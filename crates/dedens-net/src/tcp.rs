@@ -13,12 +13,12 @@
 
 #![deny(clippy::disallowed_methods)]
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
@@ -56,8 +56,9 @@ pub enum TcpError {
     /// No response before the deadline.
     #[error("no response before the deadline")]
     TimedOut,
-    /// No connection to open: as many as the pool may hold are open, each with a query waiting (D190).
-    #[error("every connection allowed has a query waiting")]
+    /// No connection to open before the deadline: as many as the pool may hold are open, each with a query
+    /// waiting, or as many as it may hold to the server (D190).
+    #[error("no connection free before the deadline")]
     Busy,
 }
 
@@ -122,8 +123,14 @@ pub struct TcpPool<N: Io = Compio> {
     /// Built at the first TLS connection.
     tls: OnceCell<TlsConnector>,
     connections: RefCell<HashMap<Link, Connection<N>>>,
+    /// The connections out of [`TcpPool::connections`], replaced or closed for room, until they close.
+    retired: RefCell<Vec<(Link, Weak<RefCell<State>>)>>,
     /// The connections held at most, see [`TcpPool::at_most`].
     most: NonZeroUsize,
+    /// The connections held at most over one link, see [`TcpPool::per_server`].
+    per_server: NonZeroUsize,
+    /// The queries waiting for room, woken when a query ends or a connection closes.
+    waiters: Rc<Waiters>,
 }
 
 impl TcpPool {
@@ -145,7 +152,10 @@ impl<N: Io> TcpPool<N> {
             trust: Trust::System,
             tls: OnceCell::new(),
             connections: RefCell::default(),
+            retired: RefCell::default(),
             most: NonZeroUsize::MAX,
+            per_server: NonZeroUsize::MAX,
+            waiters: Rc::default(),
         }
     }
 
@@ -155,12 +165,23 @@ impl<N: Io> TcpPool<N> {
         Self { trust, ..self }
     }
 
-    /// The pool, holding at most `most` connections, those closed or closing included: a new one closes the one
-    /// idle longest, with no query waiting, or fails with [`TcpError::Busy`] when there is none (D190). No bound by
-    /// default.
+    /// The pool, holding at most `most` connections until they close, those replaced while queries wait on them
+    /// included: a new one closes the one idle longest, with no query waiting, or waits for one to be (D190). No
+    /// bound by default.
     #[must_use]
     pub fn at_most(self, most: NonZeroUsize) -> Self {
         Self { most, ..self }
+    }
+
+    /// The pool, holding at most `most` connections over one link, as [`TcpPool::at_most`] counts them: a server
+    /// that asks for no more queries on each connection, by an edns-tcp-keepalive of 0 (RFC 7828 §3.2.2), holds no
+    /// more (D190). No bound by default.
+    #[must_use]
+    pub fn per_server(self, most: NonZeroUsize) -> Self {
+        Self {
+            per_server: most,
+            ..self
+        }
     }
 
     /// Sends `wire` over `link` and returns the response, waiting until `deadline`.
@@ -170,11 +191,13 @@ impl<N: Io> TcpPool<N> {
     /// response comes or the connection closes. Opens a connection when there is none or the last one takes no
     /// more queries, all its IDs taken for one; a connection that closes before the response is replaced once and
     /// the query sent again (D27). A query that times out with nothing read on its open connection since it was
-    /// sent closes the connection: the server stopped answering, or reading.
+    /// sent closes the connection: the server stopped answering, or reading. With no room for a connection, see
+    /// [`TcpPool::at_most`], the query waits for one until `deadline`.
     ///
     /// # Errors
     ///
-    /// [`TcpError`]: no connection or handshake, closed twice, a query that cannot be framed, or the deadline.
+    /// [`TcpError`]: no connection or handshake, closed twice, a query that cannot be framed, the deadline, or
+    /// [`TcpError::Busy`] when it came with no room for a connection.
     pub async fn exchange(
         &self,
         link: impl Into<Link>,
@@ -185,12 +208,24 @@ impl<N: Io> TcpPool<N> {
             return Err(TcpError::BadLength(wire.len()));
         };
         let link = link.into();
+        // However the query ends, its connection may make room: dropped last, once the connection is let go.
+        let _ended = Ended(&self.waiters);
         // The connection of the last try, and when the query went on it.
         let mut last = None;
+        let roomless = Cell::new(false);
         let attempt = async {
             for _ in 0..2 {
                 // Held while the query waits: a connection replaced in the pool lives until its queries are answered.
-                let connection = self.connection(&link)?;
+                let connection = loop {
+                    match self.connection(&link) {
+                        Err(TcpError::Busy) => {
+                            roomless.set(true);
+                            self.waiters.wait().await;
+                        }
+                        got => break got?,
+                    }
+                };
+                roomless.set(false);
                 let sent = self.io.now();
                 let response = match connection.send(wire, sent) {
                     Ok(response) => response,
@@ -213,6 +248,10 @@ impl<N: Io> TcpPool<N> {
         };
         let answered = self.io.timeout_at(deadline, attempt).await;
         answered.unwrap_or_else(|_| {
+            if roomless.get() {
+                debug!(server = %link.addr(), "no connection free before the deadline");
+                return Err(TcpError::Busy);
+            }
             if let Some((connection, sent)) = last {
                 connection.state.borrow_mut().stalled(sent);
             }
@@ -248,7 +287,7 @@ impl<N: Io> TcpPool<N> {
         }
     }
 
-    /// The connection over `link` taking queries, or a new one.
+    /// The connection over `link` taking queries, or a new one; [`TcpError::Busy`] when there is no room for it.
     fn connection(&self, link: &Link) -> Result<Connection<N>, TcpError> {
         let mut connections = self.connections.borrow_mut();
         if let Some(open) = connections.get(link)
@@ -256,8 +295,21 @@ impl<N: Io> TcpPool<N> {
         {
             return Ok(open.clone());
         }
-        // A connection replaced in the map makes no room.
-        if !connections.contains_key(link) && connections.len() >= self.most.get() {
+        let mut retired = self.retired.borrow_mut();
+        if let Some(replaced) = connections.remove(link) {
+            retired.push((link.clone(), Rc::downgrade(&replaced.state)));
+        }
+        // A connection counts until it closes; the shutdown of its side may hold its descriptor a moment longer.
+        retired.retain(|(_, state)| {
+            state
+                .upgrade()
+                .is_some_and(|state| state.borrow().outgoing.is_some())
+        });
+        if retired.iter().filter(|(over, _)| over == link).count() >= self.per_server.get() {
+            debug!(server = %link.addr(), "no connection: as many as allowed to the server");
+            return Err(TcpError::Busy);
+        }
+        if connections.len() + retired.len() >= self.most.get() {
             // The connection idle longest goes, first those that take no more queries.
             let idle = connections
                 .iter()
@@ -267,18 +319,25 @@ impl<N: Io> TcpPool<N> {
                     (state.takes_queries(), state.last)
                 })
                 .map(|(link, _)| link.clone());
-            let Some(idle) = idle else {
+            let Some(idle) = idle.and_then(|idle| connections.remove_entry(&idle)) else {
                 debug!(server = %link.addr(), "no connection: every one allowed has a query waiting");
                 return Err(TcpError::Busy);
             };
-            debug!(server = %idle.addr(), "closed: idle longest, for a new connection");
-            connections.remove(&idle);
+            debug!(server = %idle.0.addr(), "closed: idle longest, for a new connection");
+            // Closed once let go, as its task ends; a query opening it may still hold it.
+            retired.push((idle.0, Rc::downgrade(&idle.1.state)));
         }
         let tls = match link {
             Link::Tcp(_) => None,
             Link::Tls(..) => Some(self.connector()?),
         };
-        let fresh = Connection::open(&self.io, link.clone(), tls, self.idle);
+        let fresh = Connection::open(
+            &self.io,
+            link.clone(),
+            tls,
+            self.idle,
+            Rc::clone(&self.waiters),
+        );
         connections.insert(link.clone(), fresh.clone());
         Ok(fresh)
     }
@@ -290,6 +349,48 @@ impl<N: Io> TcpPool<N> {
         }
         let connector = tls::connector(&self.trust).map_err(TcpError::Trust)?;
         Ok(self.tls.get_or_init(|| connector).clone())
+    }
+}
+
+/// The queries waiting for room in a pool.
+#[derive(Debug, Default)]
+struct Waiters(RefCell<Vec<flume::Sender<()>>>);
+
+impl Waiters {
+    /// Waits for the next [`Waiters::wake`].
+    async fn wait(&self) {
+        let (wake, woken) = flume::bounded(1);
+        self.0.borrow_mut().push(wake);
+        let _ = woken.recv_async().await;
+    }
+
+    /// Wakes every query waiting, to look for room again.
+    fn wake(&self) {
+        for wake in self.0.borrow_mut().drain(..) {
+            let _ = wake.try_send(());
+        }
+    }
+}
+
+/// Wakes the queries waiting for room when dropped, at the end of a query.
+struct Ended<'a>(&'a Waiters);
+
+impl Drop for Ended<'_> {
+    fn drop(&mut self) {
+        self.0.wake();
+    }
+}
+
+/// Closes a connection and wakes the queries waiting for room when dropped, as its task ends or is cancelled.
+struct Closing {
+    state: Rc<RefCell<State>>,
+    waiters: Rc<Waiters>,
+}
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        self.state.borrow_mut().close();
+        self.waiters.wake();
     }
 }
 
@@ -382,8 +483,14 @@ impl State {
 }
 
 impl<N: Io> Connection<N> {
-    /// Starts connecting over `link`, with TLS by `tls`; queries queue meanwhile.
-    fn open(io: &N, link: Link, tls: Option<TlsConnector>, idle: Duration) -> Self {
+    /// Starts connecting over `link`, with TLS by `tls`; queries queue meanwhile. Its end wakes `waiters`.
+    fn open(
+        io: &N,
+        link: Link,
+        tls: Option<TlsConnector>,
+        idle: Duration,
+        waiters: Rc<Waiters>,
+    ) -> Self {
         let (opened, opening) = flume::bounded(0);
         let (outgoing, queue) = flume::bounded(QUEUE);
         let now = io.now();
@@ -396,7 +503,11 @@ impl<N: Io> Connection<N> {
             read: None,
             idle,
         }));
-        let task = io.spawn(run(
+        let closing = Closing {
+            state: Rc::clone(&state),
+            waiters,
+        };
+        let run = run(
             io.clone(),
             link,
             tls,
@@ -404,7 +515,11 @@ impl<N: Io> Connection<N> {
             queue,
             opened,
             idle,
-        ));
+        );
+        let task = io.spawn(async move {
+            let _closing = closing;
+            run.await;
+        });
         Self {
             state,
             opening,

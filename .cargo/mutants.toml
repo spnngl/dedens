@@ -38,9 +38,6 @@ exclude_re = [
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated_dnscrypt(<N>)? (with \(\)|-> anyhow::Result<\(\)> with Ok\(\(\)\))$',
   # A key file is read in one `read` or a few: an interrupted read is retried, which no test makes a file do.
   'secret\.rs:\d+:\d+: replace (match guard error\.kind\(\) == io::ErrorKind::Interrupted with (true|false)|== with !=) in read_secret$',
-  # A query's socket readable and yet empty (a spurious wakeup) fails the query instead of waiting on: no test makes
-  # the system wake a socket with nothing to read (D190).
-  'authoritative\.rs:\d+:\d+: replace match guard matches!\( error\.kind\(\), io::ErrorKind::WouldBlock \| io::ErrorKind::Interrupted \) with false in Authoritative(<N>)?::recv$',
   # `high << 4 | low`: the low nibble of the shifted one is clear, so `|`, `^` and `+` agree.
   'secret\.rs:\d+:\d+: replace \| with \^ in read_secret$',
   # Without the `dnscrypt` or `odoh` feature only: not built under `all_features`, so no test sees a change.

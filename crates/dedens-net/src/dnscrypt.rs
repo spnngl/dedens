@@ -387,6 +387,9 @@ impl Resolver {
                             cookie: None,
                             http: None,
                             dnscrypt: None,
+                            moved: None,
+                            edns_dropped: None,
+                            case_changed: false,
                         });
                     }
                 }

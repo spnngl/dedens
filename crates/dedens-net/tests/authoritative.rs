@@ -1,65 +1,83 @@
 //! The authoritative mode on the loopback address (D190): a port per query (RFC 5452 §9.2), forged responses
-//! dropped (RFC 5452 §9.1) and `0x20` kept against them (draft-vixie-dnsext-dns0x20), TC to TCP (RFC 7766 §5), and
-//! the bounds on sockets and connections.
+//! dropped (RFC 5452 §9.1) and `0x20` kept against them (draft-vixie-dnsext-dns0x20, RFC 5452 §9.3), ICMP errors
+//! waited out, EDNS dropped (RFC 6891 §7), TC to TCP (RFC 7766 §5), BADCOOKIE to TCP (RFC 7873 §5.3), and the
+//! bounds on sockets and connections.
 //!
-//! The server answers with the response `a.root-servers.net` gave to `example.com. A`, without RD
-//! (`testdata/proto/referral_root.bin`). A forger answers with the one `a.gtld-servers.net` gave
-//! (`referral_com.bin`): a real response, but not this server's.
+//! The server answers as `ns1.google.com` answered `google.com. A` (`testdata/recursion/unsigned.yaml`, D188). A
+//! forger answers with the referral `a.gtld-servers.net` gave for it: a real response, but not this server's.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::{self, Read as _, Write as _};
-use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::buf::{IoBuf, IoBufMut};
 use compio::net::TcpStream;
-use dedens_net::authoritative::{Authoritative, Limits, Quirks};
-use dedens_net::client::ClientError;
-use dedens_net::exchange::Failure;
+use dedens_net::authoritative::{
+    Authoritative, AuthoritativeError, Edns, Limits, LocalError, Quirks, ServerError,
+};
+use dedens_net::exchange::Moved;
 use dedens_net::io::{Compio, Io, TimedOut, Udp};
-use dedens_net::tcp::{TcpError, frame};
-use dedens_proto::edns::{EdnsFlags, EdnsOption};
-use dedens_proto::{Flags, Message, Name, Question, RecordType, Transport};
-use dedens_testkit::captured;
-use dedens_testkit::responder::{self, Responder};
+use dedens_net::tcp::frame;
+use dedens_proto::edns::{Cookie, EdnsFlags, EdnsOption};
+use dedens_proto::{Flags, Message, Name, Question, Rcode, RecordType, Transport};
+use dedens_testkit::recursion::{self, Authorities, Resolution};
 use futures_util::future::join_all;
 
-/// How long each query waits.
+use crate::util::loopback::CLOSED;
+use crate::util::{cookie_of, response, wire};
+
+/// How long each query may take.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The ports a query may go from.
 const PORTS: std::ops::RangeInclusive<u16> = 1024..=65535;
 
-fn example() -> Question<'static> {
-    Question::new("example.com.".parse().expect("a name"), RecordType::A)
+/// `ns1.google.com`, authoritative for `google.com`.
+const GOOGLE: IpAddr = IpAddr::V4(Ipv4Addr::new(216, 239, 32, 10));
+
+/// `a.gtld-servers.net`, authoritative for `com`.
+const COM: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 5, 6, 30));
+
+/// A server of `microsoft.com`, whose answer to `microsoft.com. TXT` is truncated over UDP.
+const MICROSOFT: IpAddr = IpAddr::V4(Ipv4Addr::new(150, 171, 10, 39));
+
+/// The captures of the servers above.
+static AUTHORITIES: LazyLock<Authorities> = LazyLock::new(|| {
+    let resolutions = [Resolution::read("unsigned"), Resolution::read("truncated")];
+    Authorities::new(&resolutions)
+});
+
+fn deadline() -> Instant {
+    Instant::now() + TIMEOUT
 }
 
-/// The real response to `query`: the root server's capture, its ID and question the query's, as
-/// [`Responder`] answers.
+fn google() -> Question<'static> {
+    Question::new("google.com.".parse().expect("a name"), RecordType::A)
+}
+
+/// The real response to `query`, its ID and question the query's.
 fn real(query: &[u8]) -> Vec<u8> {
-    answer("referral_root", query)
+    AUTHORITIES.answer(GOOGLE, recursion::Transport::Udp, query)
 }
 
-/// The capture `case`, its ID and question bytes those of `query`.
-fn answer(case: &str, query: &[u8]) -> Vec<u8> {
-    let mut response = captured(case);
-    let end = question_end(query);
-    response[..2].copy_from_slice(&query[..2]);
-    response[12..end].copy_from_slice(&query[12..end]);
-    response
+/// The response of another server to `query`: a forger's.
+fn forged(query: &[u8]) -> Vec<u8> {
+    AUTHORITIES.answer(COM, recursion::Transport::Udp, query)
 }
 
-/// The end of the question of `query`: its name, type and class.
-fn question_end(query: &[u8]) -> usize {
+/// The end of the question of `wire`: its name, type and class.
+fn question_end(wire: &[u8]) -> usize {
     let mut at = 12;
-    while query[at] != 0 {
-        at += usize::from(query[at]) + 1;
+    while wire[at] != 0 {
+        at += usize::from(wire[at]) + 1;
     }
     at + 1 + 4
 }
@@ -85,12 +103,26 @@ fn lowercase(mut response: Vec<u8>) -> Vec<u8> {
     response
 }
 
-/// `response` cut to its header and question, FORMERR (RFC 6891 §7: no OPT record): changed by the test.
-fn formerr(response: &[u8]) -> Vec<u8> {
-    let mut formerr = response[..question_end(response)].to_vec();
-    formerr[3] = (formerr[3] & 0xf0) | 1;
-    formerr[6..12].fill(0);
-    formerr
+/// `response` cut to its header and question, with `rcode` and no OPT record (RFC 6891 §7): changed by the test.
+fn cut(response: &[u8], rcode: Rcode) -> Vec<u8> {
+    let mut cut = response[..question_end(response)].to_vec();
+    cut[3] = (cut[3] & 0xf0) | (u8::try_from(rcode.0).expect("a header rcode") & 0x0f);
+    cut[6..12].fill(0);
+    cut
+}
+
+/// `response` cut to its header and question, TC set: changed by the test.
+fn truncated(response: &[u8]) -> Vec<u8> {
+    let mut truncated = cut(response, Rcode::NOERROR);
+    truncated[2] |= 0x02;
+    truncated
+}
+
+/// `response` without its OPT record, as a server not knowing EDNS answers: changed by the test.
+fn without_edns(response: &[u8]) -> Vec<u8> {
+    let mut message = decode(response);
+    message.edns = None;
+    wire(&message)
 }
 
 /// Whether `query` has an OPT record: the only additional record a query of these tests carries.
@@ -108,7 +140,8 @@ enum From {
 }
 
 /// A server over UDP and TCP on one port of the loopback address: each UDP query gets the datagrams of `udp`, in
-/// order, and each TCP query the response of `tcp`. Its threads run until the test process exits.
+/// order, and each TCP query the response of `tcp`, one connection after the other. Its threads run until the
+/// test process exits.
 fn server(
     udp: impl Fn(&[u8]) -> Vec<(From, Vec<u8>)> + Send + 'static,
     tcp: impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static,
@@ -140,11 +173,47 @@ fn server(
                 let mut query = vec![0; usize::from(u16::from_be_bytes(len))];
                 stream.read_exact(&mut query).expect("a whole query");
                 let response = frame(&tcp(&query)).expect("under 64 KiB");
-                stream.write_all(&response).expect("written");
+                // The client may have given up meanwhile.
+                let _ = stream.write_all(&response);
             }
         }
     });
     addr
+}
+
+/// A server answering as `ns1.google.com` over both transports, after `delay`.
+fn google_server(delay: Duration) -> SocketAddr {
+    server(
+        move |query| {
+            thread::sleep(delay);
+            vec![(From::Server, real(query))]
+        },
+        move |query| {
+            thread::sleep(delay);
+            real(query)
+        },
+    )
+}
+
+/// A server that never answers.
+fn silent() -> SocketAddr {
+    server(|_| Vec::new(), |_| unreachable!("all over UDP"))
+}
+
+/// The queries a server got, in order.
+type Queries = Arc<Mutex<Vec<Vec<u8>>>>;
+
+/// The response a server gives to a query.
+type Respond = fn(&[u8]) -> Vec<u8>;
+
+/// Records each query in order.
+fn recorder() -> (Queries, impl Fn(&[u8]) + Clone + Send + Sync + 'static) {
+    let queries = Arc::new(Mutex::new(Vec::new()));
+    let record = {
+        let queries = Arc::clone(&queries);
+        move |query: &[u8]| queries.lock().expect("not poisoned").push(query.to_vec())
+    };
+    (queries, record)
 }
 
 /// What [`Watched`] saw.
@@ -160,9 +229,14 @@ struct Seen {
     failing: Vec<io::ErrorKind>,
     /// The binds tried, failed ones included.
     binds: usize,
+    /// The errors the next receives on a socket fail with, in order, before any datagram is read.
+    recv_errors: Vec<io::ErrorKind>,
 }
 
-/// Compio, its UDP sockets counted and its randomness from a fixed seed, so that each run draws the same ports.
+/// The seed of the next [`Watched`]: each its own, or the tests running at once would draw the same ports.
+static SEEDS: AtomicU64 = AtomicU64::new(1);
+
+/// Compio, its UDP sockets counted and its randomness from a seed.
 #[derive(Debug, Clone)]
 struct Watched {
     seen: Rc<RefCell<Seen>>,
@@ -172,9 +246,14 @@ struct Watched {
 
 impl Watched {
     fn new() -> Self {
+        Self::seeded(SEEDS.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Drawing from `seed`, the same ports at each run.
+    fn seeded(seed: u64) -> Self {
         Self {
             seen: Rc::default(),
-            state: Rc::new(RefCell::new(0x5eed)),
+            state: Rc::new(RefCell::new(seed)),
         }
     }
 }
@@ -276,7 +355,12 @@ impl Udp for WatchedUdp {
     }
 
     fn try_recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.udp.try_recv(buffer)
+        let mut seen = self.seen.borrow_mut();
+        if seen.recv_errors.is_empty() {
+            self.udp.try_recv(buffer)
+        } else {
+            Err(seen.recv_errors.remove(0).into())
+        }
     }
 
     async fn send<B: IoBuf>(&self, buffer: B) -> BufResult<usize, B> {
@@ -309,23 +393,38 @@ fn decode(wire: &[u8]) -> Message<'static> {
         .into_owned()
 }
 
+/// The quirks of a server known to answer with EDNS, and nothing else.
+fn with_edns() -> Quirks {
+    Quirks {
+        edns: Edns::Supported,
+        ..Quirks::default()
+    }
+}
+
 /// The query: RD clear, EDNS of 1232 bytes with DO and a cookie, the question in a random case (RFC 5452 §9.3);
 /// the response comes back in the case asked, its sections the server's.
 #[compio::test]
 async fn a_query_asks_as_a_resolver_asks_an_authoritative_server() {
-    let responder = Responder::start(&["referral_root"]);
+    let (queries, record) = recorder();
+    let addr = server(
+        move |query| {
+            record(query);
+            vec![(From::Server, real(query))]
+        },
+        |_| unreachable!("all over UDP"),
+    );
     let (client, _) = client(Limits::default());
     let answer = client
-        .query(example(), responder.addr, Quirks::default(), TIMEOUT)
+        .query(google(), addr, Quirks::default(), deadline())
         .await
         .expect("answered");
-    let queries: [_; 1] = responder.queries().try_into().expect("one query");
-    let [(responder::Transport::Udp, query)] = queries else {
-        panic!("not over UDP");
+    let queries = queries.lock().expect("not poisoned");
+    let [query] = queries.as_slice() else {
+        panic!("not one query: {queries:?}");
     };
-    let query = decode(&query);
+    let query = decode(query);
     assert!(!query.header.flags.contains(Flags::RD));
-    let edns = query.edns.expect("EDNS");
+    let edns = query.edns.as_ref().expect("EDNS");
     assert_eq!(edns.udp_payload, 1232);
     assert!(edns.flags.contains(EdnsFlags::DO));
     assert!(
@@ -334,29 +433,35 @@ async fn a_query_asks_as_a_resolver_asks_an_authoritative_server() {
             .any(|option| matches!(option, EdnsOption::Cookie(_)))
     );
     let asked = &query.questions[0].name;
-    assert!(!asked.labels().eq(example().name.labels()), "0x20: {asked}");
+    assert!(!asked.labels().eq(google().name.labels()), "0x20: {asked}");
+    assert_eq!(
+        (answer.response.transport, answer.response.moved),
+        (Transport::Udp, None)
+    );
     let response = decode(&answer.response.wire);
     assert!(
         response.questions[0]
             .name
             .labels()
-            .eq(example().name.labels())
+            .eq(google().name.labels())
     );
-    assert_eq!(
-        response.authority,
-        decode(&captured("referral_root")).authority
-    );
-    assert_eq!(answer.quirks, Quirks::default());
+    let captured = AUTHORITIES.answer(GOOGLE, recursion::Transport::Udp, &wire(&query));
+    assert_eq!(response.answer, decode(&captured).answer);
+    assert_eq!(answer.quirks, with_edns());
 }
 
-/// RFC 5452 §9.2: each query goes from a port of its own, drawn from the whole range.
+/// RFC 5452 §9.2: each query goes from a port of its own, drawn from the whole range. The randomness is
+/// [`Watched`]'s, from a fixed seed: this checks how a port is drawn from random bytes, not the system's
+/// randomness.
 #[compio::test]
 async fn ports_differ_from_query_to_query() {
-    let responder = Responder::start(&["referral_root"]);
-    let (client, seen) = client(Limits::default());
+    let addr = google_server(Duration::ZERO);
+    let io = Watched::seeded(0x5eed);
+    let seen = Rc::clone(&io.seen);
+    let client = Authoritative::with_io(io, Limits::default());
     for _ in 0..1000 {
         client
-            .query(example(), responder.addr, Quirks::default(), TIMEOUT)
+            .query(google(), addr, with_edns(), deadline())
             .await
             .expect("answered");
     }
@@ -364,12 +469,14 @@ async fn ports_differ_from_query_to_query() {
     assert_eq!(ports.len(), 1000);
     assert!(ports.iter().all(|port| PORTS.contains(port)));
     assert!(ports.windows(2).all(|pair| pair[0] != pair[1]));
-    // The range in blocks of 1024 ports: at least half of them hold a port.
+    // Each of the 63 blocks of 1024 ports holds one, the lowest and the highest included: 1000 draws miss a block
+    // with a chance of 63·(62/63)¹⁰⁰⁰, about 7·10⁻⁶.
     let blocks: HashSet<u16> = ports.iter().map(|port| port / 1024).collect();
+    assert_eq!(blocks.len(), PORTS.len() / 1024, "{blocks:?}");
+    let (low, high) = (ports.iter().min(), ports.iter().max());
     assert!(
-        blocks.len() >= PORTS.len() / 1024 / 2,
-        "{} blocks",
-        blocks.len()
+        low < Some(&4096) && high > Some(&61440),
+        "{low:?}..{high:?}"
     );
 }
 
@@ -380,7 +487,7 @@ async fn a_response_from_another_port_is_dropped() {
     let addr = server(
         |query| {
             vec![
-                (From::Elsewhere, answer("referral_com", query)),
+                (From::Elsewhere, forged(query)),
                 (From::Server, real(query)),
             ]
         },
@@ -388,35 +495,45 @@ async fn a_response_from_another_port_is_dropped() {
     );
     let (client, _) = client(Limits::default());
     let answer = client
-        .query(example(), addr, Quirks::default(), TIMEOUT)
+        .query(google(), addr, Quirks::default(), deadline())
         .await
         .expect("answered");
     assert_eq!(answer.response.transport, Transport::Udp);
     assert_eq!(
-        decode(&answer.response.wire).authority,
-        decode(&captured("referral_root")).authority
+        decode(&answer.response.wire).answer,
+        decode(&real(&answer.response.query)).answer
     );
 }
 
-/// A forged response with the question in another case asks over TCP, where the server repeats the case: the
-/// server's response is taken, and `0x20` stays on.
+/// RFC 5452 §9.3: a forged response with the question in another case, a referral, FORMERR or TC, asks over TCP,
+/// where the server repeats the case: the server's response is taken, and neither `0x20` nor EDNS is given up.
 #[compio::test]
-async fn a_forged_case_mismatch_moves_to_tcp_and_keeps_0x20() {
-    let addr = server(
-        |query| vec![(From::Server, swap_case(answer("referral_com", query)))],
-        real,
-    );
-    let (client, _) = client(Limits::default());
-    let answer = client
-        .query(example(), addr, Quirks::default(), TIMEOUT)
-        .await
-        .expect("answered");
-    assert_eq!(answer.response.transport, Transport::Tcp);
-    assert_eq!(
-        decode(&answer.response.wire).authority,
-        decode(&captured("referral_root")).authority
-    );
-    assert_eq!(answer.quirks, Quirks::default());
+async fn a_forged_case_mismatch_moves_to_tcp_and_gives_nothing_up() {
+    let forgeries: [Respond; 3] = [
+        forged,
+        |query| cut(&real(query), Rcode::FORMERR),
+        |query| truncated(&real(query)),
+    ];
+    for forgery in forgeries {
+        let addr = server(
+            move |query| vec![(From::Server, swap_case(forgery(query)))],
+            real,
+        );
+        let (client, _) = client(Limits::default());
+        let answer = client
+            .query(google(), addr, Quirks::default(), deadline())
+            .await
+            .expect("answered");
+        assert_eq!(
+            (answer.response.transport, answer.response.moved),
+            (Transport::Tcp, Some(Moved::Case))
+        );
+        assert_eq!(
+            decode(&answer.response.wire).answer,
+            decode(&real(&answer.response.query)).answer
+        );
+        assert_eq!(answer.quirks, with_edns());
+    }
 }
 
 /// A server that lowercases the question (draft-vixie-dnsext-dns0x20 §6.2) is answered over TCP and marked; the
@@ -429,14 +546,17 @@ async fn a_server_not_repeating_the_case_is_marked_over_tcp() {
     );
     let (client, _) = client(Limits::default());
     let question = Question::new(
-        Name::from_labels([b"Example".as_slice(), b"COM"]).expect("a name"),
+        Name::from_labels([b"Google".as_slice(), b"COM"]).expect("a name"),
         RecordType::A,
     );
     let answer = client
-        .query(question.clone(), addr, Quirks::default(), TIMEOUT)
+        .query(question.clone(), addr, Quirks::default(), deadline())
         .await
         .expect("answered");
-    assert_eq!(answer.response.transport, Transport::Tcp);
+    assert_eq!(
+        (answer.response.transport, answer.response.moved),
+        (Transport::Tcp, Some(Moved::Case))
+    );
     assert!(answer.quirks.no_case);
     assert!(
         decode(&answer.response.wire).questions[0]
@@ -445,44 +565,68 @@ async fn a_server_not_repeating_the_case_is_marked_over_tcp() {
             .eq(question.name.labels())
     );
     let again = client
-        .query(question, addr, answer.quirks, TIMEOUT)
+        .query(question, addr, answer.quirks, deadline())
         .await
         .expect("answered");
     assert_eq!(again.response.transport, Transport::Udp);
 }
 
-/// One send, waiting the timeout given: trying again is the caller's.
+/// D114: a response over TCP without its question, as a FORMERR may come, tells nothing of the case.
 #[compio::test]
-async fn a_silent_server_costs_one_send_of_the_timeout() {
-    let addr = server(|_| Vec::new(), |_| unreachable!("all over UDP"));
+async fn a_tcp_response_without_the_question_marks_nothing() {
+    let addr = server(
+        |query| vec![(From::Server, swap_case(forged(query)))],
+        |query| {
+            let mut formerr = cut(&real(query), Rcode::FORMERR);
+            formerr.truncate(12);
+            formerr[4..6].fill(0);
+            formerr
+        },
+    );
+    let (client, _) = client(Limits::default());
+    let answer = client
+        .query(google(), addr, Quirks::default(), deadline())
+        .await
+        .expect("answered");
+    assert_eq!(answer.response.moved, Some(Moved::Case));
+    assert_eq!(answer.quirks, Quirks::default());
+}
+
+/// One send, waiting until the deadline: trying again is the caller's.
+#[compio::test]
+async fn a_silent_server_costs_one_send_until_the_deadline() {
+    let addr = silent();
     let (client, _) = client(Limits::default());
     let start = Instant::now();
     let silence = client
         .query(
-            example(),
+            google(),
             addr,
             Quirks::default(),
-            Duration::from_millis(100),
+            start + Duration::from_millis(100),
         )
         .await;
     assert!(
         matches!(
             silence,
-            Err(ClientError::Exchange(Failure::TimedOut { sends: 1 }))
+            Err(AuthoritativeError::Server(ServerError::TimedOut {
+                sends: 1
+            }))
         ),
         "{silence:?}"
     );
     assert!(start.elapsed() < Duration::from_secs(1));
 }
 
-/// A port taken is drawn again, 8 times at most; another error of the bind fails the query.
+/// A port taken is drawn again, 8 times at most; another error of the bind, as a port not allowed, fails the
+/// query at once.
 #[compio::test]
 async fn a_port_taken_is_drawn_again() {
-    let responder = Responder::start(&["referral_root"]);
+    let addr = google_server(Duration::ZERO);
     let (client, seen) = client(Limits::default());
     seen.borrow_mut().failing = vec![io::ErrorKind::AddrInUse; 7];
     client
-        .query(example(), responder.addr, Quirks::default(), TIMEOUT)
+        .query(google(), addr, with_edns(), deadline())
         .await
         .expect("answered");
     assert_eq!((seen.borrow().binds, seen.borrow().ports.len()), (8, 1));
@@ -495,48 +639,72 @@ async fn a_port_taken_is_drawn_again() {
             watched.failing = vec![kind; 8];
             watched.binds = 0;
         }
-        let failed = client
-            .query(example(), responder.addr, Quirks::default(), TIMEOUT)
-            .await;
+        let failed = client.query(google(), addr, with_edns(), deadline()).await;
         assert!(
-            matches!(&failed, Err(ClientError::Udp(error)) if error.kind() == kind),
+            matches!(&failed, Err(AuthoritativeError::Local(LocalError::Bind(error))) if error.kind() == kind),
             "{failed:?}"
         );
         assert_eq!(seen.borrow().binds, binds);
     }
 }
 
-/// A closed port refuses the query (ICMP port unreachable), at once: the caller tells it from a timeout.
+/// An ICMP error, which a forger knowing the port can send, does not end the query: a closed port is waited on
+/// until the deadline, and its error told beside the timeout.
 #[compio::test]
-async fn a_closed_port_fails_at_once() {
-    let closed = UdpSocket::bind("127.0.0.1:0")
-        .and_then(|socket| socket.local_addr())
-        .expect("a port");
+async fn an_icmp_error_waits_until_the_deadline() {
     let (client, _) = client(Limits::default());
     let start = Instant::now();
+    let wait = Duration::from_millis(300);
     let refused = client
-        .query(example(), closed, Quirks::default(), TIMEOUT)
+        .query(google(), CLOSED, Quirks::default(), start + wait)
         .await;
     assert!(
-        matches!(&refused, Err(ClientError::Udp(error)) if error.kind() == io::ErrorKind::ConnectionRefused),
+        matches!(
+            refused,
+            Err(AuthoritativeError::Server(ServerError::Unreachable {
+                sends: 1,
+                kind: io::ErrorKind::ConnectionRefused
+            }))
+        ),
         "{refused:?}"
     );
-    assert!(start.elapsed() < TIMEOUT);
+    assert!(start.elapsed() >= wait);
 }
 
-/// RFC 6891 §7: a server answering FORMERR without OPT is asked again without EDNS and marked; the next query,
-/// told of it, goes without.
+/// The response after an ICMP error, or after a wake-up with no datagram to read, is taken.
+#[compio::test]
+async fn the_response_after_an_icmp_error_or_a_spurious_wakeup_is_taken() {
+    let addr = google_server(Duration::ZERO);
+    let (client, seen) = client(Limits::default());
+    for errors in [
+        vec![
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::HostUnreachable,
+        ],
+        vec![io::ErrorKind::WouldBlock, io::ErrorKind::Interrupted],
+    ] {
+        seen.borrow_mut().recv_errors = errors;
+        let answer = client
+            .query(google(), addr, with_edns(), deadline())
+            .await
+            .expect("answered");
+        assert_eq!(answer.response.transport, Transport::Udp);
+        assert_eq!(seen.borrow().recv_errors, []);
+    }
+}
+
+/// RFC 6891 §7: a server answering FORMERR without OPT, then NOERROR to the query without EDNS, is marked; the
+/// next query, told of it, goes without.
 #[compio::test]
 async fn a_server_not_knowing_edns_is_marked() {
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&asked);
+    let (queries, record) = recorder();
     let addr = server(
         move |query| {
-            seen.lock().expect("not poisoned").push(has_edns(query));
+            record(query);
             let response = if has_edns(query) {
-                formerr(&real(query))
+                cut(&real(query), Rcode::FORMERR)
             } else {
-                real(query)
+                without_edns(&real(query))
             };
             vec![(From::Server, response)]
         },
@@ -544,51 +712,140 @@ async fn a_server_not_knowing_edns_is_marked() {
     );
     let (client, _) = client(Limits::default());
     let answer = client
-        .query(example(), addr, Quirks::default(), TIMEOUT)
+        .query(google(), addr, Quirks::default(), deadline())
         .await
         .expect("answered");
-    assert!(answer.quirks.no_edns);
+    assert_eq!(
+        answer.quirks.edns,
+        Edns::Unsupported {
+            rejected: Rcode::FORMERR,
+            answered: Rcode::NOERROR
+        }
+    );
     client
-        .query(example(), addr, answer.quirks, TIMEOUT)
+        .query(google(), addr, answer.quirks, deadline())
         .await
         .expect("answered");
-    assert_eq!(*asked.lock().expect("not poisoned"), [true, false, false]);
+    let edns: Vec<_> = queries
+        .lock()
+        .expect("not poisoned")
+        .iter()
+        .map(|query| has_edns(query))
+        .collect();
+    assert_eq!(edns, [true, false, false]);
 }
 
-/// RFC 7766 §5: a truncated response asks again over TCP.
+/// A failure to the query without EDNS, such as SERVFAIL, does not tell EDNS was the trouble: nothing is marked.
 #[compio::test]
-async fn a_truncated_response_moves_to_tcp() {
-    let responder = Responder::start(&["truncated", "txt_large"]);
+async fn a_failure_without_edns_marks_nothing() {
+    let addr = server(
+        |query| {
+            let rcode = if has_edns(query) {
+                Rcode::NOTIMP
+            } else {
+                Rcode::SERVFAIL
+            };
+            vec![(From::Server, cut(&real(query), rcode))]
+        },
+        |_| unreachable!("all over UDP"),
+    );
     let (client, _) = client(Limits::default());
-    let question = Question::new("google.com.".parse().expect("a name"), RecordType::TXT);
     let answer = client
-        .query(question, responder.addr, Quirks::default(), TIMEOUT)
+        .query(google(), addr, Quirks::default(), deadline())
         .await
         .expect("answered");
-    assert_eq!(answer.response.transport, Transport::Tcp);
-    assert!(answer.quirks.tcp);
-    let transports: Vec<_> = responder
-        .queries()
-        .into_iter()
-        .map(|(transport, _)| transport)
-        .collect();
-    assert_eq!(
-        transports,
-        [responder::Transport::Udp, responder::Transport::Tcp]
+    assert_eq!(answer.response.edns_dropped, Some(Rcode::NOTIMP));
+    assert_eq!(answer.quirks, Quirks::default());
+}
+
+/// RFC 7766 §5: a truncated response asks again over TCP, and tells only that the answer was large: the server
+/// is not marked.
+#[compio::test]
+async fn a_truncated_response_moves_to_tcp() {
+    let (queries, record) = recorder();
+    let addr = server(
+        move |query| {
+            record(query);
+            vec![(
+                From::Server,
+                AUTHORITIES.answer(MICROSOFT, recursion::Transport::Udp, query),
+            )]
+        },
+        |query| AUTHORITIES.answer(MICROSOFT, recursion::Transport::Tcp, query),
     );
+    let (client, _) = client(Limits::default());
+    let question = Question::new("microsoft.com.".parse().expect("a name"), RecordType::TXT);
+    let answer = client
+        .query(question, addr, Quirks::default(), deadline())
+        .await
+        .expect("answered");
+    assert_eq!(
+        (answer.response.transport, answer.response.moved),
+        (Transport::Tcp, Some(Moved::Truncated))
+    );
+    assert!(!answer.quirks.tcp);
+    assert!(decode(&answer.response.wire).answer.len() > 1);
+    assert_eq!(queries.lock().expect("not poisoned").len(), 1);
+}
+
+/// RFC 7873 §5.3: a server answering BADCOOKIE twice over UDP is asked over TCP and marked; the next query, told
+/// of it, goes over TCP from the start, without a cookie.
+#[compio::test]
+async fn a_server_answering_badcookie_twice_is_marked() {
+    const FRESH: &[u8] = b"fresh-cookie-016";
+    /// `response` with the client cookie of `query` and [`FRESH`].
+    fn with_cookie(query: &[u8], mut response: Message<'static>) -> Vec<u8> {
+        let client = cookie_of(query).expect("a cookie").client();
+        let cookie = Cookie::new(client, Some(FRESH)).expect("a valid cookie");
+        response.edns.as_mut().expect("EDNS").options = vec![EdnsOption::Cookie(cookie)];
+        wire(&response)
+    }
+    let (queries, record) = recorder();
+    let tcp = record.clone();
+    let addr = server(
+        move |query| {
+            record(query);
+            let badcookie = response(&decode(query), Rcode::BADCOOKIE);
+            vec![(From::Server, with_cookie(query, badcookie))]
+        },
+        move |query| {
+            tcp(query);
+            match cookie_of(query) {
+                Some(_) => with_cookie(query, decode(&real(query))),
+                None => real(query),
+            }
+        },
+    );
+    let (client, _) = client(Limits::default());
+    let answer = client
+        .query(google(), addr, Quirks::default(), deadline())
+        .await
+        .expect("answered");
+    assert_eq!(
+        (answer.response.transport, answer.response.moved),
+        (Transport::Tcp, Some(Moved::BadCookie))
+    );
+    assert!(answer.quirks.tcp);
+    let again = client
+        .query(google(), addr, answer.quirks, deadline())
+        .await
+        .expect("answered");
+    assert_eq!(again.response.transport, Transport::Tcp);
+    let queries = queries.lock().expect("not poisoned");
+    assert_eq!(queries.len(), 4);
+    assert_eq!(cookie_of(&queries[3]), None);
 }
 
 /// Queries past the sockets allowed wait for one: never more open at once, and each answered.
 #[compio::test]
 async fn sockets_in_flight_never_exceed_the_bound() {
-    let responder = Responder::delayed(&["referral_root"], Duration::from_millis(20));
+    let addr = google_server(Duration::from_millis(20));
     let sockets = NonZeroUsize::new(4).expect("not zero");
     let (client, seen) = client(Limits {
         sockets,
         ..Limits::default()
     });
-    let queries =
-        (0..16).map(|_| client.query(example(), responder.addr, Quirks::default(), TIMEOUT));
+    let queries = (0..16).map(|_| client.query(google(), addr, with_edns(), deadline()));
     let answers = join_all(queries).await;
     assert!(answers.iter().all(Result::is_ok));
     let seen = seen.borrow();
@@ -596,32 +853,98 @@ async fn sockets_in_flight_never_exceed_the_bound() {
     assert_eq!((seen.ports.len(), seen.open), (16, 0));
 }
 
-/// Past the TCP connections allowed, a new one closes the one idle longest, or fails when each has a query
-/// waiting.
+/// A query waiting for a socket gives up at its deadline, the one holding it going on.
+#[compio::test]
+async fn a_query_waiting_for_a_socket_fails_at_its_deadline() {
+    let addr = silent();
+    let (client, _) = client(Limits {
+        sockets: NonZeroUsize::MIN,
+        ..Limits::default()
+    });
+    let start = Instant::now();
+    let (holding, waiting) = futures_util::join!(
+        client.query(
+            google(),
+            addr,
+            with_edns(),
+            start + Duration::from_millis(300)
+        ),
+        client.query(
+            google(),
+            addr,
+            with_edns(),
+            start + Duration::from_millis(100)
+        ),
+    );
+    assert!(
+        matches!(
+            waiting,
+            Err(AuthoritativeError::Local(LocalError::NoSocket))
+        ),
+        "{waiting:?}"
+    );
+    assert!(
+        matches!(
+            holding,
+            Err(AuthoritativeError::Server(ServerError::TimedOut {
+                sends: 1
+            }))
+        ),
+        "{holding:?}"
+    );
+}
+
+/// A query dropped before its end, as by a caller giving up, gives its socket back.
+#[compio::test]
+async fn a_dropped_query_gives_its_socket_back() {
+    let (client, seen) = client(Limits {
+        sockets: NonZeroUsize::MIN,
+        ..Limits::default()
+    });
+    let dropped = compio::time::timeout(
+        Duration::from_millis(50),
+        client.query(google(), silent(), with_edns(), deadline()),
+    )
+    .await;
+    assert!(dropped.is_err());
+    assert_eq!(seen.borrow().open, 0);
+    client
+        .query(
+            google(),
+            google_server(Duration::ZERO),
+            with_edns(),
+            Instant::now() + Duration::from_millis(500),
+        )
+        .await
+        .expect("answered");
+}
+
+/// Past the TCP connections allowed, a new one closes the one idle longest, or waits for one to be until its
+/// deadline.
 #[compio::test]
 async fn tcp_connections_never_exceed_the_bound() {
-    let slow = Responder::delayed(&["referral_root"], Duration::from_millis(500));
-    let fast = Responder::start(&["referral_root"]);
+    let slow = google_server(Duration::from_millis(300));
+    let fast = google_server(Duration::ZERO);
     let (client, _) = client(Limits {
         tcp: NonZeroUsize::MIN,
         ..Limits::default()
     });
     let tcp = Quirks {
         tcp: true,
-        ..Quirks::default()
+        ..with_edns()
     };
-    let (waiting, refused) = futures_util::join!(
-        client.query(example(), slow.addr, tcp, TIMEOUT),
-        client.query(example(), fast.addr, tcp, TIMEOUT),
+    let start = Instant::now();
+    let (holding, busy, waiting) = futures_util::join!(
+        client.query(google(), slow, tcp, deadline()),
+        client.query(google(), fast, tcp, start + Duration::from_millis(100)),
+        client.query(google(), fast, tcp, deadline()),
     );
-    assert!(waiting.is_ok());
+    assert!(holding.is_ok(), "{holding:?}");
     assert!(
-        matches!(refused, Err(ClientError::Tcp(TcpError::Busy))),
-        "{refused:?}"
+        matches!(busy, Err(AuthoritativeError::Local(LocalError::TcpBusy))),
+        "{busy:?}"
     );
-    // The slow server's connection is idle now: it goes.
-    client
-        .query(example(), fast.addr, tcp, TIMEOUT)
-        .await
-        .expect("answered");
+    // The slow server's connection went idle: it closed for the fast one's.
+    assert!(waiting.is_ok(), "{waiting:?}");
+    assert!(start.elapsed() >= Duration::from_millis(300));
 }

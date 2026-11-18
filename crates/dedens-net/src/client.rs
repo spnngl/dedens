@@ -316,12 +316,9 @@ impl Random {
     }
 
     /// The next `LEN` bytes.
-    pub(crate) fn take<const LEN: usize>(
-        &mut self,
-        io: &impl Io,
-    ) -> Result<[u8; LEN], ClientError> {
+    pub(crate) fn take<const LEN: usize>(&mut self, io: &impl Io) -> io::Result<[u8; LEN]> {
         if self.used + LEN > RANDOM_BATCH {
-            io.random(&mut self.bytes).map_err(ClientError::Random)?;
+            io.random(&mut self.bytes)?;
             self.used = 0;
         }
         let mut taken = [0; LEN];
@@ -700,7 +697,10 @@ impl<N: Io> Client<N> {
 
     /// The next `LEN` random bytes.
     fn draw<const LEN: usize>(&self) -> Result<[u8; LEN], ClientError> {
-        self.random.borrow_mut().take(&self.io)
+        self.random
+            .borrow_mut()
+            .take(&self.io)
+            .map_err(ClientError::Random)
     }
 
     /// The progress of `exchange` once `bytes` came back on its own connection or stream: nothing else comes with

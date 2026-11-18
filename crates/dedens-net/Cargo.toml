@@ -40,7 +40,7 @@ tracing = ["dep:tracing"]
 compio = { workspace = true, features = ["macros"] }
 dedens-dnscrypt.workspace = true
 dedens-odoh.workspace = true
-dedens-testkit = { workspace = true, features = ["responder"] }
+dedens-testkit = { workspace = true, features = ["recursion", "responder"] }
 proptest.workspace = true
 rand_core.workspace = true
 
