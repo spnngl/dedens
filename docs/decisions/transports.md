@@ -890,39 +890,74 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   (`dedens_net::authoritative::Authoritative`, per thread), for the recursive resolver: one query to one of the
   thousands of servers it asks, with RFC 5452's defences and bounded resources.
   - Ports (RFC 5452 §9.2, §10): each query over UDP binds a socket of its own to a port drawn by `Io::random` from
-    1024-65535, each as likely, drawn again on `AddrInUse` up to 8 times, connected to the server (a datagram from
-    another address or port never reaches it), held for the exchange and closed on its end. Not port 0: the kernel
-    draws from its ephemeral range, 28232 ports on Linux, 16384 on macOS, and how well depends on the system; drawn
-    here, the range is the same everywhere and a test sees each port. Unbound draws from 1024-65535 too, without
-    the ports IANA assigned (`util/config_file.c:init_outgoing_availports`); BIND from the system's range
+    1024-65535, each as likely, connected to the server (a datagram from another address or port never reaches
+    it), closed on the response, the move to TCP or the deadline. Drawn again on `AddrInUse` up to 8 times (BIND
+    6, Unbound 10000); any other bind error, as a port Windows reserves or SELinux denies, fails the query: only
+    a port in use says another would do, and Unbound draws again on that alone. Not port 0: the kernel draws from
+    its ephemeral range, 28232 ports on Linux, 16384 on macOS, and how well depends on the system; drawn here, the
+    range is the same everywhere and a test sees each port. Unbound draws from 1024-65535 too, without the ports
+    IANA assigned (`util/config_file.c:init_outgoing_availports`); BIND from the system's range
     (`lib/dns/dispatch.c:setup_socket`).
   - Not D50's pools: a pool keeps up to 256 sockets per server for the life of the client, thousands of descriptors
     over the servers a resolver meets, and each kept port is known to whoever saw one query: ID and socket give 24
     bits a forger has to guess, a fresh port about 32.
-  - Bounds, per thread: `Limits::sockets` 1024 UDP sockets open at once (D47's upstream queries in flight; Unbound
-    opens 4096, `outgoing-range`), a query past them waiting for one until its deadline; `Limits::tcp` 32 TCP
-    connections (Unbound 10, `outgoing-num-tcp`), past them the one idle longest closes, or the query fails with
-    `TcpError::Busy` when each has a query waiting; a connection closes after 10 s idle, as D27's (Unbound 60 s,
-    `tcp-reuse-timeout`); `Limits::cookies` 4096 pairs.
-  - The query: random ID, RD clear, EDNS of 1232 bytes (DNS flag day 2020) with DO, a cookie, and `0x20` on (D184);
-    one send, `timeout` each: retrying, maybe another server, is the caller's. TC goes to TCP (RFC 7766 §5), as
-    BADCOOKIE twice (D27).
-  - `0x20` fallback (draft-vixie-dnsext-dns0x20 §6.3: one a forger cannot force): a response matching the query
-    but for the case of its question ends the UDP exchange, and the query goes again over TCP (RFC 5452 §9.3), the
-    same letters in the same case, its response taken whatever its case. Only that TCP response, which an off-path
-    forger cannot send, marks the server as not repeating the case; a forged mismatch costs a TCP query and turns
-    nothing off. Rejected: Unbound's `use-caps-for-id` fallback (D184 says why), and a mark from a cookie-verified
-    UDP exchange (a forger that read the server cookie is on the path, where `0x20` protects nothing anyway, but the
-    rule is shorter with TCP alone).
-  - What a server shows, `Quirks { no_edns, no_case, tcp }`, goes back in `Answer` and comes in with the next
-    query: the infra cache keeps it, and its marks expire with its entry; nothing here remembers a server.
+  - One deadline per query, given by the caller: the wait for a socket, the UDP exchange and its fallbacks (TCP,
+    no EDNS, a fresh cookie, the `0x20` fallback) all end by it, so the worst case is the deadline. One send:
+    retrying, maybe another server, is the caller's.
+  - Bounds, per thread: `Limits::sockets` 1024 UDP sockets (D47's upstream queries in flight; Unbound opens 4096,
+    `outgoing-range`), a query past them waiting for one until its deadline, as Unbound's queue; `Limits::tcp` 32
+    TCP connections (Unbound 10, `outgoing-num-tcp`), 4 to a server (a server asking for one query per connection
+    by a keepalive of 0, RFC 7828 §3.2.2, holds no more), past them the one idle longest closes, or the query waits
+    for one until its deadline, as Unbound's (`outnet->tcp_wait_first`, `services/outside_network.c:903-951`). A
+    connection counts until it closes, those replaced while a query waits on them included. It closes after 10 s
+    idle, as D27's (Unbound 60 s, `tcp-reuse-timeout`). `Limits::cookies` 4096 pairs.
+  - Descriptors: a thread holds 1024 + 32 = 1056 at most, so `threads × 1056` plus the listeners and the cache
+    files. The soft limit is 1024 on most Linux systems and 256 on macOS, under one thread's: `dedensd` raises its
+    soft `RLIMIT_NOFILE` to the hard limit at start once the recursive mode is wired (step 08), as BIND
+    (`bin/named/os.c:named_os_adjustnofile`) and Unbound (`daemon/unbound.c:checkrlimits`) do; the systemd unit's
+    `LimitNOFILE=524288` (D156) holds 496 threads. The defaults stay: lowered to fit 256, a thread would hold a
+    fifth of D47's queries in flight. Nothing here touches the limit; a bind past it fails the query,
+    `LocalError::Bind`.
+  - The query: random ID, RD clear, EDNS of 1232 bytes (DNS flag day 2020) with DO, a cookie, and `0x20` on (D184).
+    Over TCP from the start (`Quirks::tcp`), neither `0x20` nor a cookie: an off-path forger cannot answer over
+    TCP, and the handshake proves the source.
+  - Moves to TCP, told by `Response::moved`: TC (RFC 7766 §5), BADCOOKIE twice (D27), and a case mismatch. Only
+    BADCOOKIE marks the server `Quirks::tcp`: TC tells the answer was large, not that the server wants TCP, and
+    neither Unbound (a per-query fallback, `services/outside_network.c:3525-3536`) nor BIND (`server { tcp-only }`
+    is configuration) keeps a mark from it.
+  - `0x20` fallback (draft-vixie-dnsext-dns0x20 §6.3: one a forger cannot force): `CaseMismatch::Tcp` of the
+    exchange. A UDP response matching the query but for the case of its question, its cookie checked (one place
+    checks header, case and cookie), sends the query again over TCP (RFC 5452 §9.3), the same letters in the same
+    case, its response taken whatever its case. Only that TCP response, which an off-path forger cannot send,
+    marks the server `Quirks::no_case`, and only when it holds the question (a FORMERR without one tells nothing,
+    D114). A forged mismatch, of any rcode or TC, costs a TCP query and turns nothing off. The forwarder keeps
+    `CaseMismatch::Drop` (D184). Rejected: Unbound's `use-caps-for-id` fallback (D184 says why), and a mark from
+    a cookie-verified UDP exchange (a forger that read the server cookie is on the path, where `0x20` protects
+    nothing anyway, but the rule is shorter with TCP alone).
+  - EDNS (RFC 6891 §7): `Quirks::edns` is `Supported` once a response holds OPT, and `Unsupported { rejected,
+    answered }` only when the query without EDNS, after FORMERR or NOTIMP, got NOERROR, NXDOMAIN or YXDOMAIN: a
+    SERVFAIL or REFUSED then does not say EDNS was the trouble. Unbound marks a server so only for a query that
+    does not want DNSSEC (`services/outside_network.c:3483-3505`, `if(!sq->want_dnssec)`): the mark is told, and
+    whether a validating resolver keeps it is its infra cache's (step 07).
+  - ICMP errors: a port or host unreachable received on the socket, which anyone knowing the port can send, never
+    ends the query, the wait goes on to the deadline, as Unbound (`util/netevent.c:897-900, 1160-1178`); the
+    error comes back beside the timeout only, `ServerError::Unreachable`.
+  - Errors: `AuthoritativeError::Local` (randomness, no socket or TCP connection free before the deadline, a
+    bind, a socket error of ours, the encoding) is not the server's fault, `AuthoritativeError::Server` (timeout,
+    forged responses, unreachable, a TCP failure) is: the caller's server selection counts the second only.
+  - What a server shows, `Quirks { edns, no_case, tcp }`, goes back in `Answer` and comes in with the next query:
+    the infra cache keeps it, and its marks expire with its entry; nothing here remembers a server. Counters of
+    the waits timed out, `TcpBusy` and the ports exhausted are step 08's.
   - Cookies (RFC 7873 §5.1, §5.3): a table of 4096 pairs of source address and server, the one used longest ago
     going first (`cookies::Jar`), about 400 KiB; the forwarding client's table is the same now, where D27 kept each
     pair for the life of the client. A pair is the source address without its port (§4.1), so the fresh ports
     keep the cookie of the server.
     Unbound sends none to upstreams; BIND keeps them per server address (`lib/dns/adb.c:dns_adb_setcookie`).
-  - Tests: `crates/dedens-net/tests/authoritative.rs`: 1000 queries from 1000 ports, none twice in a row, over
-    half of the range; a forged response from another port dropped; a forged case mismatch moving to TCP with
-    `0x20` kept, a lowercasing server marked over TCP and asked without it next; TC to TCP; at most 4 sockets of 4
-    open for 16 queries; one TCP connection of 1 refused while busy, closed when idle. Test data:
-    `testdata/proto/referral_root.bin` and `referral_com.bin` (step 01's `testdata/recursion/` was not merged).
+  - Tests: `crates/dedens-net/tests/authoritative.rs`, on `testdata/recursion/` (D188), `ns1.google.com`'s answer
+    and `a.gtld-servers.net`'s referral as the forger's: 1000 queries from 1000 ports, none twice in a row, each
+    block of 1024 hit; a response from another port dropped; a forged referral, FORMERR or TC with the case
+    changed moving to TCP with nothing given up, a lowercasing server marked over TCP and asked without `0x20`
+    next; ICMP errors waited out, through the `Io` seam and on a closed port; EDNS marked only after NOERROR; TC to
+    TCP unmarked, BADCOOKIE twice marked; 4 sockets of 4 for 16 queries, a socket wait ending at the deadline, a
+    dropped query giving its socket back; a TCP query waiting for the connection of 1. `tests/tcp.rs`: a replaced
+    connection counted until it closes.

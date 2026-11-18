@@ -5,6 +5,7 @@
 //!   TCP; RFC 7766 §10: without delay.
 
 use std::cell::Cell;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -371,6 +372,53 @@ async fn a_zero_keepalive_takes_no_more_queries() {
         waiting.await.expect("joined").map(|r| id(&r)).ok(),
         Some(17)
     );
+}
+
+/// D190: a connection replaced while a query waits on it counts until it closes, against the bound of the pool and
+/// of its server: the next query waits for it, or fails at its deadline.
+#[compio::test]
+async fn a_replaced_connection_counts_until_it_closes() {
+    let bounds: [fn(TcpPool) -> TcpPool; 2] = [
+        |pool| pool.at_most(NonZeroUsize::MIN),
+        |pool| pool.per_server(NonZeroUsize::MIN),
+    ];
+    for bound in bounds {
+        let (listener, server) = listen().await;
+        let pool = Rc::new(bound(TcpPool::new(Duration::from_secs(5))));
+        let ask = |n, deadline| {
+            let pool = Rc::clone(&pool);
+            compio::runtime::spawn(async move {
+                pool.exchange(server, &query_with_id(n), deadline).await
+            })
+        };
+        let (first, waiting) = (ask(16, deadline()), ask(17, deadline()));
+        let mut peer = Peer::accept(&listener).await;
+        let (one, two) = (
+            peer.read().await.expect("a query"),
+            peer.read().await.expect("a query"),
+        );
+        peer.write(&[answer(&one, vec![EdnsOption::Keepalive(Some(0))])])
+            .await;
+        assert!(first.await.expect("joined").is_ok());
+        // The connection takes no more queries, and counts while a query waits on it.
+        let late = ask(18, Instant::now() + Duration::from_millis(100));
+        assert!(matches!(late.await.expect("joined"), Err(TcpError::Busy)));
+        let third = ask(19, deadline());
+        let early =
+            compio::time::timeout(Duration::from_millis(100), Peer::accept(&listener)).await;
+        assert!(early.is_err(), "a connection past the bound");
+        peer.write(&[answer(&two, Vec::new())]).await;
+        assert_eq!(
+            waiting.await.expect("joined").map(|r| id(&r)).ok(),
+            Some(17)
+        );
+        let mut next = compio::time::timeout(Duration::from_secs(2), Peer::accept(&listener))
+            .await
+            .expect("a new connection once the last closed");
+        let query = next.read().await.expect("a query on a new connection");
+        next.write(&[answer(&query, Vec::new())]).await;
+        assert_eq!(third.await.expect("joined").map(|r| id(&r)).ok(), Some(19));
+    }
 }
 
 #[compio::test]

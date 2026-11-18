@@ -27,8 +27,7 @@ use std::time::{Duration, Instant};
 
 use dedens_proto::edns::{Cookie, EdnsOption, EdnsView, OptionCode};
 use dedens_proto::{
-    EncodeError, Flags, HEADER_LEN, MAX_NAME_LEN, Message, Name, Query, Question, Rcode, Transport,
-    Violation,
+    EncodeError, Flags, HEADER_LEN, MAX_NAME_LEN, Message, Name, Query, Rcode, Transport, Violation,
 };
 
 use crate::doh::Method;
@@ -54,6 +53,9 @@ pub struct Options {
     /// names follows these bits, and a response must repeat the names in the same case. [`Response::wire`] has the
     /// question back in the case given (D184). Default: off.
     pub random_case: Option<[u8; 32]>,
+    /// With [`Options::random_case`], what becomes of a response that answers the query but for the case of its
+    /// question. Default: [`CaseMismatch::Drop`].
+    pub case_mismatch: CaseMismatch,
     /// Whether [`Client::exchange`](crate::client::Client::exchange) adds a client cookie to a query with EDNS
     /// and none of its own (RFC 7873 §5.1). Default: on.
     pub cookies: bool,
@@ -87,11 +89,24 @@ impl Default for Options {
             timeout: Duration::from_secs(5),
             edns_fallback: true,
             random_case: None,
+            case_mismatch: CaseMismatch::Drop,
             cookies: true,
             method: Method::Get,
             dnscrypt: DnsCryptOptions::default(),
         }
     }
+}
+
+/// What becomes of a response that answers the query but for the case of its question ([`Options::random_case`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CaseMismatch {
+    /// It is dropped, and the wait goes on (D184).
+    #[default]
+    Drop,
+    /// Over UDP, its cookie checked, it moves the query to TCP, its letters in the same case, where the response is
+    /// taken whatever its case (RFC 5452 §9.3, draft-vixie-dnsext-dns0x20 §6.2): a forger or a server that does
+    /// not repeat the case sent it, and [`Response::case_changed`] tells which (D190).
+    Tcp,
 }
 
 /// What to do after an [`Exchange`] step.
@@ -128,6 +143,24 @@ pub struct Response {
     pub http: Option<Http>,
     /// Over `DNSCrypt`, the certificate the query was encrypted under; `Client::exchange_dnscrypt` sets it (D98).
     pub dnscrypt: Option<CertificateInfo>,
+    /// Why the query moved from UDP to TCP, if it did.
+    pub moved: Option<Moved>,
+    /// The rcode, FORMERR or NOTIMP, of the response that dropped EDNS from the query (RFC 6891 §7), if one did.
+    pub edns_dropped: Option<Rcode>,
+    /// With [`CaseMismatch::Tcp`], whether the response came over TCP with the question in another case than
+    /// the query's: the server does not repeat the case (D190).
+    pub case_changed: bool,
+}
+
+/// Why an exchange moved its query from UDP to TCP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moved {
+    /// The response was truncated (RFC 7766 §5): it was large, which tells nothing of the server.
+    Truncated,
+    /// The server answered BADCOOKIE twice (RFC 7873 §5.3).
+    BadCookie,
+    /// The response answered the query but for the case of its question ([`CaseMismatch::Tcp`]).
+    Case,
 }
 
 /// A `DNSCrypt` certificate, as a response or a listing of the resolver's certificates tells it (draft "Certificates",
@@ -196,7 +229,8 @@ pub enum Failure {
     Encode(#[from] EncodeError),
 }
 
-/// How many queries a fallback changes at most: TC to TCP, EDNS dropped, and two BADCOOKIE (D27).
+/// How many queries a fallback changes at most: EDNS dropped, two BADCOOKIE, and TC or a case mismatch to TCP (D27,
+/// D190).
 pub const SPARE_IDS: usize = 4;
 
 /// What an exchange knows of the server's EDNS (RFC 6891 §7, D114).
@@ -206,8 +240,19 @@ enum EdnsState {
     Untested,
     /// A response had an OPT record: the server knows EDNS, and no response drops it.
     Known,
-    /// EDNS was dropped from the query.
-    Dropped,
+    /// EDNS was dropped from the query, on a response with this rcode.
+    Dropped(Rcode),
+}
+
+/// How the question of a response repeats the query's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Repeat {
+    /// Not at all, or the response is not one to the query.
+    No,
+    /// As asked, or in another case where the case is not looked at.
+    Same,
+    /// The same name in another case, where the case is looked at.
+    Folded,
 }
 
 /// One query to one server: retries, response matching, and the TCP, EDNS and cookie fallbacks (D27).
@@ -230,6 +275,8 @@ pub struct Exchange {
     bad_cookies: u8,
     /// Whether a response was dropped for its cookie.
     forged: bool,
+    /// Why the query moved from UDP to TCP.
+    moved: Option<Moved>,
 }
 
 impl Exchange {
@@ -280,6 +327,7 @@ impl Exchange {
             spare_ids: spare_ids.into_iter(),
             bad_cookies: 0,
             forged: false,
+            moved: None,
         })
     }
 
@@ -328,9 +376,10 @@ impl Exchange {
     /// The question may be missing from FORMERR and NOTIMP only; such a response is the response, and never drops
     /// EDNS (D114).
     ///
-    /// A truncated response moves the query to TCP, FORMERR or NOTIMP with the question and no OPT record drops
-    /// EDNS, unless the server sent an OPT record before, and BADCOOKIE with a cookie sends it again with that
-    /// cookie. The changed query goes with a spare ID.
+    /// A truncated response moves the query to TCP, as does, with [`CaseMismatch::Tcp`], one that answers it
+    /// but for the case of its question; FORMERR or NOTIMP with the question and no OPT record drops EDNS, unless
+    /// the server sent an OPT record before, and BADCOOKIE with a cookie sends it again with that cookie. The
+    /// changed query goes with a spare ID.
     #[must_use]
     pub fn receive(
         mut self,
@@ -350,7 +399,10 @@ impl Exchange {
             return Progress::Wait(self);
         };
         let rcode = response.rcode();
-        if !self.answers(&response, rcode) {
+        let repeat = self.answers(&response, rcode);
+        if repeat == Repeat::No
+            || (repeat == Repeat::Folded && self.options.case_mismatch == CaseMismatch::Drop)
+        {
             debug!(server = %self.server, id = response.header().id, "dropped: not the response (QR, ID, opcode or question)");
             return Progress::Wait(self);
         }
@@ -359,6 +411,12 @@ impl Exchange {
             self.forged = true;
             return Progress::Wait(self);
         };
+        // Over UDP only: over TCP, the case is not looked at with the fallback on.
+        if repeat == Repeat::Folded {
+            debug!(server = %self.server, "case mismatch: asking again over TCP");
+            self.moved = Some(Moved::Case);
+            return self.send_changed(Transport::Tcp, now);
+        }
         if response.edns().is_some() && self.edns == EdnsState::Untested {
             self.edns = EdnsState::Known;
         }
@@ -367,6 +425,7 @@ impl Exchange {
             && self.transport == Transport::Udp
         {
             debug!(server = %self.server, "truncated: asking again over TCP");
+            self.moved = Some(Moved::Truncated);
             return self.send_changed(Transport::Tcp, now);
         }
         if self.options.edns_fallback
@@ -376,7 +435,7 @@ impl Exchange {
             && (rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP)
         {
             debug!(server = %self.server, %rcode, "no EDNS in the response: asking again without EDNS");
-            self.edns = EdnsState::Dropped;
+            self.edns = EdnsState::Dropped(rcode);
             self.query.edns = None;
             let transport = self.transport;
             return self.send_changed(transport, now);
@@ -389,6 +448,7 @@ impl Exchange {
             self.bad_cookies += 1;
             self.set_cookie(fresh);
             let transport = if self.bad_cookies == 2 && self.transport == Transport::Udp {
+                self.moved = Some(Moved::BadCookie);
                 Transport::Tcp
             } else {
                 self.transport
@@ -396,6 +456,12 @@ impl Exchange {
             debug!(server = %self.server, ?transport, "BADCOOKIE: asking again with the server cookie");
             return self.send_changed(transport, now);
         }
+        let case_changed = self.options.case_mismatch == CaseMismatch::Tcp
+            && self.options.random_case.is_some()
+            && response
+                .question()
+                .zip(self.query.questions.first())
+                .is_some_and(|(got, sent)| !got.name.labels().eq(sent.name.labels()));
         let mut bytes = bytes;
         if let Some(given) = &self.given {
             give_case(&mut bytes, given);
@@ -409,6 +475,12 @@ impl Exchange {
             cookie,
             http: None,
             dnscrypt: None,
+            moved: self.moved,
+            edns_dropped: match self.edns {
+                EdnsState::Dropped(rcode) => Some(rcode),
+                EdnsState::Untested | EdnsState::Known => None,
+            },
+            case_changed,
         }))
     }
 
@@ -442,25 +514,38 @@ impl Exchange {
         self.time_out(now)
     }
 
-    /// Whether `response` answers the query: QR, ID, opcode and questions (RFC 5452 §9.1).
-    fn answers(&self, response: &Query<'_>, rcode: Rcode) -> bool {
+    /// Whether `response` answers the query: QR, ID, opcode and questions (RFC 5452 §9.1). The case of the
+    /// question is looked at with [`Options::random_case`], but over TCP with [`CaseMismatch::Tcp`].
+    fn answers(&self, response: &Query<'_>, rcode: Rcode) -> Repeat {
         let header = response.header();
         if !header.flags.contains(Flags::QR)
             || header.id != self.query.header.id
             || header.opcode != self.query.header.opcode
         {
-            return false;
+            return Repeat::No;
         }
         let several = response
             .violations()
             .contains(&Violation::MultipleQuestions);
+        let cased = self.options.random_case.is_some()
+            && !(self.options.case_mismatch == CaseMismatch::Tcp
+                && self.transport == Transport::Tcp);
         match (response.question(), self.query.questions.as_slice()) {
-            (None, []) => true,
-            (None, _) => rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP,
-            (Some(got), [sent]) => {
-                !several && same_question(got, sent, self.options.random_case.is_some())
+            (None, []) => Repeat::Same,
+            (None, _) if rcode == Rcode::FORMERR || rcode == Rcode::NOTIMP => Repeat::Same,
+            (Some(got), [sent])
+                if !several
+                    && got.qtype == sent.qtype
+                    && got.qclass == sent.qclass
+                    && got.name == sent.name =>
+            {
+                if !cased || got.name.labels().eq(sent.name.labels()) {
+                    Repeat::Same
+                } else {
+                    Repeat::Folded
+                }
             }
-            (Some(_), _) => false,
+            _ => Repeat::No,
         }
     }
 
@@ -601,17 +686,6 @@ fn cookie_in(query: &Message<'_>) -> Option<Cookie> {
             EdnsOption::Cookie(cookie) => Some(*cookie),
             _ => None,
         })
-}
-
-/// Whether `got` repeats `sent`, the name in the same case when `exact`.
-fn same_question(got: &Question<'_>, sent: &Question<'_>, exact: bool) -> bool {
-    got.qtype == sent.qtype
-        && got.qclass == sent.qclass
-        && if exact {
-            got.name.labels().eq(sent.name.labels())
-        } else {
-            got.name == sent.name
-        }
 }
 
 /// Writes `given`, the question's name in the case the caller gave, over the question of `wire`, the response that
