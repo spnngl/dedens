@@ -1,14 +1,15 @@
 //! The bytes the `RRset` cache requests from the allocator and has not returned stay within 1.05 times its capacity
-//! whatever it stores (D116, D193): [`Rrset`]'s cost counts each allocation an entry owns. As in `dedens-cache`'s
+//! whatever it stores (D116, D193): [`Rrset`]'s cost is each allocation an entry owns, to the byte. As in `dedens-cache`'s
 //! `tests/memory.rs`, the count is taken between operations, and this binary holds one test: the allocator counts
 //! every thread.
 
 use std::alloc::System;
+use std::sync::Arc;
 
-use dedens_cache::{Checked, Config};
+use dedens_cache::{Checked, Config, Cost};
 use dedens_proto::{Message, Record};
 use dedens_resolver::{Rank, Rrset, RrsetCache};
-use dedens_testkit::{captured, dns, message};
+use dedens_testkit::{captured, dns, dnssec, message};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
 #[global_allocator]
@@ -32,6 +33,17 @@ fn renamed(records: &[Record<'static>], i: usize) -> Vec<Rrset> {
 fn the_memory_held_stays_within_the_capacity() {
     // A referral from the root: 13 NS records, then an A and an AAAA `RRset` for each server.
     let referral: Message<'static> = message(&captured("referral_root"));
+    // The cost of an `RRset` is what the cache's `Arc` of it allocates: unsigned, and signed.
+    let signed = dnssec::response("alg13_a");
+    for set in [&referral.authority, &referral.additional, &signed.answer]
+        .into_iter()
+        .flat_map(|records| Rrset::group(records))
+    {
+        let region = Region::new(ALLOC);
+        let held = Arc::new(set.clone());
+        assert_eq!(region.change().bytes_allocated, set.cost(), "{set:?}");
+        drop(held);
+    }
     let region = Region::new(ALLOC);
     let cache = RrsetCache::new(
         CAPACITY,

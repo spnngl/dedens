@@ -1,11 +1,12 @@
 //! The `RRset` cache on captured responses (`testdata/proto`, `testdata/dnssec`): RFC 2181 §5 (`RRsets`), §5.2 (one
-//! TTL), §5.4.1 (ranking), §8 (TTL past 2^31 - 1); RFC 1035 §3.2.1 (TTL 0); RFC 4343 (case); RFC 4035 §4.7 (bogus
-//! data); D124 (TTL bounds), D116 (byte budget), D193.
+//! TTL), §5.4.1 (ranking), §8 (TTL past 2^31 - 1); RFC 1035 §2.3.4 (longest name), §3.2.1 (TTL 0); RFC 4343 (case); RFC 4035
+//! §4.7 (bogus data); RFC 6895 §3.1 (meta types); D124 (TTL bounds), D116 (byte budget), D193.
 
-use dedens_cache::{Checked, Config, ConfigError};
+use dedens_cache::{Checked, Config, ConfigError, Cost};
 use dedens_proto::edns::InfoCode;
+use dedens_proto::rdata::{Opaque, RData};
 use dedens_proto::{Class, Message, Record, RecordType, Section, Ttl};
-use dedens_resolver::{Hit, NotCached, Rank, Rrset, RrsetCache};
+use dedens_resolver::{DEFAULT_CAPACITY, Hit, NotCached, Rank, Rrset, RrsetCache};
 use dedens_testkit::{captured, dns, dnssec, message};
 
 const RANKS: [Rank; 6] = [
@@ -444,19 +445,85 @@ fn rfc2181_8_ttl_0_and_past_2_pow_31_are_not_cached() {
     );
 }
 
+/// An entry takes its key (the owner name's wire form, the type and the class) and its `RRset`'s cost: one byte over
+/// the entry limit, it is not cached.
 #[test]
 fn d116_an_rrset_larger_than_an_entry_may_be_is_not_cached() {
-    let config = Config {
-        max_entry_bytes: Some(512),
-        ..Config::default()
-    };
-    let cache = RrsetCache::new(1 << 20, config).expect("a valid config");
     let ns = rrset("referral_root", Section::Authority);
-    assert_eq!(
-        cache.insert(ns, Rank::AnswerAuthoritative, Checked::Unchecked, 0),
-        Err(NotCached::TooLarge)
+    let entry = ns.owner().wire_len() + 4 + ns.cost();
+    for (limit, stored) in [(entry, true), (entry - 1, false)] {
+        let config = Config {
+            max_entry_bytes: Some(limit),
+            ..Config::default()
+        };
+        let cache = RrsetCache::new(1 << 20, config).expect("a valid config");
+        let result = cache.insert(ns.clone(), Rank::AnswerAuthoritative, Checked::Unchecked, 0);
+        assert_eq!(result.is_ok(), stored, "limit {limit}");
+        assert_eq!(cache.is_empty(), !stored, "limit {limit}");
+        if !stored {
+            assert_eq!(result, Err(NotCached::TooLarge));
+        }
+    }
+}
+
+#[test]
+fn d193_the_default_capacity_is_twice_the_response_cache_s() {
+    assert_eq!(DEFAULT_CAPACITY, 2 * Config::default().capacity);
+    assert!(RrsetCache::new(DEFAULT_CAPACITY, Config::default()).is_ok());
+}
+
+/// The longest owner name, 255 octets, is a key like any other.
+#[test]
+fn rfc1035_2_3_4_the_longest_owner_name_is_cached() {
+    let label = |c: &str, n| c.repeat(n);
+    let long = format!(
+        "{}.{}.{}.{}.",
+        label("a", 63),
+        label("b", 63),
+        label("c", 63),
+        label("d", 61)
     );
-    assert!(cache.is_empty());
+    let owner = dns(&long);
+    assert_eq!(owner.wire_len(), 255);
+    let records: Vec<Record<'static>> = message(&captured("a"))
+        .answer
+        .iter()
+        .map(|r| Record {
+            name: owner.clone(),
+            ..r.clone()
+        })
+        .collect();
+    let [set] = <[Rrset; 1]>::try_from(Rrset::group(&records)).expect("one RRset");
+    let cache = cache();
+    cache
+        .insert(set, Rank::AnswerAuthoritative, Checked::Unchecked, 0)
+        .expect("stored");
+    let upper = dns(&long.to_uppercase());
+    assert!(cache.get(&upper, RecordType::A, Class::IN, 0).is_some());
+}
+
+/// OPT, the QTYPEs and meta types (128 to 255), type 0 and 65535 are not data: no `RRset` is made of their records.
+#[test]
+fn rfc6895_3_1_meta_types_make_no_rrset() {
+    let message = message(&captured("a"));
+    let address = &message.answer[0];
+    let data = address.rdata.wire();
+    let alone = Rrset::group(std::slice::from_ref(address));
+    for rtype in [0, 41, 128, 249, 250, 251, 252, 253, 254, 255, 65535] {
+        let rtype = RecordType::from(rtype);
+        let opaque = Opaque::new(rtype, &data).expect("RDATA of no typed form");
+        let record = Record::new(
+            address.name.clone(),
+            address.class,
+            address.ttl,
+            &RData::Opaque(opaque),
+        );
+        assert_eq!(
+            Rrset::group(&[record, address.clone()]),
+            alone,
+            "type {rtype}"
+        );
+    }
 }
 
 #[test]
@@ -520,6 +587,7 @@ fn d116_the_memory_bound_evicts() {
         "{} entries of {stored} stored",
         cache.len()
     );
+    assert!(cache.used() > CAPACITY / 2, "{} bytes used", cache.used());
     // The last stored is still there.
     let https = rrset("https", Section::Answer);
     assert!(get(&cache, &https, 0).is_some());

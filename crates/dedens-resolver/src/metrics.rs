@@ -59,10 +59,8 @@ impl Metrics {
         } else {
             self.kept.increment(1);
         }
-        if evicted > 0 {
-            self.evictions
-                .increment(u64::try_from(evicted).unwrap_or(u64::MAX));
-        }
+        self.evictions
+            .increment(u64::try_from(evicted).unwrap_or(u64::MAX));
     }
 }
 

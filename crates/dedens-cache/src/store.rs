@@ -175,3 +175,46 @@ pub(crate) const fn check(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Cost, Store};
+    use crate::config::DEFAULT_ENTRY_BYTES;
+
+    /// A value owning its bytes on the heap.
+    #[derive(Debug, Default)]
+    struct Bytes(Box<[u8]>);
+
+    impl Cost for Bytes {
+        fn cost(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    fn bytes(len: usize) -> Bytes {
+        Bytes(vec![0; len].into_boxed_slice())
+    }
+
+    #[test]
+    fn a_value_is_found_and_its_bytes_counted() {
+        let store = Store::<Option<Bytes>>::new(1 << 20, 4, None).expect("valid sizes");
+        assert!(store.is_empty());
+        // A tenth of a 256 KiB share is more than the default.
+        assert_eq!(store.entry_limit(), DEFAULT_ENTRY_BYTES);
+        let (was, evicted) = store.update(b"key", |value| value.replace(bytes(100)).is_some());
+        assert_eq!((was, evicted), (false, 0));
+        assert!(!store.is_empty());
+        assert_eq!(store.len(), 1);
+        let used = store.used();
+        store.update(b"key", |value| *value = Some(bytes(300)));
+        assert_eq!(store.used() - used, 200, "the value's cost counted");
+        assert_eq!(
+            store.get(b"key", |value| value.as_ref().map(|b| b.0.len())),
+            Some(300)
+        );
+        assert_eq!(
+            store.get(b"other", |value| value.as_ref().map(|b| b.0.len())),
+            None
+        );
+    }
+}
