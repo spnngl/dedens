@@ -22,10 +22,10 @@
 //! - an NSEC whose next name leaves the zone is dropped (Unbound's `sanitize_nsec_is_overreach`); an RRSIG stays
 //!   with the `RRset` it covers, in its section, or goes.
 //!
-//! AA ranks the records (RFC 1035 §4.1.1, RFC 2181 §5.4.1) and does not decide the outcome, as in Unbound's
-//! `response_type_from_server` (`iterator/iter_resptype.c`): a response without AA but with RA set is a cache
-//! talking, [`Outcome::Lame`]; so is a referral that leads nowhere below the zone, whatever AA. Every bound is a
-//! named constant below.
+//! Only authoritative data from the zone's servers is trusted (RFC 2181 §5.4.1): a response without AA that is not
+//! a referral is [`Outcome::Lame`], NXDOMAIN included, where Unbound's `response_type_from_server`
+//! (`iterator/iter_resptype.c`) keeps it unless RA is set (D192). So is a referral that leads nowhere below the
+//! zone, whatever AA. Every bound is a named constant below.
 
 use std::collections::{HashMap, HashSet};
 
@@ -52,21 +52,25 @@ pub const MAX_GLUE: usize = 100;
 ///
 /// The RFC puts the additional section of an authoritative answer and the authority and additional sections of a
 /// non-authoritative one at one level; they are three here, as in Unbound (`rrset_trust`). Only
-/// [`Rank::AnswerNonAuthoritative`] and above may answer a client.
+/// [`Rank::AnswerNonAuthoritative`] and above may answer a client. A response without AA is a referral or lame
+/// (D192): no rank here is that of a non-authoritative answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rank {
-    /// The additional section of a non-authoritative answer, or a referral's glue.
+    /// A referral's glue.
     AdditionalNonAuthoritative,
-    /// The authority section of a non-authoritative answer, or a referral's NS, DS and NSEC records.
+    /// A referral's NS, DS and NSEC records.
     AuthorityNonAuthoritative,
     /// The additional section of an authoritative answer.
     AdditionalAuthoritative,
-    /// The answer section of a non-authoritative answer, or of an authoritative one past its first owner name: AA
-    /// covers that name only (RFC 1035 §4.1.1). The least rank that answers a client.
+    /// The answer section of an authoritative answer past its first owner name: AA covers that name only (RFC 1035
+    /// §4.1.1). Never the answer section of a response without AA, which is lame. The least rank that answers a
+    /// client.
     AnswerNonAuthoritative,
     /// The authority section of an authoritative answer.
     AuthorityAuthoritative,
-    /// The answer section of an authoritative answer, at the name asked or the first owner name (a DNAME's).
+    /// The answer section of an authoritative answer, at the name asked or the first owner name (a DNAME's); or the
+    /// DS records of a referral to the name asked for them, which the parent holds as authoritative data (RFC 4035
+    /// §2.3), AA or not.
     AnswerAuthoritative,
 }
 
@@ -80,8 +84,6 @@ pub struct Scrubbed<'m> {
     pub dropped: Vec<Dropped>,
     /// The name asked, which ranks a chain.
     name: Name<'m>,
-    /// Whether AA was set, which ranks every record.
-    authoritative: bool,
 }
 
 /// What a scrubbed response says.
@@ -142,8 +144,8 @@ pub enum Outcome<'m> {
     },
     /// A negative answer without the zone's SOA: nothing caches it (RFC 2308 §5).
     NoSoa(Negative<'m>),
-    /// The server is not authoritative for the name: a cache answering (RA set, AA clear), or a referral that
-    /// leads nowhere below the zone (RFC 4697 §2.2).
+    /// The server is not authoritative for the name: a response without AA that is not a referral (RFC 2181
+    /// §5.4.1), or a referral that leads nowhere below the zone (RFC 4697 §2.2).
     Lame,
     /// The response cannot be read as one to the question.
     Unusable(Unusable),
@@ -222,18 +224,11 @@ impl<'m> Scrubbed<'m> {
     /// Every record kept with its rank, in the order of the outcome's fields.
     #[must_use]
     pub fn ranked(&self) -> Vec<(Rank, &Record<'m>)> {
-        let aa = self.authoritative;
-        let (authority, additional) = if aa {
-            (Rank::AuthorityAuthoritative, Rank::AdditionalAuthoritative)
-        } else {
-            (
-                Rank::AuthorityNonAuthoritative,
-                Rank::AdditionalNonAuthoritative,
-            )
-        };
+        // Every outcome but a referral is from a response with AA, or the parent's DS records from a referral.
+        let (authority, additional) = (Rank::AuthorityAuthoritative, Rank::AdditionalAuthoritative);
         // AA covers the name asked, and the first owner name: a DNAME's, above it.
         let answer = |chain: &[Record<'m>], r: &Record<'m>| {
-            if aa && (r.name == self.name || chain.first().is_some_and(|f| f.name == r.name)) {
+            if r.name == self.name || chain.first().is_some_and(|f| f.name == r.name) {
                 Rank::AnswerAuthoritative
             } else {
                 Rank::AnswerNonAuthoritative
@@ -301,7 +296,6 @@ pub fn scrub<'m>(
         outcome: Outcome::Unusable(why),
         dropped: Vec::new(),
         name: Name::root(),
-        authoritative: false,
     };
     if !header.flags.contains(Flags::QR) || header.opcode != Opcode::QUERY {
         return unusable(Unusable::NotResponse);
@@ -327,7 +321,7 @@ pub fn scrub<'m>(
     }
     let aa = header.flags.contains(Flags::AA);
     let mut s = Scrub::new(response, asked, zone);
-    let outcome = match s.outcome(&asked.name, asked.qtype, rcode, header.flags) {
+    let outcome = match s.outcome(&asked.name, asked.qtype, rcode, aa) {
         Ok(outcome) => outcome,
         Err(why) => return unusable(why),
     };
@@ -339,7 +333,6 @@ pub fn scrub<'m>(
         },
         outcome,
         name: asked.name.clone(),
-        authoritative: aa,
     }
 }
 
@@ -486,58 +479,45 @@ impl<'m, 'z> Scrub<'m, 'z> {
         }
     }
 
-    /// What the response to `name` and `qtype` says. As Unbound's `response_type_from_server`, a NOERROR response
-    /// without an SOA is a referral when the authority section holds one, or an answer section without AA holds
-    /// one for an NS question; a delegation that leads nowhere below the zone is lame.
+    /// What the response to `name` and `qtype` says: a NOERROR response with neither an SOA nor an answer is a
+    /// referral when its authority section holds one, and lame when its NS lead nowhere below the zone; any other
+    /// response without AA is lame (D192).
     fn outcome(
         &mut self,
         name: &Name<'m>,
         qtype: RecordType,
         rcode: Rcode,
-        flags: Flags,
+        aa: bool,
     ) -> Result<Outcome<'m>, Unusable> {
-        let aa = flags.contains(Flags::AA);
-        if rcode == Rcode::NOERROR {
-            let soa = self
+        if rcode == Rcode::NOERROR
+            && self.pending(Section::Answer).next().is_none()
+            && !self
                 .pending(Section::Authority)
-                .any(|(_, r)| r.rtype() == RecordType::SOA);
-            let answered = self.pending(Section::Answer).next().is_some();
-            if !soa && (!answered || !aa) {
-                if let Some(referral) = self.referral(name, qtype, Section::Authority) {
-                    return Ok(referral);
-                }
-                // NS at the zone or above it, the latter dropped as outside it.
-                if !answered
-                    && self
-                        .records(Section::Authority)
-                        .iter()
-                        .any(|r| r.rtype() == RecordType::NS)
-                {
-                    return Ok(Outcome::Lame);
-                }
-            }
-            if !aa
-                && matches!(qtype, RecordType::NS | RecordType::ANY)
-                && let Some(referral) = self.referral(name, qtype, Section::Answer)
-            {
+                .any(|(_, r)| r.rtype() == RecordType::SOA)
+        {
+            if let Some(referral) = self.referral(name, qtype) {
                 return Ok(referral);
             }
+            // NS at the zone or above it, the latter dropped as outside it.
+            if self
+                .records(Section::Authority)
+                .iter()
+                .any(|r| r.rtype() == RecordType::NS)
+            {
+                return Ok(Outcome::Lame);
+            }
         }
-        if !aa && flags.contains(Flags::RA) {
+        if !aa {
             return Ok(Outcome::Lame);
         }
         self.answer(name, qtype, rcode)
     }
 
-    /// The referral toward `name` from the NS records of `section`, if the first one owned strictly below the zone
-    /// is at or above `name`; the other NS records are dropped. For a DS question at that NS owner, its DS records
-    /// are the answer, as in Unbound (6cb75924d).
-    fn referral(
-        &mut self,
-        name: &Name<'_>,
-        qtype: RecordType,
-        section: Section,
-    ) -> Option<Outcome<'m>> {
+    /// The referral toward `name` from the NS records of the authority section, if the first one owned strictly
+    /// below the zone is at or above `name`; the other NS records are dropped. For a DS question at that NS owner,
+    /// its DS records are the answer, as in Unbound (6cb75924d).
+    fn referral(&mut self, name: &Name<'_>, qtype: RecordType) -> Option<Outcome<'m>> {
+        let section = Section::Authority;
         let child = self
             .pending(section)
             .find(|(_, r)| {
