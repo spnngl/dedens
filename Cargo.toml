@@ -177,7 +177,7 @@ x-wing = { version = "0.1.1", default-features = false, features = ["zeroize"] }
 # D97: DNSCrypt's X25519, the scalar multiplication alone.
 x25519-dalek = { version = "3.0.0", default-features = false }
 # D127: the certificates of the root anchors' signature and of ICANN's CA, read from PEM.
-x509-cert = { version = "0.2.5", default-features = false, features = ["pem"] }
+x509-cert = { version = "0.3.0", default-features = false, features = ["pem"] }
 # D59: fixed wire layouts (header, record and question fields) read and written in place, without unsafe.
 zerocopy = { version = "0.8.63", features = ["derive"] }
 # D78: ODoH secrets (the exporter secret, the plaintext of a query, the response keys) wiped when dropped.
