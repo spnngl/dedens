@@ -277,6 +277,20 @@ The other benches (`insert`, `insert_evicting_hot`, `hit_truncated`) are equal o
   name, kept on the VPS): `before` 394 275, 324 018, 411 768, 336 044 (median 365 160); `after` 400 703, 414 404,
   380 410, 280 403 (median 390 557). Rounds range 324-412 k against 280-414 k: no difference.
 
+## Resolver `RRset` cache (D193)
+
+`crates/dedens-bench/benches/rrset_cache.rs`, Apple M5, macOS 27.2, one run, one shard. Nanoseconds, median, for
+`a` (`example.com.` A, 2 records), `ns` (`example.com.` NS, 2) and `root_ns` (`com.` NS from a root referral, 13).
+
+| Measure | `a` | `ns` | `root_ns` |
+|---|---|---|---|
+| `hit`: `get`, an `Arc` cloned, no allocation | 41 | 34 | 41 |
+| `insert` into an empty cache, the `RRset` already grouped | 113 | 260 | 384 |
+
+An insert allocates 6 times (about 300 bytes): the `Arc` around the `Rrset` moved in, the key, and the first growth
+of an empty shard's tables, which a cache in use has done. A hit is a lock, a hash and an
+`Arc` clone, the same for any `RRset` size.
+
 ## Server hit path (D23, D43)
 
 - `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage
