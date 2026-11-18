@@ -302,8 +302,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   a control socket. Default: with the metrics exporter's HTTP endpoint, or a socket of its own.
 - Replies from a wildcard UDP listener leave from the address the query came to (`IP_PKTINFO`). Default: add
   when a multihomed deployment needs it.
-- Scrubbing upstream answers of records outside the question's CNAME chain and bailiwick. Default: with the
-  recursive resolver.
 - An AF_XDP UDP listener (eBPF steering datagrams into our memory, past the kernel's network stack, as Knot DNS
   does): we would build IP and UDP headers ourselves; it needs root and per-NIC setup, does no TCP, and cannot
   be measured on loopback. Default: a later optional listener mode, benchmarked between two machines.

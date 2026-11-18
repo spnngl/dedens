@@ -1439,6 +1439,46 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a cache cleared, would accept a replayed pair); an ETag for the anchors (a 304 on the XML says nothing of the
   signature); refusing a start for a root directory that cannot be written (`roots` is on by default, the bundled
   copies serve); separate settings of refresh (one schedule, one thread).
+- D192 (builds on D188) The recursive resolver scrubs each response before anything reads it:
+  `dedens_resolver::scrub(response, question, zone)`, a pure function, keeps what a server asked as authoritative for
+  `zone` may say (RFC 2181 §6.1, RFC 5452 §6) and sorts it into an `Outcome`: `Answer`, `Cname` (a chain the zone
+  cannot finish), `Referral { child, ns, proof, glue }`, `NoData`, `NxDomain`, `Lame` or `Unusable(why)`. Each record
+  dropped is returned with its section, index and `Reason`, for the iteration to log and count; each kept with its
+  `Rank` (`Scrubbed::ranked`). The rules, as Unbound's `iterator/iter_scrub.c` (`scrub_normalize`,
+  `scrub_sanitize`) has them:
+  - unusable, nothing kept: QR unset or an opcode other than QUERY, TC set (asked again over TCP, RFC 7766 §5), a
+    code other than NOERROR and NXDOMAIN, not exactly the question (name, type, class), the name outside `zone`;
+  - every section: a record of another class, or owned outside `zone`, is dropped (RFC 2181 §6.1);
+  - no AA: a referral or nothing. An answer or an NXDOMAIN without AA is `Lame` (RFC 2181 §5.4.1: data the server
+    holds from elsewhere; RFC 4697 §2.2), as is a referral leading nowhere below the zone;
+  - a referral (NOERROR, empty answer, no SOA): the first NS owner strictly below `zone` and at or above the name
+    (RFC 1034 §4.3.2 step 3b) is the child; its NS records are kept, any other NS `RRset` dropped (a sibling, the
+    zone itself, a second one); its DS, or the NSEC and NSEC3 proving none (RFC 4035 §3.1.4); as glue, the A and
+    AAAA records at its name servers' names within `zone`, the parent's to give, sibling glue too (as Unbound's
+    `harden-glue`), not only within the child: a parent that may redirect the child may give its addresses;
+  - an AA answer: from the name, a DNAME above it then the records of the type asked then a CNAME at it (RFC 1034
+    §4.3.2 step 3a, RFC 6672 §2.2), hop after hop; a DNAME's CNAME is synthesised (RFC 6672 §3.4) and the server's
+    kept only when it is the same; a qtype of CNAME is answered by the synthesised CNAME (RFC 6672 §2.3). A chain
+    leaving `zone`, or ending without data in a NOERROR, is `Cname { target }`: the zone's servers say nothing past
+    it, and the target is asked again, also when it is within the zone (a NODATA there costs one more query);
+    answer records off the chain are dropped;
+  - a negative AA answer keeps one SOA at or above the chain's end and the NSEC and NSEC3 records (RFC 2308 §2,
+    RFC 4035 §3.1.3); an answer keeps its NSEC and NSEC3 records (wildcard proofs). NS records beside an answer
+    or a negative answer are dropped (Unbound's `iter-scrub-promiscuous`), and every other type of the authority
+    section; an NSEC whose next name is outside `zone` is dropped (Unbound's `sanitize_nsec_is_overreach`);
+  - additional: only the A and AAAA records at the names of the NS records kept (a referral or an NS answer);
+  - an RRSIG stays with the `RRset` it covers, in its section, or is dropped.
+  Bounds, Unbound's defaults (`util/config_file.c`): `MAX_NS` = 20 NS (or DS) records an `RRset`
+  (`iter-scrub-ns`); `MAX_CHAIN` = 11 CNAME and DNAME hops (`iter-scrub-cname`); `MAX_SIGNATURES` = 8 RRSIGs an
+  `RRset` (`iter-scrub-rrsig`); `MAX_GLUE` = 100 addresses (`iter-scrub-glue-count`); past each, the rest is dropped.
+  Ranks (RFC 2181 §5.4.1, as Unbound's `rrset_trust`): a referral's NS and proof are authority non-authoritative,
+  its glue additional non-authoritative; an AA answer's records at the name asked answer authoritative, the chain past
+  it answer non-authoritative (AA covers the first owner, RFC 1035 §4.1.1), its authority section authority
+  authoritative, its additional additional authoritative. Forwarding is not scrubbed: an upstream resolver answers
+  for every zone, so no zone bounds it. Rejected: editing the message in place as Unbound does (a decoded message
+  borrows its bytes; the caller gets the drops); `Message::referral`, which checks no zone; glue only within the
+  child (refuses sibling glue the parent holds); trusting the server's CNAME beside a DNAME; following a chain out of
+  the zone (Kaminsky, RFC 5452 §6).
 - D193 (amends D116; builds on D22, D124) The recursive resolver's `RRset` cache, `dedens_resolver::RrsetCache`
   (recursive step 06), in the new crate `dedens-resolver`:
   - Key and value. An `RRset` (RFC 2181 §5) under its owner name lowered (RFC 4343), type and class; the value an
