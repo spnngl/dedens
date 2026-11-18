@@ -38,7 +38,7 @@ use dedens_dnscrypt::{
 };
 use dedens_proto::edns::EdnsOption;
 use dedens_proto::rdata::RData;
-use dedens_proto::{Flags, Message, Question, RecordType, Transport};
+use dedens_proto::{Flags, Message, Question, Rcode, RecordType, Transport};
 
 use crate::client::{Client, ClientError, Server};
 use crate::entropy::Entropy;
@@ -375,13 +375,15 @@ impl Resolver {
                 } else {
                     tcp_round(io, hop, &packet, deadline, open).await?
                 };
-                if let Heard::Answer(wire) = heard {
+                if let Heard::Answer((wire, rcode, opt)) = heard {
                     // Truncated over UDP: the TCP query is as large as a relay lets it be.
                     if transport == Transport::Tcp || !is_truncated(&wire) {
                         return Ok(Response {
                             wire,
                             query,
                             transport,
+                            rcode,
+                            opt,
                             rtt: io.now().saturating_duration_since(sent),
                             sends,
                             cookie: None,
@@ -684,14 +686,14 @@ fn choose(relays: &[Relay], avoid: Option<Relay>, draw: u16) -> Option<Relay> {
 }
 
 /// `datagram` if it answers the certificate query `query`: a response with its ID and question, the one a relay
-/// checks too (draft "Anonymized `DNSCrypt`", "Relay Behavior").
-fn certificate_response(query: &[u8], datagram: &[u8]) -> Option<Vec<u8>> {
+/// checks too (draft "Anonymized `DNSCrypt`", "Relay Behavior"); with its rcode, and whether it held OPT.
+fn certificate_response(query: &[u8], datagram: &[u8]) -> Option<(Vec<u8>, Rcode, bool)> {
     let asked = Message::decode(query).ok()?.message;
     let answer = Message::decode(datagram).ok()?.message;
     (answer.header.id == asked.header.id
         && answer.header.flags.contains(Flags::QR)
         && answer.questions == asked.questions)
-        .then(|| datagram.to_vec())
+        .then(|| (datagram.to_vec(), answer.rcode(), answer.edns.is_some()))
 }
 
 /// The query for the certificates: a TXT query with `id`, its EDNS padding (RFC 7830) bringing it to `len` bytes, which

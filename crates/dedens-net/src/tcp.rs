@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::ops::Bound;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
@@ -33,6 +34,12 @@ use futures_util::io::{AsyncReadExt as _, AsyncWriteExt as _, ReadHalf, WriteHal
 use crate::exchange::after;
 use crate::io::{Compio, Io, Stream};
 use crate::tls::{self, Trust};
+
+/// The least a query waits from its send before its timeout, nothing read since, closes the connection: a shorter
+/// wait, as a query with a short deadline left, tells nothing of a server other queries share the connection with.
+/// Unbound closes the connection on any query's timeout (`outnet_tcptimer`, `services/outside_network.c`); 376 ms
+/// is the timeout it gives a server it knows nothing of (`UNKNOWN_SERVER_NICENESS`, `iterator/iterator.c`).
+pub const STALLED: Duration = Duration::from_millis(376);
 
 /// Why a TCP or TLS exchange failed.
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +136,8 @@ pub struct TcpPool<N: Io = Compio> {
     most: NonZeroUsize,
     /// The connections held at most over one link, see [`TcpPool::per_server`].
     per_server: NonZeroUsize,
+    /// The time a query waiting for room must have left, see [`TcpPool::leaving`].
+    least: Duration,
     /// The queries waiting for room, woken when a query ends or a connection closes.
     waiters: Rc<Waiters>,
 }
@@ -155,6 +164,7 @@ impl<N: Io> TcpPool<N> {
             retired: RefCell::default(),
             most: NonZeroUsize::MAX,
             per_server: NonZeroUsize::MAX,
+            least: Duration::ZERO,
             waiters: Rc::default(),
         }
     }
@@ -166,8 +176,9 @@ impl<N: Io> TcpPool<N> {
     }
 
     /// The pool, holding at most `most` connections until they close, those replaced while queries wait on them
-    /// included: a new one closes the one idle longest, with no query waiting, or waits for one to be (D190). No
-    /// bound by default.
+    /// included: a new one closes the one idle longest, with no query waiting, or waits for one to be (D190). The
+    /// queries waiting for room look for it in the order they came, one at a time, and a query coming meanwhile
+    /// waits behind them. No bound by default.
     #[must_use]
     pub fn at_most(self, most: NonZeroUsize) -> Self {
         Self { most, ..self }
@@ -184,15 +195,24 @@ impl<N: Io> TcpPool<N> {
         }
     }
 
+    /// The pool, a query that waited for room giving up once less than `least` would be left of it before its
+    /// deadline, [`TcpError::Busy`]: the server is not asked on too little time to answer, which its timeout would
+    /// then be blamed for (D190). Zero by default.
+    #[must_use]
+    pub fn leaving(self, least: Duration) -> Self {
+        Self { least, ..self }
+    }
+
     /// Sends `wire` over `link` and returns the response, waiting until `deadline`.
     ///
     /// The query goes under an ID no other query on the connection has, its own when free, and the response comes
     /// back with the ID of `wire` (RFC 7766 §6.2.1). The ID of a query that stopped waiting stays taken until its
     /// response comes or the connection closes. Opens a connection when there is none or the last one takes no
     /// more queries, all its IDs taken for one; a connection that closes before the response is replaced once and
-    /// the query sent again (D27). A query that times out with nothing read on its open connection since it was
-    /// sent closes the connection: the server stopped answering, or reading. With no room for a connection, see
-    /// [`TcpPool::at_most`], the query waits for one until `deadline`.
+    /// the query sent again (D27). A query that times out after waiting [`STALLED`] at least, nothing read on its
+    /// open connection since it was sent, closes the connection: the server stopped answering, or reading. With no
+    /// room for a connection, see [`TcpPool::at_most`], the query waits for one until `deadline`, less
+    /// [`TcpPool::leaving`].
     ///
     /// # Errors
     ///
@@ -214,13 +234,32 @@ impl<N: Io> TcpPool<N> {
         let mut last = None;
         let roomless = Cell::new(false);
         let attempt = async {
+            // The query's place among those waiting for room, once it waited; and whether it was just woken.
+            let mut ticket = None;
+            let mut woken = false;
             for _ in 0..2 {
                 // Held while the query waits: a connection replaced in the pool lives until its queries are answered.
                 let connection = loop {
-                    match self.connection(&link) {
+                    let looked = self.connection(&link, ticket.is_none());
+                    if std::mem::take(&mut woken) {
+                        // The next in line looks after this one, whether it found room or not.
+                        self.waiters.wake_after(ticket);
+                    }
+                    match looked {
                         Err(TcpError::Busy) => {
                             roomless.set(true);
-                            self.waiters.wait().await;
+                            let place = *ticket.get_or_insert_with(|| self.waiters.ticket());
+                            let room_by = deadline.checked_sub(self.least).unwrap_or(deadline);
+                            if self
+                                .io
+                                .timeout_at(room_by, self.waiters.wait(place))
+                                .await
+                                .is_err()
+                            {
+                                debug!(server = %link.addr(), "no connection free in time to ask");
+                                return Err(TcpError::Busy);
+                            }
+                            woken = true;
                         }
                         got => break got?,
                     }
@@ -252,7 +291,9 @@ impl<N: Io> TcpPool<N> {
                 debug!(server = %link.addr(), "no connection free before the deadline");
                 return Err(TcpError::Busy);
             }
-            if let Some((connection, sent)) = last {
+            if let Some((connection, sent)) = last
+                && deadline.saturating_duration_since(sent) >= STALLED
+            {
                 connection.state.borrow_mut().stalled(sent);
             }
             Err(TcpError::TimedOut)
@@ -270,7 +311,7 @@ impl<N: Io> TcpPool<N> {
         link: impl Into<Link>,
         deadline: Instant,
     ) -> Result<SocketAddr, TcpError> {
-        let connection = self.connection(&link.into())?;
+        let connection = self.connection(&link.into(), true)?;
         // Ends when the connecting does: nothing is ever sent.
         let opened = self
             .io
@@ -287,13 +328,17 @@ impl<N: Io> TcpPool<N> {
         }
     }
 
-    /// The connection over `link` taking queries, or a new one; [`TcpError::Busy`] when there is no room for it.
-    fn connection(&self, link: &Link) -> Result<Connection<N>, TcpError> {
+    /// The connection over `link` taking queries, or a new one; [`TcpError::Busy`] when there is no room for it, or
+    /// when the query is `new` and queries woken for room have yet to look.
+    fn connection(&self, link: &Link, new: bool) -> Result<Connection<N>, TcpError> {
         let mut connections = self.connections.borrow_mut();
         if let Some(open) = connections.get(link)
             && open.state.borrow().takes_queries()
         {
             return Ok(open.clone());
+        }
+        if new && self.waiters.passing() {
+            return Err(TcpError::Busy);
         }
         let mut retired = self.retired.borrow_mut();
         if let Some(replaced) = connections.remove(link) {
@@ -324,8 +369,9 @@ impl<N: Io> TcpPool<N> {
                 return Err(TcpError::Busy);
             };
             debug!(server = %idle.0.addr(), "closed: idle longest, for a new connection");
-            // Closed once let go, as its task ends; a query opening it may still hold it.
-            retired.push((idle.0, Rc::downgrade(&idle.1.state)));
+            // Not counted: no query waits on it, and it closes as it drops, its task cancelled with its last clone,
+            // before the new one connects.
+            drop(idle);
         }
         let tls = match link {
             Link::Tcp(_) => None,
@@ -352,22 +398,93 @@ impl<N: Io> TcpPool<N> {
     }
 }
 
-/// The queries waiting for room in a pool.
+/// The queries waiting for room in a pool, in the order they came, as Unbound's `tcp_wait_first` list
+/// (`services/outside_network.c`). Room may come when a query ends or a connection closes: the first query waiting
+/// is woken, looks for room, and wakes the next, and so on down the line, so that each looks before those behind
+/// it. A query coming while one woken has yet to look waits behind the line.
 #[derive(Debug, Default)]
-struct Waiters(RefCell<Vec<flume::Sender<()>>>);
+struct Waiters {
+    /// By ticket, in the order they came.
+    queue: RefCell<BTreeMap<u64, flume::Sender<()>>>,
+    /// The ticket of the next query to wait.
+    next: Cell<u64>,
+    /// The queries woken that have yet to look for room.
+    woken: Cell<usize>,
+}
 
 impl Waiters {
-    /// Waits for the next [`Waiters::wake`].
-    async fn wait(&self) {
-        let (wake, woken) = flume::bounded(1);
-        self.0.borrow_mut().push(wake);
-        let _ = woken.recv_async().await;
+    /// A ticket behind every other.
+    fn ticket(&self) -> u64 {
+        let ticket = self.next.get();
+        self.next.set(ticket + 1);
+        ticket
     }
 
-    /// Wakes every query waiting, to look for room again.
-    fn wake(&self) {
-        for wake in self.0.borrow_mut().drain(..) {
-            let _ = wake.try_send(());
+    /// Whether a query woken has yet to look for room: one coming now looks after it.
+    fn passing(&self) -> bool {
+        self.woken.get() > 0
+    }
+
+    /// Waits at the place of `ticket` until woken.
+    async fn wait(&self, ticket: u64) {
+        let (wake, woken) = flume::bounded(1);
+        self.queue.borrow_mut().insert(ticket, wake);
+        let place = Place {
+            waiters: self,
+            ticket,
+            woken,
+        };
+        if place.woken.recv_async().await.is_ok() {
+            self.woken.set(self.woken.get() - 1);
+        }
+    }
+
+    /// Room may have come: wakes the first query waiting, unless one woken has yet to look, which wakes the next.
+    fn room(&self) {
+        if !self.passing() {
+            self.wake_after(None);
+        }
+    }
+
+    /// Wakes the first query waiting behind `ticket`, or the first of all.
+    fn wake_after(&self, ticket: Option<u64>) {
+        let mut queue = self.queue.borrow_mut();
+        let behind = ticket.map_or(Bound::Unbounded, Bound::Excluded);
+        while let Some(next) = queue
+            .range((behind, Bound::Unbounded))
+            .next()
+            .map(|(next, _)| *next)
+        {
+            if queue
+                .remove(&next)
+                .is_some_and(|wake| wake.try_send(()).is_ok())
+            {
+                self.woken.set(self.woken.get() + 1);
+                return;
+            }
+        }
+    }
+}
+
+/// A query's place in [`Waiters`] while it waits: given up when it stops waiting, the wake it got passed on.
+struct Place<'a> {
+    waiters: &'a Waiters,
+    ticket: u64,
+    woken: flume::Receiver<()>,
+}
+
+impl Drop for Place<'_> {
+    fn drop(&mut self) {
+        let queued = self
+            .waiters
+            .queue
+            .borrow_mut()
+            .remove(&self.ticket)
+            .is_some();
+        if !queued && self.woken.try_recv().is_ok() {
+            // Woken, but gone before looking: the next looks in its place.
+            self.waiters.woken.set(self.waiters.woken.get() - 1);
+            self.waiters.wake_after(Some(self.ticket));
         }
     }
 }
@@ -377,7 +494,7 @@ struct Ended<'a>(&'a Waiters);
 
 impl Drop for Ended<'_> {
     fn drop(&mut self) {
-        self.0.wake();
+        self.0.room();
     }
 }
 
@@ -390,7 +507,7 @@ struct Closing {
 impl Drop for Closing {
     fn drop(&mut self) {
         self.state.borrow_mut().close();
-        self.waiters.wake();
+        self.waiters.room();
     }
 }
 

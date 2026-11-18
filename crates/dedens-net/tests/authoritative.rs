@@ -21,7 +21,7 @@ use compio::BufResult;
 use compio::buf::{IoBuf, IoBufMut};
 use compio::net::TcpStream;
 use dedens_net::authoritative::{
-    Authoritative, AuthoritativeError, Edns, Limits, LocalError, Quirks, ServerError,
+    Authoritative, AuthoritativeError, Edns, Limits, LocalError, Quirks, SERVER_FLOOR, ServerError,
 };
 use dedens_net::exchange::Moved;
 use dedens_net::io::{Compio, Io, TimedOut, Udp};
@@ -30,6 +30,7 @@ use dedens_proto::edns::{Cookie, EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Name, Question, Rcode, RecordType, Transport};
 use dedens_testkit::recursion::{self, Authorities, Resolution};
 use futures_util::future::join_all;
+use rustix::io::Errno;
 
 use crate::util::loopback::CLOSED;
 use crate::util::{cookie_of, response, wire};
@@ -230,9 +231,11 @@ struct Seen {
     /// The binds tried, failed ones included.
     binds: usize,
     /// The errors the next receives on a socket fail with, in order, before any datagram is read.
-    recv_errors: Vec<io::ErrorKind>,
+    recv_errors: Vec<io::Error>,
+    /// The errors the next waits for a socket to be readable fail with, in order.
+    readable_errors: Vec<io::Error>,
     /// The errors the next sends on a socket fail with, in order, sending nothing.
-    send_errors: Vec<io::ErrorKind>,
+    send_errors: Vec<io::Error>,
     /// The errors the next connects, of a UDP socket or a TCP stream, fail with, in order.
     connect_errors: Vec<io::ErrorKind>,
 }
@@ -249,7 +252,10 @@ impl Watched {
     fn new() -> Self {
         // A seed of its own: one shared by the tests running at once, here or in another run of them, would draw
         // the same ports at once.
-        Self::seeded(RandomState::new().hash_one(()))
+        let seed = RandomState::new().hash_one(());
+        // Shown with the failure of the test, to replay it.
+        eprintln!("Watched::seeded({seed:#x})");
+        Self::seeded(seed)
     }
 
     /// Drawing from `seed`, the same ports at each run.
@@ -368,7 +374,14 @@ impl Udp for WatchedUdp {
     }
 
     async fn readable(&self) -> io::Result<()> {
-        self.udp.readable().await
+        let failing = {
+            let mut seen = self.seen.borrow_mut();
+            (!seen.readable_errors.is_empty()).then(|| seen.readable_errors.remove(0))
+        };
+        match failing {
+            Some(error) => Err(error),
+            None => self.udp.readable().await,
+        }
     }
 
     fn try_recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -376,7 +389,7 @@ impl Udp for WatchedUdp {
         if seen.recv_errors.is_empty() {
             self.udp.try_recv(buffer)
         } else {
-            Err(seen.recv_errors.remove(0).into())
+            Err(seen.recv_errors.remove(0))
         }
     }
 
@@ -386,7 +399,7 @@ impl Udp for WatchedUdp {
             (!seen.send_errors.is_empty()).then(|| seen.send_errors.remove(0))
         };
         match failing {
-            Some(kind) => BufResult(Err(kind.into()), buffer),
+            Some(error) => BufResult(Err(error), buffer),
             None => self.udp.send(buffer).await,
         }
     }
@@ -692,17 +705,33 @@ async fn an_icmp_error_waits_until_the_deadline() {
     assert!(start.elapsed() >= wait);
 }
 
-/// The response after an ICMP error, or after a wake-up with no datagram to read, is taken.
+/// Errors a connected UDP socket may report for an ICMP error, which anyone knowing the port can forge: on Linux,
+/// port and host unreachable, administratively prohibited (EACCES), and the parameter problem of `ICMPv4` or the
+/// unrecognized next header of `ICMPv6` (EPROTO) (`icmp_err_convert`, `icmpv6_err_convert`).
+const ICMP: [fn() -> io::Error; 4] = [
+    || io::ErrorKind::ConnectionRefused.into(),
+    || io::ErrorKind::HostUnreachable.into(),
+    || io::ErrorKind::PermissionDenied.into(),
+    || io::Error::from_raw_os_error(Errno::PROTO.raw_os_error()),
+];
+
+/// Errors of ours: no memory, or no buffer.
+const OURS: [fn() -> io::Error; 2] = [
+    || io::ErrorKind::OutOfMemory.into(),
+    || io::Error::from_raw_os_error(Errno::NOBUFS.raw_os_error()),
+];
+
+/// The response after ICMP errors, or after a wake-up with no datagram to read, is taken.
 #[compio::test]
 async fn the_response_after_an_icmp_error_or_a_spurious_wakeup_is_taken() {
     let addr = google_server(Duration::ZERO);
     let (client, seen) = client(Limits::default());
     for errors in [
+        ICMP.map(|error| error()).into(),
         vec![
-            io::ErrorKind::ConnectionRefused,
-            io::ErrorKind::HostUnreachable,
+            io::ErrorKind::WouldBlock.into(),
+            io::ErrorKind::Interrupted.into(),
         ],
-        vec![io::ErrorKind::WouldBlock, io::ErrorKind::Interrupted],
     ] {
         seen.borrow_mut().recv_errors = errors;
         let answer = client
@@ -710,47 +739,67 @@ async fn the_response_after_an_icmp_error_or_a_spurious_wakeup_is_taken() {
             .await
             .expect("answered");
         assert_eq!(answer.response.transport, Transport::Udp);
-        assert_eq!(seen.borrow().recv_errors, []);
+        assert!(seen.borrow().recv_errors.is_empty());
     }
 }
 
-/// A receive failing for want of a buffer of ours fails the query at once, the server not to blame.
+/// A receive failing for want of ours fails the query at once, the server not to blame.
 #[compio::test]
 async fn a_receive_failing_for_want_of_ours_fails_at_once() {
     let addr = google_server(Duration::ZERO);
     let (client, seen) = client(Limits::default());
-    seen.borrow_mut().recv_errors = vec![io::ErrorKind::OutOfMemory];
-    let failed = client.query(google(), addr, with_edns(), deadline()).await;
-    assert!(
-        matches!(&failed, Err(AuthoritativeError::Local(LocalError::Socket(error))) if error.kind() == io::ErrorKind::OutOfMemory),
-        "{failed:?}"
-    );
+    for error in OURS {
+        seen.borrow_mut().recv_errors = vec![error()];
+        let failed = client.query(google(), addr, with_edns(), deadline()).await;
+        assert!(
+            matches!(&failed, Err(AuthoritativeError::Local(LocalError::Socket(failure))) if same(failure, &error())),
+            "{failed:?}"
+        );
+    }
 }
 
-/// A send failing with the ICMP error of a datagram before waits until the deadline as on a receive; one failing
-/// for want of a buffer of ours fails the query at once, the server not to blame.
+/// A send failing with the ICMP error of a datagram before, or the wait for a datagram failing, waits until the
+/// deadline as on a receive; one failing for want of ours fails the query at once, the server not to blame.
 #[compio::test]
-async fn a_send_failing_waits_unless_the_failure_is_ours() {
+async fn a_send_or_a_wait_failing_waits_unless_the_failure_is_ours() {
     let addr = silent();
     let (client, seen) = client(Limits::default());
     let wait = Duration::from_millis(200);
-    for (kind, elapsed) in [
-        (io::ErrorKind::ConnectionRefused, wait..Duration::MAX),
-        (io::ErrorKind::OutOfMemory, Duration::ZERO..wait),
-    ] {
-        seen.borrow_mut().send_errors = vec![kind];
-        let start = Instant::now();
-        let failed = client
-            .query(google(), addr, Quirks::default(), start + wait)
-            .await;
-        let to_blame = match &failed {
-            Err(AuthoritativeError::Server(ServerError::Unreachable { sends: 1, kind })) => *kind,
-            Err(AuthoritativeError::Local(LocalError::Socket(error))) => error.kind(),
-            _ => panic!("{failed:?}"),
-        };
-        assert_eq!(to_blame, kind);
-        assert!(elapsed.contains(&start.elapsed()), "{kind:?}");
+    let failures = ICMP
+        .map(|error| (error, wait..Duration::MAX))
+        .into_iter()
+        .chain(OURS.map(|error| (error, Duration::ZERO..wait)));
+    for (error, elapsed) in failures {
+        for readable in [false, true] {
+            {
+                let mut seen = seen.borrow_mut();
+                let failing = if readable {
+                    &mut seen.readable_errors
+                } else {
+                    &mut seen.send_errors
+                };
+                *failing = vec![error()];
+            }
+            let start = Instant::now();
+            let failed = client
+                .query(google(), addr, Quirks::default(), start + wait)
+                .await;
+            let failure = match failed {
+                Err(AuthoritativeError::Server(ServerError::Unreachable { sends: 1, kind })) => {
+                    io::Error::from(kind)
+                }
+                Err(AuthoritativeError::Local(LocalError::Socket(error))) => error,
+                _ => panic!("{failed:?}"),
+            };
+            assert_eq!(failure.kind(), error().kind(), "{readable}");
+            assert!(elapsed.contains(&start.elapsed()), "{failure:?} {readable}");
+        }
     }
+}
+
+/// Whether `one` and `other` are the same error.
+fn same(one: &io::Error, other: &io::Error) -> bool {
+    (one.kind(), one.raw_os_error()) == (other.kind(), other.raw_os_error())
 }
 
 /// A TCP connection refused is the server's failure; one not made for want of a buffer of ours is ours.
@@ -871,6 +920,33 @@ async fn a_failure_without_edns_marks_nothing() {
         .expect("answered");
     assert_eq!(answer.response.edns_dropped, Some(Rcode::NOTIMP));
     assert_eq!(answer.quirks, Quirks::default());
+}
+
+/// A FORMERR without OPT from a server known to answer with EDNS, as a forger may send, does not drop EDNS, as
+/// Unbound's `edns_lame_known`: it is the response.
+#[compio::test]
+async fn a_server_known_to_do_edns_keeps_it() {
+    let (queries, record) = recorder();
+    let addr = server(
+        move |query| {
+            record(query);
+            vec![(From::Server, cut(&real(query), Rcode::FORMERR))]
+        },
+        |_| unreachable!("all over UDP"),
+    );
+    let (client, _) = client(Limits::default());
+    let answer = client
+        .query(google(), addr, with_edns(), deadline())
+        .await
+        .expect("answered");
+    assert_eq!(
+        (answer.response.rcode, answer.response.edns_dropped),
+        (Rcode::FORMERR, None)
+    );
+    assert_eq!(answer.quirks, with_edns());
+    let queries = queries.lock().expect("not poisoned");
+    assert_eq!(queries.len(), 1);
+    assert!(has_edns(&queries[0]));
 }
 
 /// RFC 7766 §5: a truncated response asks again over TCP, and tells only that the answer was large: the server
@@ -1007,6 +1083,61 @@ async fn a_query_waiting_for_a_socket_fails_at_its_deadline() {
         ),
         "{holding:?}"
     );
+}
+
+/// D190: a query whose wait for a UDP socket or a TCP connection leaves the server less than [`SERVER_FLOOR`] fails
+/// as ours, not as the server's timeout.
+#[compio::test]
+async fn a_wait_of_ours_leaving_too_little_is_not_the_servers_timeout() {
+    let tcp = Quirks {
+        tcp: true,
+        ..with_edns()
+    };
+    let cases = [
+        (
+            Quirks::default(),
+            Limits {
+                sockets: NonZeroUsize::MIN,
+                ..Limits::default()
+            },
+        ),
+        (
+            tcp,
+            Limits {
+                tcp: NonZeroUsize::MIN,
+                ..Limits::default()
+            },
+        ),
+    ];
+    for (quirks, limits) in cases {
+        let (client, _) = client(limits);
+        let start = Instant::now();
+        // The socket or the connection is free at 300 ms, which leaves the waiting query less than the floor.
+        let free = start + Duration::from_millis(300);
+        let (_, waiting) = futures_util::join!(
+            client.query(
+                google(),
+                google_server(Duration::from_millis(300)),
+                quirks,
+                free
+            ),
+            client.query(
+                google(),
+                google_server(Duration::ZERO),
+                quirks,
+                free + SERVER_FLOOR / 2
+            ),
+        );
+        assert!(
+            matches!(
+                waiting,
+                Err(AuthoritativeError::Local(
+                    LocalError::NoSocket | LocalError::TcpBusy
+                ))
+            ),
+            "{waiting:?}"
+        );
+    }
 }
 
 /// A query dropped before its end, as by a caller giving up, gives its socket back.

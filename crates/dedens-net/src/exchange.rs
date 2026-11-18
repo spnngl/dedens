@@ -131,6 +131,10 @@ pub struct Response {
     pub query: Vec<u8>,
     /// The transport it came over.
     pub transport: Transport,
+    /// Its rcode, extended by its OPT record (RFC 6891 §6.1.3).
+    pub rcode: Rcode,
+    /// Whether it held an OPT record (RFC 6891 §6.1.1).
+    pub opt: bool,
     /// The time from sending the last query to receiving this.
     pub rtt: Duration,
     /// Queries sent in all, over both transports.
@@ -462,6 +466,7 @@ impl Exchange {
                 .question()
                 .zip(self.query.questions.first())
                 .is_some_and(|(got, sent)| !got.name.labels().eq(sent.name.labels()));
+        let opt = response.edns().is_some();
         let mut bytes = bytes;
         if let Some(given) = &self.given {
             give_case(&mut bytes, given);
@@ -470,6 +475,8 @@ impl Exchange {
             wire: bytes,
             query: self.wire,
             transport,
+            rcode,
+            opt,
             rtt: now.saturating_duration_since(self.sent_at),
             sends: self.sends,
             cookie,
