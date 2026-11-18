@@ -3,21 +3,32 @@
 //! TLD not in the root zone is NXDOMAIN without DO and passed on with DO; `arpa` is passed on, and a name of one's
 //! own network under `internal` comes from a hosts stage before.
 
-use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::path::Path;
 use std::time::Duration;
 
 use dedens_proto::edns::EdnsFlags;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Message, Question, Rcode, RecordType};
 
-use crate::util::{Server, ask_udp, silent};
+use crate::util::{Files, Server, ask_udp, silent, tld_list};
 
-/// A server answering `printer.internal` from a hosts stage, then the special-use and absent TLDs from the bundled
-/// list, and forwarding the rest to `upstream`.
-fn config(listen: &str, upstream: &str) -> String {
-    format!(
-        "listen: ['{listen}']\nroots: off\npipeline: [hosts, tlds, up]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.7 printer.internal']\n  tlds:\n    type: tlds\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 200\n    tries: 1\n"
-    )
+/// A server answering `printer.internal` from a hosts stage, then the special-use and absent TLDs from IANA's list
+/// generated now ([`tld_list`]), fetched from loopback into `dir`, and forwarding the rest to `upstream`; once it
+/// serves that list. The bundled one is not used: 30 days after `just roots` the stage passes on what it does not
+/// list (D128).
+fn start(upstream: SocketAddr, dir: &Path) -> Server {
+    let files = Files::start();
+    files.serve("/tlds.json", serde_json::to_vec(&tld_list()).expect("JSON"));
+    let url = files.url("/tlds.json");
+    let mut server = Server::configured(|listen| {
+        format!(
+            "listen: ['{listen}']\nroots:\n  tlds: '{url}'\ndownloads:\n  dir: '{}'\npipeline: [hosts, tlds, up]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.7 printer.internal']\n  tlds:\n    type: tlds\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 200\n    tries: 1\n",
+            dir.display()
+        )
+    });
+    assert!(server.event("reloaded").is_some(), "the list fetched");
+    server
 }
 
 /// The reply of `server` to `name` and `qtype`, with DO when `signed`.
@@ -56,7 +67,8 @@ pub(crate) fn asked(upstream: &UdpSocket) -> Vec<String> {
 #[test]
 fn rfc6761_6_3_localhost_and_its_subnames_are_the_loopback_addresses() {
     let (upstream, at) = silent();
-    let server = Server::configured(|listen| config(listen, &at.to_string()));
+    let dir = tempfile::tempdir().expect("a directory");
+    let server = start(at, dir.path());
     for name in ["localhost.", "www.LocalHost."] {
         let a = ask(&server, name, RecordType::A, false);
         assert_eq!(a.rcode(), Rcode::NOERROR, "{name}");
@@ -78,7 +90,8 @@ fn rfc6761_6_3_localhost_and_its_subnames_are_the_loopback_addresses() {
 #[test]
 fn rfc6761_6_and_rfc7686_2_names_never_resolved_are_nxdomain_with_no_upstream_query() {
     let (upstream, at) = silent();
-    let server = Server::configured(|listen| config(listen, &at.to_string()));
+    let dir = tempfile::tempdir().expect("a directory");
+    let server = start(at, dir.path());
     for name in [
         "invalid.",
         "x.invalid.",
@@ -102,7 +115,8 @@ fn rfc6761_6_and_rfc7686_2_names_never_resolved_are_nxdomain_with_no_upstream_qu
 #[test]
 fn rfc6761_6_5_names_of_no_special_use_are_left_to_the_root_zone() {
     let (upstream, at) = silent();
-    let server = Server::configured(|listen| config(listen, &at.to_string()));
+    let dir = tempfile::tempdir().expect("a directory");
+    let server = start(at, dir.path());
     for name in ["www.example.", "x.alt.", "nonexistent-tld."] {
         assert_eq!(
             ask(&server, name, RecordType::A, false).rcode(),

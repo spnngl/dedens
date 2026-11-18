@@ -14,7 +14,7 @@ mod server;
 
 /// A reply decoded as a capture is: without a broken rule.
 pub(crate) use dedens_testkit::message as decode;
-pub(crate) use http::Files;
+pub(crate) use http::{Files, tld_list};
 pub(crate) use server::{Server, config, write_config, write_key};
 
 /// The query, under `id`, that the captured response `case` answers, as sent.
