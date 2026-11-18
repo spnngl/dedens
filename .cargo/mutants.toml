@@ -98,6 +98,8 @@ exclude_re = [
   'reply\.rs:\d+:\d+: replace (\+ with -|\| with \^) in Client<.q>::answer$',
   # A stored response never has the TC flag: a truncated one is refused at build and a patch never sets it.
   'replace \| with \^ in Response::serve$',
+  # Fast paths of the RRset's RDATA, measured (D193): without them the hash set finds the same duplicates and equality.
+  'rrset\.rs:\d+:\d+: (replace > with >= in canonical|delete match arm \(\[a\], \[b\]\) in same_rdatas)$',
   # At the limit both branches give the same value: the insecure TTL, and the default entry size (`store.rs`).
   'replace < with <= in (Config::insecure_ttl|entry_limit)$',
   # Read only when root drops to `user` (D122): seen by the #[ignore]d root tests of privileges.rs, outside this job.
