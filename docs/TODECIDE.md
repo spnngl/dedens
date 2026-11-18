@@ -145,6 +145,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   each entry aged by the downtime, a dump of other routes ignored (`crates/telltale-cache/src/persist.rs`). D43
   prefetches what is asked, D96 prewarms listed names. Default: none, a restart's misses costing one upstream
   question each; revisit if a restart is measured to hurt.
+- An A or AAAA `RRset` replacing referral glue in the `RRset` cache (D193): Unbound caps its TTL at the glue's time
+  left and keeps it at the glue's rank (`services/cache/rrset.c` `need_to_update_rrset`, since CVE-2022-30699), so
+  an attacker cannot keep a deleted domain's servers alive through their addresses; `RrsetCache::insert` caps NS
+  `RRsets` only. Default: decide with step 14's attack tests, which can show the ghost through addresses.
 
 ## DNSSEC and experimental transports
 

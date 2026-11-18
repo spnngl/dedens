@@ -804,7 +804,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     fuzz target, `dedensd` being a binary), `an_unreadable_saved_list_refuses_the_start`, `threads_are_bounded`,
     `threads_default_to_the_cores_on_linux` (`config/limits.rs`), `threads_set_the_serving_threads` (`tests/listeners.rs`).
     Test and bench key files are written 0600 (`util::write_key`). No hot path touched, no bench.
-- D116 (amends D22, D44; amended by D118) The cache's memory, evictions and truncated hits (audit step 18; L12, E8, P1):
+- D116 (amends D22, D44; amended by D118, D193) The cache's memory, evictions and truncated hits (audit step 18; L12, E8, P1):
   - Memory (L12). `capacity` counts everything a shard holds: the keys and responses, and `SLOT_COST` for each slot
     of the slab, live or free. `SLOT_COST` is the sum of what a slot takes in each table at the worst moment of its
     growth, rounded up to 16: the slab slot (`size_of::<Option<Entry>>()`, the `u64` cache mark of D118 in its
@@ -1439,3 +1439,49 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a cache cleared, would accept a replayed pair); an ETag for the anchors (a 304 on the XML says nothing of the
   signature); refusing a start for a root directory that cannot be written (`roots` is on by default, the bundled
   copies serve); separate settings of refresh (one schedule, one thread).
+- D193 (amends D116; builds on D22, D124) The recursive resolver's `RRset` cache, `dedens_resolver::RrsetCache`
+  (recursive step 06), in the new crate `dedens-resolver`:
+  - Key and value. An `RRset` (RFC 2181 §5) under its owner name lowered (RFC 4343), type and class; the value an
+    `Arc<Rrset>` (records and the RRSIGs covering them, owned), its rank, the validator's verdict
+    (`dedens_cache::Checked`: unchecked, secure, insecure, bogus) and its expiry. The value is an enum of one variant,
+    so the negative entries of step 12 share the key space. `Rrset::group` builds the `RRsets` of a section:
+    duplicates dropped, the RDATA in one order so that the same data compares equal whatever order it came in, the
+    TTL the smallest of the records and their signatures (RFC 2181 §5.2); equality is the data, not the TTL.
+  - Ranks (RFC 2181 §5.4.1), least trusted first: additional non-authoritative (referral glue), authority
+    non-authoritative (referral NS), additional authoritative, answer non-authoritative (and the CNAME chain of an
+    authoritative answer past its first name), authority authoritative, answer authoritative. The RFC's last
+    bullet puts three of them at one level; they are split as Unbound's `rrset_trust` does
+    (`util/data/packed_rrset.h`): authoritative first, authority over additional. No zone-data ranks: the resolver
+    holds no zone. Secure data is trusted above every rank (the RFC's closing paragraph).
+  - Replacement, Unbound's `need_to_update_rrset` (`services/cache/rrset.c`): an expired entry gives way to anything;
+    more trusted data replaces, except data equal to bogus data that is not itself secure (it would lengthen the
+    bogus data's life, RFC 4035 §4.7); other data of equal trust replaces (the last heard of); the same data of equal
+    trust keeps the entry and its running time; less trusted data does not replace, unless the entry is bogus and
+    the data other and not bogus. An NS `RRset` replacing one not expired lives no longer than the time it had left,
+    whatever its trust: a delegation is renewed from its parent only once expired, so a deleted domain does not live
+    on (ghost domain names, Jiang et al., NDSS 2012; Unbound the same). `insert` returns what the cache holds after.
+  - TTLs: one source with the response cache, `dedens_cache::Config::lifetime` (D124): raised to `min_ttl` unless
+    secure, capped by `max_ttl`, by the insecure cap when insecure and by `bogus_ttl` when bogus; TTL 0 is not
+    cached (`NotCached::ZeroTtl`, RFC 1035 §3.2.1), a TTL past 2^31 - 1 was read as 0 (RFC 2181 §8). `RrsetCache::new`
+    takes the response cache's `Config` and a capacity of its own.
+  - Sizing (amends D116). The response cache's store is extracted from `Cache` as `dedens_cache::Store<V>`: the
+    shards, their locks (held for one call, never across an `.await`), keyed SipHash, S3-FIFO and the byte budget,
+    generic over a value that says its heap bytes (`Cost`); `SLOT_COST` is per value type (`Shard::<V>::SLOT_COST`),
+    and the sizing rules of D116 (`capacity`, `shards`, `max_entry_bytes`, the derived entry limit) are one pair of
+    functions both use. The `RRset` cache holds `Store<Option<Entry>>`, the `Arc`'s allocation, the owner name and
+    each RDATA counted as allocated; an `RRset` over the entry limit is not cached (`NotCached::TooLarge`).
+    `DEFAULT_CAPACITY` is 128 MiB, twice the response cache's 64 MiB, as Unbound's performance guide sets
+    `rrset-cache-size` to twice `msg-cache-size` (its defaults are 4 MiB each, `util/config_file.c`); BIND bounds all
+    its caches together by `max-cache-size`, 90 % of memory. `tests/memory.rs` holds the allocator's count within
+    1.05 times the capacity (0.94 on a referral churn). An `RRset` a `Hit` still holds after its eviction is the
+    caller's, outside the budget.
+  - Counters (feature `metrics`, D30): `dedens_resolver_rrset_lookups_total{outcome=hit|miss}`,
+    `dedens_resolver_rrset_inserts_total{outcome=stored|kept}`, `dedens_resolver_rrset_evictions_total`.
+  - Measured: `crates/dedens-bench/benches/rrset_cache.rs` (insert, hit), in `docs/benchmarks.md`. Fuzzed:
+    `rrset_cache_insert`. Tests: `crates/dedens-resolver/tests/rrset_cache.rs`.
+  - Rejected: a second S3-FIFO in the resolver (two evictions to keep right); moka or another cache crate (a
+    dependency for what the store does, and no byte budget of our making); `dedens_dnssec::RrSet` as the value (its
+    `Vec`s' capacity is not the bytes the budget sees, and it would make the cache depend on the validator); the
+    RFC's three-way tie (glue would replace an authoritative additional section); zone-data ranks (no zones).
+    Open: capping an A or AAAA `RRset` that replaces referral glue, as Unbound does since CVE-2022-30699
+    (TODECIDE, step 14).

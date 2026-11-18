@@ -5,7 +5,8 @@
 | Path | Role | I/O |
 |---|---|---|
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
-| `crates/dedens-cache` | Response cache for the server: sharded, serve-stale | none, time passed in |
+| `crates/dedens-cache` | Response cache for the server: sharded, serve-stale; its byte-budgeted `Store` (D193) | none, time passed in |
+| `crates/dedens-resolver` | Recursive resolver: the `RRset` cache (D193) | none (sans-IO), time passed in |
 | `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`) | none (sans-IO), time passed in |
@@ -23,8 +24,6 @@
 | `deploy/` | What a release ships beside the binaries (D153, D156, D158): the image's `dedensd.yaml`, the deb and rpm packages' files (systemd unit, sysusers, maintainer scripts, man pages that `just man` writes and each binary's tests compare with its command line), the licence report's `about.toml` | none |
 | `fuzz/` | libFuzzer targets of the parsers of outside data, the binaries' included (D181), own workspace | none |
 | `testdata/` | Real data the tests, benches, fuzz targets and simulations share: captures, RFC example zones, lists (D161) | read as files |
-
-Planned: `dedens-resolver`.
 
 ## Data flow
 
