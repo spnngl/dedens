@@ -8,13 +8,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hasher};
 
-use crate::response::Response;
+use crate::store::Cost;
 
 // What a slot of the slab takes in each table, at the worst moment of its growth (D116: why these, and what the
 // memory test holds them to). `a_slot_costs_what_the_tables_take_at_worst` checks each against the real tables.
 
-/// A slab slot: an entry, the cache mark of its response included (D118), grown by an eighth at a time.
-const SLAB: usize = size_of::<Option<Entry>>() * 9 / 8;
 /// An index bucket just after the table doubled: 16 buckets for 7 items, and a control byte each.
 const INDEX: usize = ((size_of::<(u64, u32)>() + 1) * 16).div_ceil(7);
 /// The two queues and the free list, each at most twice as long as needed.
@@ -23,10 +21,6 @@ const LISTS: usize = 3 * 2 * size_of::<u32>();
 const STAMPS: usize = ((size_of::<(u64, u64)>() + 1) * 16).div_ceil(7);
 /// Places of the ghost queue: twice as many as ghosts, in a queue at most twice as long as needed.
 const PLACES: usize = 4 * size_of::<(u64, u64)>();
-
-/// Bytes charged for each slot of the slab, live or free, besides the key and response of its entry: the slot and its
-/// places in the index, the queues, the free list and the ghosts (D116).
-pub(crate) const SLOT_COST: usize = (SLAB + INDEX + LISTS + STAMPS + PLACES).next_multiple_of(16);
 
 /// The most times one call of `Shard::evict` spares an entry of main for its hits, sending it to the back, before it
 /// evicts without regard to hits (D116). Entries of small with hits move to main, each once: not counted.
@@ -72,41 +66,33 @@ enum Queue {
     Main,
 }
 
-/// What a shard knows of one key.
+/// What a shard knows of one key: its value, and its place in the queues.
 #[derive(Debug)]
-pub(crate) struct Entry {
+pub(crate) struct Entry<V> {
     hash: u64,
     key: Box<[u8]>,
     queue: Queue,
     freq: u8,
-    /// The last response stored, fresh or stale; none while only failures are known.
-    pub(crate) response: Option<Response>,
-    /// Whether a prefetch was already asked for the current response.
-    pub(crate) prefetched: bool,
-    /// Resolution failures in a row (RFC 9520 §3.2).
-    pub(crate) failures: u32,
-    /// No resolution before this time.
-    pub(crate) hold_until: u32,
+    pub(crate) value: V,
 }
 
-impl Entry {
+impl<V: Cost + Default> Entry<V> {
     fn new(hash: u64, key: &[u8], queue: Queue) -> Self {
         Self {
             hash,
             key: key.into(),
             queue,
             freq: 0,
-            response: None,
-            prefetched: false,
-            failures: 0,
-            hold_until: 0,
+            value: V::default(),
         }
     }
 
     fn cost(&self) -> usize {
-        SLOT_COST + self.key.len() + self.response.as_ref().map_or(0, Response::cost)
+        Shard::<V>::SLOT_COST + self.key.len() + self.value.cost()
     }
+}
 
+impl<V> Entry<V> {
     /// Counts a hit, which keeps the entry through eviction rounds.
     pub(crate) fn hit(&mut self) {
         self.freq = (self.freq + 1).min(MAX_FREQ);
@@ -173,11 +159,11 @@ impl Ghosts {
     }
 }
 
-/// A shard; [`crate::Cache`] holds each behind its own lock.
+/// A shard of entries holding values `V`; [`crate::Store`] holds each behind its own lock.
 #[derive(Debug)]
-pub(crate) struct Shard {
+pub(crate) struct Shard<V> {
     index: HashMap<u64, u32, Prehash>,
-    slab: Vec<Option<Entry>>,
+    slab: Vec<Option<Entry<V>>>,
     free: Vec<u32>,
     small: VecDeque<u32>,
     main: VecDeque<u32>,
@@ -186,14 +172,34 @@ pub(crate) struct Shard {
     small_bytes: usize,
     main_bytes: usize,
     budget: usize,
-    /// Most slots the slab grows to, each charged [`SLOT_COST`] whether free or not: the budget less the largest
-    /// entry, which so still fits with every slot in use.
+    /// Most slots the slab grows to, each charged [`Shard::SLOT_COST`] whether free or not: the budget less the
+    /// largest entry, which so still fits with every slot in use.
     slots: usize,
 }
 
-impl Shard {
-    /// A shard of `budget` bytes whose entries take at most `max_entry` bytes of key and response each (an
-    /// entry of the shard in all costs [`SLOT_COST`] more).
+impl<V> Shard<V> {
+    /// A slab slot, the entry and its value inline, grown by an eighth at a time.
+    const SLAB: usize = size_of::<Option<Entry<V>>>() * 9 / 8;
+
+    /// Bytes charged for each slot of the slab, live or free, besides the key and the heap bytes of its value
+    /// ([`Cost`]): the slot and its places in the index, the queues, the free list and the ghosts (D116).
+    pub(crate) const SLOT_COST: usize =
+        (Self::SLAB + INDEX + LISTS + STAMPS + PLACES).next_multiple_of(16);
+
+    /// Bytes taken: the entries, each with its slot, and the slots free.
+    pub(crate) const fn used(&self) -> usize {
+        self.small_bytes + self.main_bytes + Self::SLOT_COST * self.free.len()
+    }
+
+    /// Number of entries.
+    pub(crate) fn len(&self) -> usize {
+        self.index.len()
+    }
+}
+
+impl<V: Cost + Default> Shard<V> {
+    /// A shard of `budget` bytes whose entries take at most `max_entry` bytes of key and value each (an entry of
+    /// the shard in all costs [`Shard::SLOT_COST`] more).
     pub(crate) fn new(budget: usize, max_entry: usize) -> Self {
         Self {
             index: HashMap::default(),
@@ -205,22 +211,12 @@ impl Shard {
             small_bytes: 0,
             main_bytes: 0,
             budget,
-            slots: budget.saturating_sub(max_entry) / SLOT_COST,
+            slots: budget.saturating_sub(max_entry) / Self::SLOT_COST,
         }
     }
 
-    /// Bytes taken: the entries, each with its slot, and the slots free.
-    pub(crate) const fn used(&self) -> usize {
-        self.small_bytes + self.main_bytes + SLOT_COST * self.free.len()
-    }
-
-    /// Number of entries.
-    pub(crate) fn len(&self) -> usize {
-        self.index.len()
-    }
-
     /// The entry of `key`; [`Entry::hit`] counts a hit.
-    pub(crate) fn get(&mut self, hash: u64, key: &[u8]) -> Option<&mut Entry> {
+    pub(crate) fn get(&mut self, hash: u64, key: &[u8]) -> Option<&mut Entry<V>> {
         let slot = *self.index.get(&hash)?;
         let entry = self.slab[slot as usize].as_mut()?;
         (*entry.key == *key).then_some(entry)
@@ -232,7 +228,7 @@ impl Shard {
         &mut self,
         hash: u64,
         key: &[u8],
-        change: impl FnOnce(&mut Entry),
+        change: impl FnOnce(&mut Entry<V>),
     ) -> usize {
         let (slot, mut evicted) = if let Some(&slot) = self.index.get(&hash) {
             let entry = self.slab[slot as usize]
@@ -306,7 +302,7 @@ impl Shard {
         &mut self,
         hash: u64,
         key: &[u8],
-        change: impl FnOnce(&mut Entry),
+        change: impl FnOnce(&mut Entry<V>),
     ) -> usize {
         if self.get(hash, key).is_some() {
             self.update(hash, key, change)
@@ -322,7 +318,7 @@ impl Shard {
         }
     }
 
-    fn alloc(&mut self, entry: Entry) -> u32 {
+    fn alloc(&mut self, entry: Entry<V>) -> u32 {
         if let Some(slot) = self.free.pop() {
             self.slab[slot as usize] = Some(entry);
             slot
@@ -407,7 +403,7 @@ impl Shard {
             Room::Entry(cost) if self.free.is_empty() => {
                 self.slab.len() >= self.slots || self.used() + cost > self.budget
             }
-            Room::Entry(cost) => self.used() + cost - SLOT_COST > self.budget,
+            Room::Entry(cost) => self.used() + cost - Self::SLOT_COST > self.budget,
             Room::Budget(_) => self.used() > self.budget,
         }
     }
@@ -427,9 +423,15 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::cache::Stored;
     use crate::key::MAX_KEY_LEN;
 
-    impl Shard {
+    /// The shards of the response cache, which the tests count in failure records.
+    type Shard = super::Shard<Stored>;
+    type Entry = super::Entry<Stored>;
+    const SLOT_COST: usize = Shard::SLOT_COST;
+
+    impl<V: Cost + Default> super::Shard<V> {
         /// Checks the byte counts against the entries, the queues against the index, and the budget.
         fn check(&self) {
             for (queue, slots, bytes) in [
@@ -460,7 +462,7 @@ mod tests {
             );
             assert_eq!(
                 self.used(),
-                self.small_bytes + self.main_bytes + SLOT_COST * self.free.len()
+                self.small_bytes + self.main_bytes + Self::SLOT_COST * self.free.len()
             );
             assert!(
                 self.used() <= self.budget,
@@ -535,7 +537,7 @@ mod tests {
         // The slab, grown as `alloc` does.
         grows_within(
             Shard::new(usize::MAX / 2, MAX_KEY_LEN),
-            SLAB,
+            Shard::SLAB,
             |shard, n| {
                 shard.alloc(Entry::new(n, &[], Queue::Small));
             },
@@ -555,7 +557,7 @@ mod tests {
         }
         assert!(worst <= PLACES * most, "{worst} > {}", PLACES * most);
         // The terms are rounded up, never down.
-        const { assert!(SLAB + INDEX + LISTS + STAMPS + PLACES <= SLOT_COST) };
+        const { assert!(Shard::SLAB + INDEX + LISTS + STAMPS + PLACES <= SLOT_COST) };
     }
 
     /// Puts the failure records of `hashes` in main, hit as often as they count.
@@ -706,7 +708,7 @@ mod tests {
                         entry.hit();
                     }
                 } else {
-                    shard.update(hash, &key, |entry| entry.failures += 1);
+                    shard.update(hash, &key, |entry| entry.value.failures += 1);
                 }
                 shard.check();
             }

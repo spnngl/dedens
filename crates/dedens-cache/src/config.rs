@@ -3,8 +3,9 @@
 use dedens_proto::Ttl;
 use thiserror::Error;
 
-use crate::key::MAX_KEY_LEN;
-use crate::shard::SLOT_COST;
+use crate::cache::SLOT_COST;
+use crate::response::Checked;
+use crate::store;
 
 /// Most a resolution failure may be cached (RFC 9520 §3.2, after RFC 2308 §7).
 const MAX_FAILURE_SECS: u32 = 300;
@@ -47,7 +48,7 @@ pub struct Config {
     /// Least TTL of a stored response, so that a flood of short-TTL names is not asked upstream again and again
     /// (D124): the smallest TTL of its records is raised to it, and clients see TTLs counting down from the raised
     /// lifetime, as under Unbound's `cache-min-ttl`. Not applied to a response with a TTL of 0, which stays
-    /// uncached ([`NotCached::ZeroTtl`](crate::NotCached::ZeroTtl)), nor to a [`Checked::Secure`](crate::Checked::Secure)
+    /// uncached ([`NotCached::ZeroTtl`](crate::NotCached::ZeroTtl)), nor to a [`Checked::Secure`]
     /// one, which its signatures' expiration bounds (RFC 4035 §5.3.3); a bogus response keeps `bogus_ttl`. Applies
     /// to negative answers too. 0 turns it off. At most `max_ttl`, `max_negative_ttl` and the insecure cap, see
     /// [`Config::insecure_ttl`].
@@ -77,7 +78,7 @@ pub struct Config {
     /// Seconds a response that failed DNSSEC validation is kept, so that a query repeated meanwhile is not
     /// validated again (D77; Unbound's `val-bogus-ttl`: 60 seconds); at least 1.
     pub bogus_ttl: u32,
-    /// Cap on the TTL of a response stored as [`Checked::Insecure`](crate::Checked::Insecure), within `max_ttl`
+    /// Cap on the TTL of a response stored as [`Checked::Insecure`], within `max_ttl`
     /// (D93): a zone that turns secure gets AD on its answers within that time. `None`: a day, or `max_ttl` if it
     /// is less. At least 1, at most `max_ttl`.
     pub max_insecure_ttl: Option<u32>,
@@ -160,22 +161,38 @@ impl Config {
         }
     }
 
+    /// The least a TTL of data `checked` is raised to: `min_ttl` (D124), but for secure data, whose signatures only
+    /// the validator knows the life of.
+    pub(crate) fn floor(&self, checked: Checked) -> u32 {
+        if checked == Checked::Secure {
+            0
+        } else {
+            self.min_ttl
+        }
+    }
+
+    /// How long a positive `RRset` of TTL `ttl`, `checked`, may be cached: raised to `min_ttl` unless secure,
+    /// capped by `max_ttl`, by [`Config::insecure_ttl`] when insecure and by `bogus_ttl` when bogus (RFC 4035 §4.7, D93,
+    /// D124). `None` for TTL 0, which is not cached and not raised (RFC 1035 §3.2.1); a TTL past 2^31 - 1 was read as
+    /// 0 already (RFC 2181 §8, [`Ttl::from_wire`]).
+    #[must_use]
+    pub fn lifetime(&self, ttl: Ttl, checked: Checked) -> Option<u32> {
+        let cap = match checked {
+            Checked::Unchecked | Checked::Secure => self.max_ttl,
+            Checked::Insecure => self.insecure_ttl(),
+            Checked::Bogus(_) => self.bogus_ttl,
+        };
+        match ttl.get() {
+            0 => None,
+            ttl => Some(ttl.max(self.floor(checked)).min(cap)).filter(|&ttl| ttl > 0),
+        }
+    }
+
     /// The most bytes an entry may hold: `max_entry_bytes`, else 8 KiB, or a tenth of a shard's share of the
     /// capacity less a slot if that is less (D116). Only meaningful once [`Config::validate`] passes.
     #[must_use]
     pub const fn entry_limit(&self) -> usize {
-        if let Some(bytes) = self.max_entry_bytes {
-            return bytes;
-        }
-        let Some(share) = self.capacity.checked_div(self.shards) else {
-            return 0;
-        };
-        let tenth = (share / 10).saturating_sub(SLOT_COST);
-        if tenth < DEFAULT_ENTRY_BYTES {
-            tenth
-        } else {
-            DEFAULT_ENTRY_BYTES
-        }
+        store::entry_limit(self.capacity, self.shards, self.max_entry_bytes, SLOT_COST)
     }
 
     /// Checks the settings against each other and the RFCs.
@@ -184,22 +201,10 @@ impl Config {
     ///
     /// [`ConfigError`] naming the first setting refused.
     pub const fn validate(&self) -> Result<(), ConfigError> {
-        if !self.shards.is_power_of_two() || self.shards > MAX_SHARDS {
-            return Err(ConfigError::Shards(self.shards));
-        }
-        let share = self.capacity / self.shards;
-        if let Some(bytes) = self.max_entry_bytes {
-            if bytes < MAX_KEY_LEN {
-                return Err(ConfigError::EntryBytes(MAX_KEY_LEN));
-            }
-            let least = SLOT_COST.saturating_add(bytes);
-            if share < least {
-                return Err(ConfigError::Capacity(least.saturating_mul(self.shards)));
-            }
-        } else if self.entry_limit() < MAX_KEY_LEN {
-            // A tenth of the share holds a failure record and its slot.
-            let least = (SLOT_COST + MAX_KEY_LEN) * 10;
-            return Err(ConfigError::Capacity(least.saturating_mul(self.shards)));
+        if let Err(sizes) =
+            store::check(self.capacity, self.shards, self.max_entry_bytes, SLOT_COST)
+        {
+            return Err(sizes);
         }
         if self.failure_min == 0
             || self.failure_min > self.failure_max

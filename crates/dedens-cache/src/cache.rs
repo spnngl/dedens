@@ -1,7 +1,4 @@
-//! The shared cache: shards picked by key hash, each behind its own lock.
-
-use std::hash::{BuildHasher, RandomState};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+//! The shared cache: the responses and failure records of a [`Store`], under the keys of their queries.
 
 use dedens_proto::edns::EDE_LEN;
 use dedens_proto::{Decoded, HEADER_LEN, MAX_NAME_LEN, Query};
@@ -11,6 +8,30 @@ use crate::key::Key;
 use crate::metrics::Metrics;
 use crate::response::{Checked, NotCached, Refresh, Response};
 use crate::shard::Shard;
+use crate::store::{Cost, Store, lock};
+
+/// What the cache keeps of one key.
+#[derive(Debug, Default)]
+pub(crate) struct Stored {
+    /// The last response stored, fresh or stale; none while only failures are known.
+    pub(crate) response: Option<Response>,
+    /// Whether a prefetch was already asked for the current response.
+    pub(crate) prefetched: bool,
+    /// Resolution failures in a row (RFC 9520 §3.2).
+    pub(crate) failures: u32,
+    /// No resolution before this time.
+    pub(crate) hold_until: u32,
+}
+
+impl Cost for Stored {
+    fn cost(&self) -> usize {
+        self.response.as_ref().map_or(0, Response::cost)
+    }
+}
+
+/// Bytes charged for each slot of a shard of the cache besides its key and response (D116); the cache mark of the
+/// response is counted in it (D118).
+pub(crate) const SLOT_COST: usize = Shard::<Stored>::SLOT_COST;
 
 /// When expired data may answer (RFC 8767 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,8 +89,7 @@ pub enum Lookup {
 /// A response cache shared by threads, sharded to keep lock waits short.
 #[derive(Debug)]
 pub struct Cache {
-    shards: Box<[Mutex<Shard>]>,
-    hasher: RandomState,
+    store: Store<Stored>,
     config: Config,
     metrics: Metrics,
 }
@@ -82,13 +102,8 @@ impl Cache {
     /// [`ConfigError`] when `config` is refused by [`Config::validate`].
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         config.validate()?;
-        let budget = config.capacity / config.shards;
         Ok(Self {
-            shards: (0..config.shards)
-                .map(|_| Mutex::new(Shard::new(budget, config.entry_limit())))
-                .collect(),
-            // Keyed SipHash: names chosen to collide cannot pile up in one shard or slot.
-            hasher: RandomState::new(),
+            store: Store::new(config.capacity, config.shards, config.max_entry_bytes)?,
             config,
             metrics: Metrics::new(),
         })
@@ -148,9 +163,9 @@ impl Cache {
     #[must_use]
     pub fn refresh(&self, query: &Query<'_>, now: u32) -> Option<Refresh> {
         let key = Key::of(query)?;
-        let (hash, shard) = self.shard(&key);
+        let (hash, shard) = self.store.shard(key.as_bytes());
         let mut shard = lock(shard);
-        let response = shard.get(hash, key.as_bytes())?.response.as_ref()?;
+        let response = shard.get(hash, key.as_bytes())?.value.response.as_ref()?;
         (now < response.expires).then(|| response.refresh(self.config.prefetch_percent))
     }
 
@@ -170,24 +185,25 @@ impl Cache {
         let Some(key) = Key::of(query) else {
             return Lookup::Miss;
         };
-        let (hash, shard) = self.shard(&key);
+        let (hash, shard) = self.store.shard(key.as_bytes());
         let mut end = out.len();
         let mut shard = lock(shard);
         let Some(entry) = shard.get(hash, key.as_bytes()) else {
             return Lookup::Miss;
         };
-        let nothing = if self.held(entry.hold_until, now) {
+        let nothing = if self.held(entry.value.hold_until, now) {
             Lookup::Failed
         } else {
             Lookup::Miss
         };
-        let Some(response) = &entry.response else {
+        let Some(response) = &entry.value.response else {
             return nothing;
         };
         let (ttl, freshness) = if now < response.expires {
-            let prefetch =
-                used && !entry.prefetched && response.ending(now, self.config.prefetch_percent);
-            entry.prefetched |= prefetch;
+            let prefetch = used
+                && !entry.value.prefetched
+                && response.ending(now, self.config.prefetch_percent);
+            entry.value.prefetched |= prefetch;
             (response.left(now), Freshness::Fresh { prefetch })
         } else if now < response.stale_until {
             let allowed = match stale {
@@ -294,10 +310,10 @@ impl Cache {
         let Some(key) = Key::of(query) else {
             return false;
         };
-        let (hash, shard) = self.shard(&key);
+        let (hash, shard) = self.store.shard(key.as_bytes());
         lock(shard)
             .get(hash, key.as_bytes())
-            .and_then(|entry| entry.response.as_mut())
+            .and_then(|entry| entry.value.response.as_mut())
             .is_some_and(|response| {
                 let found = response.mark == seen;
                 if found {
@@ -315,7 +331,7 @@ impl Cache {
         (checked, mark): (Checked, u64),
         bad: bool,
     ) -> Result<(), NotCached> {
-        let (hash, shard) = self.shard(key);
+        let (hash, shard) = self.store.shard(key.as_bytes());
         let mut response = match Response::build(key, response, now, checked, bad, &self.config) {
             // Answered and not stored: an answer the cache holds is outdated by it, not to be served stale
             // (RFC 8767 §4: only data that cannot be refreshed), and a failure held is over. A response refused
@@ -327,10 +343,7 @@ impl Cache {
                 | NotCached::ClientSubnet),
             ) => {
                 let evicted = lock(shard).update_existing(hash, key.as_bytes(), |entry| {
-                    entry.response = None;
-                    entry.prefetched = false;
-                    entry.failures = 0;
-                    entry.hold_until = 0;
+                    entry.value = Stored::default();
                 });
                 self.metrics.evicted(evicted);
                 return Err(refused);
@@ -341,10 +354,10 @@ impl Cache {
         let evicted = {
             let mut shard = lock(shard);
             shard.update(hash, key.as_bytes(), |entry| {
-                entry.response = Some(response);
-                entry.prefetched = false;
-                entry.failures = 0;
-                entry.hold_until = 0;
+                entry.value = Stored {
+                    response: Some(response),
+                    ..Stored::default()
+                };
             })
         };
         self.metrics.inserted();
@@ -365,9 +378,10 @@ impl Cache {
     )]
     pub fn fail(&self, key: &Key, now: u32) -> u32 {
         let config = &self.config;
-        let (hash, shard) = self.shard(key);
+        let (hash, shard) = self.store.shard(key.as_bytes());
         let mut hold = 0;
         let evicted = lock(shard).update(hash, key.as_bytes(), |entry| {
+            let entry = &mut entry.value;
             if self.held(entry.hold_until, now) {
                 hold = entry.hold_until - now;
                 return;
@@ -399,7 +413,7 @@ impl Cache {
     /// Number of entries, responses and failure records.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|s| lock(s).len()).sum()
+        self.store.len()
     }
 
     /// Whether there is no entry.
@@ -411,18 +425,6 @@ impl Cache {
     /// Bytes taken by the entries and what the shards keep for them (D116), at most `Config::capacity`.
     #[must_use]
     pub fn used(&self) -> usize {
-        self.shards.iter().map(|s| lock(s).used()).sum()
+        self.store.used()
     }
-
-    fn shard(&self, key: &Key) -> (u64, &Mutex<Shard>) {
-        let hash = self.hasher.hash_one(key.as_bytes());
-        // High bits pick the shard; the shard's table uses the low ones.
-        let at = usize::try_from(hash >> 40).unwrap_or_default() & (self.shards.len() - 1);
-        (hash, &self.shards[at])
-    }
-}
-
-/// A shard is consistent between calls (no panic within), so a poisoned lock is still usable.
-fn lock(shard: &Mutex<Shard>) -> MutexGuard<'_, Shard> {
-    shard.lock().unwrap_or_else(PoisonError::into_inner)
 }

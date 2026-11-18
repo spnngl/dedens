@@ -8,7 +8,8 @@ do not: the memory an entry costs and the complexity of each operation.
 
 ## Memory
 
-A slot of a shard's slab, live or free, costs `SLOT_COST` bytes (derived in `src/shard.rs`, D116): the slot, its
+A slot of a shard's slab, live or free, costs `SLOT_COST` bytes (`Shard::SLOT_COST` in `src/shard.rs` for the
+value a `Store` holds, D116, D193): the slot, its
 places in the index and the queues, and its ghost, each at the worst moment of its table's growth. An entry also
 costs `key length + response bytes` (`Response::cost`: the wire, 2 bytes a record, the bits of the cuts), at most
 `Config::entry_limit`. `used()` is at most `capacity`: freed slots are reused and counted, and when more than half
