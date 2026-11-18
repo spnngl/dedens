@@ -334,6 +334,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "scrub_response"
+path = "fuzz_targets/scrub_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "parse_rdap"
 path = "fuzz_targets/parse_rdap.rs"
 test = false
