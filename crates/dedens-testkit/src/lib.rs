@@ -8,11 +8,14 @@
 //! By default the kit depends on `dedens-proto` and data-encoding alone. The feature `certificates` adds the TLS
 //! certificates of the encrypted transports' tests, on `dedens-net`, compio and rcgen; `responder` adds the
 //! loopback server the tests of `dedens` and `dedensd` query, with the Anonymized `DNSCrypt` relay they go through, and
-//! `odoh` and `doc` its experimental transports.
+//! `odoh` and `doc` its experimental transports. `recursion` adds the captured resolutions of the recursive resolver
+//! and the servers replaying them, on serde (D188).
 
 #[cfg(feature = "certificates")]
 pub mod certificates;
 pub mod dnssec;
+#[cfg(feature = "recursion")]
+pub mod recursion;
 #[cfg(feature = "responder")]
 pub mod relay;
 #[cfg(feature = "responder")]
