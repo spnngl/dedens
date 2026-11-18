@@ -779,6 +779,7 @@ dependencies = [
  "dedens-odoh",
  "dedens-plugins",
  "dedens-proto",
+ "dedens-resolver",
  "dedens-roots",
  "dedens-scenario",
  "dedens-server",
@@ -841,6 +842,15 @@ dependencies = [
  "thiserror",
  "vstd",
  "zerocopy",
+]
+
+[[package]]
+name = "dedens-resolver"
+version = "0.1.0"
+dependencies = [
+ "dedens-cache",
+ "dedens-proto",
+ "thiserror",
 ]
 
 [[package]]

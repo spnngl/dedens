@@ -26,6 +26,8 @@ dedens-net.workspace = true
 dedens-odoh.workspace = true
 dedens-plugins.workspace = true
 dedens-proto.workspace = true
+# The `RRset` cache of `benches/rrset_cache.rs`.
+dedens-resolver.workspace = true
 dedens-roots.workspace = true
 dedens-server.workspace = true
 divan.workspace = true
@@ -96,6 +98,10 @@ harness = false
 name = "anchors"
 harness = false
 
+[[bench]]
+name = "rrset_cache"
+harness = false
+
 # D143: the benches' dependencies stay regular ones, so cargo-deny checks them (D14).
 [package.metadata.cargo-shear]
 ignored = [
@@ -106,6 +112,7 @@ ignored = [
   "dedens-odoh",
   "dedens-plugins",
   "dedens-proto",
+  "dedens-resolver",
   "dedens-roots",
   "dedens-server",
   "divan",

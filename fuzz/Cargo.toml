@@ -30,6 +30,7 @@ dedens-net = { path = "../crates/dedens-net", features = ["odoh", "dnscrypt"] }
 dedens-odoh = { path = "../crates/dedens-odoh" }
 dedens-plugins = { path = "../crates/dedens-plugins" }
 dedens-proto = { path = "../crates/dedens-proto" }
+dedens-resolver = { path = "../crates/dedens-resolver" }
 dedens-roots = { path = "../crates/dedens-roots" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
 dedens-server = { path = "../crates/dedens-server" }
@@ -321,6 +322,13 @@ bench = false
 [[bin]]
 name = "parse_tlds_json"
 path = "fuzz_targets/parse_tlds_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rrset_cache_insert"
+path = "fuzz_targets/rrset_cache_insert.rs"
 test = false
 doc = false
 bench = false
