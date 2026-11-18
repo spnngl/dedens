@@ -325,8 +325,8 @@ the case of its first 12 letters varied, n records of one run, as an attacker ma
 | `eq_case_variants` 128 | 241 000 (132 000) | 13 580 (12 870) |
 | `eq_case_variants` 2048 | 170 700 000 (35 780 000) | 509 600 (209 900) |
 
-Linear but for the sort: 16 times the variants, 15.5 times the time (fastest), where it was 256 times. Elsewhere no change, but for one that is
-not made: a `HashSet` for every `RRset` cost the zones about twice the time, so only a run longer than one is
+Linear but for the sort: 16 times the variants, 15.5 times the time (fastest), where it was 256 times. Elsewhere
+no change, but for one that is not made: a `HashSet` for every `RRset` cost the zones about twice the time, so only a run longer than one is
 hashed; and `into_boxed_slice` on the `Vec` grown by pushes, a shrinking `realloc`, cost them a sixth more than
 moving the RDATA into a slice of its size, as before (fastest 4 744 and 5 410).
 

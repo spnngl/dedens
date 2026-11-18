@@ -15,8 +15,9 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   and headers are not counted: up to 1.5 times more on glue (D193). A new owned field means a new term.
 - `insert` trusts its rank: the input is scrubbed (step 05), in bailiwick. Only answer non-authoritative and
   above, or secure data, may answer a client (RFC 2181 §5.4.1); `get` returns every rank.
-- Replacement follows Unbound's `need_to_update_rrset` but for two choices of D193: verdicts on the same data, and
-  an NS `RRset` bounded whatever its trust. A change there goes to D193 and `tests/rrset_cache.rs`.
+- Replacement follows Unbound's `need_to_update_rrset` but for three choices of D193: verdicts on the same data,
+  an NS `RRset` bounded whatever its trust, and an address over glue pinned whatever its TTL and across a verdict
+  (`Cached::pins`). A change there goes to D193 and `tests/rrset_cache.rs`.
 - Keys are the owner name in lowercase (RFC 4343): a lookup lowers its name the same way, through `key_of`.
 - The value is an enum (`Entry`) so that negative entries (step 12) share the `RRset` cache's key space: add a
   variant, not a second store.
