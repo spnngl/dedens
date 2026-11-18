@@ -18,9 +18,13 @@ metrics = ["dep:metrics"]
 dedens-cache.workspace = true
 dedens-proto.workspace = true
 metrics = { workspace = true, optional = true }
+# D194: the infra cache draws the server to ask with the caller's CSPRNG (RFC 5452 §4.4).
+rand_core.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+dedens-roots.workspace = true
 dedens-testkit.workspace = true
 metrics.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }

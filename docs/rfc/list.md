@@ -28,6 +28,7 @@ These are the foundational RFCs required for modern DNS implementation, includin
 * **[RFC 4592](https://datatracker.ietf.org/doc/html/rfc4592):** The Role of Wildcards in the Domain Name System
 * **[RFC 5452](https://datatracker.ietf.org/doc/html/rfc5452):** Measures for Making DNS More Resilient against Forged Answers
 * **[RFC 5936](https://datatracker.ietf.org/doc/html/rfc5936):** DNS Zone Transfer Protocol (AXFR)
+* **[RFC 6298](https://datatracker.ietf.org/doc/html/rfc6298):** Computing TCP's Retransmission Timer: the round-trip estimate and timeout the resolver keeps per authoritative server (D194)
 * **[RFC 6604](https://datatracker.ietf.org/doc/html/rfc6604):** xNAME RCODE and Status Bits Clarification
 * **[RFC 6672](https://datatracker.ietf.org/doc/html/rfc6672):** DNAME Redirection in the DNS
 * **[RFC 6891](https://datatracker.ietf.org/doc/html/rfc6891):** Extension Mechanisms for DNS (EDNS0)

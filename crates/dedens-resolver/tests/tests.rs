@@ -2,6 +2,7 @@
 //! its docs and in the names of its tests. `memory.rs` is a binary of its own: it sets the process's
 //! `#[global_allocator]`.
 
+mod infra_cache;
 #[cfg(feature = "metrics")]
 mod metrics;
 mod rrset_cache;

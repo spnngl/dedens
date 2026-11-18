@@ -1,7 +1,7 @@
 # dedens-resolver
 
-The recursive resolver. Sans-IO: the caller passes the time in seconds, so tests drive the
-clock. The rustdoc holds the rules; D193 the `RRset` cache's choices.
+The recursive resolver. Sans-IO: the caller passes the time in seconds and the random source, so tests drive
+both. The rustdoc holds the rules; D193 the `RRset` cache's choices, D194 the infra cache's.
 
 The caches keep their entries in `dedens_cache::Store` (D193): its sharding, byte budget and S3-FIFO are
 `dedens-cache`'s, tested there. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in `tests/metrics.rs`.
@@ -19,6 +19,9 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   an NS `RRset` bounded whatever its trust, and an address over glue pinned whatever its TTL and across a verdict
   (`Cached::pins`). A change there goes to D193 and `tests/rrset_cache.rs`.
 - Keys are the owner name in lowercase (RFC 4343): a lookup lowers its name the same way, through `key_of`.
+- The infra cache's lame keys lower the zone the same way, through `lame_key`; its `Cost` is 0: its entries own no
+  allocation, the key and slot are the store's.
+- The infra cache's random draw takes a `CryptoRng` (RFC 5452 §4.4): the server asked must not be predictable.
 - The value is an enum (`Entry`) so that negative entries (step 12) share the `RRset` cache's key space: add a
   variant, not a second store.
 - Time is `u32` seconds from any origin and may go back: use saturating arithmetic.

@@ -1,9 +1,35 @@
 //! The counters of the `metrics` feature (D30).
 
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
+
 use dedens_cache::{Checked, Config};
-use dedens_resolver::{Inserted, Rank, Rrset, RrsetCache};
+use dedens_proto::Name;
+use dedens_resolver::{InfraCache, Inserted, Marks, Rank, Rrset, RrsetCache};
 use dedens_testkit::{captured, message};
-use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+
+use crate::infra_cache::Seeded;
+
+/// The counters `snapshotter` holds, as `name label` and value.
+fn counters(snapshotter: &Snapshotter) -> Vec<(String, u64)> {
+    snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter_map(|(key, _, _, value)| {
+            let DebugValue::Counter(n) = value else {
+                return None;
+            };
+            let (_, key) = key.into_parts();
+            let label = key
+                .labels()
+                .map(|l| l.value().to_owned())
+                .collect::<String>();
+            Some((format!("{} {label}", key.name()), n))
+        })
+        .collect()
+}
 
 #[test]
 fn lookups_inserts_and_evictions_count() {
@@ -52,22 +78,7 @@ fn lookups_inserts_and_evictions_count() {
             .is_some()
     );
 
-    let counters: Vec<(String, u64)> = snapshotter
-        .snapshot()
-        .into_vec()
-        .into_iter()
-        .filter_map(|(key, _, _, value)| {
-            let DebugValue::Counter(n) = value else {
-                return None;
-            };
-            let (_, key) = key.into_parts();
-            let label = key
-                .labels()
-                .map(|l| l.value().to_owned())
-                .collect::<String>();
-            Some((format!("{} {label}", key.name()), n))
-        })
-        .collect();
+    let counters = counters(&snapshotter);
     let count = |name: &str| {
         counters
             .iter()
@@ -82,4 +93,52 @@ fn lookups_inserts_and_evictions_count() {
     assert!(cache.len() < 26, "{} entries", cache.len());
     let evicted = count("dedens_resolver_rrset_evictions_total ");
     assert_eq!(usize::try_from(evicted).ok(), Some(26 - cache.len()));
+}
+
+#[test]
+fn selections_and_evictions_count() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let capacity = 16 << 10;
+    let cache = metrics::with_local_recorder(&recorder, || InfraCache::new(capacity, 1))
+        .expect("a valid size");
+    let servers: Vec<SocketAddr> = (0..1000)
+        .map(|n| {
+            SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, n)),
+                53,
+            )
+        })
+        .collect();
+    let mut rng = Seeded(1);
+    let zone = Name::root();
+    let first = servers[0];
+    for _ in 0..InfraCache::TIMEOUT_LIMIT {
+        cache.timeout(first, InfraCache::UNKNOWN_TIMEOUT, 0);
+    }
+    assert!(
+        cache
+            .select(&[first], &zone, InfraCache::MAX_TIMEOUT, 0, &mut rng)
+            .is_none()
+    );
+    for &server in &servers {
+        cache.reply(server, Duration::from_millis(20), Marks::default(), 0);
+    }
+    assert!(
+        cache
+            .select(&servers, &zone, InfraCache::MAX_TIMEOUT, 0, &mut rng)
+            .is_some()
+    );
+
+    let counters = counters(&snapshotter);
+    let count = |name: &str| {
+        counters
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(0, |(_, n)| *n)
+    };
+    assert_eq!(count("dedens_resolver_infra_selections_total none"), 1);
+    assert_eq!(count("dedens_resolver_infra_selections_total chosen"), 1);
+    let evicted = count("dedens_resolver_infra_evictions_total ");
+    assert_eq!(usize::try_from(evicted).ok(), Some(1000 - cache.len()));
 }

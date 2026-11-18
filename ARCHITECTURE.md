@@ -6,7 +6,7 @@
 |---|---|---|
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale; its byte-budgeted `Store` (D193) | none, time passed in |
-| `crates/dedens-resolver` | Recursive resolver: the `RRset` cache (D193) | none (sans-IO), time passed in |
+| `crates/dedens-resolver` | Recursive resolver: the `RRset` cache (D193), the infra cache of authoritative servers (D194) | none (sans-IO), time and randomness passed in |
 | `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`) | none (sans-IO), time passed in |

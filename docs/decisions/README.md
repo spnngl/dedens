@@ -192,3 +192,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D188 [performance and safety](performance-and-safety.md): real resolutions from the root in `testdata/recursion/`, YAML, `just capture-recursion`; replayed by `Authorities`
 - D189 [simulation tests](simulation-tests.md): the captures' authoritative servers hosted at their addresses, each misbehaving on demand (`Conduct`); `Expected::resolved`
 - D193 [server](server.md): the resolver's `RRset` cache: RFC 2181 ranks, Unbound's replacement rules, the response cache's TTLs and store
+- D194 [server](server.md): the resolver's infra cache: RFC 6298 times per server, lameness per zone, a random server within 400 ms

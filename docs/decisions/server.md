@@ -1533,3 +1533,53 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `Vec`s' capacity is not the bytes the budget sees, and it would make the cache depend on the validator); the
     RFC's three-way tie (glue would replace an authoritative additional section); zone-data ranks (no zones); a
     public `Rank::of(section, authoritative)` (an answer's section and AA do not rank it alone).
+- D194 (builds on D116, D193) The recursive resolver's infra cache, `dedens_resolver::InfraCache` (recursive
+  step 07): what the resolver knows of each authoritative server, and which one to ask next.
+  - Per server address (IP and port): the round-trip time smoothed per RFC 6298 §2 (SRTT, RTTVAR, RTO = SRTT +
+    4 RTTVAR, in ms), the timeouts in a row, the time of its next probe and its marks (`Marks`): EDNS
+    (`Edns::Unknown`, `Supported`, `Unsupported`), no `0x20` echo, TCP needed. Per address and zone (lowered, RFC
+    4343): lameness, with its own expiry. Unbound keys everything by (address, zone) (`services/cache/infra.c`
+    `infra_lookup_nottl`); a server's time and marks are its own, so they are kept once whatever zones it serves, and
+    only lameness, which is per zone (RFC 4697 §2.2.1), is keyed by zone. Cookies stay in the transport's jar
+    (recursive step 03, per source and server, RFC 7873 §4.1), not here.
+  - Numbers, each an associated constant of `InfraCache`, against Unbound (and BIND where it differs):
+    `UNKNOWN_TIMEOUT` 376 ms, Unbound's `UNKNOWN_SERVER_NICENESS` (`iterator/iterator.c`, RFC 6298 §2.1 says 1 s);
+    `MIN_TIMEOUT` 50 ms, Unbound's `RTT_MIN_TIMEOUT` (`util/rtt.c`, RFC 6298 §2.4 says 1 s: a DNS answer is no TCP
+    segment); `MAX_TIMEOUT` 120 s, Unbound's `RTT_MAX_TIMEOUT` (`util/rtt.c`) and RFC 6298 §2.5's 60 s or more;
+    `BAND` 400 ms, Unbound's `RTT_BAND` (`iterator/iterator.h`); `TIMEOUT_LIMIT` 3 timeouts in a row, Unbound's
+    `TIMEOUT_COUNT_MAX` (`services/cache/infra.h`) and BIND's `MAX_EDNS0_TIMEOUTS` (`lib/dns/resolver.c`);
+    `SERVER_TTL` 900 s, Unbound's `infra-host-ttl` (`util/config_file.c`), BIND keeps an entry 60 s past its last use
+    (`lib/dns/adb.c` `dns_adb_entrywindow`); `LAME_TTL` 1800 s, RFC 4697 §2.2.1's 30 minutes or more, Unbound 900 s
+    (lameness lives with its host entry), BIND none (`lame-ttl` defaults to 0, the lame cache off).
+  - Times: an answer sets the estimate (§2.2 the first, §2.3 the next); a timeout of a query sent with a timeout no
+    less than the server's RTO doubles that timeout, at most `MAX_TIMEOUT` (§5.5, Unbound's `rtt_lost`), so queries
+    in flight together back off once; the first answer after `TIMEOUT_LIMIT` timeouts starts the estimate anew
+    (§5.7). BIND smooths 7/10 old and 3/10 new (`adb.c` `adjustsrtt`), unknown servers first by a random 1-31 µs:
+    RFC 6298 gives the timeout too, which BIND takes elsewhere (800 ms, then backed off).
+  - Choice, `select(servers, zone, remaining, now, rng)`: servers skipped (`TIMEOUT_LIMIT` timeouts in a row, until
+    their probe time, now + their RTO rounded up to the second) and servers lame for the zone (unless every one left
+    is, RFC 4697 §2.2.1) set aside, one is drawn at random (`CryptoRng`, RFC 5452 §4.4: the fastest alone is
+    predictable) among those whose RTO is within `BAND` of the least; an unknown server's 376 ms puts it in the band
+    of any server under 776 ms, so it is tried. None left: `None`, the iterator's failure. The timeout is the
+    server's RTO, at most `remaining` (the resolution's time left, under D45's client timer). Unbound skips a server
+    only once its RTO reaches `PROBE_MAXRTO` 12 s (`util/config_file.h`) and its probe delay is `(rto + 1999) / 1000`
+    s; counting timeouts in a row skips a dead server at its third timeout, 3 s in from unknown. Unbound counts
+    timeouts per query type (A, AAAA, other); one count here.
+  - Marks, the transport's quirks (recursive step 03) as the resolver's own type, the recurse stage (step 08)
+    turning one into the other, are merged into the entry, never cleared by a later answer: `Supported` is not
+    downgraded by `Unsupported` (one answer without OPT proves nothing, RFC 6891 §7, Unbound's `infra_edns_update`), `Unknown`
+    keeps what is held, no `0x20` and TCP stay set. They go with the entry: `SERVER_TTL` runs from its creation, not
+    its last use, so a server fixed is asked plainly again within 15 minutes; a skipped server's entry, renewed, keeps
+    its times and probe (Unbound's `infra_host` the same).
+  - Sizing (D116): one `dedens_cache::Store<Entry>` (D193) for both kinds of entry, a server's 20-byte key (kind,
+    family, 16 address bytes, port) and a lame entry's with the zone's wire form, changed by `Store::upsert`;
+    `Entry`'s `Cost` is 0, all of it inline in the slot. `new(capacity, shards)`; a server takes 260 bytes, slot
+    and key, so `DEFAULT_CAPACITY` 4 MiB holds about 16,000 servers (measured: 16,128 once full, 64 shards),
+    Unbound's default 10,000 hosts (`infra-cache-numhosts`); a test holds 10,000 in it.
+  - Counters (feature `metrics`, D30): `dedens_resolver_infra_selections_total{outcome=chosen|none}`,
+    `dedens_resolver_infra_evictions_total`. Tests: `crates/dedens-resolver/tests/infra_cache.rs`.
+  - Rejected: Unbound's (address, zone) key for times and marks (a server is as slow for one zone as another, and
+    13 root servers times every TLD would fill it); BIND's random initial time (no timeout from it); the fastest server
+    always (RFC 5452 §4.4); a `480 s` blacklist, which Unbound's `BLACKLIST_PENALTY` is not: 480,000 ms added to a
+    server's RTT for one query (`iterator/iterator.c`), the iterator's (step 04) to apply.
+    Open: times per (address, zone) if a server is measured slow for one zone only (TODECIDE).
