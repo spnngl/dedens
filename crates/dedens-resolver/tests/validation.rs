@@ -14,7 +14,10 @@ use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType};
 use dedens_resolver::{Caches, Failure, Limits, Minimisation, Ranked, Resolution, Resolved};
 use dedens_testkit::recursion;
 
-use crate::iteration::{Change, Sent, at, caches, is, name, resolvable, served, start, to};
+use crate::iteration::{
+    Answered, Change, Sent, at, caches, captured, is, name, resolvable, run, served, start, steer,
+    to,
+};
 
 /// The captures whose answer is signed from the root down.
 const SIGNED: &[&str] = &[
@@ -218,13 +221,19 @@ fn d197_a_bogus_cname_leaves_its_target_to_be_judged_by_itself() {
     let id = "cname-signed";
     let capture = recursion::Resolution::read(id);
     let caches = caches(false);
-    let (resolved, _) = ask(&capture, &caches, question(&capture), true, &|zone, message| {
-        if is(zone, "icann.org.") && answers(message, "www.icann.org.", RecordType::A) {
-            message
-                .answer
-                .retain(|r| r.rdata.rtype() != RecordType::RRSIG);
-        }
-    });
+    let (resolved, _) = ask(
+        &capture,
+        &caches,
+        question(&capture),
+        true,
+        &|zone, message| {
+            if is(zone, "icann.org.") && answers(message, "www.icann.org.", RecordType::A) {
+                message
+                    .answer
+                    .retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+            }
+        },
+    );
     let missing = Failure::Bogus(InfoCode::RRSIGS_MISSING);
     assert_eq!(resolved, Resolved::Failed(missing));
     let end = Question::new(name("www.icann.org.cdn.cloudflare.net."), RecordType::A);
@@ -236,10 +245,45 @@ fn d197_a_bogus_cname_leaves_its_target_to_be_judged_by_itself() {
 }
 
 #[test]
+fn d197_a_bogus_answer_is_asked_again_of_another_server() {
+    // Changed: one server of icann.org, 199.4.138.53, strips the signatures of its answer for www.icann.org, as a
+    // spoofer or a garbling path would. The other, 2001:500:89::53, answers as captured: asked again, the answer
+    // is secure (Unbound's val_blacklist).
+    let capture = recursion::Resolution::read("cname-signed");
+    let caches = caches(false);
+    let validator = validator(dedens_dnssec::Limits::default());
+    let mut resolution =
+        start(&capture, &caches, Limits::default()).validated(validator, at(&capture).as_secs());
+    steer(&caches, &capture);
+    let authorities = recursion::Authorities::new([&capture]);
+    let garbling = "199.4.138.53"
+        .parse::<std::net::IpAddr>()
+        .expect("an address");
+    let server = |query: &dedens_resolver::Query| {
+        let mut response = captured(&authorities, query);
+        if query.server.ip() == garbling && answers(&response, "www.icann.org.", RecordType::A) {
+            (response.answer).retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+        }
+        Answered::Response(response)
+    };
+    let (resolved, sent) = run(&mut resolution, &server, at(&capture));
+    assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?} {sent:?}");
+    let www = name("www.icann.org.");
+    let asked = sent.iter().filter(|(zone, name, rtype)| {
+        is(zone, "icann.org.") && *name == www && *rtype == RecordType::A
+    });
+    assert_eq!(asked.count(), 2, "{sent:?}");
+}
+
+#[test]
 fn rfc6672_2_2_a_yxdomain_is_validated() {
     // Changed: dns.netmeister.org's answer forged into a YXDOMAIN, its DNAME unsigned, to a target of 255 bytes that
     // makes the name asked too long. Unvalidated, the YXDOMAIN would be served; the DNAME is bogus.
-    let target = format!("{0}.{0}.{0}.{1}.netmeister.org.", "a".repeat(63), "a".repeat(46));
+    let target = format!(
+        "{0}.{0}.{0}.{1}.netmeister.org.",
+        "a".repeat(63),
+        "a".repeat(46)
+    );
     let forged = crate::scrub::dname("dname.dns.netmeister.org.", &target);
     let (resolved, sent) = ask(
         &recursion::Resolution::read("dname"),
@@ -256,7 +300,10 @@ fn rfc6672_2_2_a_yxdomain_is_validated() {
             }
         },
     );
-    assert!(matches!(resolved, Resolved::Failed(Failure::Bogus(_))), "{resolved:?} {sent:?}");
+    assert!(
+        matches!(resolved, Resolved::Failed(Failure::Bogus(_))),
+        "{resolved:?} {sent:?}"
+    );
 }
 
 #[test]
@@ -264,7 +311,10 @@ fn rfc4035_5_3_4_a_wildcard_expansion_cached_unchecked_is_asked_again() {
     // A client setting CD, or an address lookup (a server name an attacker put under a victim's wildcard), caches
     // the expansion unchecked, without the proof that no closer name exists. Validated from the cache it would be
     // bogus: it is asked again, its proof with it. Secure under NSEC3, insecure under an opt-out span.
-    for (id, verdict) in [("wildcard", Checked::Secure), ("wildcard-optout", Checked::Insecure)] {
+    for (id, verdict) in [
+        ("wildcard", Checked::Secure),
+        ("wildcard-optout", Checked::Insecure),
+    ] {
         let capture = recursion::Resolution::read(id);
         let caches = caches(false);
         let (unchecked, _) = ask(&capture, &caches, question(&capture), false, &|_, _| {});

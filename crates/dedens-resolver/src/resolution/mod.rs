@@ -435,9 +435,22 @@ pub struct Resolution {
     found: HashMap<Question<'static>, Vec<IpAddr>>,
     /// What the validation cost, once over.
     spent: Option<Cost>,
+    /// The servers whose responses answered the client's question, its CNAMEs included, since it was last asked,
+    /// with the zone each was asked as a server of.
+    answered_by: Vec<(IpAddr, Name<'static>)>,
+    /// The servers no question is asked of: those that gave a bogus answer.
+    shunned: Vec<IpAddr>,
+    /// The client's question asked again after a bogus verdict, at most [`RETRIES`].
+    retries: usize,
+    /// The extended error of the first bogus verdict, which stands unless a retry does better.
+    bogus: Option<InfoCode>,
     /// The query awaiting its reply, or the outcome; `None` while working out the next query.
     settled: Option<Settled>,
 }
+
+/// The times the client's question is asked again after a bogus verdict, the servers that answered it shunned:
+/// Unbound's `VAL_MAX_RESTART_COUNT` (`validator/validator.h`), whose `val_blacklist` does as much (D197).
+const RETRIES: usize = 5;
 
 /// Where a resolution waits.
 #[derive(Debug)]
@@ -450,6 +463,8 @@ enum Settled {
 /// The answer to the client's question, being validated.
 #[derive(Debug)]
 struct Checking {
+    /// The client's question, asked again if the answer is bogus.
+    question: Question<'static>,
     outcome: Resolved,
     validation: Box<Validation>,
 }
@@ -753,6 +768,15 @@ impl Delegation {
             }
         }
     }
+
+    /// Takes `servers` out of those to ask, now and once looked up.
+    fn shun(&mut self, servers: &[IpAddr]) {
+        self.known.extend(servers);
+        self.untried
+            .retain(|server| !servers.contains(&server.ip()));
+        self.timed_out
+            .retain(|server| !servers.contains(&server.ip()));
+    }
 }
 
 /// What a delegation does next.
@@ -800,6 +824,10 @@ impl Resolution {
             validator: None,
             checking: None,
             spent: None,
+            answered_by: Vec::new(),
+            shunned: Vec::new(),
+            retries: 0,
+            bogus: None,
             found: HashMap::new(),
             settled: None,
         })
@@ -926,6 +954,22 @@ impl Resolution {
                 crate::metrics::query(Sent::Answer);
                 infra.reply(server, rtt, seen, now_secs);
             }
+        }
+        let answer = matches!(
+            scrubbed.outcome,
+            Outcome::Answer { .. }
+                | Outcome::Cname { .. }
+                | Outcome::NoData { .. }
+                | Outcome::NxDomain { .. }
+                | Outcome::YxDomain { .. }
+        );
+        let source = (server.ip(), query.zone.clone());
+        if answer
+            && self.checking.is_none()
+            && query.question == self.tasks.client.asked
+            && !self.answered_by.contains(&source)
+        {
+            self.answered_by.push(source);
         }
         let referral = matches!(scrubbed.outcome, Outcome::Referral { .. });
         let ranked = self.cache(scrubbed.ranked(), referral, now_secs);
@@ -1057,6 +1101,7 @@ impl Resolution {
         let At::Asking(delegation) = at else {
             return self.begin(now_secs);
         };
+        delegation.shun(&self.shunned);
         let question = match minimise {
             Minimise::On { question, .. } => question,
             Minimise::Off => asked,
@@ -1100,11 +1145,14 @@ impl Resolution {
         let caches = Arc::clone(&self.caches);
         let rrsets = &caches.rrsets;
         let validating = self.validator.is_some();
+        // Asked again after a bogus answer: what was judged bogus is asked of the servers left.
+        let retrying = self.retries > 0 && self.checking.is_none();
         let usable = |held: &Ranked| {
             answers(held)
                 && !(validating
                     && matches!(held.checked, Checked::Unchecked | Checked::Secure)
                     && held.rrset.expanded())
+                && !(retrying && matches!(held.checked, Checked::Bogus(_)))
         };
         let task = self.tasks.active();
         let Question { name, qtype, .. } = &task.asked;
@@ -1219,7 +1267,8 @@ impl Resolution {
         let mut kept = Vec::with_capacity(ranked.len());
         for (rank, set) in ranked {
             let synthesized = set.rtype() == RecordType::CNAME
-                && (dnames.iter()).any(|dname| set.owner() != dname && set.owner().is_within(dname));
+                && (dnames.iter())
+                    .any(|dname| set.owner() != dname && set.owner().is_within(dname));
             let at = if referral && from_cache && set.rtype() == RecordType::NS {
                 self.started_secs
             } else {
@@ -1329,17 +1378,20 @@ impl Resolution {
     fn end(&mut self, limit: Limit) {
         debug!(%limit, "limit reached, resolution ends");
         crate::metrics::limit(limit);
-        let failure = if self.checking.is_some() {
-            Failure::Indeterminate(InfoCode::DNSSEC_INDETERMINATE)
-        } else {
-            Failure::Limit(limit)
+        let failure = match self.bogus {
+            Some(code) => Failure::Bogus(code),
+            None if self.checking.is_some() => {
+                Failure::Indeterminate(InfoCode::DNSSEC_INDETERMINATE)
+            }
+            None => Failure::Limit(limit),
         };
         self.settled = Some(Settled::Done(Resolved::Failed(failure)));
     }
 
-    /// Sends `query`, within [`Limits::queries`], or [`Limits::validation`] for the validator's question.
+    /// Sends `query`, within [`Limits::queries`], or [`Limits::validation`] for the validator's question and the
+    /// client's asked again after a bogus answer.
     fn send(&mut self, query: Query) {
-        if self.checking.is_some() {
+        if self.checking.is_some() || self.retries > 0 {
             if self.proving >= self.limits.validation {
                 return self.end(Limit::Validation);
             }
@@ -1502,9 +1554,10 @@ impl Resolution {
             checking.validation.answer(response.as_ref());
             return self.check(now);
         }
-        let mut outcome = match (outcome, self.limit) {
-            (Resolved::Failed(_), Some(limit)) => Resolved::Failed(Failure::Limit(limit)),
-            (outcome, _) => outcome,
+        let mut outcome = match (outcome, self.bogus, self.limit) {
+            (Resolved::Failed(_), Some(code), _) => Resolved::Failed(Failure::Bogus(code)),
+            (Resolved::Failed(_), None, Some(limit)) => Resolved::Failed(Failure::Limit(limit)),
+            (outcome, _, _) => outcome,
         };
         let judged = matches!(
             outcome,
@@ -1522,6 +1575,7 @@ impl Resolution {
                     let response = outcome.message(&question, true);
                     let validation = Box::new(validator.start(&question, &response, *unix));
                     self.checking = Some(Checking {
+                        question,
                         outcome,
                         validation,
                     });
@@ -1547,6 +1601,7 @@ impl Resolution {
             }
             dedens_dnssec::Next::Done(verdict) => {
                 let Some(Checking {
+                    question,
                     outcome,
                     validation,
                 }) = self.checking.take()
@@ -1554,11 +1609,60 @@ impl Resolution {
                     return;
                 };
                 self.spent = Some(validation.cost());
-                let outcome = self.judged(outcome, verdict, &validation, now);
+                let (chain, data, denials) = outcome.parts();
+                let bogus: Vec<Name<'static>> = (chain.iter().chain(data).chain(denials))
+                    .filter(|ranked| {
+                        let own = validation.verdict_of(ranked.rrset.owner(), ranked.rrset.rtype());
+                        matches!(own, Some(Verdict::Bogus { .. }))
+                    })
+                    .map(|ranked| ranked.rrset.owner().clone())
+                    .collect();
+                let outcome = match self.judged(outcome, verdict, &validation, now) {
+                    Resolved::Failed(Failure::Bogus(code)) => {
+                        return self.retry(question, code, &bogus);
+                    }
+                    Resolved::Failed(_) if let Some(code) = self.bogus => {
+                        Resolved::Failed(Failure::Bogus(code))
+                    }
+                    outcome => outcome,
+                };
                 debug!(?outcome, "resolution done");
                 self.settled = Some(Settled::Done(outcome));
             }
         }
+    }
+
+    /// Asks `question` again after a bogus answer, `code`, the servers that answered it shunned, as Unbound's
+    /// `val_blacklist`: at most [`RETRIES`] times, the queries within [`Limits::validation`]. A spoofed or garbled
+    /// response from one server does not make the answer bogus while another serves it right. The servers shunned
+    /// are those of the zone each `RRset` judged bogus by itself came from (`bogus`, their owners), or all that
+    /// answered when none was (a denial missing). Without a server to shun, or out of retries, the answer is bogus
+    /// with the first code.
+    fn retry(&mut self, question: Question<'static>, code: InfoCode, bogus: &[Name<'static>]) {
+        let code = *self.bogus.get_or_insert(code);
+        let answered_by = std::mem::take(&mut self.answered_by);
+        let source = |owner: &Name<'_>| {
+            let zones = answered_by.iter().map(|(_, zone)| zone);
+            zones
+                .filter(|zone| owner.is_within(zone))
+                .max_by_key(|zone| zone.label_count())
+        };
+        let blamed: Vec<IpAddr> = (answered_by.iter())
+            .filter(|(_, zone)| {
+                bogus.is_empty() || bogus.iter().any(|owner| source(owner) == Some(zone))
+            })
+            .map(|&(server, _)| server)
+            .collect();
+        if self.retries >= RETRIES || blamed.is_empty() {
+            debug!(%code, "bogus, not asked again");
+            self.settled = Some(Settled::Done(Resolved::Failed(Failure::Bogus(code))));
+            return;
+        }
+        self.retries += 1;
+        debug!(%code, servers = ?blamed, retry = self.retries, "bogus, asked again of other servers");
+        self.shunned.extend(blamed);
+        self.tasks.client = Task::new(question, Purpose::Answer, self.minimisation);
+        self.tasks.lookups.clear();
     }
 
     /// `outcome` as `verdict` makes it. The cache records each `RRset`'s own verdict (`Validation::verdict_of`,
