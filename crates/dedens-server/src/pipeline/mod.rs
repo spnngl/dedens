@@ -988,15 +988,15 @@ impl Pipeline {
             Ended::Resolved(resolved) => {
                 let mut decoded = Decoded::default();
                 decoded.message = resolved.message(resolving.question(), client.dnssec());
-                if !resolving.validated() {
-                    return finish.plain(decoded, Ttls::Bounded, out);
-                }
-                // Validated: secure when each RRset is (RFC 4035 §5), insecure when one is, or is not judged.
-                // A YXDOMAIN is not judged (the validator takes none): insecure, as a forwarded one.
+                // The verdicts the `RRset` cache holds: secure when each RRset is, AD set even with CD (RFC 4035
+                // §3.2.3, RFC 6840 §5.8); insecure when one is. Data not judged (no validator, a YXDOMAIN) and,
+                // with CD, bogus data go as received (RFC 6840 §5.9): a validated bogus answer is a failure.
                 let outcome = match resolved.checked() {
                     Checked::Secure => Outcome::Secure,
-                    Checked::Bogus(code) => return servfail(&client, code, out),
-                    Checked::Insecure | Checked::Unchecked => Outcome::Insecure,
+                    Checked::Insecure => Outcome::Insecure,
+                    Checked::Unchecked | Checked::Bogus(_) => {
+                        return finish.plain(decoded, Ttls::Bounded, out);
+                    }
                 };
                 finish.deliver(outcome, decoded, None, Ttls::Bounded, out)
             }

@@ -59,7 +59,7 @@ fn denied_queries_are_counted_by_action() {
 }
 
 /// The values of the counter `name`, by the label `label`, that are not zero.
-fn counted(
+pub(crate) fn counted(
     snapshotter: &metrics_util::debugging::Snapshotter,
     name: &str,
     label: &str,
