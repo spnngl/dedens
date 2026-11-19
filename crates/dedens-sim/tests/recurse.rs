@@ -1,22 +1,28 @@
 //! `dedensd` resolving from the root (D195) on the Internet of a captured resolution (D189): its recurse stage
 //! answers the capture's question (RFC 1034 §5.3.3), priming the root's servers alongside (RFC 8109 §3), and the
-//! resolutions of a hundred clients asking it at once send each query once (RFC 5452 §5).
+//! resolutions of a hundred clients asking it at once send each query once (RFC 5452 §5), even of a silent server,
+//! past which one more is shed (D195).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Config};
+use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
-use dedens_proto::{Name, Question, Rcode, RecordType, Transport};
-use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, RrsetCache};
+use dedens_proto::{Message, Name, Question, Rcode, RecordType, Transport};
+use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, RrsetCache};
 use dedens_roots::RootHints;
 use dedens_server::{Pipeline, Recurse, Stage};
 use dedens_sim::client::Carrier;
 use dedens_sim::seed::{self, Seed};
+use dedens_sim::stub::Outcome;
 use dedens_sim::topology::{Topology, World};
 use dedens_sim::trace::{Event, What};
+use dedens_sim::upstream::{Answers, Verdict};
 use dedens_testkit::recursion::Resolution;
 use futures_util::future::join_all;
 
@@ -139,6 +145,74 @@ fn rfc1034_5_3_3_dedensd_resolves_the_capture_from_the_root() {
             .map(|(_, count)| count)
             .sum::<usize>();
         assert_eq!(primed, 1, "{events:#?}");
+    });
+}
+
+/// The resolutions of a thread that wait on one query in flight, the one sending it apart (`WAITERS`, D195).
+const WAITERS: usize = 100;
+
+/// The extended error of `message`, if any.
+fn ede(message: &Message<'_>) -> Option<InfoCode> {
+    (message.edns.iter())
+        .flat_map(|edns| &edns.options)
+        .find_map(|option| match option {
+            EdnsOption::Ede(ede) => Some(ede.code),
+            _ => None,
+        })
+}
+
+/// The root server the capture asked silent, one resolution sends its query, `WAITERS` wait on it, and one more is
+/// shed: SERVFAIL Not Ready at once. Each client gets its reply within `Limits::time` (D195).
+#[test]
+fn d195_past_the_waiters_on_a_silent_server_a_resolution_is_shed() {
+    seed::each(SEEDS, |seed| {
+        let capture = capture();
+        let root = capture.exchanges.first().expect("an exchange").server;
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let silent = {
+            let heard = Rc::clone(&heard);
+            Answers::new().faulty(move |question, _| {
+                heard.borrow_mut().push(question.clone());
+                Verdict::Drop
+            })
+        };
+        let mut world = Topology::new()
+            .authoritative_at(root, silent)
+            .resolution(&capture)
+            .resolver(move |_| pipeline(&capture))
+            .dedensd()
+            .tick(TICK)
+            .build(seed);
+        let replies = Rc::new(RefCell::new(Vec::new()));
+        let got = Rc::clone(&replies);
+        world.client(async move |stub| {
+            let asked = (0..WAITERS + 2).map(|_| stub.ask(question(), Carrier::Udp));
+            for outcome in join_all(asked).await {
+                let Outcome::Answered(answer) = outcome? else {
+                    return Err("no reply".into());
+                };
+                got.borrow_mut().push(answer);
+            }
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+        // The client's question, asked of the silent server once; the root's servers primed besides.
+        let sent = (heard.borrow().iter())
+            .filter(|&asked| *asked == question())
+            .count();
+        assert_eq!(sent, 1, "{:#?}", heard.borrow());
+        let replies = replies.borrow();
+        assert_eq!(replies.len(), WAITERS + 2);
+        let shed = (replies.iter())
+            .filter(|answer| ede(&answer.message) == Some(InfoCode::NOT_READY))
+            .count();
+        assert_eq!(shed, 1, "{replies:#?}");
+        // Each message takes up to turmoil's 100 ms each way.
+        let bound = Limits::default().time + 2 * Duration::from_millis(100);
+        assert!(
+            replies.iter().all(|answer| answer.elapsed <= bound),
+            "{replies:#?}"
+        );
     });
 }
 
