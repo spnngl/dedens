@@ -125,6 +125,9 @@ pub(super) struct Chain {
     /// Every name the answer passed through, the one asked and the last included: the owners an answer may
     /// have `RRsets` at (RFC 1034 §3.6.2, RFC 6672 §3.1).
     pub(super) names: HashSet<Name<'static>>,
+    /// Whether it stops at a DNAME that would make a name longer than 255 bytes of the last: the answer is then
+    /// YXDOMAIN (RFC 6672 §2.2).
+    pub(super) overflow: bool,
 }
 
 impl Chain {
@@ -154,6 +157,7 @@ impl Chain {
         let mut end = question.name.clone().into_owned();
         let mut names = HashSet::from([end.clone()]);
         let mut links = 0;
+        let mut overflow = false;
         while links <= section.sets.len() {
             let present = if question.qtype == RecordType::ANY {
                 section.sets.iter().any(|set| set.owner() == &end)
@@ -166,12 +170,15 @@ impl Chain {
                     found: true,
                     links,
                     names,
+                    overflow: false,
                 };
             }
             let next = if let Some(cname) = section.find(&end, RecordType::CNAME) {
                 target(cname)
             } else if let Some(dname) = dname_of(section, &end) {
-                target(dname).and_then(|to| substitute(&end, dname.owner(), &to).ok())
+                let next = target(dname).map(|to| substitute(&end, dname.owner(), &to));
+                overflow = matches!(next, Some(Err(_)));
+                next.and_then(Result::ok)
             } else {
                 None
             };
@@ -185,6 +192,7 @@ impl Chain {
             found: false,
             links,
             names,
+            overflow,
         }
     }
 }

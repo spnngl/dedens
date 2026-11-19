@@ -189,7 +189,10 @@ impl Validation {
                 "NXNAME is no type to ask for",
             ));
         }
-        if !matches!(response.rcode(), Rcode::NOERROR | Rcode::NXDOMAIN) {
+        if !matches!(
+            response.rcode(),
+            Rcode::NOERROR | Rcode::NXDOMAIN | Rcode::YXDOMAIN
+        ) {
             return Ok(Verdict::indeterminate(
                 InfoCode::DNSSEC_INDETERMINATE,
                 format!("the response is {}", response.rcode()),
@@ -255,7 +258,9 @@ impl Validation {
         Ok(Located { apex, settled })
     }
 
-    /// The verdict on an answer: its `RRsets`, those of its authority section, and the denial of what it lacks.
+    /// The verdict on an answer: its `RRsets`, those of its authority section, and the denial of what it lacks;
+    /// each `RRset`'s own is recorded (`Validation::verdict_of`). A YXDOMAIN is the DNAME that makes it (RFC 6672
+    /// §2.2): it needs no denial, and is bogus without that DNAME.
     fn answer_verdict(
         &mut self,
         question: &Question<'static>,
@@ -273,10 +278,19 @@ impl Validation {
                 format!("{} has an answer and the rcode is NXDOMAIN", chain.end),
             ));
         }
+        if rcode == Rcode::YXDOMAIN && !chain.overflow {
+            return Ok(Verdict::bogus(
+                InfoCode::DNSSEC_BOGUS,
+                format!(
+                    "the rcode is YXDOMAIN and no DNAME makes {} too long",
+                    chain.end
+                ),
+            ));
+        }
         // A CNAME chain that stops before the type asked has no denial to make: the caller asks on.
         let partial =
             !chain.found && chain.links > 0 && rcode == Rcode::NOERROR && !authority.has_denial();
-        let needs_denial = !chain.found && !partial;
+        let needs_denial = !chain.found && !partial && rcode != Rcode::YXDOMAIN;
 
         // What is asked of the chain of trust, before anything is checked.
         let mut items = Vec::new();
@@ -315,9 +329,12 @@ impl Validation {
             fallback,
         };
         let mut verdict = Verdict::Secure { ttl: Ttl::MAX };
+        self.sets.clear();
         // Bogus outranks every other verdict, so the first one is the last word and the rest costs nothing.
         for item in &items {
-            verdict = verdict.worse(self.item_verdict(item, &mut evidences));
+            let own = self.item_verdict(item, &mut evidences);
+            self.record(item.set, own.clone());
+            verdict = verdict.worse(own);
             if matches!(verdict, Verdict::Bogus { .. }) {
                 return Ok(verdict);
             }
@@ -330,6 +347,7 @@ impl Validation {
                 continue;
             }
             let checked = self.denial_verdict(zone, None, rcode, &mut evidences);
+            self.record_denials(zone, &evidences);
             verdict = verdict.worse(checked);
             if matches!(verdict, Verdict::Bogus { .. }) {
                 return Ok(verdict);
@@ -343,6 +361,7 @@ impl Validation {
                 rcode,
                 &mut evidences,
             ));
+            self.record_denials(&zone, &evidences);
         }
         Ok(match verdict {
             Verdict::Secure { ttl } if partial => Verdict::Incomplete {
@@ -351,6 +370,37 @@ impl Validation {
             },
             other => other,
         })
+    }
+
+    /// Records `verdict` as the own of `set`, unless it has one.
+    fn record(&mut self, set: &RrSet<'static>, verdict: Verdict) {
+        let known = (self.sets.iter())
+            .any(|(owner, rtype, _)| owner == set.owner() && *rtype == set.rtype());
+        if !known {
+            self.sets.push((set.owner().clone(), set.rtype(), verdict));
+        }
+    }
+
+    /// Records the own verdict of each NSEC, NSEC3 and SOA `RRset` of the authority section that is a proof of
+    /// `zone`: the zone's when its keys are not secure, else that of the set's signatures once checked.
+    fn record_denials(&mut self, zone: &Located, evidences: &Evidences) {
+        let parsed = Arc::clone(&self.parsed);
+        let authority = &parsed.authority;
+        let keys = secure_keys(zone);
+        let proofs = (authority.sets.iter().enumerate()).filter(|(_, set)| {
+            is_denial(set.rtype()) && evidences.owns(&zone.apex, set, authority)
+        });
+        for (index, set) in proofs {
+            let own = match &keys {
+                Err(unusable) => unusable.clone().into(),
+                Ok(_) => match self.checked.get(&(index, zone.apex.clone())) {
+                    Some(Ok(ttl)) => Verdict::Secure { ttl: *ttl },
+                    Some(Err(unusable)) => unusable.clone().into(),
+                    None => continue,
+                },
+            };
+            self.record(set, own);
+        }
     }
 
     /// The verdict on one `RRset` (RFC 4035 §5.3), a wildcard expansion included (§5.3.4).
