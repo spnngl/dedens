@@ -948,6 +948,59 @@ fn rfc4035_2_2_an_rrsig_answer_is_answered_not_cached() {
     ));
 }
 
+/// dns.netmeister.org's answer through its DNAME, as to www.dname.dns.netmeister.org RRSIG: the signatures at the
+/// chain's end are the answer, the chain is for the cache at its ranks. A signed CNAME has an RRSIG at its own name,
+/// which a server answers with, so only a DNAME's synthesised CNAME, unsigned, leads an RRSIG question on. No
+/// capture holds one: netmeister.org's servers (Gandi) refuse RRSIG questions, so the resolution cannot reach
+/// dns.netmeister.org's; its server answered one so on 2026-11-19 (`dig +norec +dnssec`, with an NSEC's RRSIG too).
+#[test]
+fn rfc4035_2_2_an_rrsig_answer_through_a_dname_is_answered_at_the_chain_end() {
+    let (bytes, _, zone) = captured(
+        "dname",
+        "dns.netmeister.org.",
+        "www.dname.dns.netmeister.org.",
+        RecordType::A,
+    );
+    let mut response = decode(&bytes);
+    let question = Question::new(
+        "www.dname.dns.netmeister.org.".parse().expect("a name"),
+        RecordType::RRSIG,
+    );
+    let end: Name<'static> = "www.dns.netmeister.org.".parse().expect("a name");
+    // Changed: the question made RRSIG; the CNAME at www.dns.netmeister.org removed, its RRSIG kept: the server
+    // answers an RRSIG question there with the RRSIGs, without following the CNAME.
+    response.questions = vec![question.clone()];
+    response
+        .answer
+        .retain(|r| !(r.rtype() == RecordType::CNAME && r.name == end));
+    let scrubbed = scrub(&response, &question, &zone);
+    let Outcome::Signatures { chain, records } = &scrubbed.outcome else {
+        panic!("{}", describe(&scrubbed));
+    };
+    assert!(scrubbed.dropped.is_empty(), "{}", describe(&scrubbed));
+    assert_eq!(
+        names(chain),
+        [
+            "dname.dns.netmeister.org. DNAME",
+            "www.dname.dns.netmeister.org. CNAME",
+            "dname.dns.netmeister.org. RRSIG",
+        ]
+    );
+    assert_eq!(names(records), ["www.dns.netmeister.org. RRSIG"]);
+    let ranked: Vec<_> = scrubbed
+        .ranked()
+        .into_iter()
+        .map(|(rank, set)| (rank, set.rtype(), set.rrsigs().len()))
+        .collect();
+    assert_eq!(
+        ranked,
+        [
+            (Rank::AnswerAuthoritative, RecordType::DNAME, 1),
+            (Rank::AnswerAuthoritative, RecordType::CNAME, 0),
+        ]
+    );
+}
+
 /// An AA answer is an answer, not a referral, though its authority section names a zone between the one asked and
 /// the name: gandi.net's answer, as if from a server of net., keeps its address and drops gandi.net's NS.
 #[test]

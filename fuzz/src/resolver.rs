@@ -108,7 +108,8 @@ fn assert_order_free(records: &[Record<'_>], rrsets: &[Rrset]) {
 /// below the zone and above the name; each record dropped is one of the response's, once; and the records kept and
 /// those dropped are the response's, each in one of the two, but for the CNAMEs synthesised from a DNAME kept;
 /// each record kept for the cache is in an `RRset` of its rank, an RRSIG with the `RRset` it covers; the others are
-/// the signatures answering an RRSIG question. A lame or unusable response keeps and drops nothing.
+/// the signatures answering an RRSIG question, each an RRSIG owned by the chain's end. A lame or unusable response
+/// keeps and drops nothing.
 ///
 /// # Panics
 ///
@@ -127,10 +128,7 @@ pub fn scrub_response(data: &[u8]) {
         return;
     };
     let scrubbed = scrub(response, question, &zone);
-    let signatures = match &scrubbed.outcome {
-        Outcome::Signatures { records, .. } => records.as_slice(),
-        _ => &[],
-    };
+    let signatures = signatures(&question.name, &scrubbed.outcome);
     let kept: Vec<&Record<'_>> = scrubbed
         .records()
         .into_iter()
@@ -177,6 +175,30 @@ pub fn scrub_response(data: &[u8]) {
         );
     }
     partitioned(response, &scrubbed, &kept);
+}
+
+/// The signatures `outcome` answers an RRSIG question with: each an RRSIG owned by the end of its chain from `name`.
+fn signatures<'a, 'm>(name: &Name<'m>, outcome: &'a Outcome<'m>) -> &'a [Record<'m>] {
+    let Outcome::Signatures { chain, records } = outcome else {
+        return &[];
+    };
+    let end = chain
+        .iter()
+        .rev()
+        .find_map(|r| match r.data() {
+            RData::Cname(target) => Some(target),
+            _ => None,
+        })
+        .unwrap_or_else(|| name.clone());
+    for record in records {
+        assert!(
+            record.rtype() == RecordType::RRSIG && record.name == end,
+            "{} {} answers an RRSIG question at {end}",
+            record.name,
+            record.rtype()
+        );
+    }
+    records
 }
 
 /// Whether each record of `response` is either one of `kept` or dropped by `scrubbed`, once, but for the CNAMEs
