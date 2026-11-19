@@ -244,7 +244,8 @@ impl StageFile {
             } => {
                 file.is_some() || !urls.is_empty() || allow.file.is_some() || !allow.urls.is_empty()
             }
-            Self::Tlds {} | Self::Recurse(_) => false,
+            Self::Recurse(file) => file.names_files(),
+            Self::Tlds {} => false,
         }
     }
 }
@@ -415,8 +416,8 @@ pub(super) fn blocklist(
     ))))
 }
 
-/// Replaces the cache stages of `built` that are those of `previous` with empty ones when the forward stages
-/// validate differently, or the recurse stages serve other zones locally (D195).
+/// Replaces the cache stages of `built` that are those of `previous` with empty ones when the forward or recurse
+/// stages validate differently (D77, D197), or the recurse stages serve other zones locally (D195).
 pub(super) fn flush(built: &mut [Stage], previous: &Pipeline) -> anyhow::Result<()> {
     if filled(previous.stages()) == filled(built) {
         return Ok(());
@@ -442,7 +443,10 @@ fn filled(stages: &[Stage]) -> Vec<Filled<'_>> {
         .iter()
         .filter_map(|stage| match stage {
             Stage::Forward(forward) => Some(Filled::Validating(forward.validation_tag())),
-            Stage::Recurse(recurse) => Some(Filled::Serving(recurse.local_zones().collect())),
+            Stage::Recurse(recurse) => Some(Filled::Recursing(
+                recurse.validation_tag(),
+                recurse.local_zones().collect(),
+            )),
             _ => None,
         })
         .collect()
@@ -453,8 +457,8 @@ fn filled(stages: &[Stage]) -> Vec<Filled<'_>> {
 enum Filled<'a> {
     /// A forward stage, validating so.
     Validating(Option<&'a str>),
-    /// A recurse stage, serving these zones locally.
-    Serving(Vec<&'a Name<'static>>),
+    /// A recurse stage, validating so, serving these zones locally.
+    Recursing(Option<&'a str>, Vec<&'a Name<'static>>),
 }
 
 /// The questions a cache stage keeps answered, from `prewarm` (D96): each distinct name, in order, once for each of

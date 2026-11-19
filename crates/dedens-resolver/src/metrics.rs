@@ -77,6 +77,7 @@ pub(crate) fn limit(limit: Limit) {
         Limit::Depth => "depth",
         Limit::Servers => "servers",
         Limit::Targets => "targets",
+        Limit::Validation => "validation",
         Limit::Time => "time",
     };
     metrics::counter!(LIMITS, "limit" => field).increment(1);

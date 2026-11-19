@@ -16,6 +16,8 @@ metrics = ["dep:metrics"]
 [dependencies]
 # D193: the sharded byte-budgeted store and the TTL rules of the response cache.
 dedens-cache.workspace = true
+# D197: the validator, which judges the answer, its questions resolved by the resolution.
+dedens-dnssec.workspace = true
 dedens-proto.workspace = true
 # D191: the root's and the TLDs' servers, where a resolution starts when the cache knows no delegation.
 dedens-roots.workspace = true

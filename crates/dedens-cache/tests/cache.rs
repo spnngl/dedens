@@ -268,7 +268,13 @@ fn d195_a_bounded_response_is_not_raised_to_the_minimum() {
     let q = query_of("a");
     let bounded = |wire: &[u8]| {
         let decoded = Message::decode(wire).expect("a response that decodes");
-        cache.insert_bounded(&Query::read(&q).expect("a query"), &decoded, T0, 0)
+        cache.insert_bounded(
+            &Query::read(&q).expect("a query"),
+            &decoded,
+            T0,
+            Checked::Unchecked,
+            0,
+        )
     };
     // A TTL of 0 is used once, never kept (RFC 1035 §3.2.1), bounded or not.
     assert_eq!(

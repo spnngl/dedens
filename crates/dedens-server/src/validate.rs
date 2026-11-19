@@ -267,7 +267,7 @@ impl Validating {
     }
 
     /// Takes `units` of work done for `payer` from its share and from the allowance (D106).
-    fn charge(&self, payer: Payer, units: u32) {
+    pub(crate) fn charge(&self, payer: Payer, units: u32) {
         if let Some(share) = payer.share {
             self.shares.charge(share, units);
         }
@@ -275,7 +275,7 @@ impl Validating {
     }
 
     /// Counts and tells whether the share of `payer` or the allowance owes units (D106).
-    fn shed(&self, payer: Payer) -> bool {
+    pub(crate) fn shed(&self, payer: Payer) -> bool {
         if payer.share.is_some_and(|share| self.shares.in_debt(share)) {
             self.metrics.shed_share();
             return true;
@@ -288,7 +288,12 @@ impl Validating {
     }
 
     fn start(&self, question: &Question<'_>, response: &Message<'_>) -> Validation {
-        self.validator.start(question, response, (self.clock)())
+        self.validator.start(question, response, self.unix())
+    }
+
+    /// The time the clock reads, in seconds since the Unix epoch: the validator's.
+    pub(crate) fn unix(&self) -> u64 {
+        (self.clock)()
     }
 }
 
@@ -508,7 +513,7 @@ impl Check {
 
 /// The units a validation's work cost: its signature verifications and NSEC3 hashing (`Cost::nsec3_blocks` counts
 /// SHA-1 blocks, D106).
-fn work(cost: Cost) -> u32 {
+pub(crate) fn work(cost: Cost) -> u32 {
     cost.verifications
         .saturating_add(cost.nsec3_blocks.div_ceil(BLOCKS_PER_UNIT))
 }

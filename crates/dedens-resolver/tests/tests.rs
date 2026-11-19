@@ -10,3 +10,4 @@ mod minimisation;
 mod rrset_cache;
 mod scrub;
 mod seeded;
+mod validation;

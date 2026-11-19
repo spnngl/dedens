@@ -4,6 +4,10 @@
 //! to an authoritative server and handing back the reply, until it is done; [`Pipeline::resolved`] then writes the
 //! reply.
 //!
+//! A stage [`Recurse::validating`] validates what it resolves for a client without CD (RFC 4035 §5), within the
+//! allowance of D77 and the client network's share of it (D117), as a validating forward stage does: the
+//! validator's questions are resolved by the same resolution (D197).
+//!
 //! [`Pipeline::resolved`]: crate::Pipeline::resolved
 
 mod local;
@@ -13,16 +17,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use dedens_proto::edns::Cookie;
-use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport};
+use dedens_proto::edns::{Cookie, InfoCode};
+use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
 use dedens_resolver::{
-    Caches, Limits, Minimisation, Query, Ranked, Reply, Resolution, Resolved, Unsupported,
+    Caches, Failure, Limits, Minimisation, Query, Reply, Resolution, Resolved, Unsupported,
 };
 use rand_core::CryptoRng;
 use thiserror::Error;
 
 use self::local::LocalZones;
-use crate::budget::{Budgets, Slot};
+use crate::budget::{Budgets, Slot, Spent};
+use crate::validate::{Payer, Source, Validating, work};
 
 /// Resolves the questions that reach it, sharing its caches with every thread: the root's and the TLDs' servers
 /// from the hints, the `RRset` and infrastructure caches (D191, D193, D194), its questions minimised (D198). The zones served locally are answered
@@ -37,6 +42,8 @@ pub struct Recurse {
     share: Option<Arc<Budgets>>,
     /// Whether the root's servers are being primed: one priming at a time, whichever thread starts it.
     priming: Arc<AtomicBool>,
+    /// The validator of what it resolves, if it validates.
+    validation: Option<Validating>,
 }
 
 /// A zone given to [`Recurse::resolving`] that is not served locally.
@@ -56,7 +63,31 @@ impl Recurse {
             local: LocalZones::default(),
             share: None,
             priming: Arc::new(AtomicBool::new(false)),
+            validation: None,
         }
+    }
+
+    /// The same stage, validating with `validation` what it resolves for a client without CD (D197): an answer it
+    /// proves authentic has AD, a bogus one is SERVFAIL with its extended error (RFC 4035 §5.5, RFC 8914). Each
+    /// client query takes a unit of the allowance and of its network's share (D77, D117) and is charged the
+    /// validator's questions and work: one that finds either spent gets SERVFAIL with EDE 14 (Not Ready), not
+    /// parked as a forward stage's is (D186), and one past `Allowance::per_query` is indeterminate.
+    #[must_use]
+    pub fn validating(mut self, validation: Validating) -> Self {
+        self.validation = Some(validation);
+        self
+    }
+
+    /// The validation of [`Recurse::validating`], `None` when the stage does not validate.
+    #[must_use]
+    pub const fn validation(&self) -> Option<&Validating> {
+        self.validation.as_ref()
+    }
+
+    /// The [`Validating::tagged`] name of the validation, `None` when the stage does not validate.
+    #[must_use]
+    pub fn validation_tag(&self) -> Option<&str> {
+        self.validation.as_ref().map(Validating::tag)
     }
 
     /// The same stage within `limits`.
@@ -131,19 +162,37 @@ impl Recurse {
     }
 
     /// The resolution of `question` for a client: `client` at `stage`, storing into the cache stage `cache`, the
-    /// queries paid by the network of `from` unless `exempt`.
+    /// queries paid by the network of `from` unless `exempt`, validated unless the client set CD (`checking`
+    /// false).
     pub(crate) fn resolving_for(
         &self,
         question: Question<'static>,
         client: Asking,
         (from, proven, exempt): (IpAddr, bool, bool),
+        checking: bool,
     ) -> Box<Resolving> {
         let payer = self
             .share
             .as_ref()
             .filter(|_| !exempt)
             .map(|share| (Arc::clone(share), Slot::new(from, proven)));
+        let source = Source {
+            address: from,
+            proven,
+        };
+        let validation = self
+            .validation
+            .as_ref()
+            .filter(|_| checking)
+            .map(|validating| {
+                Box::new(Charging {
+                    validating: validating.clone(),
+                    payer: Payer::new(source, exempt),
+                    charged: 0,
+                })
+            });
         Box::new(Resolving {
+            validation,
             state: State::Ready,
             question,
             caches: Arc::clone(&self.caches),
@@ -180,6 +229,7 @@ impl Recurse {
             minimisation: self.minimisation,
             paid: 0,
             payer: None,
+            validation: None,
             asker: Asker::Priming(Priming(Arc::clone(&self.priming))),
         }))
     }
@@ -198,7 +248,41 @@ pub struct Resolving {
     /// The queries paid for so far.
     paid: usize,
     payer: Option<(Arc<Budgets>, Slot)>,
+    /// The validation of the answer, and who pays for it; `None` when not validated.
+    validation: Option<Box<Charging>>,
     pub(crate) asker: Asker,
+}
+
+/// The allowance a resolution's validation spends (D77, D117).
+#[derive(Debug)]
+struct Charging {
+    validating: Validating,
+    payer: Payer,
+    /// What the allowance was charged so far, in units.
+    charged: u32,
+}
+
+impl Charging {
+    /// Charges what the validation of `resolution` cost since the last time: its questions and its work. Tells how
+    /// it ends when it may ask no more, still validating: past `Allowance::per_query` it is indeterminate, and with
+    /// the allowance or the share in debt it is shed, as a forward stage's validation is (D106).
+    fn charge(&mut self, resolution: &Resolution, validating: bool) -> Option<Ended> {
+        let cost = resolution.validation_cost()?;
+        let spent = u32::try_from(cost.questions)
+            .unwrap_or(u32::MAX)
+            .saturating_add(work(cost));
+        let validation = &self.validating;
+        validation.charge(self.payer, spent.saturating_sub(self.charged));
+        self.charged = spent;
+        if !validating {
+            None
+        } else if spent > validation.allowance().per_query {
+            let failure = Failure::Indeterminate(InfoCode::DNSSEC_INDETERMINATE);
+            Some(Ended::Resolved(Resolved::Failed(failure)))
+        } else {
+            validation.shed(self.payer).then_some(Ended::Shed)
+        }
+    }
 }
 
 /// Where a [`Resolving`] is.
@@ -281,27 +365,29 @@ impl Resolving {
 
     /// What to do at `now`, on the clock of [`Pipeline::query`](crate::Pipeline::query)'s seconds: the query to
     /// send, its server drawn with `rng` (RFC 5452 §4.4), or the end. Each new query is paid for by the client's
-    /// network first (D117); it ends there when the network has nothing left.
+    /// network first (D117); it ends there when the network has nothing left. A validated one takes a unit of
+    /// the validation's allowance first, and is charged its work as it goes (D77).
     pub fn step(&mut self, now: Duration, rng: &mut impl CryptoRng) -> Turn<'_> {
         if let State::Ready = self.state {
-            self.state = match Resolution::start(
-                self.question.clone(),
-                Arc::clone(&self.caches),
-                now,
-                self.limits,
-                self.minimisation,
-            ) {
-                Ok(resolution) => State::Running(Box::new(resolution)),
-                Err(unsupported) => State::Ended(Ended::Unsupported(unsupported)),
-            };
+            self.state = self.start(now);
         }
         let State::Running(resolution) = &mut self.state else {
             return Turn::Done;
         };
         // Stepping again without a reply gives the same, so the query is taken once paid for.
-        let ended = match resolution.step(now, rng) {
-            dedens_resolver::Next::Done(resolved) => Some(Ended::Resolved(resolved.clone())),
-            dedens_resolver::Next::Send(_) => {
+        let done = match resolution.step(now, rng) {
+            dedens_resolver::Next::Done(resolved) => Some(resolved.clone()),
+            dedens_resolver::Next::Send(_) => None,
+        };
+        // A validation that may ask no more ends here, before its query is paid for.
+        let over = self
+            .validation
+            .as_mut()
+            .and_then(|charging| charging.charge(resolution, done.is_none()));
+        let ended = match done {
+            _ if over.is_some() => over,
+            Some(resolved) => Some(Ended::Resolved(resolved)),
+            None => {
                 let sent = resolution.sent();
                 let unpaid = sent > self.paid;
                 self.paid = sent;
@@ -324,6 +410,41 @@ impl Resolving {
             dedens_resolver::Next::Send(query) => Turn::Send(query),
             dedens_resolver::Next::Done(_) => Turn::Done,
         }
+    }
+
+    /// The state the first step leaves: the resolution started, validated if it is to be once the allowance
+    /// admits it, or ended.
+    fn start(&self, now: Duration) -> State {
+        if let Some(charging) = &self.validation
+            && let Err(spent) = charging.validating.admit(charging.payer, secs(now))
+        {
+            // The share's unit taken when the allowance refuses goes back: the query is not parked (D186).
+            if spent == Spent::Global {
+                charging.validating.give_up(charging.payer);
+            }
+            return State::Ended(Ended::Shed);
+        }
+        match Resolution::start(
+            self.question.clone(),
+            Arc::clone(&self.caches),
+            now,
+            self.limits,
+            self.minimisation,
+        ) {
+            Ok(resolution) => State::Running(Box::new(match &self.validation {
+                Some(charging) => {
+                    let validating = &charging.validating;
+                    resolution.validated(validating.validator().clone(), validating.unix())
+                }
+                None => resolution,
+            })),
+            Err(unsupported) => State::Ended(Ended::Unsupported(unsupported)),
+        }
+    }
+
+    /// Whether its answer was validated: the reply is then the verdict's (D197).
+    pub(crate) const fn validated(&self) -> bool {
+        self.validation.is_some()
     }
 
     /// Hands over the reply to the query [`Resolving::step`] gave, at `now`.
@@ -372,52 +493,6 @@ impl Resolving {
             State::Ready | State::Running(_) => None,
         }
     }
-}
-
-/// The response to `question` of `resolved`: its rcode, and its `RRsets` in a message, each with the TTL the
-/// resolution gives, bounded by the cache's lifetime already (D124): bounded again, a time left under the floor
-/// would be raised. RRSIGs go only to a client that asked with DO (RFC 4035 §3.2.1).
-pub(crate) fn message(
-    question: &Question<'static>,
-    resolved: &Resolved,
-    dnssec: bool,
-) -> (Rcode, Message<'static>) {
-    let records = |section: &mut Vec<Record<'static>>, ranked: &Ranked| {
-        let rrset = &ranked.rrset;
-        let signatures = if dnssec { rrset.rrsigs() } else { &[] };
-        section.extend(rrset.rdatas().iter().chain(signatures).map(|rdata| Record {
-            name: rrset.owner().clone(),
-            class: rrset.class(),
-            ttl: ranked.ttl,
-            rdata: rdata.clone(),
-        }));
-    };
-    // A response to the question, as the cache stage stores one (RFC 1035 §4.1.1).
-    let mut message = Message::default();
-    message.header.flags = Flags::QR;
-    message.questions = vec![question.clone()];
-    let (chain, rcode) = match resolved {
-        Resolved::Answer { chain, data } => {
-            for ranked in chain.iter().chain([data]) {
-                records(&mut message.answer, ranked);
-            }
-            return (Rcode::NOERROR, message);
-        }
-        Resolved::NoData { chain, soa } => {
-            records(&mut message.authority, soa);
-            (chain, Rcode::NOERROR)
-        }
-        Resolved::NxDomain { chain, soa } => {
-            records(&mut message.authority, soa);
-            (chain, Rcode::NXDOMAIN)
-        }
-        Resolved::YxDomain { chain } => (chain, Rcode::YXDOMAIN),
-        Resolved::Failed(_) => return (Rcode::SERVFAIL, message),
-    };
-    for ranked in chain {
-        records(&mut message.answer, ranked);
-    }
-    (rcode, message)
 }
 
 /// `now` in whole seconds, the clock of the caches and budgets.

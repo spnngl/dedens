@@ -6,6 +6,9 @@
 //! after truncation, and matching the response to the query (RFC 5452 §9.1, D190). Every response is read through
 //! [`scrub()`](crate::scrub()), whose outcome alone decides what the resolution does next and what the caches learn
 //! (D192). Every bound of [`Limits`] ends it with a [`Failure`], so no answer from the Internet keeps it going.
+//!
+//! [`Resolution::validated`] has the answer validated (RFC 4035 §5, D197): the validator's questions are resolved
+//! the same way, by the same resolution and within its bounds, and its verdict is recorded on the cached `RRsets`.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -14,9 +17,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::Checked;
+use dedens_dnssec::{Cost, Validation, Validator, Verdict};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, MAX_NAME_LEN, Message, Name, Question, Record, RecordType, Ttl};
+use dedens_proto::{
+    Class, Flags, MAX_NAME_LEN, Message, Name, Question, Rcode, Record, RecordType, Ttl,
+};
 use dedens_roots::{RootHints, Server, Tlds};
 use rand_core::CryptoRng;
 use thiserror::Error;
@@ -72,6 +78,11 @@ pub struct Limits {
     /// per client question, and allows 16 lookups per delegation (`MAX_DP_TARGET_COUNT`); here a name whose A is
     /// NXDOMAIN has its AAAA skipped (D191).
     pub targets: usize,
+    /// Queries sent for the validator's questions, beside [`Limits::queries`]: 32, as Unbound gives each of its
+    /// validator's fetches a `max-sent-count` of its own within its global quota of 200 (`MAX_GLOBAL_QUOTA`,
+    /// `iterator/iterator.h`). A chain of trust costs two queries per zone cut at most, a DS and a DNSKEY, fewer
+    /// once the cache holds them (D197).
+    pub validation: usize,
     /// Time from start to answer: 4.5 s, a stub's 5 s timer (glibc's `RES_TIMEOUT`) less the time for the
     /// SERVFAIL to reach it before it asks again.
     pub time: Duration,
@@ -86,6 +97,7 @@ impl Default for Limits {
             depth: 4,
             servers: 13,
             targets: 5,
+            validation: 32,
             time: Duration::from_millis(4500),
         }
     }
@@ -127,6 +139,9 @@ pub enum Limit {
     /// [`Limits::targets`].
     #[error("address lookups per delegation")]
     Targets,
+    /// [`Limits::validation`].
+    #[error("validation queries")]
+    Validation,
     /// [`Limits::time`].
     #[error("time")]
     Time,
@@ -147,17 +162,26 @@ pub enum Failure {
     /// Servers responded, none with an answer, a denial or a referral: lame, refusing, failing.
     #[error("no server answered usably")]
     Unusable,
+    /// The validator found the answer bogus (RFC 4035 §5.5), with this extended error: its `RRsets` are cached
+    /// so, and served to no client but one that sets CD (D197).
+    #[error("bogus (extended error {0})")]
+    Bogus(InfoCode),
+    /// The validator could not judge the answer, with this extended error: one of its questions got no answer,
+    /// or a bound of its own stopped it (RFC 4033 §5). Nothing is cached of the verdict.
+    #[error("validation indeterminate (extended error {0})")]
+    Indeterminate(InfoCode),
 }
 
 impl Failure {
     /// The extended error of the SERVFAIL: No Reachable Authority for a bound or no response, Network Error for
-    /// failed exchanges, Other for responses none of which served.
+    /// failed exchanges, Other for responses none of which served, the validator's for a verdict.
     #[must_use]
     pub const fn info_code(self) -> InfoCode {
         match self {
             Self::Limit(_) | Self::Unreachable => InfoCode::NO_REACHABLE_AUTHORITY,
             Self::Network => InfoCode::NETWORK_ERROR,
             Self::Unusable => InfoCode::OTHER,
+            Self::Bogus(code) | Self::Indeterminate(code) => code,
         }
     }
 }
@@ -186,6 +210,8 @@ pub enum Resolved {
         chain: Vec<Ranked>,
         /// The data at the chain's end.
         data: Ranked,
+        /// The NSEC and NSEC3 `RRsets` proving a wildcard expansion, of the chain or the data (RFC 4035 §5.3.4).
+        denials: Vec<Ranked>,
     },
     /// The name, or the chain's end, has no data of the type (RFC 2308 §2.2).
     NoData {
@@ -193,6 +219,8 @@ pub enum Resolved {
         chain: Vec<Ranked>,
         /// The zone's SOA, without which a denial is not taken (RFC 2308 §5).
         soa: Ranked,
+        /// The NSEC and NSEC3 `RRsets` proving it (RFC 4035 §3.1.3), and those of a wildcard expansion.
+        denials: Vec<Ranked>,
     },
     /// The name, or the chain's end, does not exist (RFC 2308 §2.1).
     NxDomain {
@@ -200,6 +228,8 @@ pub enum Resolved {
         chain: Vec<Ranked>,
         /// The zone's SOA.
         soa: Ranked,
+        /// As in [`Resolved::NoData`].
+        denials: Vec<Ranked>,
     },
     /// A DNAME makes the chain's end longer than 255 bytes (RFC 6672 §2.2).
     YxDomain {
@@ -208,6 +238,118 @@ pub enum Resolved {
     },
     /// No answer.
     Failed(Failure),
+}
+
+impl Resolved {
+    /// The response to `question` this is: its rcode, and its `RRsets` in a message, each with its TTL (bounded by
+    /// the cache's lifetime already, D124: bounded again, a time left under the floor would be raised), the CNAMEs
+    /// and the data in the answer section, the SOA and the denials in the authority section. RRSIGs and denials go
+    /// only when `dnssec`, to a client that set DO (RFC 4035 §3.1.1, §3.1.3) and to the validator; AD is clear.
+    #[must_use]
+    pub fn message(&self, question: &Question<'static>, dnssec: bool) -> Message<'static> {
+        let records = |section: &mut Vec<Record<'static>>, ranked: &Ranked| {
+            let rrset = &ranked.rrset;
+            let signatures = if dnssec { rrset.rrsigs() } else { &[] };
+            section.extend(rrset.rdatas().iter().chain(signatures).map(|rdata| Record {
+                name: rrset.owner().clone(),
+                class: rrset.class(),
+                ttl: ranked.ttl,
+                rdata: rdata.clone(),
+            }));
+        };
+        // A response to the question, as the cache stage stores one (RFC 1035 §4.1.1).
+        let mut message = Message::default();
+        message.header.flags = Flags::QR;
+        message.questions = vec![question.clone()];
+        message.header.rcode = match self {
+            Self::Answer { .. } | Self::NoData { .. } => Rcode::NOERROR,
+            Self::NxDomain { .. } => Rcode::NXDOMAIN,
+            Self::YxDomain { .. } => Rcode::YXDOMAIN,
+            Self::Failed(_) => Rcode::SERVFAIL,
+        };
+        let (chain, one, denials) = self.parts();
+        for ranked in chain {
+            records(&mut message.answer, ranked);
+        }
+        let section = match self {
+            Self::Answer { .. } => &mut message.answer,
+            _ => &mut message.authority,
+        };
+        if let Some(ranked) = one {
+            records(section, ranked);
+        }
+        for ranked in denials.iter().filter(|_| dnssec) {
+            records(&mut message.authority, ranked);
+        }
+        message
+    }
+
+    /// The validator's verdict on the `RRsets` given, all of them: bogus if one is, secure if all are, insecure
+    /// if all are judged, unchecked if one is not or there is none (a failure).
+    #[must_use]
+    pub fn checked(&self) -> Checked {
+        let (chain, one, denials) = self.parts();
+        let mut sets = chain.iter().chain(one).chain(denials).peekable();
+        if sets.peek().is_none() {
+            return Checked::Unchecked;
+        }
+        sets.fold(Checked::Secure, |verdict, ranked| {
+            match (verdict, ranked.checked) {
+                (bogus @ Checked::Bogus(_), _) | (_, bogus @ Checked::Bogus(_)) => bogus,
+                (Checked::Unchecked, _) | (_, Checked::Unchecked) => Checked::Unchecked,
+                (Checked::Insecure, _) | (_, Checked::Insecure) => Checked::Insecure,
+                (Checked::Secure, Checked::Secure) => Checked::Secure,
+            }
+        })
+    }
+
+    /// The `RRsets` given: the chain, the data or the SOA, the denials.
+    fn parts(&self) -> (&[Ranked], Option<&Ranked>, &[Ranked]) {
+        match self {
+            Self::Answer {
+                chain,
+                data: one,
+                denials,
+            }
+            | Self::NoData {
+                chain,
+                soa: one,
+                denials,
+            }
+            | Self::NxDomain {
+                chain,
+                soa: one,
+                denials,
+            } => (chain, Some(one), denials),
+            Self::YxDomain { chain } => (chain, None, &[]),
+            Self::Failed(_) => (&[], None, &[]),
+        }
+    }
+
+    /// Every `RRset` given, mutable.
+    fn rrsets_mut(&mut self) -> impl Iterator<Item = &mut Ranked> {
+        let (chain, rest, denials): (&mut [Ranked], Option<&mut Ranked>, &mut [Ranked]) = match self
+        {
+            Self::Answer {
+                chain,
+                data: one,
+                denials,
+            }
+            | Self::NoData {
+                chain,
+                soa: one,
+                denials,
+            }
+            | Self::NxDomain {
+                chain,
+                soa: one,
+                denials,
+            } => (chain, Some(one), denials),
+            Self::YxDomain { chain } => (chain, None, &mut []),
+            Self::Failed(_) => (&mut [], None, &mut []),
+        };
+        chain.iter_mut().chain(rest).chain(denials)
+    }
 }
 
 /// A query to send: what to ask of which server, as a server of which zone. The transport builds the message.
@@ -277,14 +419,22 @@ pub struct Resolution {
     /// When it started, on the caches' clock: the time an NS `RRset` is stored at (D193).
     started_secs: u32,
     sent: usize,
+    /// Of the queries sent, those for the validator's questions ([`Limits::validation`]).
+    proving: usize,
     restarts: usize,
     referrals: usize,
     /// The first per-branch bound reached, reported if the question fails.
     limit: Option<Limit>,
     tasks: Tasks,
+    /// The validator, and the time in Unix seconds it judges signatures at; `None` leaves the answer unchecked.
+    validator: Option<(Validator, u64)>,
+    /// The validation of the answer, once it came: [`Tasks::client`] is then the validator's question.
+    checking: Option<Checking>,
     /// The addresses each sub-resolution found, by the question it started with, so that one asked twice is
     /// resolved once.
     found: HashMap<Question<'static>, Vec<IpAddr>>,
+    /// What the validation cost, once over.
+    spent: Option<Cost>,
     /// The query awaiting its reply, or the outcome; `None` while working out the next query.
     settled: Option<Settled>,
 }
@@ -297,7 +447,14 @@ enum Settled {
     Done(Resolved),
 }
 
-/// The client's question, and the sub-resolutions it waits on, the last one active.
+/// The answer to the client's question, being validated.
+#[derive(Debug)]
+struct Checking {
+    outcome: Resolved,
+    validation: Box<Validation>,
+}
+
+/// The client's question (or the validator's), and the sub-resolutions it waits on, the last one active.
 #[derive(Debug)]
 struct Tasks {
     client: Task,
@@ -307,6 +464,10 @@ struct Tasks {
 impl Tasks {
     fn active(&mut self) -> &mut Task {
         self.lookups.last_mut().unwrap_or(&mut self.client)
+    }
+
+    fn current(&self) -> &Task {
+        self.lookups.last().unwrap_or(&self.client)
     }
 
     /// The delegation the active task asks.
@@ -320,7 +481,10 @@ impl Tasks {
     /// The active sub-resolution, taken off, when `zone` is one its ancestors are stuck on: one waits for it, for
     /// an address of a server of `zone`, so that following `zone` would loop (D191).
     fn looping(&mut self, zone: &Name<'_>) -> Option<Task> {
-        let (_, ancestors) = self.lookups.split_last()?;
+        let (active, ancestors) = self.lookups.split_last()?;
+        if active.purpose != Purpose::Address {
+            return None;
+        }
         let stuck = [&self.client]
             .into_iter()
             .chain(ancestors)
@@ -329,25 +493,33 @@ impl Tasks {
     }
 }
 
-/// A question being resolved: the client's, or a server's address.
+/// A question being resolved: the client's, the validator's, a server's address, or a zone cut.
 #[derive(Debug)]
 struct Task {
     /// The question it started with.
     question: Question<'static>,
     /// The question asked now: at the end of the CNAMEs followed.
     asked: Question<'static>,
+    purpose: Purpose,
     /// The CNAMEs followed so far.
     chain: Vec<Ranked>,
+    /// The denials received so far: of a wildcard the chain was expanded from.
+    denials: Vec<Ranked>,
+    /// The search of a DS question's zone cut, once a DS came from below it.
+    cut: Option<Cut>,
     at: At,
     minimise: Minimise,
 }
 
 impl Task {
-    fn new(question: Question<'static>, minimisation: Minimisation) -> Self {
+    fn new(question: Question<'static>, purpose: Purpose, minimisation: Minimisation) -> Self {
         Self {
             asked: question.clone(),
             question,
+            purpose,
             chain: Vec::new(),
+            denials: Vec::new(),
+            cut: None,
             at: At::Start,
             minimise: Minimise::new(minimisation),
         }
@@ -458,6 +630,36 @@ fn ancestor(name: &Name<'_>, labels: usize) -> Name<'static> {
     (wire.get(at..))
         .and_then(|suffix| Name::from_uncompressed(suffix).ok())
         .map_or_else(Name::root, Name::into_owned)
+}
+
+/// What a task's outcome is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// The resolution's: the client's question, or the validator's.
+    Answer,
+    /// A server's address, for the task below it.
+    Address,
+    /// The NS `RRset` of a name, for the DS question below it: whether the name is a zone cut, and its servers.
+    Cut,
+}
+
+/// A DS question answered NODATA from the child's side of its cut, by a server of a zone above the parent that
+/// serves the child too: a server of the parent is to be found (RFC 4035 §3.1.4.1), as Unbound's `iter_ds_toolow`
+/// and `processDSNSFind` (`iterator/iterator.c`) do. Each name from the DS's parent up is looked up for its NS
+/// `RRset`, until one is a zone cut, whose servers are asked the DS, or the zone asked is reached, which the
+/// response is taken from (D197).
+#[derive(Debug)]
+enum Cut {
+    /// The NS `RRset` of `point` is looked up.
+    Seeking {
+        point: Name<'static>,
+        /// The zone whose server gave `held`.
+        zone: Name<'static>,
+        /// The response from below the cut, taken if no cut is found.
+        held: Resolved,
+    },
+    /// The search is over: a later NODATA is the answer.
+    Over,
 }
 
 #[derive(Debug)]
@@ -587,19 +789,39 @@ impl Resolution {
             started: now,
             started_secs: secs(now),
             sent: 0,
+            proving: 0,
             restarts: 0,
             referrals: 0,
             limit: None,
             tasks: Tasks {
-                client: Task::new(question, minimisation),
+                client: Task::new(question, Purpose::Answer, minimisation),
                 lookups: Vec::new(),
             },
+            validator: None,
+            checking: None,
+            spent: None,
             found: HashMap::new(),
             settled: None,
         })
     }
 
-    /// Queries sent so far, which the client's budget pays for (D117).
+    /// Has the answer validated by `validator` at `unix`, the time in seconds since the Unix epoch that signatures
+    /// are judged at (RFC 4035 §5, D197). Its questions, each DS of the parent's servers (RFC 4035 §3.1.4.1) and
+    /// each DNSKEY of the zone's, are resolved as the client's, within [`Limits`], the queries of
+    /// [`Limits::validation`]; their responses are what the resolution gives, built by [`Resolved::message`] from
+    /// the `RRsets` it trusts, so that nothing a server adds to a response (glue, additional data) reaches it.
+    ///
+    /// The verdict is recorded on every `RRset` of the answer in the cache (RFC 4035 §4.7): secure ones live no
+    /// longer than their signatures, a bogus answer ends the resolution [`Failure::Bogus`]. An answer whose
+    /// `RRsets` the cache judged already is not validated again. A YXDOMAIN is not validated: the validator judges
+    /// answers and denials only.
+    #[must_use]
+    pub fn validated(mut self, validator: Validator, unix: u64) -> Self {
+        self.validator = Some((validator, unix));
+        self
+    }
+
+    /// Queries sent so far, the validator's included, which the client's budget pays for (D117).
     #[must_use]
     pub const fn sent(&self) -> usize {
         self.sent
@@ -707,19 +929,44 @@ impl Resolution {
         }
         let referral = matches!(scrubbed.outcome, Outcome::Referral { .. });
         let ranked = self.cache(scrubbed.ranked(), referral, now_secs);
-        let sets = |records: &[Record<'_>]| sets(records, &ranked);
         if self.minimised(&query.question) && self.went_on(&scrubbed.outcome, server) {
             return;
         }
-        match &scrubbed.outcome {
-            Outcome::Answer { chain, records, .. } => {
+        self.follow(query, &scrubbed.outcome, &ranked, now_secs);
+    }
+
+    /// Moves on from `outcome`, the response to `query` scrubbed, whose `RRsets` `ranked` holds as cached.
+    fn follow(&mut self, query: Query, outcome: &Outcome<'_>, ranked: &[Ranked], now_secs: u32) {
+        let server = query.server;
+        let sets = |records: &[Record<'_>]| sets(records, ranked);
+        match outcome {
+            Outcome::Answer {
+                chain,
+                records,
+                denials,
+                ..
+            } => {
                 if let Some(data) = sets(records).pop()
                     && let Some(chain) = self.hops(sets(chain))
                 {
-                    self.finish(Resolved::Answer { chain, data });
+                    let denials = self.denials(sets(denials));
+                    self.finish(
+                        Resolved::Answer {
+                            chain,
+                            data,
+                            denials,
+                        },
+                        now_secs,
+                    );
                 }
             }
-            Outcome::Cname { chain, target, .. } => {
+            Outcome::Cname {
+                chain,
+                target,
+                denials,
+            } => {
+                let denials = self.denials(sets(denials));
+                self.tasks.active().denials = denials;
                 self.restart(sets(chain), target.clone().into_owned());
             }
             // The parent's servers asked a DS refer it to the zone below: the child has none to give, and the
@@ -729,6 +976,20 @@ impl Resolution {
             {
                 debug!(%server, zone = %query.zone, %child, "DS referred to the child, not followed");
             }
+            // The parent's referral to the name a cut is sought at: the cut, whose servers the glue gives.
+            Outcome::Referral { child, ns, .. }
+                if self.tasks.current().purpose == Purpose::Cut
+                    && *child == query.question.name =>
+            {
+                if let Some(data) = sets(ns).pop() {
+                    let answer = Resolved::Answer {
+                        chain: Vec::new(),
+                        data,
+                        denials: Vec::new(),
+                    };
+                    self.finish(answer, now_secs);
+                }
+            }
             Outcome::Referral {
                 child, ns, glue, ..
             } => {
@@ -736,23 +997,33 @@ impl Resolution {
                     self.referral(child.clone().into_owned(), &ns, &sets(glue), now_secs);
                 }
             }
-            Outcome::NoData { soa, .. } => {
-                if let Some(soa) = sets(slice::from_ref(soa)).pop()
-                    && let Some(chain) = self.hops(Vec::new())
-                {
-                    self.finish(Resolved::NoData { chain, soa });
+            Outcome::NoData { soa, denials } => {
+                if let Some(soa) = sets(slice::from_ref(soa)).pop() {
+                    self.no_data(query, soa, sets(denials), now_secs);
                 }
             }
-            Outcome::NxDomain { chain, soa, .. } => {
+            Outcome::NxDomain {
+                chain,
+                soa,
+                denials,
+            } => {
                 if let Some(soa) = sets(slice::from_ref(soa)).pop()
                     && let Some(chain) = self.hops(sets(chain))
                 {
-                    self.finish(Resolved::NxDomain { chain, soa });
+                    let denials = self.denials(sets(denials));
+                    self.finish(
+                        Resolved::NxDomain {
+                            chain,
+                            soa,
+                            denials,
+                        },
+                        now_secs,
+                    );
                 }
             }
             Outcome::YxDomain { chain } => {
                 if let Some(chain) = self.hops(sets(chain)) {
-                    self.finish(Resolved::YxDomain { chain });
+                    self.finish(Resolved::YxDomain { chain }, now_secs);
                 }
             }
             outcome @ (Outcome::Signatures { .. }
@@ -805,7 +1076,8 @@ impl Resolution {
             Ask::Send(query) => self.send(query),
             Ask::Lookup(question) => {
                 debug!(name = %question.name, rtype = %question.qtype, depth = depth + 1, "address lookup");
-                (self.tasks.lookups).push(Task::new(question, self.minimisation));
+                let task = Task::new(question, Purpose::Address, self.minimisation);
+                self.tasks.lookups.push(task);
             }
             Ask::Fail(failure) => {
                 if let Failure::Limit(limit) = failure {
@@ -813,7 +1085,7 @@ impl Resolution {
                     crate::metrics::limit(limit);
                     self.limit.get_or_insert(limit);
                 }
-                self.finish(Resolved::Failed(failure));
+                self.finish(Resolved::Failed(failure), now_secs);
             }
         }
     }
@@ -829,7 +1101,13 @@ impl Resolution {
         if let Some(data) = rrsets.get(name, qtype, Class::IN, now).filter(answers) {
             debug!(%name, rtype = %qtype, "answered from the cache");
             let chain = std::mem::take(&mut task.chain);
-            return self.finish(Resolved::Answer { chain, data });
+            let denials = std::mem::take(&mut task.denials);
+            let answer = Resolved::Answer {
+                chain,
+                data,
+                denials,
+            };
+            return self.finish(answer, now);
         }
         if qtype != RecordType::CNAME
             && let Some(cname) = rrsets
@@ -988,6 +1266,21 @@ impl Resolution {
             return self.abandon(&task);
         }
         debug!(%zone, "referral");
+        let delegation = self.delegation(zone, ns, glue, now);
+        let task = self.tasks.active();
+        task.at = At::Asking(delegation);
+        task.descend();
+    }
+
+    /// The delegation to `zone` of the first [`Limits::servers`] servers of `ns`, at the addresses `glue` gives
+    /// them, else those cached.
+    fn delegation(
+        &self,
+        zone: Name<'static>,
+        ns: &Ranked,
+        glue: &[Ranked],
+        now: u32,
+    ) -> Delegation {
         let mut known = Vec::new();
         let mut missing = Vec::new();
         for name in servers(&ns.rrset, self.limits.servers) {
@@ -1001,9 +1294,7 @@ impl Resolution {
             }
             known.extend(at);
         }
-        let task = self.tasks.active();
-        task.at = At::Asking(Delegation::new(zone, Source::Parent, known, missing));
-        task.descend();
+        Delegation::new(zone, Source::Parent, known, missing)
     }
 
     /// Records what the server asked did, for the failure of its delegation.
@@ -1020,9 +1311,14 @@ impl Resolution {
         self.settled = Some(Settled::Done(Resolved::Failed(Failure::Limit(limit))));
     }
 
-    /// Sends `query`, within [`Limits::queries`].
+    /// Sends `query`, within [`Limits::queries`], or [`Limits::validation`] for the validator's question.
     fn send(&mut self, query: Query) {
-        if self.sent >= self.limits.queries {
+        if self.checking.is_some() {
+            if self.proving >= self.limits.validation {
+                return self.end(Limit::Validation);
+            }
+            self.proving += 1;
+        } else if self.sent >= self.limits.queries {
             return self.end(Limit::Queries);
         }
         debug!(server = %query.server, zone = %query.zone, name = %query.question.name, rtype = %query.question.qtype, "query");
@@ -1044,18 +1340,116 @@ impl Resolution {
         }
     }
 
-    /// Ends the active task with `outcome`: the resolution's when it is the client's question, else addresses
-    /// for the task waiting on it.
-    fn finish(&mut self, outcome: Resolved) {
-        let Some(task) = self.tasks.lookups.pop() else {
-            let outcome = match (outcome, self.limit) {
-                (Resolved::Failed(_), Some(limit)) => Resolved::Failed(Failure::Limit(limit)),
-                (outcome, _) => outcome,
+    /// Moves on from a NODATA of `soa` and `denials` to `query`: the answer, unless a DS question's from below its
+    /// cut.
+    fn no_data(&mut self, query: Query, soa: Ranked, denials: Vec<Ranked>, now: u32) {
+        if self.below_cut(&query, &soa) {
+            let held = Resolved::NoData {
+                chain: Vec::new(),
+                soa,
+                denials,
             };
-            debug!(?outcome, "resolution done");
-            self.settled = Some(Settled::Done(outcome));
+            return self.seek_cut(held, query.zone, now);
+        }
+        if let Some(chain) = self.hops(Vec::new()) {
+            let denials = self.denials(denials);
+            self.finish(
+                Resolved::NoData {
+                    chain,
+                    soa,
+                    denials,
+                },
+                now,
+            );
+        }
+    }
+
+    /// The active task's denials, taken, followed by `denials`.
+    fn denials(&mut self, mut denials: Vec<Ranked>) -> Vec<Ranked> {
+        let mut held = std::mem::take(&mut self.tasks.active().denials);
+        held.append(&mut denials);
+        held
+    }
+
+    /// Whether a NODATA of `soa` to `query` is a DS question's from below its cut: the SOA is of the name asked or
+    /// below, from a zone the parent of which the zone asked is not, so that a server of the parent may still be
+    /// found below it (Unbound's `iter_ds_toolow` and `iter_dp_cangodown`). Once per question.
+    fn below_cut(&self, query: &Query, soa: &Ranked) -> bool {
+        let task = self.tasks.current();
+        let name = &query.question.name;
+        query.question.qtype == RecordType::DS
+            && task.purpose == Purpose::Answer
+            && task.cut.is_none()
+            && task.chain.is_empty()
+            && soa.rrset.owner().is_within(name)
+            && name.label_count() > query.zone.label_count() + 1
+    }
+
+    /// Starts the search of the active DS question's cut, from its parent up to `zone`, the zone whose server gave
+    /// `held`.
+    fn seek_cut(&mut self, held: Resolved, zone: Name<'static>, now: u32) {
+        let name = &self.tasks.current().asked.name;
+        debug!(%name, %zone, "DS from below its cut");
+        match parent(name) {
+            Some(point) => self.seek_cut_at(point, zone, held, now),
+            None => self.finish(held, now),
+        }
+    }
+
+    /// Looks up the NS `RRset` of `point` for the active DS question, or takes `held` once `point` is `zone`.
+    fn seek_cut_at(&mut self, point: Name<'static>, zone: Name<'static>, held: Resolved, now: u32) {
+        if point.label_count() <= zone.label_count() {
+            debug!(%zone, "no cut below the zone asked");
+            self.tasks.active().cut = Some(Cut::Over);
+            return self.finish(held, now);
+        }
+        if self.tasks.lookups.len() >= self.limits.depth {
+            crate::metrics::limit(Limit::Depth);
+            self.limit.get_or_insert(Limit::Depth);
+            self.tasks.active().cut = Some(Cut::Over);
+            return self.finish(Resolved::Failed(Failure::Limit(Limit::Depth)), now);
+        }
+        debug!(%point, "zone cut lookup");
+        let question = Question::new(point.clone(), RecordType::NS);
+        self.tasks.active().cut = Some(Cut::Seeking { point, zone, held });
+        self.tasks
+            .lookups
+            .push(Task::new(question, Purpose::Cut, self.minimisation));
+    }
+
+    /// Ends the search of a cut with `outcome`, the NS lookup's: its servers asked the DS question if `outcome`
+    /// is the NS `RRset` sought, else the name above looked up.
+    fn cut(&mut self, outcome: &Resolved, now: u32) {
+        let Some(Cut::Seeking { point, zone, held }) = self.tasks.active().cut.take() else {
             return;
         };
+        match outcome {
+            Resolved::Answer { chain, data, .. }
+                if chain.is_empty() && *data.rrset.owner() == point =>
+            {
+                debug!(%point, "zone cut found");
+                let delegation = self.delegation(point, data, &[], now);
+                let task = self.tasks.active();
+                task.cut = Some(Cut::Over);
+                task.at = At::Asking(delegation);
+                task.descend();
+            }
+            _ => match parent(&point) {
+                Some(up) => self.seek_cut_at(up, zone, held, now),
+                None => self.finish(held, now),
+            },
+        }
+    }
+
+    /// Ends the active task with `outcome`: the client's question, or the validator's, else addresses or a cut
+    /// for the task waiting on it.
+    fn finish(&mut self, outcome: Resolved, now: u32) {
+        let Some(task) = self.tasks.lookups.pop() else {
+            return self.answered(outcome, now);
+        };
+        if task.purpose == Purpose::Cut {
+            return self.cut(&outcome, now);
+        }
         let found: Vec<IpAddr> = match &outcome {
             Resolved::Answer { data, .. } => addresses(&data.rrset).collect(),
             // A name that does not exist has no AAAA either.
@@ -1066,6 +1460,119 @@ impl Resolution {
             delegation.add(found.iter().copied());
         }
         self.found.insert(task.question, found);
+    }
+
+    /// Ends [`Tasks::client`] with `outcome`: the resolution, or its validation when there is a validator; the
+    /// validation goes on when it is the validator's question.
+    fn answered(&mut self, outcome: Resolved, now: u32) {
+        if let Some(checking) = &mut self.checking {
+            let response = (!matches!(outcome, Resolved::Failed(_)))
+                .then(|| outcome.message(&self.tasks.client.question, true));
+            checking.validation.answer(response.as_ref());
+            return self.check(now);
+        }
+        let mut outcome = match (outcome, self.limit) {
+            (Resolved::Failed(_), Some(limit)) => Resolved::Failed(Failure::Limit(limit)),
+            (outcome, _) => outcome,
+        };
+        let judged = matches!(
+            outcome,
+            Resolved::Answer { .. } | Resolved::NoData { .. } | Resolved::NxDomain { .. }
+        );
+        if let Some((validator, unix)) = &self.validator
+            && judged
+        {
+            match outcome.checked() {
+                Checked::Unchecked => {
+                    let question = self.tasks.client.question.clone();
+                    let response = outcome.message(&question, true);
+                    let validation = Box::new(validator.start(&question, &response, *unix));
+                    self.checking = Some(Checking {
+                        outcome,
+                        validation,
+                    });
+                    return self.check(now);
+                }
+                Checked::Bogus(code) => outcome = Resolved::Failed(Failure::Bogus(code)),
+                Checked::Secure | Checked::Insecure => {}
+            }
+        }
+        debug!(?outcome, "resolution done");
+        self.settled = Some(Settled::Done(outcome));
+    }
+
+    /// The validation's next move: its question becomes [`Tasks::client`], or its verdict ends the resolution.
+    fn check(&mut self, now: u32) {
+        let Some(checking) = &mut self.checking else {
+            return;
+        };
+        match checking.validation.step() {
+            dedens_dnssec::Next::Ask(question) => {
+                debug!(name = %question.name, rtype = %question.qtype, "validator question");
+                self.tasks.client = Task::new(question, Purpose::Answer, self.minimisation);
+            }
+            dedens_dnssec::Next::Done(verdict) => {
+                let Some(Checking {
+                    outcome,
+                    validation,
+                }) = self.checking.take()
+                else {
+                    return;
+                };
+                self.spent = Some(validation.cost());
+                let outcome = self.judged(outcome, verdict, now);
+                debug!(?outcome, "resolution done");
+                self.settled = Some(Settled::Done(outcome));
+            }
+        }
+    }
+
+    /// `outcome` as `verdict` makes it, the verdict recorded on each of its `RRsets` in the cache: a secure one
+    /// lives no longer than the verdict's TTL, the signatures' (RFC 4035 §5.3.3), an insecure one than D93's cap, a
+    /// bogus one than `Config::bogus_ttl` (RFC 4035 §4.7).
+    fn judged(&self, mut outcome: Resolved, verdict: Verdict, now: u32) -> Resolved {
+        debug!(?verdict, "validated");
+        let (checked, cap) = match verdict {
+            Verdict::Secure { ttl } => (Checked::Secure, Some(ttl)),
+            Verdict::Insecure { .. } => (Checked::Insecure, None),
+            Verdict::Bogus { ede } => (Checked::Bogus(ede.code), None),
+            Verdict::Indeterminate { ede } => {
+                return Resolved::Failed(Failure::Indeterminate(ede.code));
+            }
+            // Neither comes of a response holding the whole chain, which is no referral.
+            _ => {
+                let code = InfoCode::DNSSEC_INDETERMINATE;
+                return Resolved::Failed(Failure::Indeterminate(code));
+            }
+        };
+        let rrsets = &self.caches.rrsets;
+        for ranked in outcome.rrsets_mut() {
+            let mut rrset = Rrset::clone(&ranked.rrset);
+            if let Some(cap) = cap {
+                rrset.cap_ttl(cap);
+            }
+            let lifetime = rrsets.config().lifetime(rrset.ttl(), checked).unwrap_or(0);
+            let rrset = Arc::new(rrset);
+            if let Err(error) = rrsets.insert(Arc::clone(&rrset), ranked.rank, checked, now) {
+                debug!(owner = %rrset.owner(), rtype = %rrset.rtype(), %error, "verdict not cached");
+            }
+            ranked.ttl = ranked.ttl.min(Ttl::from_wire(lifetime));
+            ranked.checked = checked;
+            ranked.rrset = rrset;
+        }
+        match checked {
+            Checked::Bogus(code) => Resolved::Failed(Failure::Bogus(code)),
+            _ => outcome,
+        }
+    }
+
+    /// What the validation cost so far: `None` before it started, or when nothing was validated.
+    #[must_use]
+    pub fn validation_cost(&self) -> Option<Cost> {
+        self.checking
+            .as_ref()
+            .map(|checking| checking.validation.cost())
+            .or(self.spent)
     }
 }
 
@@ -1289,6 +1796,13 @@ fn target(cname: &Rrset) -> Option<Name<'static>> {
         },
         _ => None,
     }
+}
+
+/// The name without its first label; `None` for the root.
+fn parent(name: &Name<'_>) -> Option<Name<'static>> {
+    (!name.is_root())
+        .then(|| Name::from_labels(name.labels().skip(1)).ok())
+        .flatten()
 }
 
 /// The delegation to `zone` that hints give.
