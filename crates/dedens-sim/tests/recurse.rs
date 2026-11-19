@@ -96,7 +96,7 @@ fn world(seed: Seed) -> World {
 }
 
 /// The queries each authoritative server answered, by server, question and whether over TCP.
-fn served(events: &[Event]) -> BTreeMap<(IpAddr, String, u16, bool), usize> {
+fn served_each(events: &[Event]) -> BTreeMap<(IpAddr, String, u16, bool), usize> {
     let mut served = BTreeMap::new();
     for event in events {
         if let What::Served {
@@ -130,7 +130,7 @@ fn rfc1034_5_3_3_dedensd_resolves_the_capture_from_the_root() {
         });
         let events = world.run().expect("the run passes its checks");
         // RFC 8109 §3: the root's servers asked for once, alongside.
-        let primed = served(&events)
+        let primed = served_each(&events)
             .into_iter()
             .filter(|((_, name, qtype, _), _)| name == "." && *qtype == RecordType::NS.0)
             .map(|(_, count)| count)
@@ -151,7 +151,7 @@ fn rfc5452_5_a_hundred_identical_questions_send_each_query_once() {
             Ok(())
         });
         let events = world.run().expect("the run passes its checks");
-        let served = served(&events);
+        let served = served_each(&events);
         assert!(!served.is_empty());
         assert!(
             served.values().all(|&count| count == 1),

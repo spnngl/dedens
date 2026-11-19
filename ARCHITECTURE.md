@@ -7,7 +7,7 @@
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale; its byte-budgeted `Store` (D193) | none, time passed in |
 | `crates/dedens-resolver` | Recursive resolver: the iteration (D191), a response scrubbed to what the zone asked may say, into ranked `RRsets` (D192); the `RRset` cache (D193), the infra cache of authoritative servers (D194) | none (sans-IO), time and randomness passed in |
-| `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself | none (sans-IO) |
+| `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself, the recurse stage and the zones it serves locally (D195) | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`) | none (sans-IO), time passed in |
 | `crates/dedens-roots` | IANA's root hints and TLD list (D126): bundled, and read from a fresh copy | none (sans-IO) |
@@ -36,7 +36,8 @@
 - Server, a query: `apps/dedensd/src/serve/` (a module per transport, D65, D66, D81, D84; ODoH in
   `apps/dedensd/src/odoh/`, D79, D94; DNSCrypt in `apps/dedensd/src/dnscrypt/` and `serve/dnscrypt.rs`, D99) → `crates/dedens-server/src/access.rs` (D91) → `Query::read` →
   `cookie.rs` and `rrl.rs` (D113) → the stage pipeline (`pipeline/`, D23) of stages `plugin.rs`, `cache.rs` and
-  `forward.rs`; a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to the query by
+  `forward.rs` or `recurse/` (D195; `apps/dedensd/src/serve/recurse.rs` steps the resolution, `dedens-resolver`,
+  over `dedens-net`'s authoritative mode, D190); a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to the query by
   `reply.rs` → send (UDP: the socket's `Outbox`, D123).
 - Server, a response from upstream: `Message::decode` (D28) → `forward::usable` → with `dnssec: validate`,
   `validate.rs` (D77; its cost: `budget.rs`, D117; questions in flight shared: `apps/dedensd/src/flights.rs`, D86)

@@ -59,9 +59,11 @@ pub(crate) fn describe() {
 }
 
 /// Resolutions of a thread waiting on one query in flight besides the one that sent it: past them, a resolution
-/// asks no one and goes on to the next server. As BIND's `max-clients-per-query`, 100 by default
-/// (`lib/ns/query.c`, `ns_query_recurse`), past which BIND drops the client's query; Unbound bounds the queries
-/// a thread holds, `num-queries-per-thread`, and not those waiting on one (`services/mesh.c`, `mesh_new_client`).
+/// asks no one and goes on to the next server. BIND's `max-clients-per-query` default (`bin/include/defaultconfig.h`):
+/// BIND lets 10 clients (`clients-per-query`) wait on one fetch, raised by 5 up to 100 while fetches overflow, and
+/// drops the client's query past it (`lib/dns/resolver.c`, `dns_resolver_createfetch`, `fctx_sendevents`); Unbound
+/// bounds the queries a thread holds, `num-queries-per-thread`, and not those waiting on one (`services/mesh.c`,
+/// `mesh_new_client`).
 /// A resolution waits on one query at a time and holds one of the thread's upstream queries (D47): 100 of 1024.
 pub(super) const WAITERS: usize = 100;
 

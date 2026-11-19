@@ -1,7 +1,8 @@
 # dedens-server
 
 The server's query pipeline (D23, D41, D43), sans-IO: `Pipeline::query` and `Pipeline::receive` return a `Step`
-that `apps/dedensd` carries out with `dedens-net`. Measure a change to the rate limit with
+that `apps/dedensd` carries out with `dedens-net`; `Step::Resolve` hands it a resolution to step, send and feed
+back, `Pipeline::resolved` writing the reply (D195). Measure a change to the rate limit with
 `crates/dedens-bench/benches/rrl.rs`.
 
 ## Invariants
@@ -18,3 +19,5 @@ that `apps/dedensd` carries out with `dedens-net`. Measure a change to the rate 
   (D113).
 - A hit a `Plugin::reviewer` reviewed is marked with the pipeline's id (`Cache::mark`) and decoded once (D118).
 - ANY over UDP and DoC is answered empty with TC (D114).
+- A recurse stage's reply TTLs are bounded by the cache's `lifetime` before it is written (D195): `Resolved` holds
+  the servers' raw TTLs (D191). A pipeline has a forward or a recurse stage, never both (`dedensd`'s config).
