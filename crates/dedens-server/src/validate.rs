@@ -125,7 +125,7 @@ impl Default for Allowance {
     }
 }
 
-/// The validator, the clock and the allowance of a forward stage (D77).
+/// The validator, the clock and the allowance of a forward or recurse stage (D77, D197).
 #[derive(Clone)]
 pub struct Validating {
     validator: Validator,
