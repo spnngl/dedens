@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -692,6 +692,67 @@ fn d191_servers_bound() {
     let (outcome, sent) = unanswered(Limits::default());
     assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Servers)));
     assert_eq!(sent, Limits::default().servers);
+}
+
+/// Resolves `unsigned`'s question with com's referral to google.com naming `glued` servers with an IPv4 glue each,
+/// the first an IPv6 one too, and ns.example.net without glue, whose lookup gives one IPv4 address; every server of
+/// google.com times out.
+fn spent(glued: usize) -> (Resolved, Vec<Sent>) {
+    let capture = recursion::Resolution::read("unsigned");
+    let google = name("google.com.");
+    let unglued = name("ns.example.net.");
+    let caches = caches(false);
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let template = response(&capture, "com.", "google.com.");
+    let question = Question::new(capture.name.clone(), capture.rtype);
+    let addresses: Vec<Ipv4Addr> = (1..=glued)
+        .map(|i| Ipv4Addr::new(192, 0, 2, u8::try_from(i).expect("a byte")))
+        .collect();
+    let mut to_google = referral(&template, &question, &google, &addresses);
+    let ns = to_google.authority[0].clone();
+    let glue = to_google.additional[0].clone();
+    let v6 = RData::Aaaa(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+    (to_google.additional).push(Record::new(glue.name.clone(), glue.class, glue.ttl, &v6));
+    let data = RData::Ns(unglued.clone());
+    (to_google.authority).push(Record::new(ns.name.clone(), ns.class, ns.ttl, &data));
+    let mut found = template.clone();
+    found.header.flags = found.header.flags.with(Flags::AA);
+    found.authority.clear();
+    found.additional.clear();
+    let address = RData::A(Ipv4Addr::new(192, 0, 2, 100));
+    found.answer = vec![Record::new(unglued.clone(), glue.class, glue.ttl, &address)];
+    let server = |query: &Query| {
+        let question = &query.question;
+        if query.zone == google {
+            Answered::Timeout
+        } else if question.name == unglued && question.qtype == RecordType::A {
+            Answered::Response(to(found.clone(), question))
+        } else if is(&query.zone, "com.") {
+            Answered::Response(to(to_google.clone(), question))
+        } else {
+            Answered::Response(captured(&authorities, query))
+        }
+    };
+    let mut resolution = start(&capture, &caches, Limits::default());
+    run(&mut resolution, &server, at(&capture))
+}
+
+#[test]
+fn d191_servers_bound_stops_lookups() {
+    // 13 glued addresses time out: the unglued name is not looked up.
+    let servers = Limits::default().servers;
+    let google = name("google.com.");
+    let (outcome, sent) = spent(servers - 1);
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Servers)));
+    assert_eq!(looked_up(&sent), [], "{sent:?}");
+    assert_eq!(sent.iter().filter(|s| s.0 == google).count(), servers);
+    // 12, then the address looked up: its AAAA is not looked up.
+    let (outcome, sent) = spent(servers - 2);
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Servers)));
+    let lookup = ("ns.example.net.".to_owned(), RecordType::A);
+    assert_eq!(looked_up(&sent), [lookup], "{sent:?}");
+    assert_eq!(sent.iter().filter(|s| s.0 == google).count(), servers);
 }
 
 #[test]
