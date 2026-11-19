@@ -17,7 +17,7 @@ use proptest::prelude::*;
 
 use crate::util::{
     T0, a, insert, key_of, lookup, min_cache, query, query_of, query_plain, query_with, response,
-    small_cache, small_config, ttls,
+    retimed, small_cache, small_config, ttls,
 };
 
 const NEVER: StalePolicy = StalePolicy::Never;
@@ -257,6 +257,36 @@ fn prefetch_counts_from_the_raised_lifetime() {
     assert_eq!(freshness(T0 + 30), Freshness::Fresh { prefetch: false });
     assert_eq!(freshness(T0 + 54), Freshness::Fresh { prefetch: false });
     assert_eq!(freshness(T0 + 55), Freshness::Fresh { prefetch: true });
+}
+
+/// D195: a response whose TTLs are bounded already (a recursion's, each bounded once) is kept as it is, not raised
+/// to `min_ttl`: `a.bin` (29 s) stays 29 s, where [`prefetch_counts_from_the_raised_lifetime`] keeps it 60.
+#[test]
+fn d195_a_bounded_response_is_not_raised_to_the_minimum() {
+    let cache = min_cache(60);
+    let wire = captured("a");
+    let q = query_of("a");
+    let bounded = |wire: &[u8]| {
+        let decoded = Message::decode(wire).expect("a response that decodes");
+        cache.insert_bounded(&Query::read(&q).expect("a query"), &decoded, T0, 0)
+    };
+    // A TTL of 0 is used once, never kept (RFC 1035 §3.2.1), bounded or not.
+    assert_eq!(
+        bounded(&retimed(&wire, 0, |m| &mut m.answer)),
+        Err(NotCached::ZeroTtl)
+    );
+    bounded(&wire).expect("stored");
+    let fresh = |now| {
+        matches!(
+            lookup(&cache, &q, now, NEVER).0,
+            Lookup::Hit(Hit {
+                freshness: Freshness::Fresh { .. },
+                ..
+            })
+        )
+    };
+    assert!(fresh(T0 + 28));
+    assert!(!fresh(T0 + 30));
 }
 
 #[test]

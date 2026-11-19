@@ -608,6 +608,27 @@ fn d117_a_network_out_of_queries_gets_servfail_not_ready() {
     assert_eq!(ede(&reply), Some(InfoCode::NOT_READY));
 }
 
+/// The stage hands its client share, for a reload with the same budget to keep its buckets (D195).
+#[test]
+fn d195_the_stage_hands_its_client_share() {
+    let caches = caches(Config::default());
+    assert!(Recurse::new(Arc::clone(&caches)).share().is_none());
+    let share = Arc::new(
+        Budgets::new(Budget {
+            per_second: 1,
+            burst: 1,
+            table: 1,
+        })
+        .expect("a budget"),
+    );
+    let recurse = Recurse::new(caches).with_share(Arc::clone(&share));
+    assert!(
+        recurse
+            .share()
+            .is_some_and(|held| Arc::ptr_eq(held, &share))
+    );
+}
+
 /// A resolution shed for the waiters on its query (`Resolving::shed`) gives its unit back: nothing was sent.
 #[test]
 fn d195_a_resolution_shed_gets_servfail_not_ready_and_pays_nothing() {
