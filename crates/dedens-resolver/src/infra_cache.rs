@@ -4,12 +4,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use dedens_cache::{ConfigError, Cost, Store};
-use dedens_proto::{MAX_NAME_LEN, Name};
+use dedens_proto::{MAX_NAME_LEN, Name, Rcode};
 use rand_core::CryptoRng;
 
 use crate::metrics::Infra as Metrics;
 
-/// Whether a server speaks EDNS (RFC 6891 §7).
+/// Whether a server speaks EDNS (RFC 6891 §7), as the transport's `dedens_net::Edns` says (D190).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Edns {
     /// Not seen yet: ask with EDNS.
@@ -17,8 +17,14 @@ pub enum Edns {
     Unknown,
     /// It answered an EDNS query with an OPT record.
     Supported,
-    /// It answered an EDNS query with FORMERR or NOTIMP and no OPT record: ask without EDNS.
-    Unsupported,
+    /// It answered a query with EDNS by `rejected`, FORMERR or NOTIMP, and no OPT record, then the query without
+    /// EDNS by `answered`, NOERROR, NXDOMAIN or YXDOMAIN: ask without EDNS.
+    Unsupported {
+        /// The rcode of the response to the query with EDNS.
+        rejected: Rcode,
+        /// The rcode of the response to the query without.
+        answered: Rcode,
+    },
 }
 
 /// What a server showed of itself, which the next query to it goes by: the transport's quirks (recursive step 03).
@@ -28,7 +34,8 @@ pub struct Marks {
     pub edns: Edns,
     /// It answered a question in another case than asked: no `0x20` for it (RFC 5452 §9.1, D184).
     pub no_case: bool,
-    /// UDP did not do (truncated, or a bad cookie twice): ask it over TCP.
+    /// It answered BADCOOKIE twice over UDP, then over TCP (RFC 7873 §5.3): ask it over TCP. A truncated response
+    /// tells only that the answer was large, and sets no mark (D190).
     pub tcp: bool,
 }
 
@@ -38,7 +45,7 @@ impl Marks {
     /// `infra_edns_update`).
     fn merged(self, seen: Self) -> Self {
         let edns = match (self.edns, seen.edns) {
-            (held, Edns::Unknown) | (held @ Edns::Supported, Edns::Unsupported) => held,
+            (held, Edns::Unknown) | (held @ Edns::Supported, Edns::Unsupported { .. }) => held,
             (_, seen) => seen,
         };
         Self {

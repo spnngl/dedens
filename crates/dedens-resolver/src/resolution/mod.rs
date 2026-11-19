@@ -3,28 +3,30 @@
 //!
 //! The caller drives it: [`Resolution::step`] says what to ask of which server, or that it is done;
 //! [`Resolution::receive`] hands it the reply. The transport owns the exchange: the ID, EDNS and DO, `0x20`, TCP
-//! after truncation, and matching the response to the query (RFC 5452 §9.1, D190). Every bound of [`Limits`] ends
-//! it with a [`Failure`], so no answer from the Internet keeps it going.
-
-mod read;
+//! after truncation, and matching the response to the query (RFC 5452 §9.1, D190). Every response is read through
+//! [`scrub()`](crate::scrub()), whose outcome alone decides what the resolution does next and what the caches learn
+//! (D192). Every bound of [`Limits`] ends it with a [`Failure`], so no answer from the Internet keeps it going.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
+use std::slice;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dedens_cache::Checked;
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, MAX_NAME_LEN, Message, Name, Question, Rcode, RecordType};
+use dedens_proto::{Class, MAX_NAME_LEN, Message, Name, Question, Record, RecordType};
 use dedens_roots::{RootHints, Server, Tlds};
 use rand_core::CryptoRng;
-use read::{Read, Unusable};
 use thiserror::Error;
 use tracing::debug;
 
 use crate::infra_cache::{self, InfraCache, Marks};
+use crate::rank::Rank;
 use crate::rrset::{self, Rrset};
-use crate::rrset_cache::{Rank, Ranked, RrsetCache};
+use crate::rrset_cache::{Ranked, RrsetCache};
+use crate::scrub::{Outcome, scrub};
 
 /// What a resolution starts from and adds to: the caches, and the hints for when they know no delegation.
 #[derive(Debug)]
@@ -148,7 +150,8 @@ impl Failure {
 /// not IN, the only one with a root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum Unsupported {
-    /// ANY, AXFR, OPT and the other QTYPEs and meta types.
+    /// ANY, AXFR, OPT and the other QTYPEs and meta types; and RRSIG, no `RRset` of its own but part of the one it
+    /// covers (D176), so neither cached nor an answer of [`Resolved`] (D191).
     #[error("type {0} is not resolved")]
     Type(RecordType),
     /// A class other than IN.
@@ -156,9 +159,9 @@ pub enum Unsupported {
     Class(Class),
 }
 
-/// How a resolution ends. Each `RRset` was cached as it came, at the rank its response gave it.
+/// How a resolution ends. Each `RRset` was cached as it came, at the rank the scrubber gave it (D192).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Outcome {
+pub enum Resolved {
     /// The data, after the CNAMEs leading to it.
     Answer {
         /// The CNAMEs from the name asked, in order.
@@ -211,7 +214,7 @@ pub enum Next<'a> {
     /// Send this query, then [`Resolution::receive`] its reply; asked again before that, it is the same query.
     Send(&'a Query),
     /// It is over.
-    Done(&'a Outcome),
+    Done(&'a Resolved),
 }
 
 /// The reply to the query sent, as the transport ends the exchange.
@@ -223,11 +226,18 @@ pub enum Reply<'a> {
         message: &'a Message<'a>,
         /// The server's quirks seen.
         seen: Marks,
+        /// The transport's round-trip time, from its last query to this response (D190's `Response::rtt`): not
+        /// the time since [`Resolution::step`] gave the query, which counts waits for a socket, the TCP retry
+        /// after truncation and the EDNS fallback.
+        rtt: Duration,
     },
+    /// A response matched to the query that does not decode (RFC 1035 §4.1): the next server is asked and nothing
+    /// is remembered of this one, as Unbound's `process_response` ignores a response it cannot parse.
+    Undecodable,
     /// No response within [`Query::timeout`].
     Timeout,
-    /// The server could not be reached, or would not talk: ICMP unreachable, TCP refused or reset, forgeries
-    /// only. It is backed off as after a timeout.
+    /// The server could not be reached, or would not talk: ICMP unreachable, TCP refused or reset, responses
+    /// dropped for their cookie only (D190's `ServerError`). It is backed off as after a timeout.
     ServerError,
     /// The exchange failed here, before the server had a say: the server is not blamed (D191).
     LocalError,
@@ -258,12 +268,9 @@ pub struct Resolution {
 /// Where a resolution waits.
 #[derive(Debug)]
 enum Settled {
-    /// For the reply to `query`, sent at `sent_at`.
-    Waiting {
-        query: Query,
-        sent_at: Duration,
-    },
-    Done(Outcome),
+    /// For the reply to the query.
+    Waiting(Query),
+    Done(Resolved),
 }
 
 /// The client's question, and the sub-resolutions it waits on, the last one active.
@@ -303,8 +310,8 @@ impl Tasks {
 struct Task {
     /// The question it started with.
     question: Question<'static>,
-    /// The name asked now, the end of the CNAMEs followed.
-    name: Name<'static>,
+    /// The question asked now: at the end of the CNAMEs followed.
+    asked: Question<'static>,
     /// The CNAMEs followed so far.
     chain: Vec<Ranked>,
     at: At,
@@ -313,7 +320,7 @@ struct Task {
 impl Task {
     fn new(question: Question<'static>) -> Self {
         Self {
-            name: question.name.clone(),
+            asked: question.clone(),
             question,
             chain: Vec::new(),
             at: At::Start,
@@ -434,7 +441,7 @@ impl Resolution {
         if question.qclass != Class::IN {
             return Err(Unsupported::Class(question.qclass));
         }
-        if !rrset::data_type(question.qtype) {
+        if !rrset::data_type(question.qtype) || question.qtype == RecordType::RRSIG {
             return Err(Unsupported::Type(question.qtype));
         }
         Ok(Self {
@@ -471,15 +478,15 @@ impl Resolution {
             self.advance(now, rng);
         };
         match self.settled.insert(settled) {
-            Settled::Waiting { query, .. } => Next::Send(query),
+            Settled::Waiting(query) => Next::Send(query),
             Settled::Done(outcome) => Next::Done(outcome),
         }
     }
 
     /// Hands over the reply to the query [`Resolution::step`] gave, at `now`; ignored when none is awaited.
     pub fn receive(&mut self, reply: Reply<'_>, now: Duration) {
-        let (query, sent_at) = match self.settled.take() {
-            Some(Settled::Waiting { query, sent_at }) => (query, sent_at),
+        let query = match self.settled.take() {
+            Some(Settled::Waiting(query)) => query,
             other => {
                 self.settled = other;
                 debug!("reply to no query, ignored");
@@ -490,8 +497,12 @@ impl Resolution {
         let infra = &caches.infra;
         let now_secs = secs(now);
         let server = query.server;
-        let (message, seen) = match reply {
-            Reply::Response { message, seen } => (message, seen),
+        let (message, seen, rtt) = match reply {
+            Reply::Response { message, seen, rtt } => (message, seen, rtt),
+            Reply::Undecodable => {
+                debug!(%server, "undecodable response");
+                return self.heard(Heard::Responses);
+            }
             Reply::Timeout => {
                 debug!(%server, "timeout");
                 infra.timeout(server, query.timeout, now_secs);
@@ -500,54 +511,74 @@ impl Resolution {
             Reply::ServerError => {
                 debug!(%server, "server error");
                 infra.timeout(server, query.timeout, now_secs);
-                self.heard(Heard::Errors);
-                return;
+                return self.heard(Heard::Errors);
             }
             Reply::LocalError => {
                 debug!(%server, "local error");
-                self.heard(Heard::Errors);
-                return;
+                return self.heard(Heard::Errors);
             }
         };
         self.heard(Heard::Responses);
-        let read = read::read(message, &query.question, &query.zone, self.limits.servers);
-        // Only a response that serves the question credits the server (D191).
-        match &read {
-            read if read.usable() => {
-                infra.reply(server, now.saturating_sub(sent_at), seen, now_secs);
-            }
-            Read::Lame => infra.lame(server, &query.zone, now_secs),
-            Read::Unusable(Unusable::Rcode(Rcode::REFUSED | Rcode::SERVFAIL)) => {
-                infra.timeout(server, query.timeout, now_secs);
-            }
-            _ => {}
+        let scrubbed = scrub(message, &query.question, &query.zone);
+        // Only a response that serves the question credits the server; one that does not, REFUSED and SERVFAIL
+        // among them, has the next server asked and leaves this one as it was, as Unbound's `THROWAWAY` (D191).
+        match &scrubbed.outcome {
+            Outcome::Lame => infra.lame(server, &query.zone, now_secs),
+            Outcome::NoSoa(_) | Outcome::Signatures { .. } | Outcome::Unusable(_) => {}
+            _ => infra.reply(server, rtt, seen, now_secs),
         }
-        self.cache(&read, now_secs);
-        match read {
-            Read::Answer { chain, data } => {
-                if let Some(chain) = self.hops(chain) {
-                    self.finish(Outcome::Answer { chain, data });
+        let referral = matches!(scrubbed.outcome, Outcome::Referral { .. });
+        let ranked = self.cache(scrubbed.ranked(), referral, now_secs);
+        let sets = |records: &[Record<'_>]| sets(records, &ranked);
+        match &scrubbed.outcome {
+            Outcome::Answer { chain, records, .. } => {
+                if let Some(data) = sets(records).pop()
+                    && let Some(chain) = self.hops(sets(chain))
+                {
+                    self.finish(Resolved::Answer { chain, data });
                 }
             }
-            Read::Cname { chain, target } => self.restart(chain, target),
-            Read::Referral { child, ns, glue } => self.referral(child, &ns, &glue, now_secs),
-            Read::NoData { soa } => {
-                if let Some(chain) = self.hops(Vec::new()) {
-                    self.finish(Outcome::NoData { chain, soa });
+            Outcome::Cname { chain, target, .. } => {
+                self.restart(sets(chain), target.clone().into_owned());
+            }
+            // The parent's servers asked a DS refer it to the zone below: the child has none to give, and the
+            // proof the referral holds is the validator's (recursive step 10).
+            Outcome::Referral { child, .. }
+                if query.question.qtype == RecordType::DS && *child == query.question.name =>
+            {
+                debug!(%server, zone = %query.zone, %child, "DS referred to the child, not followed");
+            }
+            Outcome::Referral {
+                child, ns, glue, ..
+            } => {
+                if let Some(ns) = sets(ns).pop() {
+                    self.referral(child.clone().into_owned(), &ns, &sets(glue), now_secs);
                 }
             }
-            Read::NxDomain { chain, soa } => {
-                if let Some(chain) = self.hops(chain) {
-                    self.finish(Outcome::NxDomain { chain, soa });
+            Outcome::NoData { soa, .. } => {
+                if let Some(soa) = sets(slice::from_ref(soa)).pop()
+                    && let Some(chain) = self.hops(Vec::new())
+                {
+                    self.finish(Resolved::NoData { chain, soa });
                 }
             }
-            Read::YxDomain { chain } => {
-                if let Some(chain) = self.hops(chain) {
-                    self.finish(Outcome::YxDomain { chain });
+            Outcome::NxDomain { chain, soa, .. } => {
+                if let Some(soa) = sets(slice::from_ref(soa)).pop()
+                    && let Some(chain) = self.hops(sets(chain))
+                {
+                    self.finish(Resolved::NxDomain { chain, soa });
                 }
             }
-            Read::NoSoa | Read::Lame | Read::Unusable(_) => {
-                debug!(%server, zone = %query.zone, ?read, "response not used");
+            Outcome::YxDomain { chain } => {
+                if let Some(chain) = self.hops(sets(chain)) {
+                    self.finish(Resolved::YxDomain { chain });
+                }
+            }
+            outcome @ (Outcome::Signatures { .. }
+            | Outcome::NoSoa(_)
+            | Outcome::Lame
+            | Outcome::Unusable(_)) => {
+                debug!(%server, zone = %query.zone, ?outcome, "response not used");
             }
         }
     }
@@ -563,16 +594,13 @@ impl Resolution {
         }
         let now_secs = secs(now);
         let depth = self.tasks.lookups.len();
-        let Task {
-            question, name, at, ..
-        } = self.tasks.active();
+        let Task { asked, at, .. } = self.tasks.active();
         let At::Asking(delegation) = at else {
             return self.begin(now_secs);
         };
-        let question = Question::new(name.clone(), question.qtype);
         let ask = ask(
             delegation,
-            question,
+            asked,
             &self.caches.infra,
             &self.limits,
             &self.found,
@@ -582,7 +610,7 @@ impl Resolution {
             rng,
         );
         match ask {
-            Ask::Send(query) => self.send(query, now),
+            Ask::Send(query) => self.send(query),
             Ask::Lookup(question) => {
                 debug!(name = %question.name, rtype = %question.qtype, depth = depth + 1, "address lookup");
                 self.tasks.lookups.push(Task::new(question));
@@ -593,59 +621,68 @@ impl Resolution {
                     crate::metrics::limit(limit);
                     self.limit.get_or_insert(limit);
                 }
-                self.finish(Outcome::Failed(failure));
+                self.finish(Resolved::Failed(failure));
             }
         }
     }
 
-    /// The start of the active task: its answer or CNAME in the cache, else the closest delegation known.
+    /// The start of the active task: its answer or CNAME in the cache, else the closest delegation known, above
+    /// the name for a DS, which the parent's servers hold (RFC 4035 §3.1.4.1; Unbound's `processInitRequest`).
     fn begin(&mut self, now: u32) {
         let caches = Arc::clone(&self.caches);
         let rrsets = &caches.rrsets;
         let task = self.tasks.active();
-        let (name, qtype) = (&task.name, task.question.qtype);
+        let Question { name, qtype, .. } = &task.asked;
+        let qtype = *qtype;
         if let Some(data) = rrsets.get(name, qtype, Class::IN, now).filter(answers) {
             debug!(%name, rtype = %qtype, "answered from the cache");
             let chain = std::mem::take(&mut task.chain);
-            return self.finish(Outcome::Answer { chain, data });
+            return self.finish(Resolved::Answer { chain, data });
         }
         if qtype != RecordType::CNAME
             && let Some(cname) = rrsets
                 .get(name, RecordType::CNAME, Class::IN, now)
                 .filter(answers)
-            && let Some(target) = read::target(&cname.rrset)
+            && let Some(target) = target(&cname.rrset)
         {
             return self.restart(vec![cname], target);
         }
-        let delegation = closest(&caches, name, self.limits.servers, now);
+        let parent = qtype == RecordType::DS;
+        let delegation = closest(&caches, name, parent, self.limits.servers, now);
         if let Some(task) = self.tasks.looping(&delegation.zone) {
             return self.abandon(&task);
         }
         self.tasks.active().at = At::Asking(delegation);
     }
 
-    /// Caches the `RRsets` `read` kept at their rank. NS records learned through a delegation the cache gave are
-    /// stored as of the resolution's start, so that they cannot refresh an NS `RRset` that had expired by then
-    /// (Unbound's `store_rrsets`, D193).
-    fn cache(&mut self, read: &Read, now: u32) {
+    /// Caches the `RRsets` the scrubber kept, at the rank it gave each (D192), and returns them. The NS records of
+    /// a `referral` through a delegation the cache gave are stored as of the resolution's start, so that they cannot
+    /// refresh an NS `RRset` that had expired by then (Unbound's `store_rrsets`, D193).
+    fn cache(&mut self, ranked: Vec<(Rank, Rrset)>, referral: bool, now: u32) -> Vec<Ranked> {
         let from_cache = self
             .tasks
             .asking()
             .is_some_and(|delegation| delegation.source == Source::Cache);
-        let referral = matches!(read, Read::Referral { .. });
-        for ranked in read.ranked() {
-            let at = if referral && from_cache && ranked.rrset.rtype() == RecordType::NS {
+        let mut kept = Vec::with_capacity(ranked.len());
+        for (rank, set) in ranked {
+            let at = if referral && from_cache && set.rtype() == RecordType::NS {
                 self.started_secs
             } else {
                 now
             };
-            let _ = self.caches.rrsets.insert(
-                Arc::clone(&ranked.rrset),
-                ranked.rank,
-                ranked.checked,
-                at,
-            );
+            let rrset = Arc::new(set);
+            let _ = self
+                .caches
+                .rrsets
+                .insert(Arc::clone(&rrset), rank, Checked::Unchecked, at);
+            kept.push(Ranked {
+                ttl: rrset.ttl(),
+                rrset,
+                rank,
+                checked: Checked::Unchecked,
+            });
         }
+        kept
     }
 
     /// The active task's chain, taken, followed by `chain`, within [`Limits::restarts`]: `None` when the
@@ -667,13 +704,14 @@ impl Resolution {
             return;
         };
         let task = self.tasks.active();
-        debug!(from = %task.name, to = %target, "CNAME restart");
+        debug!(from = %task.asked.name, to = %target, "CNAME restart");
         task.chain = chain;
-        task.name = target;
+        task.asked.name = target;
         task.at = At::Start;
     }
 
-    /// Follows a referral to `zone`, within [`Limits::referrals`].
+    /// Follows a referral to `zone`, within [`Limits::referrals`], to the first [`Limits::servers`] servers of `ns`
+    /// at the addresses `glue` gives them, else those cached.
     fn referral(&mut self, zone: Name<'static>, ns: &Ranked, glue: &[Ranked], now: u32) {
         self.referrals = self.referrals.saturating_add(1);
         if self.referrals > self.limits.referrals {
@@ -683,22 +721,20 @@ impl Resolution {
             return self.abandon(&task);
         }
         debug!(%zone, "referral");
-        let glued: Vec<&Name<'static>> = glue.iter().map(|set| set.rrset.owner()).collect();
-        let mut addresses: Vec<IpAddr> =
-            glue.iter().flat_map(|set| addresses(&set.rrset)).collect();
+        let mut known = Vec::new();
         let mut missing = Vec::new();
         for name in servers(&ns.rrset, self.limits.servers) {
-            if glued.contains(&&name) {
-                continue;
+            let glued = glue.iter().filter(|set| *set.rrset.owner() == name);
+            let mut at: Vec<IpAddr> = glued.flat_map(|set| addresses(&set.rrset)).collect();
+            if at.is_empty() {
+                at = cached_addresses(&self.caches.rrsets, &name, now);
             }
-            let known = cached_addresses(&self.caches.rrsets, &name, now);
-            if known.is_empty() {
+            if at.is_empty() {
                 missing.push(name);
             }
-            addresses.extend(known);
+            known.extend(at);
         }
-        self.tasks.active().at =
-            At::Asking(Delegation::new(zone, Source::Parent, addresses, missing));
+        self.tasks.active().at = At::Asking(Delegation::new(zone, Source::Parent, known, missing));
     }
 
     /// Records what the server asked did, for the failure of its delegation.
@@ -712,20 +748,17 @@ impl Resolution {
     fn end(&mut self, limit: Limit) {
         debug!(%limit, "limit reached, resolution ends");
         crate::metrics::limit(limit);
-        self.settled = Some(Settled::Done(Outcome::Failed(Failure::Limit(limit))));
+        self.settled = Some(Settled::Done(Resolved::Failed(Failure::Limit(limit))));
     }
 
     /// Sends `query`, within [`Limits::queries`].
-    fn send(&mut self, query: Query, now: Duration) {
+    fn send(&mut self, query: Query) {
         if self.sent >= self.limits.queries {
             return self.end(Limit::Queries);
         }
         debug!(server = %query.server, zone = %query.zone, name = %query.question.name, rtype = %query.question.qtype, "query");
         self.sent += 1;
-        self.settled = Some(Settled::Waiting {
-            query,
-            sent_at: now,
-        });
+        self.settled = Some(Settled::Waiting(query));
     }
 
     /// Ends `task`, a sub-resolution that loops: neither its A nor its AAAA is looked up again (D191).
@@ -744,10 +777,10 @@ impl Resolution {
 
     /// Ends the active task with `outcome`: the resolution's when it is the client's question, else addresses
     /// for the task waiting on it.
-    fn finish(&mut self, outcome: Outcome) {
+    fn finish(&mut self, outcome: Resolved) {
         let Some(task) = self.tasks.lookups.pop() else {
             let outcome = match (outcome, self.limit) {
-                (Outcome::Failed(_), Some(limit)) => Outcome::Failed(Failure::Limit(limit)),
+                (Resolved::Failed(_), Some(limit)) => Resolved::Failed(Failure::Limit(limit)),
                 (outcome, _) => outcome,
             };
             debug!(?outcome, "resolution done");
@@ -755,9 +788,9 @@ impl Resolution {
             return;
         };
         let found: Vec<IpAddr> = match &outcome {
-            Outcome::Answer { data, .. } => addresses(&data.rrset).collect(),
+            Resolved::Answer { data, .. } => addresses(&data.rrset).collect(),
             // A name that does not exist has no AAAA either.
-            Outcome::NxDomain { .. } => return self.no_address(&task.question.name),
+            Resolved::NxDomain { .. } => return self.no_address(&task.question.name),
             _ => Vec::new(),
         };
         if let Some(delegation) = self.tasks.asking() {
@@ -774,7 +807,7 @@ impl Resolution {
 )]
 fn ask(
     delegation: &mut Delegation,
-    question: Question<'static>,
+    question: &Question<'static>,
     infra: &InfraCache,
     limits: &Limits,
     found: &HashMap<Question<'static>, Vec<IpAddr>>,
@@ -793,7 +826,7 @@ fn ask(
             delegation.untried.retain(|&server| server != choice.server);
             delegation.asked += 1;
             return Ask::Send(Query {
-                question,
+                question: question.clone(),
                 server: choice.server,
                 zone: delegation.zone.clone(),
                 marks: choice.marks,
@@ -868,14 +901,18 @@ fn cached_addresses(rrsets: &RrsetCache, name: &Name<'_>, now: u32) -> Vec<IpAdd
         .collect()
 }
 
-/// The closest delegation above `name` the caches know: an NS `RRset` with an address for one of its first `cap`
-/// servers, else a TLD's hints, else the root's (RFC 1034 §5.3.3 step 2).
-fn closest(caches: &Caches, name: &Name<'_>, cap: usize, now: u32) -> Delegation {
+/// The closest delegation above `name` the caches know, strictly above it if `parent` (the root's hints for the root): an NS
+/// `RRset` with an address for one of its first `cap` servers, else a TLD's hints, else the root's (RFC 1034 §5.3.3
+/// step 2).
+fn closest(caches: &Caches, name: &Name<'_>, parent: bool, cap: usize, now: u32) -> Delegation {
     let mut buf = [0; MAX_NAME_LEN];
     let wire = name.to_wire(&mut buf);
     // Each suffix of the name, longest first and the root last, borrowed from its wire form: a label is its
     // length, then its bytes.
-    let mut at = 0;
+    let mut at = match wire.first() {
+        Some(&length) if parent => 1 + usize::from(length),
+        _ => 0,
+    };
     while let Some(&length) = wire.get(at) {
         let suffix = wire.get(at..).map(Name::from_uncompressed);
         at += 1 + usize::from(length);
@@ -906,6 +943,29 @@ fn closest(caches: &Caches, name: &Name<'_>, cap: usize, now: u32) -> Delegation
     }
     debug!("delegation from the root hints");
     hinted(Name::root(), caches.roots.servers())
+}
+
+/// The `RRsets` of `records`, as `kept` holds them: the scrubber's ranks (D192).
+fn sets(records: &[Record<'_>], kept: &[Ranked]) -> Vec<Ranked> {
+    Rrset::group(records)
+        .iter()
+        .filter_map(|set| {
+            kept.iter()
+                .find(|held| held.rrset.owner() == set.owner() && held.rrset.rtype() == set.rtype())
+        })
+        .cloned()
+        .collect()
+}
+
+/// The name a CNAME `RRset` of one record leads to.
+fn target(cname: &Rrset) -> Option<Name<'static>> {
+    match cname.rdatas() {
+        [one] => match one.data() {
+            RData::Cname(target) => Some(target.into_owned()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The delegation to `zone` that hints give.

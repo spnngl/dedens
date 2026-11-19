@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use dedens_cache::ConfigError;
-use dedens_proto::Name;
+use dedens_proto::{Name, Rcode};
 use dedens_resolver::{Choice, Edns, InfraCache, Marks};
 use dedens_roots::RootHints;
 use rand_core::{TryCryptoRng, TryRng};
@@ -295,6 +295,12 @@ fn rfc4697_2_2_1_every_server_lame_is_asked() {
     assert!(drawn.iter().all(|&n| n > DRAWS / 3), "{drawn:?}");
 }
 
+/// A server that answered FORMERR to EDNS and NOERROR without it, as the transport says (D190).
+const UNSUPPORTED: Edns = Edns::Unsupported {
+    rejected: Rcode::FORMERR,
+    answered: Rcode::NOERROR,
+};
+
 #[test]
 fn rfc6891_7_edns_kept_once_seen() {
     let cache = cache();
@@ -306,17 +312,17 @@ fn rfc6891_7_edns_kept_once_seen() {
         ..Marks::default()
     };
     cache.reply(a, 20 * MS, marks(Edns::Supported), 0);
-    cache.reply(a, 20 * MS, marks(Edns::Unsupported), 0);
+    cache.reply(a, 20 * MS, marks(UNSUPPORTED), 0);
     cache.reply(a, 20 * MS, marks(Edns::Unknown), 0);
     assert_eq!(
         select(&cache, &[a], 0).map(|c| c.marks.edns),
         Some(Edns::Supported)
     );
-    cache.reply(b, 20 * MS, marks(Edns::Unsupported), 0);
+    cache.reply(b, 20 * MS, marks(UNSUPPORTED), 0);
     cache.reply(b, 20 * MS, marks(Edns::Unknown), 0);
     assert_eq!(
         select(&cache, &[b], 0).map(|c| c.marks.edns),
-        Some(Edns::Unsupported)
+        Some(UNSUPPORTED)
     );
     cache.reply(b, 20 * MS, marks(Edns::Supported), 0);
     assert_eq!(
@@ -332,7 +338,7 @@ fn marks_stay_until_the_entry_expires() {
         panic!("13 roots")
     };
     let seen = Marks {
-        edns: Edns::Unsupported,
+        edns: UNSUPPORTED,
         no_case: true,
         tcp: true,
     };
