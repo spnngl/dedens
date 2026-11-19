@@ -21,7 +21,7 @@ fn last(id: &str) -> Message<'static> {
 #[test]
 fn each_response_answers_its_question() {
     let all = Resolution::all();
-    assert_eq!(all.len(), 14, "every case of the README");
+    assert_eq!(all.len(), 18, "every case of the README");
     for (id, resolution) in all {
         for exchange in &resolution.exchanges {
             let response = message(&exchange.response);
