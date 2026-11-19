@@ -16,7 +16,7 @@ use std::time::Duration;
 use dedens_cache::Checked;
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, MAX_NAME_LEN, Message, Name, Question, Record, RecordType};
+use dedens_proto::{Class, MAX_NAME_LEN, Message, Name, Question, Record, RecordType, Ttl};
 use dedens_roots::{RootHints, Server, Tlds};
 use rand_core::CryptoRng;
 use thiserror::Error;
@@ -161,7 +161,8 @@ pub enum Unsupported {
 }
 
 /// How a resolution ends. Each `RRset` was cached as it came, at the rank the scrubber gave it (D192), and is given
-/// with the TTL it came with, unbounded: the stage serving it (step 08) must bound it.
+/// with the TTL to serve it with: its time left when the cache gave it, else the TTL it came with bounded as the
+/// cache bounds what it stores (D124). Never bound twice: a floor raising a time left serves expired data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
     /// The data, after the CNAMEs leading to it.
@@ -711,9 +712,13 @@ impl Resolution {
             {
                 debug!(owner = %rrset.owner(), rtype = %rrset.rtype(), %error, "not cached");
             }
+            // Bounded as the cache bounds what it stores (D124), as a cache hit's time left is, but from the TTL
+            // received: what the cache did with it changes what later questions find, not this response.
+            let ttl = (self.caches.rrsets.config())
+                .lifetime(rrset.ttl(), Checked::Unchecked)
+                .unwrap_or(0);
             kept.push(Ranked {
-                // As received, not bounded as the cache bounds what it stores: the stage (step 08) must bound it.
-                ttl: rrset.ttl(),
+                ttl: Ttl::from_wire(ttl),
                 rrset,
                 rank,
                 checked: Checked::Unchecked,

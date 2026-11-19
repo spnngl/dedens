@@ -13,10 +13,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use dedens_cache::Config;
 use dedens_proto::edns::Cookie;
 use dedens_proto::{
-    Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport, Ttl,
+    Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport,
 };
 use dedens_resolver::{Caches, Limits, Query, Ranked, Reply, Resolution, Resolved, Unsupported};
 use rand_core::CryptoRng;
@@ -66,11 +65,18 @@ impl Recurse {
     }
 
     /// The same stage, each query sent paid by the client's network from `share` (D117): one unit a query, and a
-    /// client whose network has none left gets SERVFAIL with EDE 14 (Not Ready).
+    /// client whose network has none left gets SERVFAIL with EDE 14 (Not Ready). A stage built on reload with the
+    /// same budget takes over the buckets of the one before ([`Recurse::share`]).
     #[must_use]
-    pub fn with_share(mut self, share: Budgets) -> Self {
-        self.share = Some(Arc::new(share));
+    pub fn with_share(mut self, share: impl Into<Arc<Budgets>>) -> Self {
+        self.share = Some(share.into());
         self
+    }
+
+    /// What each client network may spend of the queries sent, if bounded.
+    #[must_use]
+    pub const fn share(&self) -> Option<&Arc<Budgets>> {
+        self.share.as_ref()
     }
 
     /// The same stage resolving `zone`, which it served locally (RFC 6303 §3: each zone may be turned off).
@@ -184,7 +190,8 @@ pub(crate) enum State {
 #[derive(Debug)]
 pub(crate) enum Ended {
     Resolved(Resolved),
-    /// The client's network had nothing left to pay a query with (D117).
+    /// The client's network had nothing left to pay a query with (D117), or too many resolutions waited on its
+    /// query ([`Resolving::shed`]).
     Shed,
     /// The question is not resolved (D191).
     Unsupported(Unsupported),
@@ -309,32 +316,43 @@ impl Resolving {
         }
     }
 
-    /// How it ended, and the `RRset` cache's TTL bounds; `None` before it did.
-    pub(crate) fn ended(&self) -> Option<(&Ended, &Config)> {
+    /// Ends it shed, without sending the query [`Resolving::step`] gave: too many resolutions wait on the same one
+    /// (D195). The client's network gets back the unit the query took, as nothing was sent, and the client gets
+    /// SERVFAIL Not Ready, as one whose network has nothing left (D117).
+    pub fn shed(&mut self) {
+        if let State::Running(_) = self.state {
+            // A query given was paid for, unless the client is exempt.
+            if let Some((share, slot)) = &self.payer {
+                share.refund(*slot);
+            }
+            self.state = State::Ended(Ended::Shed);
+        }
+    }
+
+    /// How it ended; `None` before it did.
+    pub(crate) const fn ended(&self) -> Option<&Ended> {
         match &self.state {
-            State::Ended(ended) => Some((ended, self.caches.rrsets.config())),
+            State::Ended(ended) => Some(ended),
             State::Ready | State::Running(_) => None,
         }
     }
 }
 
-/// The response to `question` of `resolved`: its rcode, and its `RRsets` in a message, each with its time left in the cache
-/// bounded as `config` bounds it (D124): the resolution gives the TTL it was received with. RRSIGs go only to a
-/// client that asked with DO (RFC 4035 §3.2.1).
+/// The response to `question` of `resolved`: its rcode, and its `RRsets` in a message, each with the TTL the
+/// resolution gives, bounded by the cache's lifetime already (D124): bounded again, a time left under the floor
+/// would be raised. RRSIGs go only to a client that asked with DO (RFC 4035 §3.2.1).
 pub(crate) fn message(
     question: &Question<'static>,
     resolved: &Resolved,
-    config: &Config,
     dnssec: bool,
 ) -> (Rcode, Message<'static>) {
     let records = |section: &mut Vec<Record<'static>>, ranked: &Ranked| {
-        let ttl = Ttl::from_wire(config.lifetime(ranked.ttl, ranked.checked).unwrap_or(0));
         let rrset = &ranked.rrset;
         let signatures = if dnssec { rrset.rrsigs() } else { &[] };
         section.extend(rrset.rdatas().iter().chain(signatures).map(|rdata| Record {
             name: rrset.owner().clone(),
             class: rrset.class(),
-            ttl,
+            ttl: ranked.ttl,
             rdata: rdata.clone(),
         }));
     };

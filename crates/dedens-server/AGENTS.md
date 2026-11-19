@@ -19,5 +19,7 @@ back, `Pipeline::resolved` writing the reply (D195). Measure a change to the rat
   (D113).
 - A hit a `Plugin::reviewer` reviewed is marked with the pipeline's id (`Cache::mark`) and decoded once (D118).
 - ANY over UDP and DoC is answered empty with TC (D114).
-- A recurse stage's reply TTLs are bounded by the cache's `lifetime` before it is written (D195): `Resolved` holds
-  the servers' raw TTLs (D191). A pipeline has a forward or a recurse stage, never both (`dedensd`'s config).
+- A recurse stage's reply TTLs are bounded once (D195): `Resolved` holds them so, a TTL fresh from a reply bounded
+  by the cache's `lifetime`, one from the RRset cache its time left. Never floor them again: the cache stage stores
+  them with `Cache::insert_bounded` (`Ttls::Bounded`), not `insert`. A pipeline has a forward or a recurse stage,
+  never both (`dedensd`'s config).
