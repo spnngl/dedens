@@ -73,7 +73,9 @@ impl Finish<'_> {
         let stored = self.store().filter(|cache| {
             keep && match ttls {
                 Ttls::Received => cache.insert(query, &decoded, now, mark),
-                Ttls::Bounded => cache.insert_bounded(query, &decoded, now, mark),
+                Ttls::Bounded => {
+                    cache.insert_bounded(query, &decoded, now, Checked::Unchecked, mark)
+                }
             }
             .is_ok()
         });
@@ -104,13 +106,15 @@ impl Finish<'_> {
             .map_or(Step::Drop, Step::Reply)
     }
 
-    /// Ends the query with `outcome` for `decoded`, upstream's answer, its TTLs at most `cap` (D77): stored in the
-    /// cache stage with what the verdict made of it, and replied unless the client was answered already.
+    /// Ends the query with `outcome` for `decoded`, upstream's answer or a recursion's, its TTLs at most `cap`
+    /// (D77, D197): stored in the cache stage with what the verdict made of it, and replied unless the client was
+    /// answered already. `ttls` says whether its TTLs are bounded already.
     pub(super) fn deliver(
         &self,
         outcome: Outcome,
         mut decoded: Decoded<'static>,
         cap: Option<Ttl>,
+        ttls: Ttls,
         out: &mut [u8],
     ) -> Step {
         let checked = match outcome {
@@ -138,10 +142,13 @@ impl Finish<'_> {
         };
         present(&mut decoded.message, outcome, cap, self.client.dnssec());
         let rcode = decoded.message.rcode();
+        let (query, now) = (self.query, self.now);
         let stored = self.store().filter(|cache| {
-            cache
-                .insert_checked(self.query, &decoded, self.now, checked, mark)
-                .is_ok()
+            match ttls {
+                Ttls::Received => cache.insert_checked(query, &decoded, now, checked, mark),
+                Ttls::Bounded => cache.insert_bounded(query, &decoded, now, checked, mark),
+            }
+            .is_ok()
         });
         if self.purpose != Purpose::Reply {
             return Step::Drop;

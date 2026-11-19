@@ -1,20 +1,24 @@
 //! A `recurse` stage, as written and built (D195): the resolution's limits (D191), its QNAME minimisation (D198),
-//! the zones served locally to resolve instead (RFC 6303 §3), a client network's share of the queries (D117), and the
-//! sizes of its caches (D193, D194). A reload keeps its caches while their sizes and the cache stage's settings stay, and the share's buckets
-//! while its budget stays.
+//! the zones served locally to resolve instead (RFC 6303 §3), a client network's share of the queries (D117), the
+//! sizes of its caches (D193, D194), and its validation (D197), set as a forward stage's (D77). A reload keeps its
+//! caches while their sizes, the cache stage's settings and the validation stay, and the share's buckets while its
+//! budget stays.
 
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, ensure};
+use dedens_dnssec::TrustAnchors;
 use dedens_proto::Name;
 use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, Minimisation, RrsetCache};
 use dedens_roots::{RootHints, Tlds};
-use dedens_server::{Budgets, DEFAULT_SHARE, Pipeline, Recurse, Stage};
+use dedens_server::{Allowance, Budgets, DEFAULT_SHARE, Pipeline, Recurse, Stage, Validating};
 use serde::Deserialize;
 
 use super::limits::BudgetFile;
+use super::upstream::{Dnssec, Insecure, Validation};
 
 /// A `recurse` stage's settings.
 #[derive(Debug, Default, Deserialize)]
@@ -29,6 +33,24 @@ pub(super) struct RecurseFile {
     client_share: Option<BudgetFile>,
     rrset_cache_bytes: Option<NonZeroUsize>,
     infra_cache_bytes: Option<NonZeroUsize>,
+    /// Whether it validates, `off` by default as a forward stage (D77, D197).
+    #[serde(default)]
+    dnssec: Dnssec,
+    trust_anchors: Option<PathBuf>,
+    #[serde(default)]
+    insecure: Vec<Insecure>,
+}
+
+impl RecurseFile {
+    /// Whether building it reads a file it names: its trust anchors.
+    pub(super) const fn names_files(&self) -> bool {
+        self.trust_anchors.is_some()
+    }
+
+    /// Whether it validates, read before its trust anchors move into [`Validation`].
+    pub(super) const fn validates_by_root(&self) -> bool {
+        matches!(self.dnssec, Dnssec::Validate) && self.trust_anchors.is_none()
+    }
 }
 
 /// The bounds of one resolution, each `Limits::default`'s unless written.
@@ -41,6 +63,7 @@ struct LimitsFile {
     depth: Option<NonZeroUsize>,
     servers: Option<NonZeroUsize>,
     targets: Option<NonZeroUsize>,
+    validation: Option<NonZeroUsize>,
     time_ms: Option<NonZeroU32>,
 }
 
@@ -61,6 +84,8 @@ const MAX: Limits = Limits {
     servers: 100,
     // Unbound's `MAX_DP_TARGET_COUNT` 16 (`iterator/iterator.h`).
     targets: 16,
+    // Unbound's `MAX_GLOBAL_QUOTA` 200 (`iterator/iterator.h`), the queries of a client question with its validation's.
+    validation: 200,
     // A client gives up well before, and a resolution holds one of the thread's upstream queries (D47) all along.
     time: Duration::from_secs(30),
 };
@@ -95,18 +120,36 @@ struct LocalZonesFile {
 }
 
 /// The stage `name` of `file`, after the stages `built`: its TTLs bounded as their cache stage's, if any; its caches
-/// those of `previous`'s recurse stage when their sizes and settings are the same.
+/// those of `previous`'s recurse stage when their sizes and settings are the same, and it validates the same way:
+/// the `RRset` cache holds the verdicts of its validator (D197). Validating, its anchors are the root's of `root`
+/// (D128) unless `trust_anchors` names some, and its allowance `allowance` (D77).
 ///
 /// # Errors
 ///
 /// A limit above [`MAX`]'s; a zone in `local_zones.resolve` that is not a name, not served locally or listed twice; a
-/// `client_share` [`Budgets::new`] refuses; caches [`RrsetCache::new`] or [`InfraCache::new`] refuses.
+/// `client_share` [`Budgets::new`] refuses; caches [`RrsetCache::new`] or [`InfraCache::new`] refuses; validation
+/// settings [`Validation::validating`] refuses.
 pub(super) fn recurse(
     name: &str,
     file: RecurseFile,
-    built: &[Stage],
-    previous: &Pipeline,
+    (built, previous): (&[Stage], &Pipeline),
+    (root, allowance): (Option<TrustAnchors>, Allowance),
 ) -> anyhow::Result<Stage> {
+    let validation = Validation {
+        dnssec: file.dnssec,
+        trust_anchors: file.trust_anchors,
+        root,
+        insecure: file.insecure,
+        // The stage's `client_share` is of the queries sent (D117): validation's is the default.
+        client_share: None,
+        allowance,
+    };
+    let held = previous.stages().iter().filter_map(|stage| match stage {
+        Stage::Recurse(old) => old.validation(),
+        _ => None,
+    });
+    let validating = validation.validating(name, held)?;
+    let tag = validating.as_ref().map(Validating::tag);
     // The TTLs the cache stage stores under, which the stage answers under too.
     let cache = (built.iter())
         .find_map(|stage| match stage {
@@ -127,7 +170,8 @@ pub(super) fn recurse(
             let caches = held.caches();
             let same = caches.rrsets.capacity() == rrset_bytes
                 && caches.infra.capacity() == infra_bytes
-                && caches.rrsets.config() == cache;
+                && caches.rrsets.config() == cache
+                && held.validation_tag() == tag;
             same.then(|| Arc::clone(caches))
         }
         _ => None,
@@ -159,6 +203,9 @@ pub(super) fn recurse(
         .with_limits(limits)
         .with_minimisation(file.qname_minimisation.into())
         .with_share(share);
+    if let Some(validating) = validating {
+        stage = stage.validating(validating);
+    }
     let mut resolved: Vec<Name<'static>> = Vec::new();
     for zone in file.local_zones.resolve {
         let zone: Name<'static> = zone
@@ -207,6 +254,11 @@ fn limits(file: LimitsFile) -> anyhow::Result<Limits> {
         depth: or(file.depth, default.depth, ("depth", MAX.depth))?,
         servers: or(file.servers, default.servers, ("servers", MAX.servers))?,
         targets: or(file.targets, default.targets, ("targets", MAX.targets))?,
+        validation: or(
+            file.validation,
+            default.validation,
+            ("validation", MAX.validation),
+        )?,
         time,
     })
 }
@@ -380,6 +432,10 @@ mod tests {
             ("limits: {depth: 8}", "`limits.depth` is above 7"),
             ("limits: {servers: 101}", "`limits.servers` is above 100"),
             ("limits: {targets: 17}", "`limits.targets` is above 16"),
+            (
+                "limits: {validation: 201}",
+                "`limits.validation` is above 200",
+            ),
             ("limits: {queries: 0}", "nonzero"),
             ("limits: {speed: 1}", "speed"),
             (
@@ -403,7 +459,7 @@ mod tests {
             assert!(message.contains(expected), "{setting}: {message}");
         }
         let most = "limits: {queries: 200, restarts: 255, referrals: 130, depth: 7, servers: 100, targets: 16, \
-                    time_ms: 30000}";
+                    validation: 200, time_ms: 30000}";
         read(
             &format!("{RECURSIVE}    {most}\n"),
             env,

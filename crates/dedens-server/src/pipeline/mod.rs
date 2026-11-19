@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use dedens_cache::{Cache, StalePolicy};
+use dedens_cache::{Cache, Checked, StalePolicy};
 use dedens_proto::edns::{Cookie, EdnsOption, InfoCode};
 use dedens_proto::{
     Class, Decoded, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
@@ -24,7 +24,7 @@ use crate::cache::{self, Looked, Read};
 use crate::cookie::{Cookies, Standing};
 use crate::forward::{self, Forward, Server, Via};
 use crate::plugin::{Answer, Plugin};
-use crate::recurse::{self, Asker, Asking, Ended, Recurse, Resolving};
+use crate::recurse::{Asker, Asking, Ended, Recurse, Resolving};
 use crate::reply::Client;
 use crate::rrl::{Admission, RateLimit};
 use crate::validate::{Check, Outcome, Payer, Progress, Source, Validating};
@@ -847,7 +847,13 @@ impl Pipeline {
             } else if let Some(decoded) = decoded {
                 // Not validated: the client disabled checking, or the class has no DNSSEC. Never secure, whatever
                 // upstream's AD says (RFC 6840 §5.8).
-                return finish.deliver(Outcome::Insecure, decoded.into_owned(), None, out);
+                return finish.deliver(
+                    Outcome::Insecure,
+                    decoded.into_owned(),
+                    None,
+                    Ttls::Received,
+                    out,
+                );
             } else {
                 None
             };
@@ -863,7 +869,13 @@ impl Pipeline {
                     Progress::Done(outcome) => {
                         validating.metrics().outcome(outcome);
                         let cap = check.cap();
-                        return finish.deliver(outcome, check.into_answer(), cap, out);
+                        return finish.deliver(
+                            outcome,
+                            check.into_answer(),
+                            cap,
+                            Ttls::Received,
+                            out,
+                        );
                     }
                     Progress::Shed => return finish.shed(out),
                 }
@@ -925,10 +937,13 @@ impl Pipeline {
             stage: index,
             cache,
         };
+        // A client that checks for itself gets what was resolved unchecked (RFC 4035 §3.2.2).
+        let checking = !client.header.flags.contains(Flags::CD);
         Step::Resolve(stage.resolving_for(
             question.clone().into_owned(),
             asking,
             (source.address, source.proven, exempt),
+            checking,
         ))
     }
 
@@ -966,14 +981,17 @@ impl Pipeline {
                 finish.failed(Some(failure.info_code()), out)
             }
             Ended::Resolved(resolved) => {
-                let (rcode, message) =
-                    recurse::message(resolving.question(), resolved, client.dnssec());
                 let mut decoded = Decoded::default();
-                decoded.message = message;
-                if decoded.message.set_rcode(rcode).is_err() {
-                    return reply(&client, Message::default(), Rcode::SERVFAIL, out);
+                decoded.message = resolved.message(resolving.question(), client.dnssec());
+                if !resolving.validated() {
+                    return finish.plain(decoded, Ttls::Bounded, out);
                 }
-                finish.plain(decoded, Ttls::Bounded, out)
+                // Validated: secure when each RRset is (RFC 4035 §5), insecure when one is, or is not judged.
+                let outcome = match resolved.checked() {
+                    Checked::Secure => Outcome::Secure,
+                    _ => Outcome::Insecure,
+                };
+                finish.deliver(outcome, decoded, None, Ttls::Bounded, out)
             }
             Ended::Shed => finish.shed(out),
             Ended::Unsupported(dedens_resolver::Unsupported::Type(_)) => {

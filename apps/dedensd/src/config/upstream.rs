@@ -243,38 +243,12 @@ pub(super) fn forward(
     );
     let mut forward =
         Forward::new(servers).with_context(|| format!("stage `{name}` has no server"))?;
-    match validation.dnssec {
-        Dnssec::Off => ensure!(
-            validation.trust_anchors.is_none()
-                && validation.insecure.is_empty()
-                && validation.client_share.is_none(),
-            "stage `{name}`: `trust_anchors`, `insecure` and `client_share` need `dnssec: validate`"
-        ),
-        Dnssec::Validate => {
-            let validating = validating(
-                validation.trust_anchors.as_deref(),
-                validation.root,
-                validation.insecure,
-            )?;
-            let kept = previous.stages().iter().find_map(|stage| match stage {
-                Stage::Forward(old) => old.validation().filter(|old| old.tag() == validating.tag()),
-                _ => None,
-            });
-            // The allowance follows the serving threads, fixed at start: a kept validator keeps it, and its bucket.
-            let mut validating = kept
-                .cloned()
-                .unwrap_or_else(|| validating.allowing(validation.allowance));
-            // The shares are not part of what the keys were validated by: a reload that changes them keeps the
-            // key cache and starts the shares' buckets again.
-            let share = BudgetFile::over(validation.client_share, DEFAULT_SHARE);
-            if validating.share() != share {
-                validating = validating.sharing(
-                    Budgets::new(share)
-                        .with_context(|| format!("stage `{name}`: `client_share`"))?,
-                );
-            }
-            forward = forward.validating(validating);
-        }
+    let held = previous.stages().iter().filter_map(|stage| match stage {
+        Stage::Forward(old) => old.validation(),
+        _ => None,
+    });
+    if let Some(validating) = validation.validating(name, held)? {
+        forward = forward.validating(validating);
     }
     if let Some(ms) = timeout_ms {
         ensure!(
@@ -321,7 +295,47 @@ pub(super) struct Validation {
     pub(super) allowance: Allowance,
 }
 
-/// Whether a forward stage validates (D77): `off` or `validate`. The YAML reader takes an unquoted `off` for the
+impl Validation {
+    /// The validator of stage `name`, if it validates: one of `held`, the stage's before the reload, when it
+    /// validates the same way, so that its key cache stays (D86).
+    ///
+    /// # Errors
+    ///
+    /// `trust_anchors`, `insecure` or `client_share` without `dnssec: validate`; anchors [`validating`] refuses; a
+    /// `client_share` [`Budgets::new`] refuses.
+    pub(super) fn validating<'a>(
+        self,
+        name: &str,
+        held: impl IntoIterator<Item = &'a Validating>,
+    ) -> anyhow::Result<Option<Validating>> {
+        if let Dnssec::Off = self.dnssec {
+            ensure!(
+                self.trust_anchors.is_none()
+                    && self.insecure.is_empty()
+                    && self.client_share.is_none(),
+                "stage `{name}`: `trust_anchors`, `insecure` and `client_share` need `dnssec: validate`"
+            );
+            return Ok(None);
+        }
+        let validating = validating(self.trust_anchors.as_deref(), self.root, self.insecure)?;
+        let kept = (held.into_iter()).find(|old| old.tag() == validating.tag());
+        // The allowance follows the serving threads, fixed at start: a kept validator keeps it, and its bucket.
+        let mut validating = kept
+            .cloned()
+            .unwrap_or_else(|| validating.allowing(self.allowance));
+        // The shares are not part of what the keys were validated by: a reload that changes them keeps the key
+        // cache and starts the shares' buckets again.
+        let share = BudgetFile::over(self.client_share, DEFAULT_SHARE);
+        if validating.share() != share {
+            validating = validating.sharing(
+                Budgets::new(share).with_context(|| format!("stage `{name}`: `client_share`"))?,
+            );
+        }
+        Ok(Some(validating))
+    }
+}
+
+/// Whether a forward or recurse stage validates (D77, D197): `off` or `validate`. The YAML reader takes an unquoted `off` for the
 /// boolean `false` once the stage's fields are buffered for the `type` tag, so that is read as `off` too.
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 #[serde(try_from = "DnssecText")]

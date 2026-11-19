@@ -94,13 +94,15 @@
 //!   root:
 //!     type: recurse
 //!     # each resolution's limits (D191), capped (D195)
-//!     limits: {queries: 32, restarts: 11, referrals: 30, depth: 4, servers: 13, targets: 5, time_ms: 4500}
+//!     limits: {queries: 32, restarts: 11, referrals: 30, depth: 4, servers: 13, targets: 5, validation: 32,
+//!              time_ms: 4500}
 //!     qname_minimisation: relaxed    # RFC 9156; strict: no fallback to the full name; none (D198)
 //!     local_zones:                   # RFC 6303, home.arpa, resolver.arpa, localhost and invalid, answered here
 //!       resolve: []                  # those of them to resolve instead, by apex: [home.arpa] for a router's
 //!     client_share: {rate: 1000, burst: 2000}  # queries to authoritative servers a client network may send (D117)
 //!     rrset_cache_bytes: 134217728   # the RRsets learnt (D193)
 //!     infra_cache_bytes: 4194304     # the servers' round-trip times and quirks (D194)
+//!     dnssec: off                    # or validate, with trust_anchors and insecure as a forward stage's (D197)
 //! ```
 
 mod access;
@@ -402,8 +404,8 @@ const MAX_TRIES: u8 = 5;
 /// 4 MiB receive buffer, so the bound stops a typo, not a machine (D115).
 const MAX_THREADS: usize = 1024;
 
-/// The stages of `order`, built from `defined` after those of `previous`, a validating forward stage bound to
-/// `allowance` (D77), and the questions their cache stage keeps answered (D96).
+/// The stages of `order`, built from `defined` after those of `previous`, a validating forward or recurse stage
+/// bound to `allowance` (D77, D197), and the questions their cache stage keeps answered (D96).
 ///
 /// # Errors
 ///
@@ -496,7 +498,13 @@ fn stages(
                     (&mut *downloads, store),
                 )?
             }
-            StageFile::Recurse(file) => recurse(name, file, &built, previous)?,
+            StageFile::Recurse(file) => {
+                let root = (file.validates_by_root())
+                    .then(|| downloads.root_anchors(store))
+                    .transpose()?
+                    .flatten();
+                recurse(name, file, (&built, previous), (root, allowance))?
+            }
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
                 downloads.tlds(store)?,
                 Ttl::from_wire(PLUGIN_TTL),

@@ -285,7 +285,8 @@ impl Cache {
     /// [`Cache::insert`] of a response whose TTLs are bounded already: each by [`Config::lifetime`] when read from
     /// a server, or the time left of an `RRset` in a cache, as a recursive resolution answers (D195). It lives as
     /// long as its smallest TTL within the caps, not raised to `min_ttl` again: data with 3 s left is not served
-    /// for 60.
+    /// for 60. `checked` is kept with it as [`Cache::insert_checked`] keeps it, a validating recursion's verdict
+    /// (D197): a [`Checked::Bogus`] response is stored as that stores it.
     ///
     /// # Errors
     ///
@@ -295,11 +296,14 @@ impl Cache {
         query: &Query<'_>,
         response: &Decoded<'_>,
         now: u32,
+        checked: Checked,
         mark: u64,
     ) -> Result<(), NotCached> {
+        if matches!(checked, Checked::Bogus(_)) {
+            return self.insert_checked(query, response, now, checked, mark);
+        }
         let key = Key::of(query).ok_or(NotCached::Query)?;
-        let stored = (Checked::Unchecked, mark);
-        self.store(&key, response, now, stored, Bounds::Bounded)
+        self.store(&key, response, now, (checked, mark), Bounds::Bounded)
     }
 
     /// [`Cache::insert`] of a response the caller validated (D77): `checked` is kept with it and sets the AD bit of

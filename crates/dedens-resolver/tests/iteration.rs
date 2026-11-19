@@ -158,7 +158,11 @@ fn reply(answered: &Answered) -> Reply<'_> {
 }
 
 /// A resolution of `capture`'s question.
-fn start(capture: &recursion::Resolution, caches: &Arc<Caches>, limits: Limits) -> Resolution {
+pub(crate) fn start(
+    capture: &recursion::Resolution,
+    caches: &Arc<Caches>,
+    limits: Limits,
+) -> Resolution {
     let question = Question::new(capture.name.clone(), capture.rtype);
     Resolution::start(
         question,
@@ -171,7 +175,7 @@ fn start(capture: &recursion::Resolution, caches: &Arc<Caches>, limits: Limits) 
 }
 
 /// Starts `capture`'s question on `caches`, steered to its servers, under `limits`, and runs it.
-fn resolve(
+pub(crate) fn resolve(
     capture: &recursion::Resolution,
     caches: &Arc<Caches>,
     limits: Limits,
@@ -183,7 +187,7 @@ fn resolve(
 pub(crate) type Change<'a> = dyn Fn(&Name<'_>, &mut Message<'static>) + 'a;
 
 /// [`resolve`], each captured response passed through `change` with the zone of the server giving it.
-fn changed(
+pub(crate) fn changed(
     capture: &recursion::Resolution,
     caches: &Arc<Caches>,
     limits: Limits,
@@ -360,7 +364,7 @@ fn rfc1034_5_3_3_the_cache_answers_again() {
             Resolved::Answer { .. } => {
                 // The cache counts its TTLs down from the least of the RRset's.
                 let rrsets = |outcome: &Resolved| match outcome {
-                    Resolved::Answer { chain, data } => {
+                    Resolved::Answer { chain, data, .. } => {
                         let sets = chain.iter().chain([data]);
                         sets.map(|held| Rrset::clone(&held.rrset))
                             .collect::<Vec<_>>()
@@ -509,7 +513,7 @@ fn rfc6895_3_meta_types_and_other_classes_are_not_resolved() {
 
 /// The captures a resolution takes: all but the RRSIG question's, refused at the start
 /// (`rfc6895_3_meta_types_and_other_classes_are_not_resolved`).
-fn resolvable() -> Vec<(String, recursion::Resolution)> {
+pub(crate) fn resolvable() -> Vec<(String, recursion::Resolution)> {
     let mut all = recursion::Resolution::all();
     all.retain(|(_, capture)| capture.rtype != RecordType::RRSIG);
     all
