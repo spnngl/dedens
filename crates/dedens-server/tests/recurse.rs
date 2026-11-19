@@ -729,7 +729,7 @@ fn validating(
     let validator = Validator::new(TrustAnchors::root(), dedens_dnssec::Limits::default());
     let at = capture.captured_at;
     let validating = Validating::new(validator, Arc::new(move || at)).allowing(allowance);
-    Recurse::new(Arc::clone(caches)).validating(validating)
+    unminimised(Arc::clone(caches)).validating(validating)
 }
 
 /// The reply of a validating pipeline to `query`, `capture` served by `authorities`.
