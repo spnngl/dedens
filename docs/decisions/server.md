@@ -1751,25 +1751,29 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (D124: `min_ttl`, `max_ttl`, the insecure and bogus caps) of the cache stage before, so the cache and the reply
     agree, the RRset cache reading under the same `Config`; one from the RRset cache is its time left, bounded when
     stored, never raised again to `min_ttl` (a record served past its owner's TTL plus the floor). The cache stage
-    stores the reply as it is (`Cache::insert_bounded`: capped, not floored). AA clear, RA set.
+    stores the reply as it is (`Cache::insert_bounded`: capped, not floored). A negative answer lives min(SOA TTL,
+    SOA MINIMUM), not floored to `min_ttl` as a forwarded one is (D124), and MINIMUM 0 is not cached: Unbound's
+    `cache-min-negative-ttl` and BIND's `min-ncache-ttl` default to 0. AA clear, RA set.
   - Priming (RFC 8109 §3): when a resolution starts and the root's NS RRset is not in the RRset cache, the stage
     hands the driver a priming resolution of `. NS` too, one at a time per stage (an atomic flag, cleared when the
     priming ends either way), its queries paid by no client; the RRset cache keeps the answer for its TTL, and the
-    next resolution after its expiry primes again (§3.1). Meanwhile resolutions go on from the hints: D191 asks the
+    next resolution after its expiry primes again (§3.1); `dedensd` logs what the priming came to
+    (`Resolving::resolved`), a warning when it got no answer. Meanwhile resolutions go on from the hints: D191 asks the
     TLD hints for a TLD's servers, the root hints for the rest, so no client waits for the priming (§3's choice).
     The hints are the bundled ones (D126): D128 refreshes the TLD list and the root's trust anchors into
     `state_dir`, not `named.root`, so the step file's "refreshed copy" is not built (TODECIDE).
   - Locally served zones, class IN's, answered by the stage with AA and no query (another class goes on to the
     resolution, which refuses it): RFC 6303 §4's reverse zones (the RFC 1918
     ranges, 0, 127, 169.254, the TEST-NETs, 255.255.255.255, `::`, `::1`, `fe80::/10`, `fd00::/8`, the IPv6
-    documentation prefix), each an empty zone per §3 (`SOA . nobody.invalid. 1 3600 1200 604800 10800`, `NS`
+    documentation prefix), each an empty zone per §3 (`SOA @ nobody.invalid. 1 3600 1200 604800 10800`, `NS`
     itself, TTL 10800: SOA and NS at the apex, NODATA for other types, NXDOMAIN below); `home.arpa` the same (RFC
     8375 §4 4.B) but its DS with DO resolved, so the insecure delegation proves; `resolver.arpa` NODATA for every
     name (RFC 9462 §6.4: no designated resolver known); `localhost` the loopback addresses for A and AAAA, NODATA else,
     its DS too, as no query goes out for it (RFC 6761 §6.3 item 4); `invalid` NXDOMAIN (§6.4) with the empty zone's
-    SOA to cache it by (RFC 2308 §5), as Unbound's static zone. `local_zones.resolve` lists apexes to resolve instead
-    (RFC 6303 §3's switch per zone); an apex not in the list, or listed twice, is a load error. Unbound's defaults (`services/localzone.c`
-    `local_zone_enter_defaults`) less `test` and `onion`, which D128's `tlds` stage answers.
+    SOA to cache it by (RFC 2308 §5), as Unbound's static zone. `local_zones.resolve` lists apexes to resolve
+    instead (RFC 6303 §3's switch per zone); an apex not in the list, or listed twice, is a load error. Unbound's
+    defaults (`services/localzone.c` `local_zone_enter_defaults`) less `test` and `onion`, which D128's `tlds`
+    stage answers.
   - Shared queries (RFC 5452 §5): one query in flight per (server address, question) per thread, Unbound's mesh per
     thread (`services/mesh.c` `mesh_new_client`), not D86's process-wide flights: a thread's resolutions wait on its
     own query, no lock between threads. At most `WAITERS` 100 resolutions wait on one, BIND's
@@ -1785,27 +1789,36 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the server's timeout: learnt meanwhile, it may be shorter than the sender's, and each waiter timing out would
     send the query again (`just sim` showed it). Past its end it takes a timeout, judging no server. The sender, or
     a waiter sending after its sender was cancelled, waits `Query::timeout` from then, within its resolution's end.
+    A timeout cut short by the sender's own end is not the server's: it is not shared, the waiters sending again
+    with their own time, and `Resolution` judges no server for a timeout that comes as the resolution's time runs
+    out.
   - Client budget (D117): each query a resolution sends costs its client network one unit of the stage's
     `client_share` (default 1000/s, burst 2000, as the forward stage's); one refused ends it, SERVFAIL with EDE 14
-    (Not Ready), as validation's shed. The rate limit's exempt networks pay nothing. A reload with the same budget
+    (Not Ready), as validation's shed. The rate limit's exempt networks pay nothing. A query shared is paid as one
+    sent: the unit is taken when the step gives the query, before the flight is known, and kept, which errs on the
+    side of the budget; only a shed resolution, which waits on nothing, gets it back. A reload with the same budget
     keeps the buckets, as validation's (D117): a reload is no fresh burst.
   - Configuration: `type: recurse` with `limits` (D191's), `local_zones.resolve`,
     `client_share`, `rrset_cache_bytes` (default 128 MiB, D193) and `infra_cache_bytes` (default 4 MiB, D194). A
     pipeline forwards or recurses: both are a load error naming the two stages; a stage after a recurse stage is one
-    (it answers every query), as after a forward stage. A reload with the same cache settings keeps the caches.
-    Each limit has a ceiling, the highest BIND or Unbound allows or uses, a load error naming it past it, so no
-    setting lets one question cost what neither would: `queries` 200 (BIND's `max-query-count`, the queries of a
-    client question, validation's included), `restarts` 255 (BIND's `max-query-restarts` range), `referrals` 130
-    (Unbound's `MAX_REFERRAL_COUNT`, `iterator/iterator.h`), `depth` 7 (BIND's `max-recursion-depth`), `servers` 100
+    (it answers every query), as after a forward stage. A reload with the same cache settings keeps the caches; one
+    serving other zones locally flushes the cache stage before, which holds what they resolved to or were served.
+    Each limit has a ceiling, the highest BIND or Unbound allows or uses, or BIND's default where BIND sets no
+    maximum, a load error naming it past it, so no setting lets one question cost what neither would by default:
+    `queries` 200 (BIND's `max-query-count` default, the queries of a client question, validation's included),
+    `restarts` 255 (BIND's `max-query-restarts` range), `referrals` 130 (Unbound's `MAX_REFERRAL_COUNT`,
+    `iterator/iterator.h`), `depth` 7 (BIND's `max-recursion-depth` default), `servers` 100
     (BIND's `max-delegation-servers` range), `targets` 16 (Unbound's `MAX_DP_TARGET_COUNT`), `time_ms` 30,000 (a
     client gives up well before, and a resolution holds one of the thread's upstream queries, D47, all along).
   - Descriptors: `dedensd` raises its soft `RLIMIT_NOFILE` to the hard limit at start, as BIND
     (`named_os_adjustnofile`) and Unbound (`checkrlimits`): a thread's authoritative mode holds up to 1056 sockets
     (D190). At start whatever the pipeline, since a reload may add a recurse stage. macOS refuses an unlimited soft
     limit, and one above `kern.maxfilesperproc`, with `EINVAL`, and its `setrlimit(2)` asks for `min(OPEN_MAX,
-    hard)` instead: refused, the soft limit is raised to that, `OPEN_MAX` 10240. The limit obtained is logged.
-  - Metrics: `dedens_resolver_queries_total{outcome=answer|lame|unusable|undecodable|timeout|server_error|local_error}`
-    (a shared reply counted once); `dedensd_recurse_errors_total{error=no_socket|tcp_busy|ports_exhausted|local|
+    hard)` instead: refused, the soft limit is raised to that, `OPEN_MAX` 10240, or kept where it is above already
+    (`launchctl limit maxfiles`). The limit obtained is logged.
+  - Metrics:
+    `dedens_resolver_queries_total{outcome=answer|lame|unusable|undecodable|timeout|server_error|local_error}` (a
+    shared reply counted once); `dedensd_recurse_errors_total{error=no_socket|tcp_busy|ports_exhausted|local|
     forged|unreachable|tcp}`, D190's errors (`ports_exhausted` the bind's `AddrInUse`, `unreachable` the ICMP);
     `dedensd_recurse_shed_total`; gauges `dedensd_recurse_{rrset,infra}_cache_{entries,bytes}`, set after
     each resolution; D191's `dedens_resolver_limits_total{limit}`.
@@ -1813,14 +1826,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     finds no forward stage and only replies), and `prewarm` needs a forward stage (TODECIDE); validation (step 10),
     QNAME minimisation (11), negative caching (12).
   - Tests: `crates/dedens-server/tests/recurse.rs` (each capture of `testdata/recursion` through the pipeline, the
-    cache stage answering it again; TTL bounds; DO; priming; the local zones; the budget), `crates/dedens-sim/tests/recurse.rs`
-    (`dedensd`'s loop on the captured servers' simulated Internet: priming once, and 100 identical questions sending
-    each query once), `apps/dedensd/tests/recurse.rs` (the local zones from the process only, where the step file
-    asked for a capture resolved from the process: a process cannot reach the captured servers' addresses, so the
-    capture is resolved in the simulation), the config tests in `apps/dedensd/src/config/recurse.rs`, the shared
-    queries' unit tests in `apps/dedensd/src/serve/recurse.rs` (`asked`, a send given: the outcome handed over, a local
-    error too, a waiter's wait past its own timeout and until its end, the shed), the shared reply in `crates/dedens-resolver/tests/iteration.rs`. The
-    `serve_query` fuzz target answers through a recurse stage, its input every server's response.
+    cache stage answering it again; TTL bounds; DO; priming; the local zones; the budget),
+    `crates/dedens-sim/tests/recurse.rs` (`dedensd`'s loop on the captured servers' simulated Internet: priming
+    once, 100 identical questions sending each query once, and past the waiters on a silent server one query sent,
+    one resolution shed, each reply within `Limits::time`), `apps/dedensd/tests/recurse.rs` (the local zones from
+    the process only, where the step file asked for a capture resolved from the process: a process cannot reach the
+    captured servers' addresses, so the capture is resolved in the simulation), the config tests in
+    `apps/dedensd/src/config/recurse.rs`, the shared queries' unit tests in `apps/dedensd/src/serve/recurse.rs`
+    (`asked`, a send given: the outcome handed over, a local error too, a waiter's wait past its own timeout and
+    until its end, a timeout cut short not shared, the shed; `hand`: what was sent judges the server, what was
+    shared does not, a shed ends), the shared reply and the timeout cut short in
+    `crates/dedens-resolver/tests/iteration.rs`. The `serve_query` fuzz target answers through a recurse stage, its
+    input every server's response.
   - Rejected: the resolution inside `Upstream` (its forward accessors would mean nothing for it); stepping it in
     `Pipeline::query` (no clock nor randomness there); D86's process-wide flights (a lock across threads); waiters
     without bound (one slow server holding every client).
