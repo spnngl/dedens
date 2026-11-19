@@ -23,3 +23,6 @@ back, `Pipeline::resolved` writing the reply (D195). Measure a change to the rat
   by the cache's `lifetime`, one from the RRset cache its time left. Never floor them again: the cache stage stores
   them with `Cache::insert_bounded` (`Ttls::Bounded`), not `insert`. A pipeline has a forward or a recurse stage,
   never both (`dedensd`'s config).
+- A validating recurse stage (D197) is never parked (D186): past the allowance it is SERVFAIL EDE 14. Its verdict
+  is the resolution's (`Resolved::checked`, `Failure::Bogus`), presented by `Finish::deliver` with `Ttls::Bounded`;
+  a bogus one is SERVFAIL with its EDE, never stale data.

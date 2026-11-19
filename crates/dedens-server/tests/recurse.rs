@@ -800,10 +800,26 @@ fn rfc4035_5_a_bogus_answer_gets_servfail_with_its_extended_error() {
     );
     let authorities = Authorities::new([&capture]);
     let query = client_query("sidn.nl.", RecordType::A, Flags::NONE, true);
-    let reply = validated(&capture, &authorities, &query, Allowance::default());
-    assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
-    assert_eq!(ede(&reply), Some(InfoCode::RRSIGS_MISSING));
-    assert_eq!(reply.answer, []);
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let pipeline = pipeline(
+        Config::default(),
+        validating(&caches, &capture, Allowance::default()),
+    );
+    // The `RRset` cache holds the verdict: asked again, the stage sends nothing and answers the same.
+    for (later, sent) in [(0, true), (1, false)] {
+        let (reply, resent) = ask(
+            &pipeline,
+            (&query, CLIENT),
+            &authorities,
+            at(&capture) + later,
+        );
+        assert_eq!(resent.is_some_and(|n| n > 0), sent, "{later}");
+        let reply = decode(reply.as_deref().expect("a reply"));
+        assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
+        assert_eq!(ede(&reply), Some(InfoCode::RRSIGS_MISSING));
+        assert_eq!(reply.answer, []);
+    }
 }
 
 #[test]

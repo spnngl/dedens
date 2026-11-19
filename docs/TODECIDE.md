@@ -276,14 +276,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   (`crates/dedens-resolver/src/resolution/mod.rs`, `Resolution::ask`); Unbound goes up instead when the delegation
   point is useless (`iterator/iterator.c` `iter_dp_is_useless`, then the parent side or the root). Default: once from
   the root hints, within the same `Limits` (D191), in `Resolution::ask` (the recurse stage, D195, left it as is).
-- A DS question answered NODATA by the child: a server of a zone above the name's parent, which the resolution
-  asks when it knows no closer cut, that serves the child zone too gives a NODATA whose SOA owner is the name asked,
-  the child's apex (RFC 4035 §3.1.4.1: the wrong side of the cut), and the resolution takes it as the DS's denial
-  (`Resolution::receive`, `crates/dedens-resolver/src/resolution/mod.rs`). Unbound's `iter_ds_toolow`
-  (`iterator/iter_utils.c`) rejects it, unless the zone asked is the name's parent or one label above it
-  (`iter_dp_cangodown`), and looks up the NS of each name from the name's parent up until a cut is found
-  (`processDSNSFind`, `MAX_DSNS_FIND_COUNT` 20). That needs an NS lookup beside the address ones, with its own bound.
-  Default: with the validator (recursive step 10), which needs the parent's DS and reads its proof.
+- Validation by default in a recurse stage (D197): `dnssec` is `off` unless set, as a forward stage's (D77), where
+  Unbound and BIND validate a recursive resolver by default. Default: off, as the forwarder; `validate` the default
+  once the simulation (D196) runs every capture validated.
+- A wildcard answer from the `RRset` cache validated anew (D197): the cache keeps the answer's RRsets, not the
+  denial proving the wildcard's expansion, so an unvalidated cached wildcard answer is judged without it, bogus.
+  Default: as is (a resolution that cached it unvalidated is one without a validator); kept with the answer when
+  negative caching keeps denials (recursive step 12).
 - ANY over TCP with a recurse stage: answered NOTIMP, a meta type the resolution does not ask (D195); RFC 8482 §4
   asks for a minimal answer instead: one RRset of the name (§4.1) or a synthesized HINFO (§4.2). Over UDP it is
   truncated, as the forward stage's. Default: the cached RRsets of the name if any, else resolve its A and answer
