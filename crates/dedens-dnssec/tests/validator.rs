@@ -526,7 +526,10 @@ fn each_rrset_of_an_insecure_answer_has_its_own_verdict() {
         } else if record.name == question.name {
             assert!(own.is_some_and(secure), "{record}: {own:?}");
         } else {
-            assert!(matches!(own, Some(Verdict::Insecure { .. })), "{record}: {own:?}");
+            assert!(
+                matches!(own, Some(Verdict::Insecure { .. })),
+                "{record}: {own:?}"
+            );
         }
     }
 }
@@ -536,11 +539,18 @@ fn each_rrset_of_an_insecure_answer_has_its_own_verdict() {
 #[test]
 fn each_proof_of_a_denial_has_its_own_verdict() {
     let script = Script::new();
-    for (id, insecure) in [("nxdomain_root_nsec", false), ("leaf_nxdomain_com_ds", true)] {
+    for (id, insecure) in [
+        ("nxdomain_root_nsec", false),
+        ("leaf_nxdomain_com_ds", true),
+    ] {
         let response = response(id);
         let validation = script.validation(&response);
         let verdict = script.verdict(id);
-        assert_eq!(matches!(verdict, Verdict::Insecure { .. }), insecure, "{id}: {verdict:?}");
+        assert_eq!(
+            matches!(verdict, Verdict::Insecure { .. }),
+            insecure,
+            "{id}: {verdict:?}"
+        );
         let proofs = (response.authority.iter()).filter(|r| r.rtype() != RecordType::RRSIG);
         for record in proofs {
             let own = validation.verdict_of(&record.name, record.rtype());
