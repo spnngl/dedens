@@ -196,3 +196,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D192 [server](server.md): the recursive resolver scrubs each response to what the zone asked may say, Unbound's rules, bounds and ranks, its deviations; forwarded data never in its cache
 - D193 [server](server.md): the resolver's `RRset` cache: RFC 2181 ranks, Unbound's replacement rules, the response cache's TTLs and store
 - D194 [server](server.md): the resolver's infra cache: RFC 6298 times per server, lameness per zone, a random server within 400 ms
+- D195 [server](server.md): the recurse stage: sans-IO steps the driver sends, RFC 8109 priming beside the hints, RFC 6303 local zones, queries shared per thread, D117 per query

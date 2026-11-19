@@ -1732,3 +1732,73 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     always (RFC 5452 §4.4); a `480 s` blacklist, which Unbound's `BLACKLIST_PENALTY` is not: 480,000 ms added to a
     server's RTT for one query (`iterator/iterator.c`), the iterator's (step 04) to apply.
     Open: times per (address, zone) if a server is measured slow for one zone only (TODECIDE).
+- D195 (builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
+  from the root, `Stage::Recurse` behind the cache stage where a forwarder has a forward stage.
+  - Shape: `dedens_server::Recurse` holds the resolver's caches (`Arc<Caches>`: RRsets D193, servers D194, the root
+    and TLD hints D126), `Limits` (D191), the locally served zones and the client budget. Sans-IO as the rest of the
+    pipeline: a miss returns `Step::Resolve(Box<Resolving>)`, which the driver steps (`Resolving::step(now, rng)`,
+    `Turn::Send(&Query)` or `Turn::Done`), sending each query with D190's authoritative mode and handing back the
+    reply, then `Pipeline::resolved` writes the client's reply through the forward path's `Finish`: stored in the
+    cache stage, a failure held (D43) with stale data served if any, SERVFAIL with D191's EDE (22, 23, 0) else.
+    The resolution takes the driver's clock (a `Duration`) and randomness at each step, which `Pipeline::query`
+    (seconds, no randomness) has not: so the step returns and the driver resolves, as it forwards. One query of a
+    resolution is in flight at a time (D191); `dedensd` draws a fresh `Entropy` (D190) for each step.
+  - Replies: RD clear REFUSED with EDE 20 and ANY over UDP truncated (RFC 8482), as the forward stage; a type or
+    class the resolver does not ask (RRSIG, meta types; not IN) NOTIMP and REFUSED. The answer is built from
+    `Resolved`: chain and data in the answer section, the SOA in the authority section of NXDOMAIN and NODATA, the
+    RRSIGs when the client set DO, each TTL bounded by the response cache's `lifetime` (D124: `min_ttl`, `max_ttl`,
+    the insecure and bogus caps) of the cache stage before, so the cache and the reply agree; the RRset cache reads
+    under the same `Config`. AA clear, RA set.
+  - Priming (RFC 8109 §3): when a resolution starts and the root's NS RRset is not in the RRset cache, the stage
+    hands the driver a priming resolution of `. NS` too, one at a time per stage (an atomic flag, cleared when the
+    priming ends either way), its queries paid by no client; the RRset cache keeps the answer for its TTL, and the
+    next resolution after its expiry primes again (§3.1). Meanwhile resolutions go on from the hints: D191 asks the
+    TLD hints for a TLD's servers, the root hints for the rest, so no client waits for the priming (§3's choice).
+    The hints are the bundled ones (D126): D128 refreshes the TLD list and the root's trust anchors into
+    `state_dir`, not `named.root`, so the step file's "refreshed copy" is not built (TODECIDE).
+  - Locally served zones, answered by the stage with AA and no query: RFC 6303 §4's reverse zones (the RFC 1918
+    ranges, 0, 127, 169.254, the TEST-NETs, 255.255.255.255, `::`, `::1`, `fe80::/10`, `fd00::/8`, the IPv6
+    documentation prefix), each an empty zone per §3 (`SOA . nobody.invalid. 1 3600 1200 604800 10800`, `NS`
+    itself, TTL 10800: SOA and NS at the apex, NODATA for other types, NXDOMAIN below); `home.arpa` the same (RFC
+    8375 §4 4.B) but its DS with DO resolved, so the insecure delegation proves; `resolver.arpa` NODATA for every
+    name (RFC 9462 §6.4: no designated resolver known); `localhost` the loopback addresses for A and AAAA, NODATA else
+    (RFC 6761 §6.3); `invalid` NXDOMAIN (§6.4). `local_zones.resolve` lists apexes to resolve instead (RFC 6303 §3's
+    switch per zone); an apex not in the list is a load error. Unbound's defaults (`services/localzone.c`
+    `local_zone_enter_defaults`) less `test` and `onion`, which D128's `tlds` stage answers.
+  - Shared queries (RFC 5452 §5): one query in flight per (server address, question) per thread, Unbound's mesh per
+    thread (`services/mesh.c` `mesh_new_client`), not D86's process-wide flights: a thread's resolutions wait on its
+    own query, no lock between threads. At most `WAITERS` 100 resolutions wait on one, BIND's
+    `max-clients-per-query` default, the bound its `clients-per-query` 10 grows to (`lib/dns/resolver.c`
+    `dns_resolver_createfetch`), past which BIND drops the client; past them a resolution here takes the query as
+    not sent (the next server), and `dedensd_recurse_waiters_full_total` counts it. The waiters take the reply with
+    `Resolution::receive_shared`, which leaves the infra cache alone: the sender's `receive` judged the server once,
+    and a timeout shared by a hundred would back it off a hundred times. A query that failed locally is not shared:
+    the waiters ask again.
+  - Client budget (D117): each query a resolution sends costs its client network one unit of the stage's
+    `client_share` (default 1000/s, burst 2000, as the forward stage's); one refused ends it, SERVFAIL with EDE 14
+    (Not Ready), as validation's shed. The rate limit's exempt networks pay nothing.
+  - Configuration: `type: recurse` with `limits` (D191's, `time_ms` up to 30,000), `local_zones.resolve`,
+    `client_share`, `rrset_cache_bytes` (default 128 MiB, D193) and `infra_cache_bytes` (default 4 MiB, D194). A
+    pipeline forwards or recurses: both are a load error naming the two stages; a stage after a recurse stage is one
+    (it answers every query), as after a forward stage. A reload with the same cache settings keeps the caches.
+  - Descriptors: `dedensd` raises its soft `RLIMIT_NOFILE` to the hard limit at start, as BIND
+    (`named_os_adjustnofile`) and Unbound (`checkrlimits`): a thread's authoritative mode holds up to 1056 sockets
+    (D190). At start whatever the pipeline, since a reload may add a recurse stage.
+  - Metrics: `dedens_resolver_queries_total{outcome=answer|lame|unusable|undecodable|timeout|server_error|local_error}`
+    (a shared reply counted once); `dedensd_recurse_errors_total{error=no_socket|tcp_busy|ports_exhausted|local|
+    forged|unreachable|tcp}`, D190's errors (`ports_exhausted` the bind's `AddrInUse`, `unreachable` the ICMP);
+    `dedensd_recurse_waiters_full_total`; gauges `dedensd_recurse_{rrset,infra}_cache_{entries,bytes}`, set after
+    each resolution; D191's `dedens_resolver_limits_total{limit}`.
+  - Left to later steps or open: no prefetch nor stale refresh with a recurse stage (the cache stage's refresh
+    finds no forward stage and only replies), and `prewarm` needs a forward stage (TODECIDE); validation (step 10),
+    QNAME minimisation (11), negative caching (12).
+  - Tests: `crates/dedens-server/tests/recurse.rs` (each capture of `testdata/recursion` through the pipeline, the
+    cache stage answering it again; TTL bounds; DO; priming; the local zones; the budget), `crates/dedens-sim/tests/recurse.rs`
+    (`dedensd`'s loop on the captured servers' simulated Internet: priming once, and 100 identical questions sending
+    each query once), `apps/dedensd/tests/recurse.rs` (the local zones from the process: a process cannot reach the
+    captured servers' addresses, so the capture is resolved in the simulation), the config tests in
+    `apps/dedensd/src/config/recurse.rs`, the shared reply in `crates/dedens-resolver/tests/iteration.rs`. The
+    `serve_query` fuzz target answers through a recurse stage, its input every server's response.
+  - Rejected: the resolution inside `Upstream` (its forward accessors would mean nothing for it); stepping it in
+    `Pipeline::query` (no clock nor randomness there); D86's process-wide flights (a lock across threads); waiters
+    without bound (one slow server holding every client).

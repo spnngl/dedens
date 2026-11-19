@@ -153,9 +153,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Round-trip times per (address, zone) in the infra cache, as Unbound keys them (`services/cache/infra.c`), instead
   of per address (D194): one server could answer one zone slower than another (a zone loaded from elsewhere).
   Default: per address, until a server is measured so.
-- The infra cache's size, `InfraCache::DEFAULT_CAPACITY` 4 MiB (D194), and `LAME_TTL` are constants; Unbound has
-  `infra-cache-numhosts` and `infra-host-ttl` options. Default: options of
-  `dedensd`'s `recurse` stage (recursive step 08), sized with the `RRset` cache's.
+- The infra cache's `LAME_TTL` and `SERVER_TTL` (D194) are constants (its size is the recurse stage's
+  `infra_cache_bytes`, D195); Unbound has an `infra-host-ttl` option. Default: constants, until a deployment needs
+  another.
 
 ## Recursive resolver
 
@@ -265,10 +265,17 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Recursive resolver
 
+- Root hints: the recurse stage primes from the bundled hints (D126, D195); D128 refreshes the TLD list and the
+  root's trust anchors into `state_dir`, not `named.root`. A root server renumbered after a release is asked until
+  priming learns its new address from the others. Default: fetch IANA's `named.root` with the TLD list (D128),
+  read it at start, the bundled copy as fallback.
+- Prefetch and stale data with a recurse stage (D195): the cache stage's refresh (D43) and `prewarm` (D96) find
+  no forward stage, so the cache only replies, and an expired answer waits for the resolution. Default: a resolution
+  with the refresh's purpose, after negative caching (recursive step 12).
 - A delegation from the cache or the TLD hints whose servers all fail ends the resolution
   (`crates/dedens-resolver/src/resolution/mod.rs`, `Resolution::ask`); Unbound goes up instead when the delegation
   point is useless (`iterator/iterator.c` `iter_dp_is_useless`, then the parent side or the root). Default: once from
-  the root hints, within the same `Limits` (D191), with the stage (recursive step 08).
+  the root hints, within the same `Limits` (D191), in `Resolution::ask` (the recurse stage, D195, left it as is).
 - A DS question answered NODATA by the child: a server of a zone above the name's parent, which the resolution
   asks when it knows no closer cut, that serves the child zone too gives a NODATA whose SOA owner is the name asked,
   the child's apex (RFC 4035 §3.1.4.1: the wrong side of the cut), and the resolution takes it as the DS's denial
