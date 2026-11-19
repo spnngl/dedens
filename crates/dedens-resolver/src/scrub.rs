@@ -212,10 +212,11 @@ pub enum Reason {
 }
 
 impl<'m> Scrubbed<'m> {
-    /// What [`RrsetCache::insert`](crate::RrsetCache::insert) takes: the records kept grouped into `RRsets`, each
-    /// with the RRSIG records covering it, and its rank. One rank after the other, in the order of the outcome's
-    /// fields; within a rank, in the order of their first records. A record and the signatures kept over it share an
-    /// owner and a section, so a rank: the scrubber alone decides which signature goes with which `RRset`.
+    /// What [`RrsetCache::insert`](crate::RrsetCache::insert) takes: the records kept for the cache, as in
+    /// [`Scrubbed::records`], grouped into `RRsets`, each with the RRSIG records covering it, and its rank. One rank
+    /// after the other, in the order of the outcome's fields; within a rank, in the order of their first records. A
+    /// record and the signatures kept over it share an owner and a section, so a rank: the scrubber alone decides
+    /// which signature goes with which `RRset`.
     #[must_use]
     pub fn ranked(&self) -> Vec<(Rank, Rrset)> {
         let mut ranks: Vec<(Rank, Vec<Record<'m>>)> = Vec::new();
