@@ -402,6 +402,44 @@ mod tests {
         assert!(message.contains("lax"), "{message}");
     }
 
+    /// D197: a recurse stage validates when told, as a forward stage; a reload validating the same way keeps its
+    /// caches and its validator, one validating otherwise flushes them and the cache stage, whose answers were
+    /// judged by the old one.
+    #[test]
+    fn d197_a_recurse_stage_validates_and_a_reload_changing_it_flushes_the_caches() {
+        fn recurse(pipeline: &Pipeline) -> (Arc<dedens_cache::Cache>, &dedens_server::Recurse) {
+            match pipeline.stages() {
+                [Stage::Cache(cache), Stage::Recurse(recurse)] => (Arc::clone(cache), recurse),
+                stages => unreachable!("{stages:?}"),
+            }
+        }
+        let off = read(RECURSIVE, env, &Pipeline::default())
+            .expect("valid")
+            .pipeline;
+        assert!(recurse(&off).1.validation().is_none());
+        let text = format!("{RECURSIVE}    dnssec: validate\n");
+        let validate = read(&text, env, &off).expect("valid").pipeline;
+        let (cache, stage) = recurse(&validate);
+        assert!(stage.validation().is_some());
+        assert!(!Arc::ptr_eq(&recurse(&off).0, &cache), "off to validate");
+        assert!(!Arc::ptr_eq(recurse(&off).1.caches(), stage.caches()));
+        let same = read(&text, env, &validate).expect("valid").pipeline;
+        assert!(Arc::ptr_eq(&recurse(&same).0, &cache), "unchanged");
+        assert!(Arc::ptr_eq(recurse(&same).1.caches(), stage.caches()));
+        assert_eq!(recurse(&same).1.validation_tag(), stage.validation_tag());
+        let insecure = format!("{text}    insecure: [corp.example]\n");
+        let insecure = read(&insecure, env, &same).expect("valid").pipeline;
+        assert!(
+            !Arc::ptr_eq(&recurse(&insecure).0, &cache),
+            "negative anchor added"
+        );
+        assert!(!Arc::ptr_eq(recurse(&insecure).1.caches(), stage.caches()));
+        assert!(
+            error(&format!("{RECURSIVE}    insecure: [corp.example]\n"))
+                .contains("need `dnssec: validate`")
+        );
+    }
+
     #[test]
     fn d195_a_pipeline_forwards_or_recurses_not_both() {
         let both = "listen: [\'127.0.0.1:53\']\npipeline: [root, up]\nstages:\n  root:\n    type: recurse\n  up:\n    type: forward\n    servers: [\'192.0.2.1\']\n";

@@ -2,7 +2,9 @@
 //! captured through `Authorities`, the harness acting as the transport: RFC 1034 §5.3.3 (each capture resolved
 //! through the pipeline, the cache stage answering it again), RFC 8109 §3 (priming), RFC 6303 §3 and §4, RFC 8375 §4,
 //! RFC 9462 §6.4 and RFC 6761 §6.3, §6.4 (the zones served locally), RFC 5452 §5 (a resolution on shared replies),
-//! and D117 (the client's network pays each query).
+//! D117 (the client's network pays each query), and validation (D197): RFC 4035 §5 (AD on a secure answer, SERVFAIL
+//! with the extended error of RFC 8914 §4 on a bogus one), §3.2.2 (none for a query with CD), and D77 (the
+//! allowance bounds it).
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -11,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Config};
+use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Rcode, RecordType, Transport};
@@ -18,7 +21,9 @@ use dedens_resolver::{
     Caches, DEFAULT_CAPACITY, InfraCache, Marks, Minimisation, Query, Reply, Resolved, RrsetCache,
 };
 use dedens_roots::RootHints;
-use dedens_server::{Budget, Budgets, Pipeline, Recurse, Resolving, Stage, Step, Turn};
+use dedens_server::{
+    Allowance, Budget, Budgets, Pipeline, Recurse, Resolving, Stage, Step, Turn, Validating,
+};
 use dedens_testkit::recursion::{self, Authorities};
 use rand_core::{TryCryptoRng, TryRng};
 
@@ -713,4 +718,137 @@ fn rfc8482_any_over_udp_is_truncated() {
     let (reply, _) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
     let reply = decode(reply.as_deref().expect("a reply"));
     assert!(reply.header.flags.contains(Flags::TC));
+}
+
+/// The recurse stage on `caches`, validating from the root's anchors at the time of `capture` under `allowance`.
+fn validating(
+    caches: &Arc<Caches>,
+    capture: &recursion::Resolution,
+    allowance: Allowance,
+) -> Recurse {
+    let validator = Validator::new(TrustAnchors::root(), dedens_dnssec::Limits::default());
+    let at = capture.captured_at;
+    let validating = Validating::new(validator, Arc::new(move || at)).allowing(allowance);
+    Recurse::new(Arc::clone(caches)).validating(validating)
+}
+
+/// The reply of a validating pipeline to `query`, `capture` served by `authorities`.
+fn validated(
+    capture: &recursion::Resolution,
+    authorities: &Authorities,
+    query: &[u8],
+    allowance: Allowance,
+) -> Message<'static> {
+    let caches = caches(Config::default());
+    steer(&caches, capture);
+    let pipeline = pipeline(Config::default(), validating(&caches, capture, allowance));
+    let (reply, _) = ask(&pipeline, (query, CLIENT), authorities, at(capture));
+    decode(reply.as_deref().expect("a reply")).into_owned()
+}
+
+/// `capture` with the signatures of its answers to `name` and `rtype` taken out.
+fn stripped(
+    mut capture: recursion::Resolution,
+    name: &str,
+    rtype: RecordType,
+) -> recursion::Resolution {
+    for exchange in &mut capture.exchanges {
+        if exchange.name.to_string() == name && exchange.rtype == rtype {
+            let mut response = dedens_testkit::message(&exchange.response);
+            response.answer.retain(|r| r.rtype() != RecordType::RRSIG);
+            exchange.response = response.to_vec().expect("a response encodes");
+        }
+    }
+    capture
+}
+
+#[test]
+fn rfc4035_5_each_capture_validated_is_secure_with_ad_or_insecure_without() {
+    for (id, capture) in recursion::Resolution::all() {
+        if capture.rtype == RecordType::RRSIG {
+            continue; // d195_a_type_not_resolved_is_not_implemented
+        }
+        let caches = caches(Config::default());
+        steer(&caches, &capture);
+        let pipeline = pipeline(
+            Config::default(),
+            validating(&caches, &capture, Allowance::default()),
+        );
+        let authorities = Authorities::new([&capture]);
+        let query = client_query(&capture.name.to_string(), capture.rtype, Flags::NONE, true);
+        let now = at(&capture);
+        let (reply, _) = ask(&pipeline, (&query, CLIENT), &authorities, now);
+        let reply = decode(reply.as_deref().expect("a reply"));
+        assert_ne!(reply.header.rcode, Rcode::SERVFAIL, "{id}: {reply:?}");
+        let unsigned =
+            ["cname", "unsigned", "truncated"].contains(&id.as_str()) || id.ends_with("-unsigned");
+        assert_eq!(reply.header.flags.contains(Flags::AD), !unsigned, "{id}");
+        // The cache stage answers again as it was judged.
+        let (again, resent) = ask(&pipeline, (&query, CLIENT), &authorities, now + 1);
+        assert_eq!(resent, None, "{id}");
+        let again = decode(again.as_deref().expect("a reply"));
+        assert_eq!(again.header.flags.contains(Flags::AD), !unsigned, "{id}");
+    }
+}
+
+#[test]
+fn rfc4035_5_a_bogus_answer_gets_servfail_with_its_extended_error() {
+    let capture = stripped(
+        recursion::Resolution::read("signed-nl"),
+        "sidn.nl.",
+        RecordType::A,
+    );
+    let authorities = Authorities::new([&capture]);
+    let query = client_query("sidn.nl.", RecordType::A, Flags::NONE, true);
+    let reply = validated(&capture, &authorities, &query, Allowance::default());
+    assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
+    assert_eq!(ede(&reply), Some(InfoCode::RRSIGS_MISSING));
+    assert_eq!(reply.answer, []);
+}
+
+#[test]
+fn rfc4035_3_2_2_a_query_with_cd_is_not_validated() {
+    let capture = stripped(
+        recursion::Resolution::read("signed-nl"),
+        "sidn.nl.",
+        RecordType::A,
+    );
+    let authorities = Authorities::new([&capture]);
+    let query = client_query("sidn.nl.", RecordType::A, Flags::CD, true);
+    let reply = validated(&capture, &authorities, &query, Allowance::default());
+    assert_eq!(reply.header.rcode, Rcode::NOERROR);
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert!(
+        reply.answer.iter().any(|r| r.rtype() == RecordType::A),
+        "{reply:?}"
+    );
+}
+
+#[test]
+fn d77_a_validation_past_the_allowance_gets_servfail_not_ready() {
+    let capture = recursion::Resolution::read("signed-nl");
+    let authorities = Authorities::new([&capture]);
+    let query = client_query("sidn.nl.", RecordType::A, Flags::NONE, true);
+    let allowance = Allowance {
+        per_second: 1,
+        burst: 1,
+        per_query: 256,
+    };
+    let reply = validated(&capture, &authorities, &query, allowance);
+    assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
+    assert_eq!(ede(&reply), Some(InfoCode::NOT_READY));
+}
+
+#[test]
+fn d77_a_validation_past_its_query_allowance_is_indeterminate() {
+    let capture = recursion::Resolution::read("signed-nl");
+    let authorities = Authorities::new([&capture]);
+    let query = client_query("sidn.nl.", RecordType::A, Flags::NONE, true);
+    let allowance = Allowance {
+        per_query: 2,
+        ..Allowance::default()
+    };
+    let reply = validated(&capture, &authorities, &query, allowance);
+    assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
+    assert_eq!(ede(&reply), Some(InfoCode::DNSSEC_INDETERMINATE));
 }
