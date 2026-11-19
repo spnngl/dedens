@@ -351,7 +351,7 @@ fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdat
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
 # of fuzz/seeds/stamps.txt, one to a file in fuzz/target/seeds/stamps; dedensd's configurations, the image's, the
-# packages', those of fuzz/seeds/dnscrypt.yaml and odoh.yaml and the example of its config module, in
+# packages', those of fuzz/seeds/dnscrypt.yaml and odoh.yaml and the examples of its config module (example.yaml, example2.yaml), in
 # fuzz/target/seeds/configs (D181); the root hints, the test copy of the TLD list (D126) and ICANN's CA bundle (D127) in
 # fuzz/target/seeds/roots; the responses of the captured resolutions of testdata/recursion (D188), kept there in
 # base64, one to a file in fuzz/target/seeds/recursion.
@@ -371,7 +371,7 @@ fuzz-seeds:
     cp deploy/packages/dedensd.conf.yaml fuzz/target/seeds/configs/dedensd.conf.yaml
     cp fuzz/seeds/dnscrypt.yaml fuzz/target/seeds/configs/dnscrypt.yaml
     cp fuzz/seeds/odoh.yaml fuzz/target/seeds/configs/odoh.yaml
-    perl -ne 'last unless s{^//! ?}{}; print if /^```yaml$/ ... /^```$/ and !/^```/' apps/dedensd/src/config/mod.rs > fuzz/target/seeds/configs/example.yaml
+    perl -ne 'last unless s{^//! ?}{}; if (/^```yaml$/) { open $out, ">", "fuzz/target/seeds/configs/example" . (++$n > 1 ? $n : "") . ".yaml" or die; next } undef $out if /^```$/; print $out $_ if $out' apps/dedensd/src/config/mod.rs
 
 # Fuzz one target with libFuzzer (pinned nightly, cargo-fuzz), starting from the captured data, for five
 # minutes by default, in `fork` processes when given: just fuzz decode_message 60 4

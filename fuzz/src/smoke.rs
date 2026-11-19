@@ -119,20 +119,28 @@ fn stamps() -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', `seeds/dnscrypt.yaml` and the example of
-/// `apps/dedensd/src/config/mod.rs`.
+/// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', `seeds/dnscrypt.yaml` and the examples of
+/// `apps/dedensd/src/config/mod.rs` (`example.yaml`, `example2.yaml`).
 fn configs() -> Vec<(String, Vec<u8>)> {
-    let mut example = include_str!("../../apps/dedensd/src/config/mod.rs")
+    let mut examples: Vec<String> = Vec::new();
+    let mut open: Option<Vec<&str>> = None;
+    let docs = include_str!("../../apps/dedensd/src/config/mod.rs")
         .lines()
         .map_while(|line| line.strip_prefix("//!"))
-        .map(|line| line.strip_prefix(' ').unwrap_or(line))
-        .skip_while(|&line| line != "```yaml")
-        .skip(1)
-        .take_while(|&line| line != "```")
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(!example.is_empty(), "the example configuration");
-    example.push('\n');
+        .map(|line| line.strip_prefix(' ').unwrap_or(line));
+    for line in docs {
+        match (line, open.as_mut()) {
+            ("```yaml", None) => open = Some(Vec::new()),
+            ("```", Some(example)) => {
+                examples.push(example.join("\n") + "\n");
+                open = None;
+            }
+            (line, Some(example)) => example.push(line),
+            (_, None) => {}
+        }
+    }
+    let [forwarder, resolver] =
+        <[String; 2]>::try_from(examples).expect("the two example configurations");
     vec![
         (
             "dedensd.yaml".into(),
@@ -146,7 +154,8 @@ fn configs() -> Vec<(String, Vec<u8>)> {
             "dnscrypt.yaml".into(),
             include_bytes!("../seeds/dnscrypt.yaml").to_vec(),
         ),
-        ("example.yaml".into(), example.into_bytes()),
+        ("example.yaml".into(), forwarder.into_bytes()),
+        ("example2.yaml".into(), resolver.into_bytes()),
     ]
 }
 
