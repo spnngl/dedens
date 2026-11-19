@@ -228,6 +228,14 @@ pub enum ServerError {
         /// Queries sent in all.
         sends: u16,
     },
+    /// No response over TCP before the deadline, the query moved there from UDP on a truncated response, a case
+    /// mismatch or BADCOOKIE (D196): the server answered over UDP, so its time over UDP is not to blame, as
+    /// Unbound's `serviced_tcp_callback` backs off only a query over TCP from the start.
+    #[error("no response over TCP after {sends} queries, the query moved there from UDP")]
+    TcpTimedOut {
+        /// Queries sent in all.
+        sends: u16,
+    },
     /// No response before the deadline, responses dropped for their cookie (RFC 7873 §5.3).
     #[error(
         "no response after {sends} queries, responses with a wrong cookie dropped (RFC 7873 §5.3)"
@@ -393,6 +401,8 @@ impl<N: Io> Authoritative<N> {
             Exchange::start(query, server, options, spare_ids, now).map_err(LocalError::Encode)?;
         // The last ICMP error, told beside the timeout only.
         let mut unreachable = None;
+        // Whether the query moved from UDP to TCP: a timeout then is TCP's.
+        let mut moved = false;
         let mut progress = Progress::Send(exchange);
         loop {
             progress = match progress {
@@ -404,6 +414,9 @@ impl<N: Io> Authoritative<N> {
                     return Err(match (failure, unreachable) {
                         (Failure::Encode(error), _) => LocalError::Encode(error).into(),
                         (Failure::Forged { sends }, _) => ServerError::Forged { sends }.into(),
+                        (Failure::TimedOut { sends }, _) if moved => {
+                            ServerError::TcpTimedOut { sends }.into()
+                        }
                         (Failure::TimedOut { sends }, Some(kind)) => {
                             ServerError::Unreachable { sends, kind }.into()
                         }
@@ -416,6 +429,7 @@ impl<N: Io> Authoritative<N> {
                     self.io.sending(&next);
                     self.cookies.borrow_mut().keep(pair, next.cookie());
                     if next.transport() != Transport::Udp && socket.take().is_some() {
+                        moved = true;
                         deadline = deadline.max(self.io.now() + TCP_TIMEOUT);
                     }
                     match &socket {

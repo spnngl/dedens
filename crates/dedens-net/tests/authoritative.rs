@@ -1058,6 +1058,43 @@ async fn a_query_moved_to_tcp_waits_past_the_deadline() {
     assert!(late <= waited && waited < TCP_TIMEOUT, "{waited:?}");
 }
 
+/// D196: the query moved to TCP that gets no response there by [`TCP_TIMEOUT`] times out as TCP's: the server
+/// answered over UDP, so its time over UDP is not to blame.
+#[compio::test]
+async fn a_query_moved_to_tcp_times_out_as_tcp_s() {
+    let addr = server(
+        |query| {
+            vec![(
+                From::Server,
+                AUTHORITIES.answer(MICROSOFT, recursion::Transport::Udp, query),
+            )]
+        },
+        move |query| {
+            thread::sleep(TCP_TIMEOUT + Duration::from_secs(1));
+            AUTHORITIES.answer(MICROSOFT, recursion::Transport::Tcp, query)
+        },
+    );
+    let (client, _) = client(Limits::default());
+    let question = Question::new("microsoft.com.".parse().expect("a name"), RecordType::TXT);
+    let silence = client
+        .query(
+            question,
+            addr,
+            Quirks::default(),
+            Instant::now() + TCP_TIMEOUT / 4,
+        )
+        .await;
+    assert!(
+        matches!(
+            silence,
+            Err(AuthoritativeError::Server(ServerError::TcpTimedOut {
+                sends: 2
+            }))
+        ),
+        "{silence:?}"
+    );
+}
+
 /// RFC 7873 §5.3: a server answering BADCOOKIE twice over UDP is asked over TCP and marked; the next query, told
 /// of it, goes over TCP from the start, without a cookie.
 #[compio::test]

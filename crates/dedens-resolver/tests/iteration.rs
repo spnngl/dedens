@@ -895,6 +895,38 @@ fn d191_time_bound() {
     assert_eq!(sent, []);
 }
 
+/// A query moved to TCP that times out there leaves the server's time over UDP as it was: the next query to it
+/// waits as long, where a timeout over UDP doubles the wait (RFC 6298 §5.5), and the next server is asked.
+#[test]
+fn d197_a_tcp_timeout_does_not_back_off_the_server() {
+    let capture = recursion::Resolution::read("unsigned");
+    let now = at(&capture);
+    let waits = [Reply::Timeout, Reply::TcpTimeout].map(|reply| {
+        let caches = caches(false);
+        let mut resolution = start(&capture, &caches, Limits::default());
+        let mut rng = Seeded(SEED);
+        let Next::Send(query) = resolution.step(now, &mut rng) else {
+            panic!("a query");
+        };
+        let query = query.clone();
+        resolution.receive(reply, now + query.timeout);
+        let Next::Send(next) = resolution.step(now + query.timeout, &mut rng) else {
+            panic!("a query");
+        };
+        assert_ne!(next.server, query.server);
+        let again = caches.infra.select(
+            &[query.server],
+            &query.zone,
+            Duration::MAX,
+            secs(now + query.timeout),
+            &mut rng,
+        );
+        (query.timeout, again.expect("a server").timeout)
+    });
+    let [(sent, udp), (tcp_sent, tcp)] = waits;
+    assert_eq!((udp, tcp), (sent * 2, tcp_sent));
+}
+
 #[test]
 fn d191_time_runs_out_mid_resolution() {
     // Each query times out after its timeout: the last one is given the time left, then the resolution ends.
