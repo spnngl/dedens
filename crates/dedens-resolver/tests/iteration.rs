@@ -1591,7 +1591,7 @@ fn d195_a_timeout_cut_short_by_the_resolution_s_end_does_not_judge_the_server() 
     let limits = Limits::default();
     let mut rng = Seeded(SEED);
     let mut resolution = start(&capture, &caches, limits);
-    let now = at(&capture) + limits.time - Duration::from_millis(10);
+    let now = at(&capture) + limits.time.saturating_sub(Duration::from_millis(10));
     let Next::Send(query) = resolution.step(now, &mut rng) else {
         panic!("a query")
     };
