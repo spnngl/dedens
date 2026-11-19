@@ -77,6 +77,7 @@ fn usage_errors_exit_2() {
         &["--format=xml"],
         &["+t"],
         &["-t", "example.com"],
+        &["-p", "0", "example.com"],
         &["+trace", "@127.0.0.1", "example.com"],
         &["+trace", "+repeat=2", "example.com"],
         &["+trace", "+search", "example.com"],
@@ -150,6 +151,7 @@ fn usage_errors_the_run_finds_exit_2_before_any_query() {
     for (args, error) in [
         (&["example.com", "a..b"][..], "a..b: not a domain name"),
         (&["@127.0.0.1:x", "example.com"], "not a port"),
+        (&["@127.0.0.1:0", "example.com"], "not a port"),
         (
             &["@127.0.0.1:53:53", "example.com"],
             "not an address or a host name",
