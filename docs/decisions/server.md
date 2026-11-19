@@ -1865,7 +1865,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the validator, a referral's NS) has the whole answer validated. So an answer made of unsigned glue or additional
     data, or cached by a resolution that did not validate, is never taken for secure. A wildcard expansion (an RRSIG
     of fewer labels than its owner, RFC 4035 §5.3.4, `Rrset::expanded`) is not taken from the cache unless judged
-    insecure or bogus: the cache holds no proof of it, so the authorities are asked (`docs/TODECIDE.md`).
+    insecure or bogus: the cache holds no proof of it, so the authorities are asked (`docs/TODECIDE.md`). Without a
+    validator (CD) a secure one is served unchecked, without AD, its proof missing.
   - Verdicts, each RRset's own (`Validation::verdict_of`, Unbound's `val_verify_rrset_entry` and
     `rrset_update_sec_status`): an answer's parts may be of other zones, so a CNAME from an unsigned or a bogus zone
     does not make its signed target insecure or bogus in the cache. Each RRset, NSEC and NSEC3 included, is
