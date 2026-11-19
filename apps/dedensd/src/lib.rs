@@ -375,7 +375,9 @@ fn descriptors() {
     use nix::sys::resource::{Resource, getrlimit, setrlimit};
     let raised = getrlimit(Resource::RLIMIT_NOFILE).and_then(|(soft, hard)| {
         if soft < hard {
-            raise(hard, |soft| setrlimit(Resource::RLIMIT_NOFILE, soft, hard))?;
+            raise(soft, hard, |soft| {
+                setrlimit(Resource::RLIMIT_NOFILE, soft, hard)
+            })?;
         }
         getrlimit(Resource::RLIMIT_NOFILE)
     });
@@ -390,15 +392,17 @@ fn descriptors() {
 #[cfg(unix)]
 const OPEN_MAX: nix::sys::resource::rlim_t = 10_240;
 
-/// Sets the soft limit of open descriptors with `set`: to `hard`, or to [`OPEN_MAX`] at most where `hard` is refused
-/// with `EINVAL`, as macOS refuses an unlimited one.
+/// Raises the soft limit of open descriptors from `soft` with `set`: to `hard`, or to [`OPEN_MAX`] at most where
+/// `hard` is refused with `EINVAL`, as macOS refuses an unlimited one; never below `soft`, which may be above
+/// [`OPEN_MAX`] already.
 #[cfg(unix)]
 fn raise(
+    soft: nix::sys::resource::rlim_t,
     hard: nix::sys::resource::rlim_t,
     set: impl Fn(nix::sys::resource::rlim_t) -> nix::Result<()>,
 ) -> nix::Result<()> {
     match set(hard) {
-        Err(nix::errno::Errno::EINVAL) => set(hard.min(OPEN_MAX)),
+        Err(nix::errno::Errno::EINVAL) => set(hard.min(OPEN_MAX).max(soft)),
         set => set,
     }
 }
@@ -457,8 +461,8 @@ fn build(
 
 #[cfg(test)]
 mod tests {
-    /// D195: an unlimited hard limit refused, as macOS refuses it, the soft limit is raised to `OPEN_MAX`; a hard
-    /// limit taken, or refused for another reason, is the end of it.
+    /// D195: an unlimited hard limit refused, as macOS refuses it, the soft limit is raised to `OPEN_MAX`, never
+    /// lowered to it; a hard limit taken, or refused for another reason, is the end of it.
     #[cfg(unix)]
     #[test]
     fn d195_the_descriptors_are_raised_to_open_max_where_the_hard_limit_is_refused() {
@@ -469,27 +473,37 @@ mod tests {
 
         use super::{OPEN_MAX, raise};
 
-        // The system refuses with `refused` a soft limit above `OPEN_MAX`.
-        for (hard, refused, result, tried) in [
+        // From `soft`, the system refuses with `refused` a soft limit above `OPEN_MAX` and `soft`.
+        for (soft, hard, refused, result, tried) in [
             (
+                256,
                 RLIM_INFINITY,
                 Errno::EINVAL,
                 Ok(()),
                 vec![RLIM_INFINITY, OPEN_MAX],
             ),
-            (20_000, Errno::EINVAL, Ok(()), vec![20_000, OPEN_MAX]),
-            (4096, Errno::EINVAL, Ok(()), vec![4096]),
+            (256, 20_000, Errno::EINVAL, Ok(()), vec![20_000, OPEN_MAX]),
+            (256, 4096, Errno::EINVAL, Ok(()), vec![4096]),
             (
+                256,
                 RLIM_INFINITY,
                 Errno::EPERM,
                 Err(Errno::EPERM),
                 vec![RLIM_INFINITY],
             ),
+            // `launchctl limit maxfiles 20000 unlimited`: kept, not lowered to `OPEN_MAX`.
+            (
+                20_000,
+                RLIM_INFINITY,
+                Errno::EINVAL,
+                Ok(()),
+                vec![RLIM_INFINITY, 20_000],
+            ),
         ] {
             let set = RefCell::new(Vec::new());
-            let got = raise(hard, |soft| {
-                set.borrow_mut().push(soft);
-                if soft > OPEN_MAX {
+            let got = raise(soft, hard, |to| {
+                set.borrow_mut().push(to);
+                if to > OPEN_MAX.max(soft) {
                     Err(refused)
                 } else {
                     Ok(())
