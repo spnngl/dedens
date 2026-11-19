@@ -14,15 +14,17 @@ use dedens_net::exchange::{Options, Response};
 use dedens_net::io::Io;
 use dedens_net::tcp::frame;
 use dedens_proto::{Message, Transport};
-use dedens_server::{Parked, Pipeline, Step, Upstream, Via};
+use dedens_server::{Parked, Pipeline, Resolving, Step, Upstream, Via};
 
-use super::{Thread, pause};
+use super::{Thread, pause, recurse};
 use crate::flights::{Entered, Flights, Key, Lead};
 
-/// What a query asks upstream: now, or once the validation allowance admits it (D186).
+/// What a query asks upstream: now, or once the validation allowance admits it (D186), or the authoritative servers
+/// (D195).
 pub(super) enum Ask {
     Now(Box<Upstream>),
     Parked(Parked),
+    Resolve(Box<Resolving>),
 }
 
 impl From<Box<Upstream>> for Ask {
@@ -54,6 +56,7 @@ impl Ask {
         match self {
             Self::Now(upstream) => pipeline.abandon(&upstream, out),
             Self::Parked(parked) => pipeline.shed(parked, now, out),
+            Self::Resolve(resolving) => pipeline.resolved(&resolving, now, out),
         }
     }
 }
@@ -62,7 +65,8 @@ impl Ask {
 /// the forward stage's timeout and tries (D42), and hands `deliver` the replies to send, made in the thread's buffer and copied out
 /// ([`copy_out`]): expired data when the client response timer runs out first, resolution going on to refresh the
 /// cache (RFC 8767 §5), then the response's unless that went out; none after a prefetch. A query parked waits for
-/// the allowance first ([`wait`]), and is given up if it waits too long.
+/// the allowance first ([`wait`]), and is given up if it waits too long. A query the recurse stage resolves goes to
+/// [`recurse::resolve`].
 pub(super) async fn answer<N: Io>(
     thread: &Thread<N>,
     pipeline: &Pipeline,
@@ -74,6 +78,13 @@ pub(super) async fn answer<N: Io>(
     let since = thread.io.now();
     let mut upstream = match ask.into() {
         Ask::Now(upstream) => upstream,
+        Ask::Resolve(resolving) => {
+            // Boxed: its steps would make every forwarded query's future larger.
+            return Box::pin(recurse::resolve(
+                thread, pipeline, resolving, transport, deliver,
+            ))
+            .await;
+        }
         Ask::Parked(parked) => match wait(thread, pipeline, parked, since).await {
             Ok(upstream) => upstream,
             Err(parked) => {
@@ -148,8 +159,8 @@ pub(super) async fn answer<N: Io>(
                 Step::Reply(len) | Step::Refresh(len, _) => {
                     (copy_out(&out[..len], transport), None)
                 }
-                // `receive` does not park: the query was admitted.
-                Step::Drop | Step::Park(_) => (None, None),
+                // `receive` does not park: the query was admitted; nor does a forward stage resolve.
+                Step::Drop | Step::Park(_) | Step::Resolve(_) => (None, None),
                 Step::Upstream(next) => (None, Some(next)),
             }
         };
@@ -379,7 +390,7 @@ fn peer(addr: SocketAddr, name: Option<&str>, path: Option<&str>) -> Server {
 
 /// The reply `wire`, made in the thread's buffer, copied out to be sent over `transport`: behind its length but
 /// over UDP, HTTPS and CoAP. Only its bytes leave the buffer, never those of an earlier reply.
-fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
+pub(super) fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
     if matches!(
         transport,
         Transport::Udp | Transport::Https | Transport::Odoh | Transport::Coap

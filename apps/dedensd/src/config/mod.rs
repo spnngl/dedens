@@ -95,6 +95,7 @@ mod env;
 mod keys;
 mod limits;
 mod listen;
+mod recurse;
 mod roots;
 #[cfg(any(feature = "odoh", feature = "dnscrypt"))]
 mod secret;
@@ -130,6 +131,7 @@ pub(crate) use self::listen::Listen;
 #[cfg(feature = "dnscrypt")]
 pub(crate) use self::listen::address;
 use self::listen::{TlsFile, presented};
+use self::recurse::recurse;
 use self::roots::RootsFile;
 #[cfg(all(test, feature = "odoh"))]
 pub(crate) use self::secret::KEY_FILE_MAX;
@@ -392,6 +394,7 @@ fn stages(
     downloads: &mut Downloads,
     store: &mut Store,
 ) -> anyhow::Result<(Vec<Stage>, Vec<Question<'static>>)> {
+    forwards_or_recurses(order, &defined)?;
     let mut built = Vec::with_capacity(order.len());
     // The cache stage that keeps names answered, its place in `built` and its questions (D96).
     let mut warm = None;
@@ -472,6 +475,7 @@ fn stages(
                     (&mut *downloads, store),
                 )?
             }
+            StageFile::Recurse(file) => recurse(name, file, &built, previous)?,
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
                 downloads.tlds(store)?,
                 Ttl::from_wire(PLUGIN_TTL),
@@ -482,7 +486,21 @@ fn stages(
     if let Some(name) = defined.keys().next() {
         bail!("stage `{name}` is defined but not listed in `pipeline`");
     }
-    let questions = match warm {
+    let questions = warmed(warm, &built)?;
+    Ok((built, questions))
+}
+
+/// The questions of `warm`, the cache stage keeping names answered, its place in `built` and its questions, if any
+/// (D96).
+///
+/// # Errors
+///
+/// No forward stage after the cache stage: the recurse stage does not prewarm (D195).
+fn warmed(
+    warm: Option<(&str, usize, Vec<Question<'static>>)>,
+    built: &[Stage],
+) -> anyhow::Result<Vec<Question<'static>>> {
+    Ok(match warm {
         Some((name, at, _))
             if !built[at..]
                 .iter()
@@ -492,8 +510,27 @@ fn stages(
         }
         Some((_, _, questions)) => questions,
         None => Vec::new(),
+    })
+}
+
+/// Checks that the stages `order` lists from `defined` forward or recurse, not both: each answers every query.
+///
+/// # Errors
+///
+/// Naming a forward stage and a recurse stage both listed.
+fn forwards_or_recurses(
+    order: &[String],
+    defined: &BTreeMap<String, StageFile>,
+) -> anyhow::Result<()> {
+    let kind = |wanted: fn(&StageFile) -> bool| {
+        (order.iter()).find(|name| defined.get(name.as_str()).is_some_and(wanted))
     };
-    Ok((built, questions))
+    let forward = kind(|stage| matches!(stage, StageFile::Forward { .. }));
+    let recurse = kind(|stage| matches!(stage, StageFile::Recurse(_)));
+    if let (Some(forward), Some(recurse)) = (forward, recurse) {
+        bail!("stages `{forward}` and `{recurse}`: a pipeline forwards or recurses, not both");
+    }
+    Ok(())
 }
 
 /// The most names a cache stage's `prewarm` lists: each is asked for each type and, with `dnssec: validate`, with and
@@ -507,11 +544,17 @@ const MAX_REFRESH_MINUTES: u64 = 366 * 1440;
 ///
 /// # Errors
 ///
-/// Any stage after a forward stage, which answers every query; a second cache stage, which would never be
+/// Any stage after a forward or recurse stage, which answers every query; a second cache stage, which would never be
 /// filled; a hosts, blocklist or tlds stage after a cache stage, whose answers a reload keeps (D64).
 fn placed(name: &str, stage: &StageFile, built: &[Stage]) -> anyhow::Result<()> {
-    if let Some(Stage::Forward(_)) = built.last() {
-        bail!("stage `{name}` comes after a forward stage, which answers every query");
+    match built.last() {
+        Some(Stage::Forward(_)) => {
+            bail!("stage `{name}` comes after a forward stage, which answers every query")
+        }
+        Some(Stage::Recurse(_)) => {
+            bail!("stage `{name}` comes after a recurse stage, which answers every query")
+        }
+        _ => {}
     }
     let cached = built.iter().any(|stage| matches!(stage, Stage::Cache(_)));
     match stage {

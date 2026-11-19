@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use super::limits::BudgetFile;
+use super::recurse::RecurseFile;
 use super::roots::RootsFile;
 use super::upstream::{Dnssec, Insecure, OdohProxy, Relay, Server};
 use super::{
@@ -96,6 +97,12 @@ pub(super) enum StageFile {
     /// Answers, with no upstream query, the special-use top-level domains as their RFCs ask and the names of TLDs
     /// not in the root zone (D128), from IANA's list kept fresh as `roots` says. It goes before a cache stage.
     Tlds {},
+    /// Resolves from the root (D195), instead of a forward stage: the `RRsets` learnt are kept in a cache of
+    /// `rrset_cache_bytes`, under the cache stage's TTL bounds, the servers' timing in one of `infra_cache_bytes`;
+    /// `limits` bound each resolution (D191), `local_zones.resolve` lists zones served locally to resolve instead
+    /// (RFC 6303 §3), and `client_share` is the queries to authoritative servers a client network may send, a
+    /// second and at once (D117).
+    Recurse(RecurseFile),
 }
 
 /// A cache stage, as written: the settings of `dedens_cache::Config` and, beside them, the names to keep answered
@@ -236,7 +243,7 @@ impl StageFile {
             } => {
                 file.is_some() || !urls.is_empty() || allow.file.is_some() || !allow.urls.is_empty()
             }
-            Self::Tlds {} => false,
+            Self::Tlds {} | Self::Recurse(_) => false,
         }
     }
 }

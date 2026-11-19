@@ -230,6 +230,12 @@ impl Resolving {
         &self.question
     }
 
+    /// The caches it resolves into, the stage's.
+    #[must_use]
+    pub const fn caches(&self) -> &Arc<Caches> {
+        &self.caches
+    }
+
     /// Whether it primes the root's servers, for no client.
     #[must_use]
     pub const fn is_priming(&self) -> bool {

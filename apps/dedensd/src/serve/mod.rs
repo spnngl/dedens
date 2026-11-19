@@ -21,6 +21,7 @@ mod http3;
 pub(crate) mod isolate;
 pub(crate) mod prewarm;
 mod quic;
+mod recurse;
 mod tcp;
 mod udp;
 mod upstream;
@@ -176,6 +177,8 @@ struct Thread<N: Io = Compio> {
     /// The buffer TCP replies and replies after upstream are made in, of a message's largest size (D63): making
     /// one never waits, so one buffer serves every task, borrowed only while a reply is made and copied out.
     scratch: RefCell<Box<[u8]>>,
+    /// The recurse stage's transport and queries in flight (D195).
+    recursion: recurse::Recursion<N>,
     /// The Oblivious `DoH` target the HTTP/3 listeners serve, if any (D79).
     #[cfg(feature = "odoh")]
     odoh: Option<Arc<odoh::Service>>,
@@ -217,6 +220,7 @@ impl<N: Io> Thread<N> {
             connections: Slots::new(TCP_CONNECTIONS),
             h3: Rc::default(),
             scratch: RefCell::new(vec![0; MAX_MESSAGE_LEN].into_boxed_slice()),
+            recursion: recurse::Recursion::new(),
             #[cfg(feature = "odoh")]
             odoh: None,
         }
@@ -301,6 +305,7 @@ impl Services {
 pub(crate) fn describe() {
     isolate::describe();
     prewarm::describe();
+    recurse::describe();
     #[cfg(feature = "dnscrypt")]
     dnscrypt::describe();
 }
@@ -744,6 +749,7 @@ fn start<N: Io>(
             Ask::Now(upstream)
         }
         Step::Park(parked) => Ask::Parked(parked),
+        Step::Resolve(resolving) => Ask::Resolve(resolving),
     };
     let Some(slot) = thread.upstream.take() else {
         tracing::debug!("too many upstream queries: SERVFAIL");

@@ -211,6 +211,7 @@ impl Cached {
 #[derive(Debug)]
 pub struct RrsetCache {
     store: Store<Entry>,
+    capacity: usize,
     config: Config,
     metrics: Metrics,
 }
@@ -227,6 +228,7 @@ impl RrsetCache {
         config.validate()?;
         Ok(Self {
             store: Store::new(capacity, config.shards, config.max_entry_bytes, KEY_LEN)?,
+            capacity,
             config,
             metrics: Metrics::new(),
         })
@@ -334,6 +336,12 @@ impl RrsetCache {
     #[must_use]
     pub fn used(&self) -> usize {
         self.store.used()
+    }
+
+    /// The bytes it was made with: a reload keeps a cache of the same capacity and config (D195).
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// The TTL bounds and shards it was made with: a reply from it bounds its TTLs so (D195).
