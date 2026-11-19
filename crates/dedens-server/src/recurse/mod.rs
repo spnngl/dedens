@@ -90,6 +90,12 @@ impl Recurse {
         Ok(self)
     }
 
+    /// The zones it serves locally: a cache stage before it holds what the others resolved to, and is flushed on
+    /// reload when they change (D195).
+    pub fn local_zones(&self) -> impl Iterator<Item = &Name<'static>> {
+        self.local.names()
+    }
+
     /// The caches it resolves from: a stage built on reload with the same settings takes them over.
     #[must_use]
     pub const fn caches(&self) -> &Arc<Caches> {

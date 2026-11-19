@@ -42,16 +42,18 @@ struct LimitsFile {
     time_ms: Option<NonZeroU32>,
 }
 
-/// The most each count of `limits` may be set to, the highest BIND or Unbound allows or uses, so that no setting
-/// lets one client question cost what neither would (D195).
+/// The most each count of `limits` may be set to: the highest BIND or Unbound allows or uses, or BIND's default
+/// where BIND sets no maximum, so that no setting lets one client question cost what neither would by default
+/// (D195).
 const MAX: Limits = Limits {
-    // BIND's `max-query-count` 200: the queries of a client question, validation's included.
+    // BIND's `max-query-count` default 200 (`bin/include/defaultconfig.h`), not a maximum: the queries of a client
+    // question, validation's included.
     queries: 200,
     // BIND's `max-query-restarts` range, 1 to 255.
     restarts: 255,
     // Unbound's `MAX_REFERRAL_COUNT` 130 (`iterator/iterator.h`).
     referrals: 130,
-    // BIND's `max-recursion-depth` 7.
+    // BIND's `max-recursion-depth` default 7 (`bin/include/defaultconfig.h`), not a maximum.
     depth: 7,
     // BIND's `max-delegation-servers` range, 1 to 100.
     servers: 100,
@@ -246,6 +248,25 @@ mod tests {
                 "{changed}"
             );
         }
+    }
+
+    /// A reload serving other zones locally flushes the cache stage before the recurse stage, which holds the answers
+    /// the zones resolved to, or were served locally with.
+    #[test]
+    fn d195_a_reload_serving_other_zones_locally_flushes_the_cache_stage() {
+        let cache = |pipeline: &Pipeline| match pipeline.stages().first() {
+            Some(Stage::Cache(cache)) => Arc::clone(cache),
+            stage => unreachable!("{stage:?}"),
+        };
+        let first = read(RECURSIVE, env, &Pipeline::default()).expect("valid");
+        let same = read(RECURSIVE, env, &first.pipeline).expect("valid");
+        assert!(Arc::ptr_eq(&cache(&first.pipeline), &cache(&same.pipeline)));
+        let resolving = format!("{RECURSIVE}    local_zones: {{resolve: [home.arpa]}}\n");
+        let other = read(&resolving, env, &same.pipeline).expect("valid");
+        assert!(!Arc::ptr_eq(
+            &cache(&same.pipeline),
+            &cache(&other.pipeline)
+        ));
     }
 
     /// The recurse example of the module docs reads, and sets the defaults it says.
