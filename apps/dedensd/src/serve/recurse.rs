@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use dedens_net::authoritative::{
-    self, Authoritative, AuthoritativeError, LocalError, Quirks, ServerError,
+    self, Answer, Authoritative, AuthoritativeError, LocalError, Quirks, ServerError,
 };
 use dedens_net::entropy::Entropy;
 use dedens_net::io::Io;
@@ -211,10 +211,15 @@ async fn send<N: Io>(thread: &Thread<N>, query: &Query) -> Outcome {
     let deadline = thread.io.now() + query.timeout;
     let question = query.question.clone();
     let quirks = quirks(query.marks);
-    match transport
+    let answered = transport
         .query(question, query.server, quirks, deadline)
-        .await
-    {
+        .await;
+    outcome(answered, query.server)
+}
+
+/// What the transport's `answered` from `server` is to the resolution, each error counted by its kind.
+fn outcome(answered: Result<Answer, AuthoritativeError>, server: SocketAddr) -> Outcome {
+    match answered {
         Ok(answer) => Outcome::Response {
             seen: marks(answer.quirks),
             rtt: answer.response.rtt,
@@ -228,7 +233,7 @@ async fn send<N: Io>(thread: &Thread<N>, query: &Query) -> Outcome {
                 _ => "tcp",
             };
             metrics::counter!(SENT, "error" => label).increment(1);
-            tracing::debug!(%error, server = %query.server, "authoritative server");
+            tracing::debug!(%error, server = %server, "authoritative server");
             Outcome::ServerError
         }
         Err(AuthoritativeError::Local(error)) => {
@@ -241,12 +246,12 @@ async fn send<N: Io>(thread: &Thread<N>, query: &Query) -> Outcome {
                 _ => "local",
             };
             metrics::counter!(SENT, "error" => label).increment(1);
-            tracing::warn!(%error, server = %query.server, "authoritative query not sent");
+            tracing::warn!(%error, server = %server, "authoritative query not sent");
             Outcome::LocalError
         }
         Err(error) => {
             metrics::counter!(SENT, "error" => "local").increment(1);
-            tracing::warn!(%error, server = %query.server, "authoritative query not sent");
+            tracing::warn!(%error, server = %server, "authoritative query not sent");
             Outcome::LocalError
         }
     }
@@ -437,6 +442,67 @@ mod tests {
         ] {
             assert!(described.iter().any(|d| d == name), "{name}");
         }
+    }
+
+    /// D190's errors: a timeout is the server's silence, the others counted by their kind.
+    #[test]
+    fn d195_each_error_of_the_transport_is_counted_by_its_kind() {
+        let server: SocketAddr = ([192, 0, 2, 1], 53).into();
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let outcomes = metrics::with_local_recorder(&recorder, || {
+            let local = |error| outcome(Err(AuthoritativeError::Local(error)), server);
+            let remote = |error| outcome(Err(AuthoritativeError::Server(error)), server);
+            [
+                remote(ServerError::TimedOut { sends: 2 }),
+                remote(ServerError::Forged { sends: 2 }),
+                remote(ServerError::Unreachable {
+                    sends: 1,
+                    kind: io::ErrorKind::ConnectionRefused,
+                }),
+                local(LocalError::NoSocket),
+                local(LocalError::TcpBusy),
+                local(LocalError::Bind(io::ErrorKind::AddrInUse.into())),
+                local(LocalError::Bind(io::ErrorKind::PermissionDenied.into())),
+            ]
+        });
+        let kinds: Vec<_> = outcomes
+            .iter()
+            .map(|outcome| match outcome {
+                Outcome::Response { .. } => "response",
+                Outcome::Timeout => "timeout",
+                Outcome::ServerError => "server",
+                Outcome::LocalError => "local",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "timeout", "server", "server", "local", "local", "local", "local"
+            ]
+        );
+        let mut counted: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == SENT)
+            .flat_map(|(key, ..)| {
+                let labels: Vec<_> = key.key().labels().map(|l| l.value().to_owned()).collect();
+                labels
+            })
+            .collect();
+        counted.sort();
+        assert_eq!(
+            counted,
+            [
+                "forged",
+                "local",
+                "no_socket",
+                "ports_exhausted",
+                "tcp_busy",
+                "unreachable"
+            ]
+        );
     }
 
     #[test]
