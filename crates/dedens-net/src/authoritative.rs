@@ -23,7 +23,7 @@
 //! less is left fails as ours, so that the caller does not count our queueing against the server.
 //!
 //! What a server shows of itself, [`Quirks`], goes back to the caller, whose infra cache keeps it and passes it in
-//! with the next query (step 07 of the recursive resolver).
+//! with the next query (D194).
 
 #![deny(clippy::disallowed_methods)]
 
@@ -131,7 +131,7 @@ pub enum Edns {
     /// It answered a query with EDNS by `rejected`, FORMERR or NOTIMP, its question repeated and no OPT record, then
     /// the query without EDNS by `answered`, NOERROR, NXDOMAIN or YXDOMAIN: ask without EDNS, so without the DO bit
     /// nor a cookie. Unbound keeps no such mark for a query that wants DNSSEC (`services/outside_network.c:3483-3505`):
-    /// whether a validating resolver keeps it is its infra cache's (step 07, D190).
+    /// whether a validating resolver keeps it is its infra cache's (D190, D194).
     Unsupported {
         /// The rcode of the response to the query with EDNS.
         rejected: Rcode,
@@ -572,11 +572,13 @@ impl<N: Io> Authoritative<N> {
 
 /// Whether an error of a query's UDP socket is ours: no memory or buffer left, a bad descriptor or argument, a bug,
 /// or a send a firewall of ours denied (EPERM, as a netfilter DROP on output). Any other may come of an ICMP error,
-/// which anyone knowing the port can send: on a connected socket, Linux turns those of `ICMPv4` into ECONNREFUSED,
-/// EHOSTUNREACH, ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EACCES or EPROTO
-/// (`net/ipv4/icmp.c:icmp_err_convert`), and those of `ICMPv6` into EACCES or EPROTO among others
-/// (`net/ipv6/icmp.c:icmpv6_err_convert`); so the list is of ours, not of the network's. EPERM and EACCES share
-/// a kind, so the raw errno tells them apart.
+/// which anyone knowing the port can send. On a connected socket, Linux reports those it holds hard: of `ICMPv4`,
+/// ECONNREFUSED, EHOSTUNREACH (filtered or prohibited among them), ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET,
+/// EMSGSIZE and EPROTO (`net/ipv4/icmp.c:icmp_err_convert`, `net/ipv4/udp.c:__udp4_lib_err`); of `ICMPv6`,
+/// ECONNREFUSED, EACCES (prohibited), EMSGSIZE and EPROTO (`net/ipv6/icmp.c:icmpv6_err_convert`,
+/// `net/ipv6/udp.c:__udp6_lib_err`). With `IP_RECVERR`, not set here, the soft ones come too, EOPNOTSUPP among
+/// them. So the list is of ours, not of the network's. EPERM and EACCES share a kind, so the raw errno tells them
+/// apart.
 fn ours(error: &io::Error) -> bool {
     matches!(
         error.kind(),

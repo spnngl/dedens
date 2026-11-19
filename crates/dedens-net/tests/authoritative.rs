@@ -708,13 +708,16 @@ async fn an_icmp_error_waits_until_the_deadline() {
 }
 
 /// Errors a connected UDP socket may report for an ICMP error, which anyone knowing the port can forge: on Linux,
-/// port and host unreachable, administratively prohibited (EACCES), and the parameter problem of `ICMPv4` or the
-/// unrecognized next header of `ICMPv6` (EPROTO) (`icmp_err_convert`, `icmpv6_err_convert`).
-const ICMP: [fn() -> io::Error; 4] = [
+/// port unreachable (ECONNREFUSED), host unreachable or filtered (EHOSTUNREACH), administratively prohibited of
+/// `ICMPv6` (EACCES), a parameter problem (EPROTO), fragmentation needed or packet too big (EMSGSIZE), and with
+/// `IP_RECVERR` a source route failed (EOPNOTSUPP) (`icmp_err_convert`, `__udp4_lib_err`, `icmpv6_err_convert`).
+const ICMP: [fn() -> io::Error; 6] = [
     || io::ErrorKind::ConnectionRefused.into(),
     || io::ErrorKind::HostUnreachable.into(),
     || io::Error::from_raw_os_error(Errno::ACCESS.raw_os_error()),
     || io::Error::from_raw_os_error(Errno::PROTO.raw_os_error()),
+    || io::Error::from_raw_os_error(Errno::MSGSIZE.raw_os_error()),
+    || io::Error::from_raw_os_error(Errno::OPNOTSUPP.raw_os_error()),
 ];
 
 /// Errors of ours: no memory, no buffer, or a send a firewall of ours denied (EPERM, of the kind of EACCES).

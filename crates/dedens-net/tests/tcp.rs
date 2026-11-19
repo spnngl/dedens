@@ -754,6 +754,45 @@ async fn short_timeouts_one_after_the_other_close_a_silent_connection() {
     assert_eq!(asked.map(|r| id(&r)).ok(), Some(20));
 }
 
+/// D190: a response read after the send of the oldest query unanswered counts the silence from it: a server still
+/// answering keeps its connection, though one query of it went unanswered for longer than [`STALLED`].
+#[compio::test]
+async fn a_response_after_the_oldest_unanswered_query_keeps_the_connection() {
+    let (listener, server) = listen().await;
+    let pool = pool();
+    let soon = Instant::now() + Duration::from_millis(100);
+    let unanswered = pool.exchange(server, &query_with_id(16), soon).await;
+    assert!(
+        matches!(unanswered, Err(TcpError::TimedOut)),
+        "{unanswered:?}"
+    );
+    let mut peer = Peer::accept(&listener).await;
+    peer.read().await.expect("the query never answered");
+    // The next timeout comes past `STALLED` from the oldest send, short of it from the response.
+    compio::time::sleep(STALLED).await;
+    let (next, last) = (query_with_id(17), query_with_id(19));
+    let (answered, ()) = futures_util::join!(pool.exchange(server, &next, deadline()), async {
+        let query = peer.read().await.expect("a query on the same connection");
+        peer.write(&[answer(&query, Vec::new())]).await;
+    });
+    assert_eq!(answered.map(|r| id(&r)).ok(), Some(17));
+    let soon = Instant::now() + Duration::from_millis(100);
+    let timed_out = pool.exchange(server, &query_with_id(18), soon).await;
+    assert!(
+        matches!(timed_out, Err(TcpError::TimedOut)),
+        "{timed_out:?}"
+    );
+    peer.read().await.expect("the query that timed out");
+    let (asked, ()) = futures_util::join!(pool.exchange(server, &last, deadline()), async {
+        let query = peer
+            .read()
+            .await
+            .expect("the next query on the same connection");
+        peer.write(&[answer(&query, Vec::new())]).await;
+    });
+    assert_eq!(asked.map(|r| id(&r)).ok(), Some(19));
+}
+
 /// A response read before the query that timed out was sent does not keep the connection: the next query goes on
 /// a new one.
 #[compio::test]

@@ -29,10 +29,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     and its timeout honoured when shorter, 0 taking no new query (RFC 7828); a closed
     connection retried once on a new one, as is one whose IDs are all taken. Queries are written whole by a task of
     the connection, so a query that stops waiting never cuts a message short; those queued meanwhile go in one
-    write (D53), at most 1024 (D108). A write lasts the idle time at most, and a query that times out with no
-    response read on its connection since it was sent closes it: a server that stopped reading or answering is replaced. A connection
-    that cannot open fails each query waiting for it with its error. A connection slower than a try, waited for
-    the source address of a cookie, costs that try, not the exchange.
+    write (D53), at most 1024 (D108). A write lasts the idle time at most, and a query that times out closes its
+    connection once silent for `tcp::STALLED` (D190): a server that stopped reading or answering is replaced. A
+    connection that cannot open fails each query waiting for it with its error. A connection slower than a try,
+    waited for the source address of a cookie, costs that try, not the exchange.
 - D31 (amended by D68, D114, D184) The sans-IO exchange (`dedens-net::exchange`) takes the query whole from the caller, ID and
   cookie in it, and owns no randomness or secret (D114: the IDs of changed queries come from the caller too); `0x20`
   takes its random bits as an option, which also turns on the exact-case match, so a randomized question is never matched loosely, and gives
@@ -908,7 +908,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     list (`services/outside_network.c`): a wait of ours, for a UDP socket or a TCP connection, that leaves less
     than `SERVER_FLOOR` (50 ms, Unbound's least server timeout, `RTT_MIN_TIMEOUT`, `util/rtt.c`) before the
     deadline fails `LocalError::NoSocket` or `TcpBusy`, so that local queueing never turns into a server's
-    timeout and its backoff (step 07). Rejected: telling the time the server had beside the timeout, which
+    timeout and its backoff (D194). Rejected: telling the time the server had beside the timeout, which
     every caller would have to subtract.
   - TCP waits, per pool: the queries waiting for room queue in the order they came, as Unbound's
     `tcp_wait_first`; room wakes the first, which looks and wakes the next, and a query coming meanwhile queues
@@ -919,9 +919,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     oldest query unanswered, those that stopped waiting included, or its last response, the later: a shorter
     budget tells nothing of a server other queries share the connection with, where Unbound closes on any timeout
     (`outnet_tcptimer`). Counted from the oldest query, not the one timing out: queries with deadlines under
-    376 ms (step 07's retransmission timeout), each sent after the last timed out, would keep a dead connection
-    open, each send putting off its idle timeout too. An idle connection closed for a new one is not counted: no query holds it, and
-    it closes as it drops. Accepted risk, as Unbound: no bound per zone, so servers answering TC then stalling
+    376 ms (D194's retransmission timeout), each sent after the last timed out, would keep a dead connection
+    open, each send putting off its idle timeout too. The forwarder's pools follow the rule too, where D27 closed
+    a connection with nothing read since the send of the query timing out: one `TcpPool`, one rule. A forwarder's
+    query times out after its whole try, 5 s by default, so a close needs a query unanswered for seconds and
+    376 ms with nothing read; a live server dropping one query then costs a new connection, the queries on the
+    old one sent once more on it (D27), where Unbound closes on any timeout, forward zones included. An idle connection closed for a new one is not counted: no query holds it, and it closes as
+    it drops. Accepted risk, as Unbound: no bound per zone, so servers answering TC then stalling
     over TCP, 32 addresses of one attacker (cheap in IPv6), hold every connection until their queries' deadlines.
   - Bounds, per thread: `Limits::sockets` 1024 UDP sockets (D47's upstream queries in flight; Unbound opens 4096,
     `outgoing-range`), a query past them waiting for one until its deadline, as Unbound's queue; `Limits::tcp` 32
@@ -957,14 +961,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     answered }` only when the query without EDNS, after FORMERR or NOTIMP, got NOERROR, NXDOMAIN or YXDOMAIN: a
     SERVFAIL or REFUSED then does not say EDNS was the trouble. Unbound marks a server so only for a query that
     does not want DNSSEC (`services/outside_network.c:3483-3505`, `if(!sq->want_dnssec)`): the mark is told, and
-    whether a validating resolver keeps it is its infra cache's (step 07). A server told `Supported` is asked
+    whether a validating resolver keeps it is its infra cache's (D194). A server told `Supported` is asked
     without the fallback (`Options::edns_fallback` off): a FORMERR without OPT, as a forger may send, is the
     response, EDNS and DO kept, as Unbound's `edns_lame_known`.
   - Socket errors: an error of the UDP socket's send or receive may come of an ICMP error, which anyone knowing
-    the port can send, and Linux reports many as hard errors on a connected socket (ECONNREFUSED, EHOSTUNREACH,
-    ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EACCES, EPROTO: `icmp_err_convert`, `icmpv6_err_convert`). So
-    none ends the query but those of ours, an allow-list: no memory or buffer (OutOfMemory, ENOBUFS), EBADF or
-    EINVAL, bugs, and EPERM, a send a firewall of ours denied (a netfilter DROP on output), told from ICMP's
+    the port can send, and Linux reports many as hard errors on a connected socket: of ICMPv4, ECONNREFUSED,
+    EHOSTUNREACH (filtered or prohibited among them), ENETUNREACH, ENOPROTOOPT, EHOSTDOWN, ENONET, EMSGSIZE and
+    EPROTO (`icmp_err_convert`, `__udp4_lib_err`); of ICMPv6, ECONNREFUSED, EACCES (prohibited), EMSGSIZE and
+    EPROTO (`icmpv6_err_convert`, `__udp6_lib_err`); with `IP_RECVERR`, not set, the soft ones too, EOPNOTSUPP
+    among them. So none ends the query but those of ours, an allow-list: no memory or buffer (OutOfMemory,
+    ENOBUFS), EBADF or EINVAL, bugs, and EPERM, a send a firewall of ours denied (a netfilter DROP on output), told from ICMP's
     EACCES of the same kind by its raw errno; any other waits on to the deadline, as Unbound's on any error
     (`util/netevent.c:comm_point_udp_callback`), and comes back beside the timeout only,
     `ServerError::Unreachable`. Any error of the wait for the socket to be readable is ours: an error on the
@@ -985,12 +991,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     and `a.gtld-servers.net`'s referral as the forger's: 1000 queries from 1000 ports, none twice in a row, each
     block of 1024 hit; a response from another port dropped; a forged referral, FORMERR or TC with the case
     changed moving to TCP with nothing given up, a lowercasing server marked over TCP and asked without `0x20`
-    next; ICMP errors, EACCES and EPROTO among them, waited out on a send and a receive, through the `Io` seam and
-    on a closed port, EPERM on a send and any error of the wait ours; EDNS marked only after NOERROR, kept for a server known to do it; TC to TCP
-    unmarked, BADCOOKIE twice marked; 4 sockets of 4 for 16 queries, a socket wait ending at the deadline, a wait
-    for a socket or a TCP connection leaving less than `SERVER_FLOOR` ours, a dropped query giving its socket
+    next; ICMP errors, EACCES, EPROTO, EMSGSIZE and EOPNOTSUPP among them, waited out on a send and a receive,
+    through the `Io` seam and on a closed port, EPERM on a send and any error of the wait ours; EDNS marked only
+    after NOERROR, kept for a server known to do it; TC to TCP unmarked, BADCOOKIE twice marked; 4 sockets of 4
+    for 16 queries, a socket wait ending at the deadline, a wait for a socket or a TCP connection leaving less than `SERVER_FLOOR` ours, a dropped query giving its socket
     back; a TCP query waiting for the connection of 1; a deadline past the 5 s an exchange waits by default kept;
     a send, a receive, a UDP or a TCP connect failing the server's, but for want of ours.
     `tests/tcp.rs`: a replaced connection counted until it closes, a query timing out short of `STALLED` keeping
-    its connection, short timeouts one after the other closing a silent one, waiters taking room in the order they
-    came, a retired connection closing during a hand-off waking the line again.
+    its connection, short timeouts one after the other closing a silent one, a response after the oldest query
+    unanswered keeping it, waiters taking room in the order they came, a retired connection closing during a hand-off waking the line again.
