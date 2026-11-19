@@ -1,7 +1,8 @@
 //! The iteration of a resolution on the captured resolutions of `testdata/recursion/` (D188), each server answering
 //! as captured through `Authorities`, the harness acting as the transport: RFC 1034 §5.3.3 (from the closest
 //! delegation down the referrals, across CNAMEs), §4.3.2 (referrals down only, whatever the AA bit), RFC 2308 §5
-//! (no denial without its SOA), RFC 4035 §3.1.4.1 (a DS asked of the parent), RFC 5452 §9.1 (a response to another
+//! (no denial without its SOA), RFC 4035 §3.1.4.1 (a DS asked of the parent), RFC 5452 §5 (a reply shared by the
+//! resolutions waiting on one query judges its server once), §9.1 (a response to another
 //! question is not read), RFC 6672 §2.2 (a DNAME making a name too long), RFC 6895 §3 (questions not resolved),
 //! RFC 8914 §4 (the extended error of a failure), RFC 9471 §2 (glue within the zone asked), and each bound of
 //! `Limits` (D191).
@@ -1542,4 +1543,22 @@ fn d193_ns_learned_through_a_cached_delegation_stored_as_of_the_start() {
     }
     let stale = ns_ttl(&cached);
     assert_eq!(stale + 2, fresh);
+}
+
+#[test]
+fn rfc5452_5_a_reply_shared_does_not_judge_the_server_again() {
+    // The same query of two resolutions, sent once: the one that waited on it takes the reply without timing the
+    // server out a second time (D195).
+    let capture = recursion::Resolution::read("unsigned");
+    let caches = caches(false);
+    let now = at(&capture);
+    let mut rng = Seeded(SEED);
+    let mut waiter = start(&capture, &caches, Limits::default());
+    assert!(matches!(waiter.step(now, &mut rng), Next::Send(_)));
+    waiter.receive_shared(Reply::Timeout, now);
+    assert_eq!(caches.infra.len(), 0);
+    let mut sender = start(&capture, &caches, Limits::default());
+    assert!(matches!(sender.step(now, &mut rng), Next::Send(_)));
+    sender.receive(Reply::Timeout, now);
+    assert_eq!(caches.infra.len(), 1);
 }
