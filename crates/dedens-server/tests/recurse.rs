@@ -783,8 +783,15 @@ fn rfc4035_5_each_capture_validated_is_secure_with_ad_or_insecure_without() {
         let (reply, _) = ask(&pipeline, (&query, CLIENT), &authorities, now);
         let reply = decode(reply.as_deref().expect("a reply"));
         assert_ne!(reply.header.rcode, Rcode::SERVFAIL, "{id}: {reply:?}");
-        let unsigned =
-            ["cname", "unsigned", "truncated"].contains(&id.as_str()) || id.ends_with("-unsigned");
+        let unsigned = [
+            "cname",
+            "cname-to-signed",
+            "unsigned",
+            "truncated",
+            "wildcard-optout",
+        ]
+        .contains(&id.as_str())
+            || id.ends_with("-unsigned");
         assert_eq!(reply.header.flags.contains(Flags::AD), !unsigned, "{id}");
         // The cache stage answers again as it was judged.
         let (again, resent) = ask(&pipeline, (&query, CLIENT), &authorities, now + 1);
