@@ -1,4 +1,5 @@
-//! The random bytes of one encryption, drawn before it so that no randomness fails inside it (D79, D98).
+//! The random bytes of one encryption, drawn before it so that no randomness fails inside it (D79, D98), or of one
+//! step of a recursive resolution, which draws its server with them (D195).
 
 use core::convert::Infallible;
 use std::io;
