@@ -39,9 +39,10 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   variant, not a second store.
 - Time is `u32` seconds from any origin (a `Duration` in `Resolution`, its seconds to the caches) and may go back:
   use saturating arithmetic.
-- A response is judged in one place, `resolution/read.rs`, every rank decided there; the scrubber (step 05)
-  replaces it, its output already shaped as `Scrubbed`. Nothing else reads a response, and the infra cache credits
-  only one read as usable (D191).
+- `Resolution::receive` reads a response only through `scrub`, whose `Outcome` alone picks the next move. The infra
+  cache credits the transport's `rtt` only for an outcome serving the question; REFUSED, SERVFAIL and an undecodable
+  response leave the server as it was: its entry is keyed by address alone, a back-off would shut it out of every
+  zone (D191).
 - The transport owns the wire: ID, DO, `0x20`, TC then TCP, EDNS fallback and the matching (D190). `Query` stays
   typed, without bytes. A `Reply::LocalError` is ours: it never touches the infra cache.
 - Every CNAME hop counts against `Limits::restarts`, through `Resolution::hops`, from the cache or a response.
@@ -55,8 +56,9 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 
 - `Rank::AnswerNonAuthoritative` is never a non-AA answer: a response without AA but a referral is `Lame` (D192, a
   deviation from Unbound). It is the chain past an AA answer's first owner.
-- A DS question referred to the name asked without a DS: the referral's proof holds the NSEC or NSEC3 denying it;
-  the iteration must read it there, not ask the child, whose answer would be NODATA from the wrong side of the cut.
+- A DS is the parent's (RFC 4035 §3.1.4.1): `closest` starts above the name for one, and a DS question referred to
+  the name asked is not followed. Its proof (NSEC or NSEC3) is in the referral, the validator's to read (step 10):
+  the child's answer would be NODATA from the wrong side of the cut.
 - NSEC and NSEC3 records are not capped by count (a proof needs what it needs): the validator bounds their cost
   (KeyTrap, CVE-2023-50387 and CVE-2023-50868).
 - Names keep the case the server sent: `Name`'s equality folds case, so `scrub` matches a `0x20` question, and

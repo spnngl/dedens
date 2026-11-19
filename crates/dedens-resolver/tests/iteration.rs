@@ -1,9 +1,10 @@
 //! The iteration of a resolution on the captured resolutions of `testdata/recursion/` (D188), each server answering
 //! as captured through `Authorities`, the harness acting as the transport: RFC 1034 §5.3.3 (from the closest
 //! delegation down the referrals, across CNAMEs), §4.3.2 (referrals down only, whatever the AA bit), RFC 2308 §5
-//! (no denial without its SOA), RFC 5452 §9.1 (a response to another question is not read), RFC 6672 §2.2 (a DNAME
-//! making a name too long), RFC 6895 §3 (questions not resolved), RFC 8914 §4 (the extended error of a failure),
-//! RFC 9471 §2 (glue within the zone asked), and each bound of `Limits` (D191).
+//! (no denial without its SOA), RFC 4035 §3.1.4.1 (a DS asked of the parent), RFC 5452 §9.1 (a response to another
+//! question is not read), RFC 6672 §2.2 (a DNAME making a name too long), RFC 6895 §3 (questions not resolved),
+//! RFC 8914 §4 (the extended error of a failure), RFC 9471 §2 (glue within the zone asked), and each bound of
+//! `Limits` (D191).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -16,8 +17,8 @@ use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Opaque, RData};
 use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, Record, RecordType};
 use dedens_resolver::{
-    Caches, DEFAULT_CAPACITY, Failure, InfraCache, Limit, Limits, Marks, Next, Outcome, Query,
-    Rank, Reply, Resolution, Rrset, RrsetCache, Unsupported,
+    Caches, DEFAULT_CAPACITY, Failure, InfraCache, Limit, Limits, Marks, Next, Query, Rank, Reply,
+    Resolution, Resolved, Rrset, RrsetCache, Unsupported,
 };
 use dedens_roots::{RootHints, Tlds};
 use dedens_testkit::recursion::{self, Authorities, Exchange};
@@ -85,6 +86,9 @@ fn address(record: &Record<'_>) -> Option<IpAddr> {
     }
 }
 
+/// The round-trip time the transport reports for every response.
+const RTT: Duration = Duration::from_millis(20);
+
 fn secs(now: Duration) -> u32 {
     u32::try_from(now.as_secs()).expect("a capture time within u32")
 }
@@ -92,6 +96,7 @@ fn secs(now: Duration) -> u32 {
 /// How the transport ends an exchange.
 enum Answered {
     Response(Message<'static>),
+    Undecodable,
     Timeout,
     ServerError,
     LocalError,
@@ -101,7 +106,7 @@ enum Answered {
 type Server<'a> = dyn Fn(&Query) -> Answered + 'a;
 
 /// Runs `resolution` to its end at `now`, each query answered by `server`; the outcome, and the questions sent.
-fn run(resolution: &mut Resolution, server: &Server<'_>, now: Duration) -> (Outcome, Vec<Sent>) {
+fn run(resolution: &mut Resolution, server: &Server<'_>, now: Duration) -> (Resolved, Vec<Sent>) {
     seeded(resolution, server, now, SEED)
 }
 
@@ -111,7 +116,7 @@ fn seeded(
     server: &Server<'_>,
     now: Duration,
     seed: u64,
-) -> (Outcome, Vec<Sent>) {
+) -> (Resolved, Vec<Sent>) {
     let mut rng = Seeded(seed);
     let mut sent = Vec::new();
     loop {
@@ -138,7 +143,9 @@ fn reply(answered: &Answered) -> Reply<'_> {
         Answered::Response(message) => Reply::Response {
             message,
             seen: Marks::default(),
+            rtt: RTT,
         },
+        Answered::Undecodable => Reply::Undecodable,
         Answered::Timeout => Reply::Timeout,
         Answered::ServerError => Reply::ServerError,
         Answered::LocalError => Reply::LocalError,
@@ -156,7 +163,7 @@ fn resolve(
     capture: &recursion::Resolution,
     caches: &Arc<Caches>,
     limits: Limits,
-) -> (Outcome, Vec<Sent>) {
+) -> (Resolved, Vec<Sent>) {
     changed(capture, caches, limits, &|_, _| {})
 }
 
@@ -169,7 +176,17 @@ fn changed(
     caches: &Arc<Caches>,
     limits: Limits,
     change: &Change<'_>,
-) -> (Outcome, Vec<Sent>) {
+) -> (Resolved, Vec<Sent>) {
+    served(capture, caches, &mut start(capture, caches, limits), change)
+}
+
+/// Runs `resolution` on `caches`, steered to `capture`'s servers, each captured response passed through `change`.
+fn served(
+    capture: &recursion::Resolution,
+    caches: &Arc<Caches>,
+    resolution: &mut Resolution,
+    change: &Change<'_>,
+) -> (Resolved, Vec<Sent>) {
     steer(caches, capture);
     let authorities = Authorities::new([capture]);
     let server = |query: &Query| {
@@ -177,7 +194,7 @@ fn changed(
         change(&query.zone, &mut response);
         Answered::Response(response)
     };
-    run(&mut start(capture, caches, limits), &server, at(capture))
+    run(resolution, &server, at(capture))
 }
 
 /// Whether `zone` is the zone written `text`.
@@ -285,7 +302,7 @@ fn below(zone: &Name<'_>, name: &Name<'_>) -> Name<'static> {
 
 #[test]
 fn rfc1034_5_3_3_each_capture_resolves_asking_what_it_asked() {
-    for (id, capture) in recursion::Resolution::all() {
+    for (id, capture) in resolvable() {
         let (outcome, sent) = resolve(&capture, &caches(false), Limits::default());
         assert_eq!(sent, expected(&capture), "{id}");
         let followed = followed(&capture);
@@ -293,29 +310,29 @@ fn rfc1034_5_3_3_each_capture_resolves_asking_what_it_asked() {
             .find(|e| e.rtype == capture.rtype && followed.get(&e.zone) == Some(&e.server))
             .expect("an exchange");
         match outcome {
-            Outcome::Answer { data, .. } => {
+            Resolved::Answer { data, .. } => {
                 let captured = answer(last)
                     .into_iter()
                     .find(|set| set.rtype() == capture.rtype);
                 assert_eq!(Some(&*data.rrset), captured.as_ref(), "{id}");
             }
-            Outcome::NxDomain { soa, .. } => {
+            Resolved::NxDomain { soa, .. } => {
                 assert!(id.starts_with("nxdomain"), "{id}");
                 assert_eq!(soa.rrset.rtype(), RecordType::SOA, "{id}");
             }
-            Outcome::NoData { soa, .. } => {
+            Resolved::NoData { soa, .. } => {
                 assert!(id.starts_with("nodata"), "{id}");
                 assert_eq!(soa.rrset.rtype(), RecordType::SOA, "{id}");
             }
-            Outcome::YxDomain { .. } => panic!("{id}: {outcome:?}"),
-            Outcome::Failed(failure) => panic!("{id}: {failure}"),
+            Resolved::YxDomain { .. } => panic!("{id}: {outcome:?}"),
+            Resolved::Failed(failure) => panic!("{id}: {failure}"),
         }
     }
 }
 
 #[test]
 fn rfc1034_5_3_3_the_cache_answers_again() {
-    for (id, capture) in recursion::Resolution::all() {
+    for (id, capture) in resolvable() {
         if id == "dname" {
             continue; // d193_an_address_pinned_to_glue_is_asked_again
         }
@@ -324,10 +341,10 @@ fn rfc1034_5_3_3_the_cache_answers_again() {
         let (again, resent) = resolve(&capture, &caches, Limits::default());
         match first {
             // Positive answers come from the cache whole, chain included.
-            Outcome::Answer { .. } => {
+            Resolved::Answer { .. } => {
                 // The cache counts its TTLs down from the least of the RRset's.
-                let rrsets = |outcome: &Outcome| match outcome {
-                    Outcome::Answer { chain, data } => {
+                let rrsets = |outcome: &Resolved| match outcome {
+                    Resolved::Answer { chain, data } => {
                         let sets = chain.iter().chain([data]);
                         sets.map(|held| Rrset::clone(&held.rrset))
                             .collect::<Vec<_>>()
@@ -362,13 +379,75 @@ fn d193_an_address_pinned_to_glue_is_asked_again() {
 }
 
 #[test]
+fn rfc1034_5_3_3_a_zone_cached_is_asked_of_its_own_name() {
+    // google.com's SRV, a NODATA not cached (recursive step 12), asked again: of the google.com servers the first
+    // resolution cached, not com's.
+    let capture = recursion::Resolution::read("nodata-unsigned");
+    let caches = caches(false);
+    let _ = resolve(&capture, &caches, Limits::default());
+    let (outcome, sent) = resolve(&capture, &caches, Limits::default());
+    assert!(matches!(outcome, Resolved::NoData { .. }), "{outcome:?}");
+    let google = name("google.com.");
+    assert_eq!(sent, vec![(google.clone(), google, RecordType::SRV)]);
+}
+
+#[test]
 fn d191_tld_hints_start_below_the_root() {
     let capture = recursion::Resolution::read("unsigned");
     let (_, from_root) = resolve(&capture, &caches(false), Limits::default());
     let (outcome, sent) = resolve(&capture, &caches(true), Limits::default());
-    assert!(matches!(outcome, Outcome::Answer { .. }), "{outcome:?}");
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
     assert_eq!(sent.first().map(|s| s.0.to_string()), Some("com.".into()));
     assert_eq!(sent.len() + 1, from_root.len());
+}
+
+/// The DS of the name `capture` asked, asked after it on the same `caches`, each response passed through `change`.
+fn ds_after(capture: &recursion::Resolution, change: &Change<'_>) -> (Resolved, Vec<Sent>) {
+    let caches = caches(false);
+    let (outcome, _) = resolve(capture, &caches, Limits::default());
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
+    let question = Question::new(capture.name.clone(), RecordType::DS);
+    let mut resolution = Resolution::start(
+        question,
+        Arc::clone(&caches),
+        at(capture),
+        Limits::default(),
+    )
+    .expect("an IN question");
+    served(capture, &caches, &mut resolution, change)
+}
+
+#[test]
+fn rfc4035_3_1_4_1_a_ds_is_asked_of_the_parent() {
+    // example.com's servers are cached; its DS is com's to give, as the capture asked it.
+    let capture = recursion::Resolution::read("signed-com");
+    let (outcome, sent) = ds_after(&capture, &|_, _| {});
+    let Resolved::Answer { data, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(data.rrset.rtype(), RecordType::DS);
+    assert_eq!(
+        sent,
+        vec![(name("com."), name("example.com."), RecordType::DS)]
+    );
+}
+
+#[test]
+fn d191_a_ds_referred_to_the_child_is_not_followed() {
+    // com's servers answer example.com's DS with the referral to it they give for its A, without its DS: the
+    // child's servers have none to give.
+    let capture = recursion::Resolution::read("signed-com");
+    let mut referral = response(&capture, "com.", "example.com.");
+    referral.authority.retain(|r| r.rtype() == RecordType::NS);
+    let change = |zone: &Name<'_>, response: &mut Message<'static>| {
+        if is(zone, "com.") {
+            let asked = response.questions.first().expect("a question").clone();
+            *response = to(referral.clone(), &asked);
+        }
+    };
+    let (outcome, sent) = ds_after(&capture, &change);
+    assert!(matches!(outcome, Resolved::Failed(_)), "{outcome:?}");
+    assert!(sent.iter().all(|(zone, ..)| is(zone, "com.")), "{sent:?}");
 }
 
 #[test]
@@ -402,10 +481,24 @@ fn rfc6895_3_meta_types_and_other_classes_are_not_resolved() {
         Some(Unsupported::Class(Class::CH))
     );
     assert_eq!(start("example.com.", RecordType::A, Class::IN), None);
+    // An RRSIG is part of the RRset it covers (D176), never an answer of its own.
+    let rrsig = recursion::Resolution::read("rrsig");
+    assert_eq!(
+        start(&rrsig.name.to_string(), rrsig.rtype, Class::IN),
+        Some(Unsupported::Type(RecordType::RRSIG))
+    );
+}
+
+/// The captures a resolution takes: all but the RRSIG question's, refused at the start
+/// (`rfc6895_3_meta_types_and_other_classes_are_not_resolved`).
+fn resolvable() -> Vec<(String, recursion::Resolution)> {
+    let mut all = recursion::Resolution::all();
+    all.retain(|(_, capture)| capture.rtype != RecordType::RRSIG);
+    all
 }
 
 /// The outcome of `id` under `limits`, and the queries sent.
-pub(crate) fn limited(id: &str, limits: Limits) -> (Outcome, usize) {
+pub(crate) fn limited(id: &str, limits: Limits) -> (Resolved, usize) {
     let capture = recursion::Resolution::read(id);
     let (outcome, sent) = resolve(&capture, &caches(false), limits);
     (outcome, sent.len())
@@ -418,7 +511,7 @@ fn d191_queries_bound() {
         ..Limits::default()
     };
     let (outcome, sent) = limited("unsigned", limits);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Queries)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Queries)));
     assert_eq!(sent, 2);
 }
 
@@ -429,13 +522,13 @@ fn d191_referrals_bound() {
         ..Limits::default()
     };
     let (outcome, sent) = limited("unsigned", limits);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Referrals)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Referrals)));
     assert_eq!(sent, 2);
 }
 
 /// Resolves a name 40 labels below google.com, each zone from google.com down referring to the next one down with
 /// two servers, `lame` making the first asked of each zone below google.com lame.
-fn deep(lame: bool) -> (Outcome, Vec<Sent>) {
+fn deep(lame: bool) -> (Resolved, Vec<Sent>) {
     let capture = recursion::Resolution::read("unsigned");
     let template = response(&capture, "com.", "google.com.");
     let deep = name(&format!("{}google.com.", "x.".repeat(40)));
@@ -473,7 +566,7 @@ fn deep(lame: bool) -> (Outcome, Vec<Sent>) {
 fn d191_referrals_default_bound() {
     // The root's referral, com's, then one per zone from google.com down: the 31st is past the bound.
     let (outcome, sent) = deep(false);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Referrals)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Referrals)));
     assert_eq!(sent.len(), Limits::default().referrals + 1);
 }
 
@@ -482,7 +575,7 @@ fn d191_queries_default_bound() {
     // Two queries per zone below google.com, the first lame: the 33rd query is past the bound, at the 17th
     // referral.
     let (outcome, sent) = deep(true);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Queries)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Queries)));
     assert_eq!(sent.len(), Limits::default().queries);
 }
 
@@ -490,7 +583,7 @@ fn d191_queries_default_bound() {
 fn d191_restarts_bound() {
     // www.microsoft.com goes through two CNAMEs.
     let (outcome, _) = limited("cname", Limits::default());
-    let Outcome::Answer { chain, .. } = outcome else {
+    let Resolved::Answer { chain, .. } = outcome else {
         panic!("{outcome:?}");
     };
     let restarts = |restarts| {
@@ -500,48 +593,60 @@ fn d191_restarts_bound() {
         };
         limited("cname", limits).0
     };
-    assert!(matches!(restarts(chain.len()), Outcome::Answer { .. }));
+    assert!(matches!(restarts(chain.len()), Resolved::Answer { .. }));
     assert_eq!(
         restarts(chain.len() - 1),
-        Outcome::Failed(Failure::Limit(Limit::Restarts))
+        Resolved::Failed(Failure::Limit(Limit::Restarts))
     );
 }
 
 #[test]
 fn d191_restarts_default_bound_counts_the_cnames_of_a_response() {
-    // microsoft.com answers www.microsoft.com with a chain of `hops` CNAMEs within it, then the address.
+    // microsoft.com answers www.microsoft.com with a chain of `hops` CNAMEs within it, then the address, and each
+    // name of the chain with the rest of it: the scrubber keeps 11 hops of a response, the next is asked again.
     let capture = recursion::Resolution::read("cname");
     let chain = |hops: usize| {
         let change = |zone: &Name<'_>, response: &mut Message<'static>| {
             if !is(zone, "microsoft.com.") {
                 return;
             }
+            let asked = response.questions.first().expect("a question").clone();
+            *response = to(
+                self::response(&capture, "microsoft.com.", "www.microsoft.com."),
+                &asked,
+            );
             let cname = response.answer.first().expect("a CNAME").clone();
-            let mut owner = cname.name.clone();
-            response.answer.clear();
-            for i in 1..=hops {
-                let target = name(&format!("c{i}.microsoft.com."));
-                let data = RData::Cname(target.clone());
-                response
-                    .answer
-                    .push(Record::new(owner, cname.class, cname.ttl, &data));
-                owner = target;
-            }
-            let data = RData::A(Ipv4Addr::new(192, 0, 2, 1));
-            response
-                .answer
-                .push(Record::new(owner, cname.class, cname.ttl, &data));
+            let names: Vec<Name<'static>> = std::iter::once(cname.name.clone())
+                .chain((1..=hops).map(|i| name(&format!("c{i}.microsoft.com."))))
+                .collect();
+            let from = (names.iter().position(|n| *n == asked.name)).expect("a name of the chain");
+            let record = |owner: &Name<'static>, data| {
+                Record::new(owner.clone(), cname.class, cname.ttl, &data)
+            };
+            response.answer = (names[from..].windows(2))
+                .map(|pair| record(&pair[0], RData::Cname(pair[1].clone())))
+                .collect();
+            let last = names.last().expect("the chain's end");
+            (response.answer).push(record(last, RData::A(Ipv4Addr::new(192, 0, 2, 1))));
         };
         changed(&capture, &caches(false), Limits::default(), &change).0
     };
     let restarts = Limits::default().restarts;
-    let Outcome::Answer { chain: kept, .. } = chain(restarts) else {
+    let Resolved::Answer { chain: kept, .. } = chain(restarts) else {
         panic!("{:?}", chain(restarts));
     };
-    assert_eq!(kept.len(), restarts);
+    let owners: Vec<String> = kept
+        .iter()
+        .map(|held| held.rrset.owner().to_string())
+        .collect();
+    let names = (1..restarts).map(|i| format!("c{i}.microsoft.com."));
+    let expected: Vec<String> = std::iter::once("www.microsoft.com.".to_owned())
+        .chain(names)
+        .collect();
+    assert_eq!(owners, expected);
     assert_eq!(
         chain(restarts + 1),
-        Outcome::Failed(Failure::Limit(Limit::Restarts))
+        Resolved::Failed(Failure::Limit(Limit::Restarts))
     );
 }
 
@@ -553,7 +658,7 @@ fn d191_depth_bound() {
         ..Limits::default()
     };
     let (outcome, sent) = limited("glueless", limits);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Depth)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Depth)));
     assert_eq!(sent, 2);
 }
 
@@ -564,12 +669,12 @@ fn d191_targets_bound() {
         ..Limits::default()
     };
     let (outcome, sent) = limited("glueless", limits);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Targets)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Targets)));
     assert_eq!(sent, 2);
 }
 
 /// Runs the question of `unsigned` under `limits`, every exchange ending as `answered` makes it.
-fn unreached(limits: Limits, answered: fn() -> Answered) -> (Outcome, usize) {
+fn unreached(limits: Limits, answered: fn() -> Answered) -> (Resolved, usize) {
     let capture = recursion::Resolution::read("unsigned");
     let mut resolution = start(&capture, &caches(false), limits);
     let (outcome, sent) = run(&mut resolution, &|_| answered(), at(&capture));
@@ -577,7 +682,7 @@ fn unreached(limits: Limits, answered: fn() -> Answered) -> (Outcome, usize) {
 }
 
 /// Runs the question of `unsigned` with every query timing out, under `limits`.
-pub(crate) fn unanswered(limits: Limits) -> (Outcome, usize) {
+pub(crate) fn unanswered(limits: Limits) -> (Resolved, usize) {
     unreached(limits, || Answered::Timeout)
 }
 
@@ -585,7 +690,7 @@ pub(crate) fn unanswered(limits: Limits) -> (Outcome, usize) {
 fn d191_servers_bound() {
     // The root hints give 26 addresses.
     let (outcome, sent) = unanswered(Limits::default());
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Servers)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Servers)));
     assert_eq!(sent, Limits::default().servers);
 }
 
@@ -599,7 +704,7 @@ fn rfc8914_4_no_server_answering_is_no_reachable_authority() {
         .map(|s| s.addresses().count())
         .sum();
     let (outcome, sent) = unanswered(limits);
-    assert_eq!(outcome, Outcome::Failed(Failure::Unreachable));
+    assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
     assert_eq!(
         Failure::Unreachable.info_code(),
         InfoCode::NO_REACHABLE_AUTHORITY
@@ -608,7 +713,7 @@ fn rfc8914_4_no_server_answering_is_no_reachable_authority() {
     // Exchanges failing, on the network or here, are a network error.
     for answered in [|| Answered::ServerError, || Answered::LocalError] {
         let (outcome, sent) = unreached(limits, answered);
-        assert_eq!(outcome, Outcome::Failed(Failure::Network));
+        assert_eq!(outcome, Resolved::Failed(Failure::Network));
         assert_eq!(sent, roots);
     }
     assert_eq!(Failure::Network.info_code(), InfoCode::NETWORK_ERROR);
@@ -634,7 +739,7 @@ fn d191_a_delegation_fails_on_what_its_own_servers_did() {
         ..Limits::default()
     };
     let (outcome, _) = run(&mut start(&capture, &caches, limits), &server, at(&capture));
-    assert_eq!(outcome, Outcome::Failed(Failure::Unreachable));
+    assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
 }
 
 #[test]
@@ -647,7 +752,7 @@ fn d191_time_bound() {
         &|_| Answered::Timeout,
         at(&capture) + limits.time,
     );
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Time)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Time)));
     assert_eq!(sent, []);
 }
 
@@ -670,7 +775,7 @@ fn d191_time_runs_out_mid_resolution() {
         now += timeout;
         resolution.receive(Reply::Timeout, now);
     };
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Time)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Time)));
     assert_eq!(waited.iter().sum::<Duration>(), limits.time);
     assert!(
         waited.len() > 1 && waited.len() < limits.servers,
@@ -685,7 +790,7 @@ fn glueless(
     limits: Limits,
     seed: u64,
     lookup: &dyn Fn(&Query) -> Message<'static>,
-) -> (Outcome, Vec<Sent>) {
+) -> (Resolved, Vec<Sent>) {
     let capture = recursion::Resolution::read("unsigned");
     let caches = caches(false);
     steer(&caches, &capture);
@@ -725,7 +830,7 @@ fn glueless(
 }
 
 /// `count` server names in a zone that does not exist: the root refers to nl, whose servers deny the name.
-fn nxns(count: usize, limits: Limits) -> (Outcome, Vec<Sent>) {
+fn nxns(count: usize, limits: Limits) -> (Resolved, Vec<Sent>) {
     let nx = recursion::Resolution::read("nxdomain-nsec3");
     let to_nl = response(&nx, ".", "dedens-nxdomain.nl.");
     let denied = response(&nx, "nl.", "dedens-nxdomain.nl.");
@@ -757,7 +862,7 @@ fn d191_targets_default_bound_on_names_in_a_zone_that_does_not_exist() {
     // NXNSAttack (CVE-2020-12662): 20 server names without an address. Five are looked up, A only since each is
     // denied: the root's referral to nl and nl's denial for the first, nl's denial for the next four.
     let (outcome, sent) = nxns(20, Limits::default());
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Targets)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Targets)));
     assert_eq!(sent.len(), 2 + 2 + 4, "{sent:?}");
     let names: HashSet<String> = looked_up(&sent).into_iter().map(|(name, _)| name).collect();
     assert_eq!(names.len(), Limits::default().targets);
@@ -772,41 +877,15 @@ fn d191_a_referral_keeps_as_many_server_names_as_servers_asked() {
         ..Limits::default()
     };
     let (outcome, sent) = nxns(20, limits);
-    assert_eq!(outcome, Outcome::Failed(Failure::Unreachable));
+    assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
     let names: HashSet<String> = looked_up(&sent).into_iter().map(|(name, _)| name).collect();
     assert_eq!(names.len(), limits.servers);
     assert_eq!(sent.len(), 2 + 1 + limits.servers, "{sent:?}");
 }
 
-#[test]
-fn d191_a_referral_caches_as_many_server_names_as_servers_asked() {
-    // com's referral to google.com names 16 more servers after its four: the NS `RRset` cached holds 13.
-    let capture = recursion::Resolution::read("unsigned");
-    let change = |zone: &Name<'_>, response: &mut Message<'static>| {
-        let ns = (response.authority.iter())
-            .find(|r| r.rtype() == RecordType::NS)
-            .cloned();
-        if let (true, Some(ns)) = (is(zone, "com."), ns) {
-            response.authority.extend((5..=20).map(|i| {
-                let server = name(&format!("ns{i}.google.com."));
-                Record::new(ns.name.clone(), ns.class, ns.ttl, &RData::Ns(server))
-            }));
-        }
-    };
-    let caches = caches(false);
-    let (outcome, _) = changed(&capture, &caches, Limits::default(), &change);
-    assert!(matches!(outcome, Outcome::Answer { .. }), "{outcome:?}");
-    let now = secs(at(&capture));
-    let ns = (caches
-        .rrsets
-        .get(&name("google.com."), RecordType::NS, Class::IN, now))
-    .expect("google.com's NS cached");
-    assert_eq!(ns.rrset.rdatas().len(), Limits::default().servers);
-}
-
 /// google.com's four servers, named in google.com, which com's referral gives without glue: reachable only through
 /// google.com, com's referral leading back to it.
-fn looping(seed: u64) -> (Outcome, Vec<Sent>) {
+fn looping(seed: u64) -> (Resolved, Vec<Sent>) {
     let capture = recursion::Resolution::read("unsigned");
     let to_google = response(&capture, "com.", "google.com.");
     let names: Vec<Name<'static>> = (1..=4)
@@ -824,7 +903,7 @@ fn looping(seed: u64) -> (Outcome, Vec<Sent>) {
 fn d191_a_lookup_leading_back_to_a_zone_waiting_on_it_ends_at_once() {
     // Each server name is asked once of com, A only: com's referral back to google.com ends its lookup.
     let (outcome, sent) = looping(SEED);
-    assert_eq!(outcome, Outcome::Failed(Failure::Unreachable));
+    assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
     let mut names = looked_up(&sent);
     names.sort();
     let each = |i| (format!("ns{i}.google.com."), RecordType::A);
@@ -857,7 +936,7 @@ fn rfc5452_9_1_a_response_to_another_question_is_not_read() {
     ];
     for change in changes {
         let (outcome, _) = changed(&capture, &caches(false), Limits::default(), change);
-        assert_eq!(outcome, Outcome::Failed(Failure::Unusable));
+        assert_eq!(outcome, Resolved::Failed(Failure::Unusable));
     }
 }
 
@@ -880,12 +959,12 @@ fn rfc1034_4_3_2_a_referral_not_down_is_lame() {
     };
     // Each server of com is lame, up to the bound on servers asked.
     let servers = Limits::default().servers;
-    let failed = Outcome::Failed(Failure::Limit(Limit::Servers));
+    let failed = Resolved::Failed(Failure::Limit(Limit::Servers));
     assert_eq!(lame("com."), (failed, servers, servers + 1));
     // Each of google.com's eight addresses is lame: none answers.
     assert_eq!(
         lame("google.com."),
-        (Outcome::Failed(Failure::Unusable), 8, 10)
+        (Resolved::Failed(Failure::Unusable), 8, 10)
     );
 }
 
@@ -899,7 +978,7 @@ fn d191_a_referral_with_the_aa_bit_is_a_referral() {
         }
     };
     let (outcome, sent) = changed(&capture, &caches(false), Limits::default(), &change);
-    assert!(matches!(outcome, Outcome::Answer { .. }), "{outcome:?}");
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
     assert_eq!(sent, expected(&capture));
 }
 
@@ -917,7 +996,7 @@ fn d191_a_referral_of_another_class_is_not_followed() {
         }
     };
     let (outcome, sent) = changed(&capture, &caches(false), Limits::default(), &change);
-    assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+    assert!(matches!(outcome, Resolved::Failed(_)), "{outcome:?}");
     assert!(sent.iter().all(|s| s.0.is_root()), "{sent:?}");
 }
 
@@ -931,7 +1010,7 @@ fn d191_a_referral_read_whatever_the_order_of_its_records() {
         }
     };
     let (outcome, sent) = changed(&capture, &caches(false), Limits::default(), &change);
-    assert!(matches!(outcome, Outcome::Answer { .. }), "{outcome:?}");
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
     assert_eq!(sent, expected(&capture));
 }
 
@@ -969,7 +1048,7 @@ fn d191_an_address_given_twice_is_asked_once() {
         &server,
         at(&capture),
     );
-    assert_eq!(outcome, Outcome::Failed(Failure::Unreachable));
+    assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
     assert_eq!(sent.iter().filter(|s| s.0 == google).count(), 1, "{sent:?}");
 }
 
@@ -1019,12 +1098,59 @@ fn rfc9471_2_glue_out_of_the_zone_asked_is_not_used() {
         }
     };
     let (outcome, sent) = changed(&capture, &caches(false), Limits::default(), &change);
-    assert!(matches!(outcome, Outcome::Answer { .. }), "{outcome:?}");
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
     assert_eq!(sent, expected(&capture));
 }
 
+#[test]
+fn rfc1034_5_3_3_a_server_without_glue_is_looked_up_beside_one_with() {
+    // org's referral to netmeister.org naming ns-143-b.gandi.net, and panix.netmeister.org with its glue (as
+    // netmeister.org gives it in `dname`), which does not answer: only ns-143-b.gandi.net's own address may stand
+    // for it, so it is looked up and asked.
+    let capture = recursion::Resolution::read("glueless");
+    let panix = (recursion::Resolution::read("dname").exchanges.iter())
+        .flat_map(|exchange| dedens_testkit::message(&exchange.response).additional)
+        .find(|r| r.rtype() == RecordType::A && is(&r.name, "panix.netmeister.org."))
+        .expect("panix.netmeister.org's glue");
+    let silent = address(&panix).expect("an address");
+    let caches = caches(false);
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let server = |query: &Query| {
+        if query.server.ip() == silent {
+            return Answered::Timeout;
+        }
+        let mut response = captured(&authorities, query);
+        if is(&query.zone, "org.") && response.referral().is_some() {
+            let ns = (response.authority.iter())
+                .find(|r| r.rtype() == RecordType::NS)
+                .expect("an NS record")
+                .clone();
+            let gandi = name("ns-143-b.gandi.net.");
+            response.authority.retain(|r| r.rtype() != RecordType::NS);
+            for server in [gandi, panix.name.clone()] {
+                let data = RData::Ns(server);
+                (response.authority).push(Record::new(ns.name.clone(), ns.class, ns.ttl, &data));
+            }
+            response.additional.push(panix.clone());
+        }
+        Answered::Response(response)
+    };
+    let (outcome, sent) = run(
+        &mut start(&capture, &caches, Limits::default()),
+        &server,
+        at(&capture),
+    );
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
+    let lookup = ("ns-143-b.gandi.net.".to_owned(), RecordType::A);
+    assert!(
+        sent.iter().any(|s| (s.1.to_string(), s.2) == lookup),
+        "{sent:?}"
+    );
+}
+
 /// `glueless`, gandi.net's servers not answering the A lookup of ns-143-b.gandi.net, under `limits`.
-fn without_ipv4(limits: Limits) -> (Outcome, Vec<Sent>) {
+fn without_ipv4(limits: Limits) -> (Resolved, Vec<Sent>) {
     let capture = recursion::Resolution::read("glueless");
     let caches = caches(false);
     steer(&caches, &capture);
@@ -1042,7 +1168,7 @@ fn without_ipv4(limits: Limits) -> (Outcome, Vec<Sent>) {
 fn rfc1034_5_3_3_a_server_without_ipv4_reached_over_ipv6() {
     // gandi.net has no A record for ns-143-b.gandi.net: its AAAA one is looked up and asked.
     let (outcome, sent) = without_ipv4(Limits::default());
-    assert!(matches!(outcome, Outcome::Answer { .. }), "{outcome:?}");
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
     let aaaa = ("ns-143-b.gandi.net.".to_owned(), RecordType::AAAA);
     assert!(
         sent.iter().any(|s| (s.1.to_string(), s.2) == aaaa),
@@ -1060,7 +1186,7 @@ fn d191_targets_bound_counts_aaaa_lookups() {
         ..Limits::default()
     };
     let (outcome, _) = without_ipv4(limits);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Targets)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Targets)));
 }
 
 #[test]
@@ -1077,7 +1203,7 @@ fn d191_targets_bound_counts_each_name_looked_up() {
         }
     };
     let (outcome, _) = changed(&capture, &caches(false), limits, &change);
-    assert_eq!(outcome, Outcome::Failed(Failure::Limit(Limit::Targets)));
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Targets)));
 }
 
 #[test]
@@ -1096,7 +1222,7 @@ fn rfc2308_5_a_denial_without_the_soa_of_the_zone_asked_is_not_taken() {
         }
     };
     let (outcome, _) = changed(&capture, &caches(false), Limits::default(), &change);
-    assert_eq!(outcome, Outcome::Failed(Failure::Unusable));
+    assert_eq!(outcome, Resolved::Failed(Failure::Unusable));
 }
 
 #[test]
@@ -1159,13 +1285,13 @@ fn rfc6672_2_2_a_dname_making_a_name_too_long_is_yxdomain() {
         run(&mut resolution, &server, at(&capture)).0
     };
     // 205 + 51 = 256 bytes: too long, said by the DNAME of the zone asked above the name.
-    let Outcome::YxDomain { chain } = resolve(205) else {
+    let Resolved::YxDomain { chain } = resolve(205) else {
         panic!("{:?}", resolve(205));
     };
     let owners: Vec<&Name<'static>> = chain.iter().map(|held| held.rrset.owner()).collect();
     assert_eq!(owners, [&real.name]);
     // 204 + 51 = 255 bytes: the synthesis fits, YXDOMAIN is wrong.
-    assert_eq!(resolve(204), Outcome::Failed(Failure::Unusable));
+    assert_eq!(resolve(204), Resolved::Failed(Failure::Unusable));
 }
 
 #[test]
@@ -1190,7 +1316,7 @@ fn rfc1034_4_3_2_a_chain_cut_short_is_followed_from_its_end() {
 #[test]
 fn d193_the_cname_owning_the_name_asked_ranks_authoritative() {
     let (outcome, _) = limited("cname", Limits::default());
-    let Outcome::Answer { chain, .. } = outcome else {
+    let Resolved::Answer { chain, .. } = outcome else {
         panic!("{outcome:?}");
     };
     let ranks: Vec<Rank> = chain.iter().map(|held| held.rank).collect();
@@ -1204,8 +1330,10 @@ struct After {
     first: Duration,
     /// The server's timeout after; `None` when it is not asked again.
     timeout: Option<Duration>,
-    /// Whether it is lame for the root: a server not heard is chosen over it.
+    /// Whether it is lame for the root: a server not heard is chosen over it, draw after draw.
     lame: bool,
+    /// Whether it is chosen for com, over a server not heard, with the timeout of a server not heard.
+    elsewhere: bool,
 }
 
 fn after(answered: &dyn Fn(&Query, Message<'static>) -> Answered) -> After {
@@ -1230,12 +1358,37 @@ fn after(answered: &dyn Fn(&Query, Message<'static>) -> Answered) -> After {
             .select(servers, &query.zone, remaining, secs(now), rng)
     };
     let unheard = SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 53);
+    let com = caches.infra.select(
+        &[query.server],
+        &name("com."),
+        Duration::from_secs(10),
+        secs(now),
+        &mut rng,
+    );
     After {
         first: query.timeout,
         timeout: select(&[query.server], &mut rng).map(|choice| choice.timeout),
-        lame: select(&[query.server, unheard], &mut rng).map(|choice| choice.server)
-            == Some(unheard),
+        lame: (0..16).all(|_| {
+            select(&[query.server, unheard], &mut rng).map(|choice| choice.server) == Some(unheard)
+        }),
+        elsewhere: com.is_some_and(|choice| choice.timeout == query.timeout),
     }
+}
+
+/// The timeout a server is given after one response in `rtt`.
+fn credited(rtt: Duration) -> Option<Duration> {
+    let infra = InfraCache::new(InfraCache::DEFAULT_CAPACITY, 1).expect("a valid size");
+    let server = SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 53);
+    infra.reply(server, rtt, Marks::default(), 0);
+    let root = Name::root();
+    let choice = infra.select(
+        &[server],
+        &root,
+        Duration::from_secs(10),
+        0,
+        &mut Seeded(SEED),
+    );
+    choice.map(|choice| choice.timeout)
 }
 
 #[test]
@@ -1254,8 +1407,13 @@ fn d191_only_a_usable_response_credits_the_server() {
             Answered::Response(response)
         }
     };
-    // A referral credits its round trip.
-    assert!(!unchanged(&|_, response| Answered::Response(response)));
+    // A referral credits the round trip the transport measured (D190), whatever the time since the query was
+    // given.
+    assert_ne!(credited(RTT), credited(Duration::ZERO));
+    assert_eq!(
+        after(&|_, response| Answered::Response(response)).timeout,
+        credited(RTT)
+    );
     // A local error is not the server's; a response to another question says nothing of it.
     assert!(unchanged(&|_, _| Answered::LocalError));
     assert!(unchanged(&|_, response| {
@@ -1264,11 +1422,20 @@ fn d191_only_a_usable_response_credits_the_server() {
             &Question::new(name("example.com."), RecordType::A),
         ))
     }));
-    // Timeouts, server errors, REFUSED and SERVFAIL back it off.
+    // Timeouts and server errors back it off.
     assert!(backed_off(&|_, _| Answered::Timeout));
     assert!(backed_off(&|_, _| Answered::ServerError));
-    assert!(backed_off(&rcode(Rcode::REFUSED)));
-    assert!(backed_off(&rcode(Rcode::SERVFAIL)));
+    // An undecodable response, REFUSED and SERVFAIL leave it as it was, for this zone and the others, as Unbound's
+    // `THROWAWAY`: three of them cannot shut a server out (D191).
+    for answered in [
+        &(|_: &Query, _| Answered::Undecodable) as &dyn Fn(&Query, Message<'static>) -> Answered,
+        &rcode(Rcode::REFUSED),
+        &rcode(Rcode::SERVFAIL),
+    ] {
+        let after = after(answered);
+        assert_eq!(after.timeout, Some(after.first));
+        assert!(after.elsewhere);
+    }
     // A lame server is asked for the zone only when all are.
     let lame = after(&|_, mut response| {
         response.authority.clear();
@@ -1290,7 +1457,7 @@ fn d193_ns_learned_through_a_cached_delegation_stored_as_of_the_start() {
         let authorities = Authorities::new([&capture]);
         let server = |query: &Query| Answered::Response(captured(&authorities, query));
         let (outcome, _) = run(&mut resolution, &server, later);
-        assert!(matches!(outcome, Outcome::Answer { .. }), "{outcome:?}");
+        assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
         let held = caches
             .rrsets
             .get(&capture.name, RecordType::NS, Class::IN, secs(later));

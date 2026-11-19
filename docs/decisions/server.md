@@ -1439,61 +1439,53 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a cache cleared, would accept a replayed pair); an ETag for the anchors (a 304 on the XML says nothing of the
   signature); refusing a start for a root directory that cannot be written (`roots` is on by default, the bundled
   copies serve); separate settings of refresh (one schedule, one thread).
-- D191 (builds on D188, D190, D193, D194) The recursive resolver's iteration, `dedens_resolver::Resolution`
+- D191 (builds on D188, D190, D192, D193, D194) The recursive resolver's iteration, `dedens_resolver::Resolution`
   (recursive step 04): one client question from the closest delegation known down the referrals to the answer
   (RFC 1034 §5.3.3), sans-IO, one query in flight.
   - Driving: `Resolution::start(question, Arc<Caches>, now, limits)` refuses a question it cannot resolve
-    (`Unsupported`: ANY and the other QTYPEs and meta types, RRSIG until step 10, a class other than IN); `step(now,
-    rng)` gives `Next::Send(&Query)` or `Next::Done(&Outcome)`, the same query again until `receive(Reply, now)`
-    takes its reply. `Query { question, server, zone, marks, timeout }` is typed: the transport (D190's
-    `Authoritative::query`) owns the wire, the ID, DO, `0x20`, TC then TCP and the EDNS fallback, and matches the
-    response to the query. `Reply` is `Response { message, seen }` (the matched response, the server's `Marks` seen),
-    `Timeout`, `ServerError` (D190's `ServerError`: unreachable, forged, TCP failing) or `LocalError` (D190's
-    `LocalError`). The plan's `Send` is named `Query`: `Send` would shadow `std::marker::Send`. Time is a `Duration`
-    of any origin; the caches get its seconds.
+    (`Unsupported`: ANY and the other QTYPEs and meta types, RRSIG, part of the `RRset` it covers (D176), a class
+    other than IN); `step(now, rng)` gives `Next::Send(&Query)` or `Next::Done(&Resolved)`, the same query again
+    until `receive(Reply, now)` takes its reply. `Query { question, server, zone, marks, timeout }` is typed: the
+    transport (D190's `Authoritative::query`) owns the wire, the ID, DO, `0x20`, TC then TCP and the EDNS fallback,
+    and matches the response to the query. `Reply` is `Response { message, seen, rtt }` (the matched response, the
+    server's `Marks` seen, D190's `Response::rtt`), `Undecodable` (matched, but not a message: the next server,
+    nothing remembered, as Unbound's `process_response`), `Timeout`, `ServerError` (D190's `ServerError`:
+    unreachable, forged, TCP failing) or `LocalError` (D190's `LocalError`). The plan's `Send` is named `Query`:
+    `Send` would shadow `std::marker::Send`; its `Outcome` is `Resolved`, beside the scrubber's. Time is a
+    `Duration` of any origin; the caches get its seconds.
   - `Caches { rrsets, infra, roots, tlds }`: the start is the cache's answer (a rank that may answer, D193) or CNAME,
-    else the closest zone at or above the name whose NS `RRset` is cached with an address cached for one of its
-    servers (any rank: glue serves to reach a server), else the TLD's servers of `dedens-roots` when `tlds` is set,
-    else the root hints (D126).
-  - A response is read by one function, `resolution/read.rs`, whose output is shaped as step 05's `Scrubbed` (PR #113): the
-    outcome (`Answer`, `Cname`, `Referral`, `NoData`, `NxDomain`, `YxDomain`, `NoSoa`, `Lame`, `Unusable`) holding
-    its `RRset`s ranked, every rank decided there (`Read::ranked`, as `Scrubbed::ranked`). Step 05's order: not QR or
-    opcode QUERY, TC, an RCODE other than NOERROR, NXDOMAIN and YXDOMAIN, another question: unusable. A referral is
-    tested before AA, as Unbound (`iter_resptype.c`) and step 05 do: NOERROR, no answer, no SOA and an NS `RRset` of the
-    class owned strictly below the zone asked and at or above the name (RFC 1034 §4.3.2, downward only); NS
-    elsewhere is lame. Then without AA: lame (`InfraCache::lame`). With AA: the CNAME chain from the name within the
-    zone, walked once through an index, then the data (`Answer`), the chain's end out of the zone or without data
-    (`Cname`, restart there), NXDOMAIN with the zone's SOA, NODATA with it (RFC 2308 §2.2: no SOA is `NoSoa`,
-    unusable, RFC 2308 §5), YXDOMAIN with the DNAME whose synthesis exceeds 255 octets (RFC 6672 §2.2). A
-    synthesised CNAME is followed like any. A CNAME `RRset` of more records than one is unusable (RFC 2181 §10.1).
-    When step 05 lands (PR #113), `scrub` replaces `read` and its `Outcome` this one, field for field.
-  - Infra cache: only a response read as usable for the question (answer, CNAME, referral, NODATA, NXDOMAIN,
-    YXDOMAIN) credits the server its round trip (`InfraCache::reply`): a lame, malformed or mismatched one does not.
-    Lame marks the server lame for the zone. REFUSED, SERVFAIL, `Timeout` and `ServerError` back the server off as a
-    timeout does (RTO doubled, skipped after three, D194): Unbound and BIND credit any response's round trip and
-    move to the next server on REFUSED or SERVFAIL without penalty in their shared caches (Unbound
-    `iter_resptype.c` "throwaway", BIND `add_bad` per fetch); the back-off keeps a refusing server out of the next
-    questions' draws. `LocalError` is ours: the server is not touched.
-  - Caching: every `RRset` of a usable response at the rank `read` gave it (D193): answer data at
-    `AnswerAuthoritative` at the name asked, `AnswerNonAuthoritative` past a CNAME (RFC 2181 §5.4.1); the SOA of a
-    denial at `AuthorityAuthoritative`; the referral's NS at `AuthorityNonAuthoritative`, as of the resolution's
-    start when the delegation asked came from the cache, else now (Unbound's `store_rrsets`, D193); glue at
-    `AdditionalNonAuthoritative`, only for the server names kept and named within the zone asked (in-domain and
-    sibling glue, RFC 9471 §2). Negative answers are not cached (step 12). An address that came as glue keeps the
-    glue's rank when answered (D193's pin), so a later client question for it is asked again.
-  - Servers: a referral's NS names of the class, the first `servers` distinct kept; its addresses are its glue and
-    the cached addresses of its other servers, each once; `InfraCache::select` draws among those not tried. When
-    none is left, a server without an address, drawn at random with the resolution's `rng`, is looked up, A then
-    AAAA, by a sub-resolution on the same stack sharing the limits; its result is memoised by its question for the
-    whole resolution. A lookup whose closest delegation or referral is a zone an ancestor on the stack is waiting on
-    ends at once, its name given no address (the loop of a zone reachable only through itself costs one query per
-    name). An A lookup ending NXDOMAIN skips the name's AAAA.
+    else the closest zone at or above the name, strictly above for a DS (the parent's, RFC 4035 §3.1.4.1, Unbound's
+    `processInitRequest`), whose NS `RRset` is cached with an address cached for one of its servers (any rank: glue
+    serves to reach a server), else the TLD's servers of `dedens-roots` when `tlds` is set, else the root hints
+    (D126).
+  - Every response goes through `scrub` (D192), its `Outcome` alone deciding the next move: `Answer` ends the task,
+    `Cname` restarts at its target, `Referral` goes down, `NoData`, `NxDomain` and `YxDomain` end the task, and
+    `Signatures`, `NoSoa`, `Lame` and `Unusable` have the next server asked. A DS referred to the name asked is not
+    followed: the child has no DS, the referral's proof is the validator's (step 10).
+  - Infra cache: a response the scrubber reads as serving the question (all outcomes but `Signatures`, `NoSoa`,
+    `Lame` and `Unusable`) credits the server its round trip, the transport's `rtt`: the time since `step` gave the
+    query counts waits, the TCP retry and the EDNS fallback. `Lame` marks the server lame for the zone. `Timeout`
+    and `ServerError` back the server off (RTO doubled, skipped after three, D194). REFUSED, SERVFAIL and any other
+    unusable response leave it as it was, as Unbound's `THROWAWAY` (`iter_resptype.c`) and BIND's `add_bad`, per
+    fetch: the infra cache is keyed by address alone, and a back-off would let three REFUSED for one zone shut a
+    server out of all of them. `LocalError` is ours: the server is not touched.
+  - Caching: every `RRset` of `Scrubbed::ranked` at the scrubber's rank (D192, D193); the referral's NS as of the
+    resolution's start when the delegation asked came from the cache, else now (Unbound's `store_rrsets`, D193).
+    Negative answers are not cached (step 12). An address that came as glue keeps the glue's rank when answered
+    (D193's pin), so a later client question for it is asked again.
+  - Servers: the first `servers` names of a referral's NS `RRset`; each name's addresses are its glue, else those
+    cached; `InfraCache::select` draws among those not tried. When none is left, a server without an address, drawn
+    at random with the resolution's `rng`, is looked up, A then AAAA, by a sub-resolution on the same stack sharing
+    the limits; its result is memoised by its question for the whole resolution. A lookup whose closest delegation
+    or referral is a zone an ancestor on the stack is waiting on ends at once, its name given no address (the loop
+    of a zone reachable only through itself costs one query per name). An A lookup ending NXDOMAIN skips the
+    name's AAAA.
   - Limits (`Limits`, each a field with its number, a test in `tests/iteration.rs` reaching its default):
     `queries` 32 per client question, its sub-resolutions included, Unbound's `max-sent-count` (BIND 50): the cap
     of what a client costs; `restarts` 11, Unbound's and BIND's `max-query-restarts`, every CNAME hop counted, from
     the cache or a response; `referrals` 30, below Unbound's `MAX_REFERRAL_COUNT` 130 and above hickory's 24: the
     captures' deepest follows 4; `depth` 4 sub-resolutions waiting on one another, Unbound's `target-fetch-policy`
-    (BIND `max-recursion-depth` 7); `servers` 13 addresses asked and NS names kept per delegation, BIND's
+    (BIND `max-recursion-depth` 7); `servers` 13 addresses asked and NS names used per delegation, BIND's
     `max-delegation-servers`; `targets` 5 address lookups per delegation, A and AAAA each counted, after Unbound's
     `MAX_TARGET_NX` 5 (NXNSAttack, CVE-2020-12662), which counts NXDOMAIN lookups per client question, and its
     `MAX_DP_TARGET_COUNT` 16 per delegation (BIND counts them within its 13); `time` 4.5 s, a stub's 5 s (glibc
@@ -1502,16 +1494,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     reported if the question fails.
   - Failure: SERVFAIL with `Failure::info_code` (RFC 8914 §4), from what the servers of the delegation that failed
     did: a limit, or every query timing out, 22 No Reachable Authority; server or local errors and no response, 23
-    Network Error; responses, none usable (lame, refusing, failing), 0 Other Error. Each limit reached is a
-    `debug!` naming it and a count in `dedens_resolver_limits_total{limit}` (D30); each server chosen, referral and
-    restart a `debug!`, each read response a `trace!`.
-  - Tests: each capture of `testdata/recursion/` (D188) resolves to its captured answer through `Authorities`,
-    sending exactly the captured questions but validation's (DS, DNSKEY, priming), one server per question: the
-    infra cache marks lame every other address for each zone, so the draw falls on the server the capture followed;
-    the test harness is the transport (UDP, TCP after TC). The defaults are reached on referrals built from the
-    captured ones, every query timing out, or captured responses changed; each change is written in its test.
+    Network Error; responses, none usable (lame, refusing, failing, undecodable), 0 Other Error. Each limit reached
+    is a `debug!` naming it and a count in `dedens_resolver_limits_total{limit}` (D30); each query, referral,
+    restart and unused response a `debug!`.
+  - Tests: each capture of `testdata/recursion/` (D188) but the RRSIG question's resolves to its captured answer
+    through `Authorities`, sending exactly the captured questions but validation's (DS, DNSKEY, priming), one
+    server per question: the infra cache marks lame every other address for each zone, so the draw falls on the
+    server the capture followed; the test harness is the transport (UDP, TCP after TC). The defaults are reached on
+    referrals built from the captured ones, every query timing out, or captured responses changed; each change is
+    written in its test.
   - Not here: the stage and its transport binding (08), DNSSEC (10), QNAME minimisation (11), negative caching
-    (12), DS asked of the parent side, a last resort to the root when a cached delegation fails.
+    (12), a last resort to the root when a cached delegation fails.
 - D192 (builds on D188) The recursive resolver scrubs each response before anything reads it:
   `dedens_resolver::scrub(response, question, zone)`, a pure function, keeps what a server asked as authoritative for
   `zone` may say (RFC 2181 §6.1, RFC 5452 §6) and sorts it into an `Outcome`: `Answer`, `Signatures` (the answer
@@ -1692,9 +1685,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   step 07): what the resolver knows of each authoritative server, and which one to ask next.
   - Per server address (IP and port): the round-trip time smoothed per RFC 6298 §2 (SRTT, RTTVAR, RTO = SRTT +
     4 RTTVAR, in ms), the timeouts in a row, the time of its next probe and its marks (`Marks`): EDNS
-    (`Edns::Unknown`, `Supported`, `Unsupported`), no `0x20` echo, TCP needed. Per address and zone (lowered, RFC
-    4343): lameness, with its own expiry. Unbound keys everything by (address, zone) (`services/cache/infra.c`
-    `infra_lookup_nottl`); a server's time and marks are its own, so they are kept once whatever zones it serves, and
+    (`Edns::Unknown`, `Supported`, `Unsupported { rejected, answered }` with the rcodes D190's carry), no `0x20`
+    echo, TCP needed (BADCOOKIE twice over UDP: a truncation alone marks nothing, D190). Per address and zone
+    (lowered, RFC 4343): lameness, with its own expiry. Unbound keys everything by (address, zone)
+    (`services/cache/infra.c` `infra_lookup_nottl`); a server's time and marks are its own, so they are kept once whatever zones it serves, and
     only lameness, which is per zone (RFC 4697 §2.2.1), is keyed by zone. Cookies stay in the transport's jar
     (recursive step 03, per source and server, RFC 7873 §4.1), not here.
   - Numbers, each an associated constant of `InfraCache`, against Unbound (and BIND where it differs):
