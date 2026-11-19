@@ -17,7 +17,8 @@ pub(super) enum Local {
     NoData,
     /// The loopback address for A and AAAA, at the name and below, no data of another type (RFC 6761 §6.3 item 4).
     Loopback,
-    /// No name, the apex included (RFC 6761 §6.4 item 4): NXDOMAIN, without a SOA, as `invalid` is no zone.
+    /// No name, the apex included (RFC 6761 §6.4 item 4): NXDOMAIN, with a SOA to cache it by (RFC 2308 §5), the
+    /// empty zone's, as Unbound's static zone `invalid` answers.
     Nxdomain,
 }
 
@@ -102,16 +103,20 @@ impl LocalZones {
         Some(Self(zones.into()))
     }
 
-    /// The answer to `question`, as its zone serves it, if a zone of these holds it: its rcode, and its answer and
-    /// authority sections in a message. A DS question at a zone's apex is its parent's (RFC 4035 §3.1.4.1), and RFC 8375 §4 item
-    /// 4.B asks that it be resolved, so that a validator below proves the zone unsigned.
+    /// The answer to `question`, as its zone serves it, if a zone of these holds it, in class IN, the zones' class:
+    /// its rcode, and its answer and authority sections in a message. A DS question at an empty zone's apex is its
+    /// parent's (RFC 4035 §3.1.4.1), and RFC 8375 §4 item 4.B asks that it be resolved, so that a validator below
+    /// proves the zone unsigned; `localhost`'s is not, as no query goes out for it (RFC 6761 §6.3 item 4).
     pub(super) fn answer(&self, question: &Question<'_>) -> Option<(Rcode, Message<'static>)> {
+        if question.qclass != Class::IN {
+            return None;
+        }
         let (zone, local) = self
             .0
             .iter()
             .find(|(zone, _)| question.name.is_within(zone))?;
         let apex = question.name == *zone;
-        if apex && question.qtype == RecordType::DS && *local != Local::Nxdomain {
+        if apex && question.qtype == RecordType::DS && matches!(local, Local::Empty | Local::NoData) {
             return None;
         }
         let ttl = Ttl::from_wire(TTL);
@@ -131,7 +136,10 @@ impl LocalZones {
         let mut message = Message::default();
         let mut rcode = Rcode::NOERROR;
         let data = match (local, question.qtype) {
-            (Local::Nxdomain, _) => return Some((Rcode::NXDOMAIN, message)),
+            (Local::Nxdomain, _) => {
+                rcode = Rcode::NXDOMAIN;
+                None
+            }
             (Local::Loopback, RecordType::A) => Some(RData::A(Ipv4Addr::LOCALHOST)),
             (Local::Loopback, RecordType::AAAA) => Some(RData::Aaaa(Ipv6Addr::LOCALHOST)),
             (Local::Empty | Local::NoData, RecordType::SOA) if apex => {

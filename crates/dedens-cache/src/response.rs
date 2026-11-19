@@ -115,22 +115,32 @@ pub(crate) struct Response {
     pub(crate) mark: u64,
 }
 
+/// How [`Response::build`] bounds the lifetime of a response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bounds {
+    /// Raised to `Config::min_ttl` unless secure, within the caps (D124).
+    Raised,
+    /// Failed validation: raised too, but within `Config::bogus_ttl`, never stale (RFC 4035 §4.7).
+    Bad,
+    /// Its TTLs are bounded already, each by `Config::lifetime` or as time left in an `RRset` cache: within the
+    /// caps, never raised again, which would serve data past its time (D195).
+    Bounded,
+}
+
 impl Response {
     /// What the caller found out about it.
     pub(crate) const fn checked(&self) -> Checked {
         self.checked
     }
 
-    /// Checks `decoded`, the answer to the question of `key`, against the RFC 2308 caching rules and stores it.
-    /// `bad` data failed validation: it lives at most `Config::bogus_ttl`, never stale (RFC 4035 §4.7). An
-    /// insecure one lives at most `Config::insecure_ttl` (D93). Unless secure, it lives at least `Config::min_ttl`
-    /// (D124), within the caps.
+    /// Checks `decoded`, the answer to the question of `key`, against the RFC 2308 caching rules and stores it, its
+    /// lifetime bounded by `bounds`. An insecure one lives at most `Config::insecure_ttl` (D93).
     pub(crate) fn build(
         key: &Key,
         decoded: &Decoded<'_>,
         now: u32,
         checked: Checked,
-        bad: bool,
+        bounds: Bounds,
         config: &Config,
     ) -> Result<Self, NotCached> {
         if !decoded.violations.is_empty() {
@@ -159,14 +169,17 @@ impl Response {
         }
         let (smallest, cap) = smallest_ttl(message, question, rcode, config)?;
         // Bad data is stored as bogus, or as insecure for the clients that check for themselves (D77).
+        let bad = bounds == Bounds::Bad;
         let (cap, stale) = if bad {
             (cap.min(config.bogus_ttl), 0)
         } else {
             (cap, config.max_stale)
         };
-        let ttl = config
-            .bound(smallest, cap, checked)
-            .ok_or(NotCached::ZeroTtl)?;
+        let ttl = match bounds {
+            Bounds::Bounded => Some(smallest.min(cap)).filter(|&ttl| ttl > 0),
+            Bounds::Raised | Bounds::Bad => config.bound(smallest, cap, checked),
+        }
+        .ok_or(NotCached::ZeroTtl)?;
         // The caller adds its own OPT record to each response served.
         let wire = message.to_vec_without_edns()?;
         // The entry takes more than the wire: refuse before building the rest of it.

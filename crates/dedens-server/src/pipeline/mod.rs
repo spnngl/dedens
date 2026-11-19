@@ -16,7 +16,7 @@ use dedens_proto::{
     Class, Decoded, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
 };
 
-use self::finish::{Finish, Refused, prohibit, reply, servfail, slip};
+use self::finish::{Finish, Refused, Ttls, prohibit, reply, servfail, slip};
 pub use self::prewarm::{Warm, Warmth};
 use crate::access::{Access, Denial};
 use crate::budget::Spent;
@@ -869,7 +869,7 @@ impl Pipeline {
                 }
             }
         } else if let Some(decoded) = decoded {
-            return finish.plain(decoded, out);
+            return finish.plain(decoded, Ttls::Received, out);
         }
         if let Some(server) = following {
             upstream.server = server.clone();
@@ -910,12 +910,9 @@ impl Pipeline {
             return reply(client, Message::default(), Rcode::REFUSED, out);
         };
         if let Some((rcode, message)) = stage.local(question) {
-            let Some(len) = client.reply(message, rcode, None, out) else {
-                return Step::Drop;
-            };
-            let [high, _] = Flags::AA.bits().to_be_bytes();
-            out[2] |= high;
-            return Step::Reply(len);
+            return client
+                .authoritative(message, rcode, out)
+                .map_or(Step::Drop, Step::Reply);
         }
         let exempt = self
             .rate_limit
@@ -961,7 +958,7 @@ impl Pipeline {
             purpose: Purpose::Reply,
             now,
         };
-        let Some((ended, config)) = resolving.ended() else {
+        let Some(ended) = resolving.ended() else {
             return reply(&client, Message::default(), Rcode::SERVFAIL, out);
         };
         match ended {
@@ -970,13 +967,13 @@ impl Pipeline {
             }
             Ended::Resolved(resolved) => {
                 let (rcode, message) =
-                    recurse::message(resolving.question(), resolved, config, client.dnssec());
+                    recurse::message(resolving.question(), resolved, client.dnssec());
                 let mut decoded = Decoded::default();
                 decoded.message = message;
                 if decoded.message.set_rcode(rcode).is_err() {
                     return reply(&client, Message::default(), Rcode::SERVFAIL, out);
                 }
-                finish.plain(decoded, out)
+                finish.plain(decoded, Ttls::Bounded, out)
             }
             Ended::Shed => finish.shed(out),
             Ended::Unsupported(dedens_resolver::Unsupported::Type(_)) => {

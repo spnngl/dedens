@@ -271,6 +271,31 @@ fn d124_an_answer_is_served_within_the_cache_lifetime() {
 }
 
 #[test]
+fn d124_an_answer_from_the_rrset_cache_is_served_its_time_left_not_the_floor() {
+    let capture = recursion::Resolution::read("signed-com");
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let query = question(&capture);
+    let now = at(&capture);
+    let first = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let (reply, _) = ask(&first, (&query, CLIENT), &authorities, now);
+    assert_ne!(decode(reply.as_deref().expect("a reply")).answer, []);
+    let held = (caches.rrsets.get(&capture.name, capture.rtype, Class::IN, now))
+        .expect("the answer cached");
+    let floor = Config::default().min_ttl;
+    assert!(held.ttl.get() > floor);
+    // Three seconds left, under the floor; a new response cache, so that the `RRset` cache answers.
+    let later = now + held.ttl.get() - 3;
+    let second = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let (reply, sent) = ask(&second, (&query, CLIENT), &authorities, later);
+    assert_eq!(sent, Some(0));
+    let reply = decode(reply.as_deref().expect("a reply"));
+    let ttls: Vec<u32> = reply.answer.iter().map(|r| r.ttl.get()).collect();
+    assert_eq!(ttls, [3, 3], "{reply:?}");
+}
+
+#[test]
 fn rfc4035_3_2_1_signatures_go_to_a_client_asking_with_do() {
     let capture = recursion::Resolution::read("signed-com");
     let caches = caches(Config::default());
@@ -514,13 +539,40 @@ fn rfc6761_6_3_localhost_is_the_loopback() {
     );
     let mx = local(&pipeline, "localhost.", RecordType::MX);
     assert_eq!((mx.header.rcode, mx.answer.len()), (Rcode::NOERROR, 0));
+    // Its DS too: no query goes out for it (item 4), as for any name below.
+    let ds = local(&pipeline, "localhost.", RecordType::DS);
+    assert_eq!((ds.header.rcode, ds.answer.len()), (Rcode::NOERROR, 0));
+    assert_eq!(soa(&ds), Some("localhost.".parse().expect("a name")));
+}
+
+/// The local zones are class IN's: a question of another class is the stage's, which resolves none (REFUSED).
+#[test]
+fn d195_the_local_zones_answer_class_in_only() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    for name in ["localhost.", "10.in-addr.arpa.", "host.invalid."] {
+        let mut question = dedens_proto::Question::new(name.parse().expect("a name"), RecordType::A);
+        question.qclass = Class::CH;
+        let mut query = Message::query(7, question);
+        query.header.flags = Flags::RD;
+        let query = crate::util::wire(&query);
+        let (reply, sent) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
+        assert!(matches!(sent, None | Some(0)), "{name}");
+        let reply = decode(reply.as_deref().expect("a reply"));
+        assert_eq!(reply.header.rcode, Rcode::REFUSED, "{name}");
+        assert!(!reply.header.flags.contains(Flags::AA), "{name}");
+    }
 }
 
 #[test]
 fn rfc6761_6_4_invalid_does_not_exist() {
     let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
-    let reply = local(&pipeline, "host.invalid.", RecordType::A);
-    assert_eq!(reply.header.rcode, Rcode::NXDOMAIN);
+    let invalid: Name<'static> = "invalid.".parse().expect("a name");
+    for (name, rtype) in [("host.invalid.", RecordType::A), ("invalid.", RecordType::DS)] {
+        let reply = local(&pipeline, name, rtype);
+        assert_eq!(reply.header.rcode, Rcode::NXDOMAIN, "{name}");
+        // A SOA to cache the NXDOMAIN by (RFC 2308 §5).
+        assert_eq!(soa(&reply), Some(invalid.clone()), "{name}");
+    }
 }
 
 #[test]
@@ -548,6 +600,48 @@ fn d117_a_network_out_of_queries_gets_servfail_not_ready() {
     let reply = decode(reply.as_deref().expect("a reply"));
     assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
     assert_eq!(ede(&reply), Some(InfoCode::NOT_READY));
+}
+
+/// A resolution shed for the waiters on its query (`Resolving::shed`) gives its unit back: nothing was sent.
+#[test]
+fn d195_a_resolution_shed_gets_servfail_not_ready_and_pays_nothing() {
+    let capture = recursion::Resolution::read("signed-com");
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let share = Budgets::new(Budget {
+        per_second: 1,
+        burst: 1,
+        table: 1,
+    })
+    .expect("a budget");
+    let recurse = Recurse::new(Arc::clone(&caches)).with_share(share);
+    let pipeline = pipeline(Config::default(), recurse);
+    let now = at(&capture);
+    let mut out = vec![0; 65535];
+    for _ in 0..2 {
+        let Step::Resolve(mut resolving) =
+            pipeline.query(&question(&capture), Transport::Udp, CLIENT, now, &mut out)
+        else {
+            panic!("a resolution")
+        };
+        let mut rng = Seeded(0);
+        // The one unit of the burst pays the first query each time.
+        assert!(matches!(
+            resolving.step(Duration::from_secs(now.into()), &mut rng),
+            Turn::Send(_)
+        ));
+        resolving.shed();
+        assert_eq!(
+            resolving.step(Duration::from_secs(now.into()), &mut rng),
+            Turn::Done
+        );
+        let Step::Reply(len) = pipeline.resolved(&resolving, now, &mut out) else {
+            panic!("a reply")
+        };
+        let reply = decode(&out[..len]);
+        assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
+        assert_eq!(ede(&reply), Some(InfoCode::NOT_READY));
+    }
 }
 
 #[test]

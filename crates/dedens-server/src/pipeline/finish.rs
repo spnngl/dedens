@@ -24,6 +24,15 @@ pub(super) enum Refused {
     Busy(Box<Upstream>),
 }
 
+/// The TTLs of a response to store.
+#[derive(Clone, Copy)]
+pub(super) enum Ttls {
+    /// As a server sent them: the cache bounds them (D124).
+    Received,
+    /// Bounded already, by a recursion (D195): the cache does not raise them again.
+    Bounded,
+}
+
 /// What a response is answered with, and where it goes, once known.
 pub(super) struct Finish<'a> {
     pub(super) pipeline: &'a Pipeline,
@@ -43,9 +52,9 @@ impl Finish<'_> {
         self.cache.and_then(|index| self.pipeline.cache(index))
     }
 
-    /// Ends the query with a response nothing validated (no validator at this forward stage): stored, reviewed and
-    /// replied as D118 says.
-    pub(super) fn plain(&self, mut decoded: Decoded<'_>, out: &mut [u8]) -> Step {
+    /// Ends the query with a response nothing validated (no validator at this forward stage, or a recursion's):
+    /// stored, reviewed and replied as D118 says. `ttls` says whether its TTLs are bounded already.
+    pub(super) fn plain(&self, mut decoded: Decoded<'_>, ttls: Ttls, out: &mut [u8]) -> Step {
         let (pipeline, query, client, now) = (self.pipeline, self.query, self.client, self.now);
         // No validator: upstream's AD is its word over a channel we cannot vouch for, never ours (RFC 6840
         // §5.8, RFC 4035 §3.2.3, D114). The cache clears it as well, for a response stored as unchecked.
@@ -63,7 +72,13 @@ impl Finish<'_> {
         let mark = if blocked.is_none() { pipeline.id } else { 0 };
         let stored = self
             .store()
-            .filter(|cache| keep && cache.insert(query, &decoded, now, mark).is_ok());
+            .filter(|cache| {
+                keep && match ttls {
+                    Ttls::Received => cache.insert(query, &decoded, now, mark),
+                    Ttls::Bounded => cache.insert_bounded(query, &decoded, now, mark),
+                }
+                .is_ok()
+            });
         if let Some((_, answer)) = blocked {
             return self.blocked(&answer, out);
         }

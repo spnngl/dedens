@@ -6,7 +6,7 @@ use dedens_proto::{Decoded, HEADER_LEN, MAX_NAME_LEN, Query};
 use crate::config::{Config, ConfigError};
 use crate::key::{Key, MAX_KEY_LEN};
 use crate::metrics::Metrics;
-use crate::response::{Checked, NotCached, Refresh, Response};
+use crate::response::{Bounds, Checked, NotCached, Refresh, Response};
 use crate::shard::Shard;
 use crate::store::{Cost, Store, lock};
 
@@ -282,6 +282,26 @@ impl Cache {
         self.insert_checked(query, response, now, Checked::Unchecked, mark)
     }
 
+    /// [`Cache::insert`] of a response whose TTLs are bounded already: each by [`Config::lifetime`] when read from
+    /// a server, or the time left of an `RRset` in a cache, as a recursive resolution answers (D195). It lives as
+    /// long as its smallest TTL within the caps, not raised to `min_ttl` again: data with 3 s left is not served
+    /// for 60.
+    ///
+    /// # Errors
+    ///
+    /// [`NotCached`] says why the response is not stored.
+    pub fn insert_bounded(
+        &self,
+        query: &Query<'_>,
+        response: &Decoded<'_>,
+        now: u32,
+        mark: u64,
+    ) -> Result<(), NotCached> {
+        let key = Key::of(query).ok_or(NotCached::Query)?;
+        let stored = (Checked::Unchecked, mark);
+        self.store(&key, response, now, stored, Bounds::Bounded)
+    }
+
     /// [`Cache::insert`] of a response the caller validated (D77): `checked` is kept with it and sets the AD bit of
     /// the replies served.
     ///
@@ -302,16 +322,17 @@ impl Cache {
     ) -> Result<(), NotCached> {
         let key = Key::of(query).ok_or(NotCached::Query)?;
         if !matches!(checked, Checked::Bogus(_)) {
-            return self.store(&key, response, now, (checked, mark), false);
+            return self.store(&key, response, now, (checked, mark), Bounds::Raised);
         }
         // Both entries take the response, or both end what they held: an error of one stops neither. A client
         // that checks for itself asked under the second key already.
         let unchecked = key.with_checking_disabled();
-        let stored = self.store(&unchecked, response, now, (Checked::Insecure, mark), true);
+        let insecure = (Checked::Insecure, mark);
+        let stored = self.store(&unchecked, response, now, insecure, Bounds::Bad);
         if unchecked == key {
             return stored;
         }
-        self.store(&key, response, now, (checked, mark), true)
+        self.store(&key, response, now, (checked, mark), Bounds::Bad)
             .and(stored)
     }
 
@@ -342,10 +363,10 @@ impl Cache {
         response: &Decoded<'_>,
         now: u32,
         (checked, mark): (Checked, u64),
-        bad: bool,
+        bounds: Bounds,
     ) -> Result<(), NotCached> {
         let (hash, shard) = self.store.shard(key.as_bytes());
-        let mut response = match Response::build(key, response, now, checked, bad, &self.config) {
+        let mut response = match Response::build(key, response, now, checked, bounds, &self.config) {
             // Answered and not stored: an answer the cache holds is outdated by it, not to be served stale
             // (RFC 8767 §4: only data that cannot be refreshed), and a failure held is over. A response refused
             // as broken or as no answer to the query leaves both: it may be forged.

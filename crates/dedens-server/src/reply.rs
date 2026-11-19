@@ -112,13 +112,35 @@ impl<'q> Client<'q> {
     /// and the message encoded again with it.
     pub(crate) fn reply(
         &self,
-        mut message: Message<'q>,
+        message: Message<'q>,
         rcode: Rcode,
         error: Option<InfoCode>,
         out: &mut [u8],
     ) -> Option<usize> {
+        self.write(message, (rcode, error), Flags::NONE, out)
+    }
+
+    /// Writes `message` as [`Client::reply`] does with NOERROR or `rcode`, AA set: the answer of a zone this server
+    /// serves itself (RFC 1035 §4.1.1), such as the recurse stage's local zones (D195).
+    pub(crate) fn authoritative(
+        &self,
+        message: Message<'q>,
+        rcode: Rcode,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        self.write(message, (rcode, None), Flags::AA, out)
+    }
+
+    /// Writes `message` as [`Client::reply`] does, the flags of `set` set too.
+    fn write(
+        &self,
+        mut message: Message<'q>,
+        (rcode, error): (Rcode, Option<InfoCode>),
+        set: Flags,
+        out: &mut [u8],
+    ) -> Option<usize> {
         message.header = Header {
-            flags: self.flags(message.header.flags),
+            flags: self.flags(message.header.flags) | set,
             ..self.header
         };
         message.questions.clear();

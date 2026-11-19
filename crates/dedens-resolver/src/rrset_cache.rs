@@ -35,7 +35,8 @@ pub struct Ranked {
     /// What the validator found of them.
     pub checked: Checked,
     /// What is left of their time in the cache, which a reply gives as their TTL (RFC 1035 §4.1.3); not
-    /// [`Rrset::ttl`], the TTL they were received with, but for an `RRset` just read from a response.
+    /// [`Rrset::ttl`], the TTL they were received with. For an `RRset` a resolution just read from a response,
+    /// that TTL bounded by [`Config::lifetime`], the time the cache would store it for.
     pub ttl: Ttl,
 }
 
