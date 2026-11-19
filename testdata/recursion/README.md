@@ -22,5 +22,6 @@ the signatures of the responses are valid then. A recapture keeps the cases, not
 | `nodata-signed` | `sidn.nl SRV` | NODATA denied by NSEC |
 | `nodata-unsigned` | `google.com SRV` | NODATA in an unsigned zone |
 | `truncated` | `microsoft.com TXT` | An answer over 1232 bytes: truncated over UDP, asked again over TCP |
+| `rrsig` | `sidn.nl RRSIG` | An answer of signatures alone, no `RRset` of their own (D176) |
 
 No zone served by IPv6 servers alone was found (D188).

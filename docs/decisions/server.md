@@ -1441,12 +1441,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   copies serve); separate settings of refresh (one schedule, one thread).
 - D192 (builds on D188) The recursive resolver scrubs each response before anything reads it:
   `dedens_resolver::scrub(response, question, zone)`, a pure function, keeps what a server asked as authoritative for
-  `zone` may say (RFC 2181 §6.1, RFC 5452 §6) and sorts it into an `Outcome`: `Answer`, `Cname` (a chain the zone
-  cannot finish), `Referral { child, ns, proof, glue }`, `NoData { soa, denials }`, `NxDomain { chain, soa, denials }`,
-  `YxDomain { chain }`, `NoSoa` (a negative answer without its SOA: no negative TTL, so not cached, RFC 2308 §5),
-  `Lame` or `Unusable(why)`. A negative outcome holds its SOA, not an `Option`: one without is `NoSoa`. Each record
-  dropped is returned with its section, index and `Reason`, for the iteration to log and count; those kept are
-  grouped into `RRsets` (D193), each with the RRSIGs covering it and its `Rank`, what `RrsetCache::insert` takes
+  `zone` may say (RFC 2181 §6.1, RFC 5452 §6) and sorts it into an `Outcome`: `Answer`, `Signatures` (the answer
+  to an RRSIG question), `Cname` (a chain the zone cannot finish), `Referral { child, ns, proof, glue }`,
+  `NoData { soa, denials }`, `NxDomain { chain, soa, denials }`, `YxDomain { chain }`, `NoSoa` (a negative answer
+  without its SOA: no negative TTL, so not cached, RFC 2308 §5), `Lame` or `Unusable(why)`. A negative outcome
+  holds its SOA, not an `Option`: one without is `NoSoa`. Each record dropped is returned with its section, index
+  and `Reason`, for the iteration to log and count; those kept, but `Signatures`' records, are grouped into
+  `RRsets` (D193), each with the RRSIGs covering it and its `Rank`, what `RrsetCache::insert` takes
   (`Scrubbed::ranked`; `Scrubbed::records` lists them one by one). A signature shares its `RRset`'s owner and
   section, so its rank: the scrubber pairs them, not the cache. `Rank` is one type, in `rank.rs`, the scrubber's
   output and the cache's input. The rules, as Unbound's `iterator/iter_scrub.c` (`scrub_normalize`,
@@ -1476,7 +1477,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     chain leaving `zone`, or ending without data in a NOERROR, is `Cname { target }`: the zone's servers say nothing
     past it, and the target is asked again, also when it is within the zone (a NODATA there costs one more query);
     answer records off the chain are dropped. A DNAME whose synthesis passes 255 bytes ends the chain in
-    `YxDomain`, the answer of RFC 6672 §2.2, whatever the code the server gave;
+    `YxDomain`, the answer of RFC 6672 §2.2, whatever the code the server gave. An RRSIG question's answer, the
+    RRSIG records at the chain's end, is `Signatures { chain, records }`: an RRSIG is no `RRset` of its own but
+    part of the one it covers (D176, RFC 4035 §2.2), so the resolver answers with them and no cache takes them;
+    `ranked` and `records` hold the chain alone, and grouping loses nothing;
   - a negative answer keeps one SOA at or above the chain's end and the NSEC and NSEC3 records (RFC 2308 §2, RFC
     4035 §3.1.3); an answer keeps its NSEC and NSEC3 records (wildcard proofs). NS records beside an answer or a
     negative answer are dropped (Unbound's `iter-scrub-promiscuous`, CVE-2025-11411), and every other type of the
@@ -1502,12 +1506,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   whose DNAME synthesis is too long is `YxDomain` (Unbound fails it as a scrub error): the zone said what RFC 6672
   §2.2 makes of it; an NS `RRset` of the zone itself without SOA and without answer is `Lame` even with AA (Unbound
   reads an AA one as an answer): it delegates to itself, nothing to cache; a referral's ranks ignore AA (Unbound
-  ranks an AA referral's NS authority authoritative): a parent is not authoritative for the child's NS. Forwarding
+  ranks an AA referral's NS authority authoritative): a parent is not authoritative for the child's NS; the DS of
+  a referral answering a DS question is answer authoritative without AA (Unbound moves it to the answer section,
+  where `get_rrset_trust` ranks it `rrset_trust_ans_noAA`): the parent holds the DS `RRset` as authoritative data
+  (RFC 4035 §2.3), as in its AA answer to the same question; an RRSIG question's signatures are answered, not
+  cached (Unbound's `msgparse.c` keeps them as an `RRset` of type RRSIG, which it caches): an RRSIG is part of
+  the `RRset` it covers (D176). Forwarding
   is not scrubbed: an upstream resolver answers for every zone, so no zone bounds it; and forwarded data never enters
   the recursive resolver's `RRset` cache (MaginotDNS, USENIX Security 2023: a server both forwarder and resolver let
   its forwarded answers, checked against no zone, poison the cache its recursion reads). Rejected:
   editing the message in place as Unbound does (a decoded message borrows its bytes; the caller gets the drops);
-  `Message::referral`, which checks no zone; glue only within the child (refuses sibling glue the parent holds);
+  `Message::referral`, which checks no zone; an RRSIG question's answer `Unusable` (the resolver could not answer
+  one), or an `Answer` whose RRSIGs grouping drops; glue only within the child (refuses sibling glue the parent holds);
   trusting the server's CNAME beside a DNAME; following a chain out of the zone (Kaminsky, RFC 5452 §6); keeping an
   answer without AA ranked lower, as Unbound (a cache would hold data no zone's server vouched for; reopened if real
   captures show servers answering their zones without AA, `docs/TODECIDE.md`).

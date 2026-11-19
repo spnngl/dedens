@@ -11,7 +11,9 @@
 //!   and the records at its end. A DNAME's CNAME is synthesised and the server's kept only when it is the same
 //!   (RFC 6672 §3.4: a resolver synthesises); a chain leaving the zone, or ending without data, is
 //!   [`Outcome::Cname`]: the zone's servers say nothing past it. A DNAME whose synthesis is longer than 255 bytes
-//!   is the answer [`Outcome::YxDomain`] (RFC 6672 §2.2);
+//!   is the answer [`Outcome::YxDomain`] (RFC 6672 §2.2). The answer to an RRSIG question is
+//!   [`Outcome::Signatures`]: an RRSIG is no `RRset` of its own (D176), so the resolver answers with them and no
+//!   cache takes them;
 //! - a referral keeps one NS `RRset`, owned strictly below the zone and at or above the name asked (RFC 1034
 //!   §4.3.2 step 3b), its DS records or the NSEC or NSEC3 records proving it has none (RFC 4035 §3.1.4), and the
 //!   address records of its name servers within the zone as glue. A referral to the name asked, for its DS, is the
@@ -77,6 +79,15 @@ pub enum Outcome<'m> {
         denials: Vec<Record<'m>>,
         /// The addresses of the name servers of an NS answer, within the zone.
         additional: Vec<Record<'m>>,
+    },
+    /// The answer to an RRSIG question: the RRSIG records at the name asked or at its chain's end. An RRSIG is no
+    /// `RRset` of its own, but part of the one it covers (D176): the resolver answers with them, no cache takes
+    /// them, so [`Scrubbed::ranked`] and [`Scrubbed::records`] hold the chain alone.
+    Signatures {
+        /// The CNAME and DNAME records followed, as in [`Outcome::Answer`].
+        chain: Vec<Record<'m>>,
+        /// The RRSIG records, whatever type each covers.
+        records: Vec<Record<'m>>,
     },
     /// A chain the zone's servers cannot finish: it leaves the zone, ends without data, or is past [`MAX_CHAIN`].
     Cname {
@@ -224,7 +235,8 @@ impl<'m> Scrubbed<'m> {
             .collect()
     }
 
-    /// Every record kept with its rank, as the response held it, in the order of the outcome's fields.
+    /// Every record kept for the cache with its rank, as the response held it, in the order of the outcome's fields:
+    /// every record kept but the signatures of an [`Outcome::Signatures`].
     #[must_use]
     pub fn records(&self) -> Vec<(Rank, &Record<'m>)> {
         // Every outcome but a referral is from a response with AA, or the parent's DS records from a referral.
@@ -270,7 +282,9 @@ impl<'m> Scrubbed<'m> {
                 .chain(denials)
                 .map(with(authority))
                 .collect(),
-            Outcome::YxDomain { chain } | Outcome::NoSoa(Negative::NxDomain { chain }) => {
+            Outcome::Signatures { chain, .. }
+            | Outcome::YxDomain { chain }
+            | Outcome::NoSoa(Negative::NxDomain { chain }) => {
                 chain.iter().map(|r| (answer(chain, r), r)).collect()
             }
             Outcome::Referral {
@@ -589,6 +603,9 @@ impl<'m, 'z> Scrub<'m, 'z> {
         }
         if rcode == Rcode::YXDOMAIN {
             return Err(Unusable::Rcode(rcode));
+        }
+        if qtype == RecordType::RRSIG && !records.is_empty() {
+            return Ok(Outcome::Signatures { chain, records });
         }
         let nxdomain = rcode == Rcode::NXDOMAIN;
         let mut denials = Vec::new();

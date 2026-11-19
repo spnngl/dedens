@@ -1,7 +1,7 @@
 //! `scrub` on the captured resolutions of `testdata/recursion` (D188), as captured and changed the way an attacker
 //! would change them (D192): RFC 1034 §4.3.2, RFC 1035 §4.1.1, RFC 2181 §5.4.1/§6.1, RFC 2308 §2/§5, RFC 4035
-//! §3.1.4, RFC 4697 §2.2, RFC 5452 §6, RFC 6672 §2.2/§2.5/§3.4. Each change is written next to it; a test of a bound
-//! reaches it.
+//! §2.2/§2.3/§3.1.4, RFC 4697 §2.2, RFC 5452 §6, RFC 6672 §2.2/§2.5/§3.4. Each change is written next to it; a
+//! test of a bound reaches it.
 
 use std::fmt::Write as _;
 
@@ -103,6 +103,11 @@ fn outcome(scrubbed: &Scrubbed<'_>) -> String {
             list(records),
             list(denials),
             additional.len()
+        ),
+        Outcome::Signatures { chain, records } => format!(
+            "Signatures chain=[{}] records=[{}]",
+            list(chain),
+            list(records)
         ),
         Outcome::Cname {
             chain,
@@ -917,6 +922,32 @@ fn rfc4035_3_1_4_1_a_referral_to_the_name_asked_for_its_ds_is_the_answer() {
     assert_eq!((set.rtype(), set.rrsigs().len()), (RecordType::DS, 1));
 }
 
+/// sidn.nl's answer to sidn.nl RRSIG: signatures alone, which are not signed (RFC 4035 §2.2) and no `RRset` of
+/// their own (D176), so the answer is `Signatures`, for the resolver to answer with and for no cache: grouping
+/// them would lose them. Without them, the answer is a negative one, as for any type.
+#[test]
+fn rfc4035_2_2_an_rrsig_answer_is_answered_not_cached() {
+    let (bytes, question, zone) = captured("rrsig", "sidn.nl.", "sidn.nl.", RecordType::RRSIG);
+    let response = decode(&bytes);
+    let scrubbed = scrub(&response, &question, &zone);
+    let Outcome::Signatures { chain, records } = &scrubbed.outcome else {
+        panic!("{}", describe(&scrubbed));
+    };
+    assert!(chain.is_empty(), "{}", describe(&scrubbed));
+    assert_eq!(names(records), ["sidn.nl. RRSIG"]);
+    assert!(scrubbed.dropped.is_empty(), "{}", describe(&scrubbed));
+    // Nothing for the cache: grouping would lose the signatures.
+    assert!(scrubbed.records().is_empty(), "{}", describe(&scrubbed));
+    assert!(scrubbed.ranked().is_empty(), "{}", describe(&scrubbed));
+    let mut response = decode(&bytes);
+    // Changed: the answer section emptied.
+    response.answer.clear();
+    assert!(matches!(
+        scrub(&response, &question, &zone).outcome,
+        Outcome::NoSoa(Negative::NoData)
+    ));
+}
+
 /// An AA answer is an answer, not a referral, though its authority section names a zone between the one asked and
 /// the name: gandi.net's answer, as if from a server of net., keeps its address and drops gandi.net's NS.
 #[test]
@@ -1230,7 +1261,8 @@ fn rfc2308_2_an_soa_beside_an_answer_or_a_chain_is_dropped() {
 
 /// The ranks of RFC 2181 §5.4.1: a referral's records are the non-authoritative authority and additional data; an
 /// answer's chain is authoritative at the name asked and at the owner of its first record, a DNAME, as Unbound ranks
-/// it (RFC 1035 §4.1.1); an authoritative answer's additional data is ranked authoritative additional data.
+/// it (RFC 1035 §4.1.1); an authoritative answer's additional data is ranked authoritative additional data, its
+/// authority data (a negative answer's SOA and denials, an answer's wildcard proof) authoritative authority data.
 #[test]
 fn rfc2181_5_4_1_ranks_follow_section_and_aa() {
     let (bytes, question, zone) = captured("unsigned", "com.", "google.com.", RecordType::A);
@@ -1279,5 +1311,55 @@ fn rfc2181_5_4_1_ranks_follow_section_and_aa() {
     assert!(
         ranks.contains(&(Rank::AdditionalAuthoritative, RecordType::AAAA)),
         "{ranks:?}"
+    );
+    // An authoritative response's authority section: a negative answer's SOA and denials.
+    for (id, name, rtype) in [
+        ("nxdomain-signed", "dedens-nxdomain.sidn.nl.", RecordType::A),
+        ("nodata-signed", "sidn.nl.", RecordType::SRV),
+    ] {
+        let (bytes, question, zone) = captured(id, "sidn.nl.", name, rtype);
+        let response = decode(&bytes);
+        let ranks: Vec<_> = scrub(&response, &question, &zone)
+            .ranked()
+            .into_iter()
+            .map(|(rank, set)| (rank, set.rtype()))
+            .collect();
+        for rtype in [RecordType::SOA, RecordType::NSEC] {
+            assert!(
+                ranks.contains(&(Rank::AuthorityAuthoritative, rtype)),
+                "{id}: {ranks:?}"
+            );
+        }
+        assert!(
+            ranks
+                .iter()
+                .all(|(rank, _)| *rank == Rank::AuthorityAuthoritative),
+            "{id}: {ranks:?}"
+        );
+    }
+    // And an answer's: its wildcard proof.
+    let (bytes, question, zone) =
+        captured("signed-com", "example.com.", "example.com.", RecordType::A);
+    let mut response = decode(&bytes);
+    // Changed: an NSEC of example.com appended to the authority section, as a wildcard expansion's proof.
+    response.authority.push(rr(
+        "example.com. 300 IN NSEC www.example.com. A NS SOA RRSIG NSEC DNSKEY",
+    ));
+    let scrubbed = scrub(&response, &question, &zone);
+    let Outcome::Answer { denials, .. } = &scrubbed.outcome else {
+        panic!("{}", describe(&scrubbed));
+    };
+    assert_eq!(names(denials), ["example.com. NSEC"]);
+    let ranks: Vec<_> = scrubbed
+        .ranked()
+        .into_iter()
+        .map(|(rank, set)| (rank, set.rtype()))
+        .collect();
+    assert_eq!(
+        ranks,
+        [
+            (Rank::AnswerAuthoritative, RecordType::A),
+            (Rank::AuthorityAuthoritative, RecordType::NSEC)
+        ]
     );
 }

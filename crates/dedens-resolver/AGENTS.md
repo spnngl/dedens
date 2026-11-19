@@ -18,7 +18,8 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 - `scrub` is total: any message, any zone, no panic. The fuzz target `scrub_response` checks that what it keeps is
   within the zone and parses, that every record of the response is kept or dropped, once, and that each kept is in
   an `RRset` of its rank; its seeds are the captures of `testdata/recursion`. A record no `RRset` holds (a meta
-  type) is dropped, not kept: grouping loses nothing.
+  type) is dropped, not kept, and an RRSIG question's signatures are `Outcome::Signatures`, outside `ranked` and
+  `records` (D176): grouping loses nothing.
 - A scrubbed `Lame` or `Unusable` keeps and drops nothing: the iteration asks another server, nothing is logged per
   record.
 - A value's `Cost` counts the bytes asked for every allocation it owns (`Rrset::cost`: the `Arc`, the owner name,
