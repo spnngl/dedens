@@ -10,7 +10,8 @@ use std::net::Ipv4Addr;
 use dedens_dnssec::crypto::{Budget, Nsec3Blocks, Verifications};
 use dedens_dnssec::denial::MaxIterations;
 use dedens_dnssec::{
-    Cost, Delegation, InsecureReason, Limits, Next, TrustAnchors, Validator, Verdict, covered,
+    Cost, Delegation, InsecureReason, Limits, Next, TrustAnchors, Validation, Validator, Verdict,
+    covered,
 };
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec, RData, Rrsig};
@@ -91,6 +92,17 @@ impl Script {
     /// The verdict on the capture `id`.
     fn verdict(&self, id: &str) -> Verdict {
         self.run(&Self::validator(), &response(id), captured_at())
+    }
+
+    /// The validation of `response`, done.
+    fn validation(&self, response: &Message<'static>) -> Validation {
+        let question = response.questions.first().expect("a question").clone();
+        let now = u64::from(captured_at());
+        let mut validation = Self::validator().start(&question, response, now);
+        while let Next::Ask(ask) = validation.step() {
+            validation.answer(self.answer(&ask));
+        }
+        validation
     }
 }
 
@@ -486,6 +498,74 @@ fn an_answer_with_another_rcode_is_indeterminate() {
     assert!(
         matches!(&verdict, Verdict::Indeterminate { ede } if ede.code == InfoCode::DNSSEC_INDETERMINATE),
         "{verdict:?}"
+    );
+}
+
+/// A YXDOMAIN is the DNAME that makes it (RFC 6672 §2.2): one whose DNAME makes no name too long is bogus.
+#[test]
+fn a_yxdomain_without_its_dname_is_bogus() {
+    let script = Script::new();
+    let mut response = response("dname_answer");
+    response.header.rcode = Rcode::YXDOMAIN;
+    let verdict = script.run(&Script::validator(), &response, captured_at());
+    assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
+}
+
+/// Each `RRset` has its own verdict, its zone's, which a cache records (Unbound's `rrset_update_sec_status`): the
+/// response's is the worst of its parts. Here the signed CNAME of `ripe.net` stays secure, the unsigned sets are
+/// insecure.
+#[test]
+fn each_rrset_of_an_insecure_answer_has_its_own_verdict() {
+    let response = response("cname_to_insecure");
+    let validation = Script::new().validation(&response);
+    let question = response.questions.first().expect("a question");
+    for record in &response.answer {
+        let own = validation.verdict_of(&record.name, record.rtype());
+        if record.rtype() == RecordType::RRSIG {
+            assert_eq!(own, None, "{record}");
+        } else if record.name == question.name {
+            assert!(own.is_some_and(secure), "{record}: {own:?}");
+        } else {
+            assert!(matches!(own, Some(Verdict::Insecure { .. })), "{record}: {own:?}");
+        }
+    }
+}
+
+/// The SOA, NSEC and NSEC3 `RRsets` of a denial have their own verdict too, their signatures': secure, whether the
+/// proof is (a name error) or only proves an opt-out span (insecure, RFC 5155 §9.2).
+#[test]
+fn each_proof_of_a_denial_has_its_own_verdict() {
+    let script = Script::new();
+    for (id, insecure) in [("nxdomain_root_nsec", false), ("leaf_nxdomain_com_ds", true)] {
+        let response = response(id);
+        let validation = script.validation(&response);
+        let verdict = script.verdict(id);
+        assert_eq!(matches!(verdict, Verdict::Insecure { .. }), insecure, "{id}: {verdict:?}");
+        let proofs = (response.authority.iter()).filter(|r| r.rtype() != RecordType::RRSIG);
+        for record in proofs {
+            let own = validation.verdict_of(&record.name, record.rtype());
+            assert!(own.is_some_and(secure), "{id} {record}: {own:?}");
+        }
+    }
+}
+
+/// The signed CNAME before a bogus `RRset` stays secure: only the forged set is bogus.
+#[test]
+fn each_rrset_of_a_bogus_answer_has_its_own_verdict() {
+    let response = response("bogus_signature");
+    let validation = Script::new().validation(&response);
+    let own = |rtype| {
+        let record = (response.answer.iter())
+            .find(|record| record.rtype() == rtype)
+            .expect("a record of the type");
+        validation.verdict_of(&record.name, rtype)
+    };
+    let cname = own(RecordType::CNAME);
+    assert!(cname.is_some_and(secure), "{cname:?}");
+    let forged = own(RecordType::A);
+    assert!(
+        forged.is_some_and(|own| bogus(own, InfoCode::DNSSEC_BOGUS)),
+        "{forged:?}"
     );
 }
 

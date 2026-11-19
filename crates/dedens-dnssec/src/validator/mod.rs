@@ -175,6 +175,7 @@ impl Validator {
             zones: HashMap::new(),
             absent: HashMap::new(),
             checked: HashMap::new(),
+            sets: Vec::new(),
             done: None,
         };
         if !answers_question(&validation.response, &validation.question) {
@@ -297,6 +298,9 @@ pub struct Validation {
     /// set in it and the zone whose keys checked it: the walk reads them as well as the verdict, and no
     /// signature is verified twice (D92).
     checked: HashMap<(usize, Name<'static>), Result<Ttl, Unusable>>,
+    /// The own verdict of each `RRset` of the response judged by itself, by owner and type: see
+    /// [`Validation::verdict_of`].
+    sets: Vec<(Name<'static>, RecordType, Verdict)>,
     done: Option<Verdict>,
 }
 
@@ -349,6 +353,20 @@ impl Validation {
                 Next::Ask(question)
             }
         }
+    }
+
+    /// The verdict on the `RRset` of `owner` and `rtype` of the response by itself, once the validation is done:
+    /// its signatures against the keys of the zone it is in, a wildcard expansion's proof included (RFC 4035
+    /// §5.3); for an NSEC, NSEC3 or SOA `RRset` of the authority section, its signatures alone. That is what a
+    /// cache records of the set, as Unbound's `rrset_update_sec_status` does: the response's verdict is the worst of
+    /// its parts and of its proof of denial, and its parts may be of other zones. `None` for a set not judged by
+    /// itself: a CNAME a DNAME synthesized, a set after a bogus one, any set of a response not judged set by set
+    /// (an RRSIG answer, a referral, another rcode).
+    #[must_use]
+    pub fn verdict_of(&self, owner: &Name<'_>, rtype: RecordType) -> Option<&Verdict> {
+        (self.sets.iter())
+            .find(|(name, set_type, _)| name == owner && *set_type == rtype)
+            .map(|(_, _, verdict)| verdict)
     }
 
     fn finish(&mut self, verdict: Verdict) -> Next {
