@@ -3,8 +3,8 @@
 //! through the pipeline, the cache stage answering it again), RFC 8109 §3 (priming), RFC 6303 §3 and §4, RFC 8375 §4,
 //! RFC 9462 §6.4 and RFC 6761 §6.3, §6.4 (the zones served locally), RFC 5452 §5 (a resolution on shared replies),
 //! D117 (the client's network pays each query), and validation (D197): RFC 4035 §5 (AD on a secure answer, SERVFAIL
-//! with the extended error of RFC 8914 §4 on a bogus one), §3.2.2 (none for a query with CD), and D77 (the
-//! allowance bounds it).
+//! with the extended error of RFC 8914 §4 on a bogus one), §3.2.2 (none for a query with CD, which gets the data
+//! as held: AD when secure, by RFC 6840 §5.8, bogus data by §5.9), and D77 (the allowance bounds it).
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -732,18 +732,21 @@ fn validating(
     unminimised(Arc::clone(caches)).validating(validating)
 }
 
-/// The reply of a validating pipeline to `query`, `capture` served by `authorities`.
+/// The reply of a validating pipeline to `query`, `capture` served by `authorities`, and the queries it sent.
 fn validated(
     capture: &recursion::Resolution,
     authorities: &Authorities,
     query: &[u8],
     allowance: Allowance,
-) -> Message<'static> {
+) -> (Message<'static>, Option<usize>) {
     let caches = caches(Config::default());
     steer(&caches, capture);
     let pipeline = pipeline(Config::default(), validating(&caches, capture, allowance));
-    let (reply, _) = ask(&pipeline, (query, CLIENT), authorities, at(capture));
-    decode(reply.as_deref().expect("a reply")).into_owned()
+    let (reply, sent) = ask(&pipeline, (query, CLIENT), authorities, at(capture));
+    (
+        decode(reply.as_deref().expect("a reply")).into_owned(),
+        sent,
+    )
 }
 
 /// `capture` with the signatures of its answers to `name` and `rtype` taken out.
@@ -831,7 +834,7 @@ fn rfc4035_3_2_2_a_query_with_cd_is_not_validated() {
     );
     let authorities = Authorities::new([&capture]);
     let query = client_query("sidn.nl.", RecordType::A, Flags::CD, true);
-    let reply = validated(&capture, &authorities, &query, Allowance::default());
+    let (reply, _) = validated(&capture, &authorities, &query, Allowance::default());
     assert_eq!(reply.header.rcode, Rcode::NOERROR);
     assert!(!reply.header.flags.contains(Flags::AD));
     assert!(
@@ -850,9 +853,11 @@ fn d77_a_validation_past_the_allowance_gets_servfail_not_ready() {
         burst: 1,
         per_query: 256,
     };
-    let reply = validated(&capture, &authorities, &query, allowance);
+    let (reply, sent) = validated(&capture, &authorities, &query, allowance);
     assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
     assert_eq!(ede(&reply), Some(InfoCode::NOT_READY));
+    // Shed at its first validator question, as the allowance runs dry, not at the end of its 8 queries.
+    assert!(sent.is_some_and(|sent| sent < 8), "{sent:?}");
 }
 
 #[test]
@@ -860,11 +865,116 @@ fn d77_a_validation_past_its_query_allowance_is_indeterminate() {
     let capture = recursion::Resolution::read("signed-nl");
     let authorities = Authorities::new([&capture]);
     let query = client_query("sidn.nl.", RecordType::A, Flags::NONE, true);
+    // The validation of `sidn.nl A` costs 8 units by its last query (its questions and verifications so far,
+    // D106's `work`), and sends 8 queries in all: past `per_query` it stops at once.
+    for (per_query, secure, queries) in [(2, false, 4), (7, false, 7), (8, true, 8)] {
+        let allowance = Allowance {
+            per_query,
+            ..Allowance::default()
+        };
+        let (reply, sent) = validated(&capture, &authorities, &query, allowance);
+        assert_eq!(sent, Some(queries), "{per_query}");
+        if secure {
+            assert_eq!(reply.header.rcode, Rcode::NOERROR, "{per_query}");
+            assert!(reply.header.flags.contains(Flags::AD), "{per_query}");
+        } else {
+            assert_eq!(reply.header.rcode, Rcode::SERVFAIL, "{per_query}");
+            let code = Some(InfoCode::DNSSEC_INDETERMINATE);
+            assert_eq!(ede(&reply), code, "{per_query}");
+        }
+    }
+}
+
+#[test]
+fn rfc6840_5_8_a_query_with_cd_gets_ad_for_data_held_secure() {
+    // RFC 4035 §3.2.3: AD when every RRset is authentic, which the `RRset` cache holds from the first query.
+    let capture = recursion::Resolution::read("signed-nl");
+    let authorities = Authorities::new([&capture]);
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let pipeline = pipeline(
+        Config::default(),
+        validating(&caches, &capture, Allowance::default()),
+    );
+    for flags in [Flags::NONE, Flags::CD] {
+        let query = client_query("sidn.nl.", RecordType::A, flags, true);
+        let (reply, _) = ask(&pipeline, (&query, CLIENT), &authorities, at(&capture));
+        let reply = decode(reply.as_deref().expect("a reply"));
+        assert_eq!(reply.header.rcode, Rcode::NOERROR, "{flags:?}");
+        assert!(reply.header.flags.contains(Flags::AD), "{flags:?}");
+    }
+}
+
+#[test]
+fn rfc6840_5_9_a_query_with_cd_gets_the_data_held_bogus() {
+    let capture = stripped(
+        recursion::Resolution::read("signed-nl"),
+        "sidn.nl.",
+        RecordType::A,
+    );
+    let authorities = Authorities::new([&capture]);
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let pipeline = pipeline(
+        Config::default(),
+        validating(&caches, &capture, Allowance::default()),
+    );
+    let checked = client_query("sidn.nl.", RecordType::A, Flags::NONE, true);
+    let (bogus, _) = ask(&pipeline, (&checked, CLIENT), &authorities, at(&capture));
+    let bogus = decode(bogus.as_deref().expect("a reply"));
+    assert_eq!(bogus.header.rcode, Rcode::SERVFAIL);
+    // The bogus data the `RRset` cache holds, without AD, and no query sent.
+    let unchecked = client_query("sidn.nl.", RecordType::A, Flags::CD, true);
+    let (reply, sent) = ask(&pipeline, (&unchecked, CLIENT), &authorities, at(&capture));
+    assert_eq!(sent, Some(0));
+    let reply = decode(reply.as_deref().expect("a reply"));
+    assert_eq!(reply.header.rcode, Rcode::NOERROR);
+    assert!(!reply.header.flags.contains(Flags::AD));
+    assert!(
+        reply.answer.iter().any(|r| r.rtype() == RecordType::A),
+        "{reply:?}"
+    );
+}
+
+#[test]
+fn d197_the_stage_tells_its_validation() {
+    let capture = recursion::Resolution::read("signed-nl");
+    let caches = caches(Config::default());
+    assert!(unminimised(Arc::clone(&caches)).validation().is_none());
+    let validator = Validator::new(TrustAnchors::root(), dedens_dnssec::Limits::default());
+    let at = capture.captured_at;
+    let validating = Validating::new(validator, Arc::new(move || at)).tagged("anchors");
+    let stage = unminimised(caches).validating(validating);
+    assert_eq!(stage.validation().map(Validating::tag), Some("anchors"));
+    assert_eq!(stage.validation_tag(), Some("anchors"));
+}
+
+/// D186: a validating recurse stage parks no query: one the allowance refuses is given up at once, its share's
+/// unit given back, and counted shed.
+#[cfg(feature = "metrics")]
+#[test]
+fn d197_a_query_the_allowance_refuses_is_counted_shed() {
+    let recorder = metrics_util::debugging::DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let capture = recursion::Resolution::read("signed-nl");
+    let authorities = Authorities::new([&capture]);
+    let caches = caches(Config::default());
     let allowance = Allowance {
-        per_query: 2,
+        burst: 0,
         ..Allowance::default()
     };
-    let reply = validated(&capture, &authorities, &query, allowance);
-    assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
-    assert_eq!(ede(&reply), Some(InfoCode::DNSSEC_INDETERMINATE));
+    let recurse =
+        metrics::with_local_recorder(&recorder, || validating(&caches, &capture, allowance));
+    let pipeline = pipeline(Config::default(), recurse);
+    let query = client_query("sidn.nl.", RecordType::A, Flags::NONE, true);
+    let (reply, sent) = ask(&pipeline, (&query, CLIENT), &authorities, at(&capture));
+    assert_eq!(sent, Some(0));
+    assert_eq!(
+        ede(&decode(reply.as_deref().expect("a reply"))),
+        Some(InfoCode::NOT_READY)
+    );
+    assert_eq!(
+        crate::metrics::counted(&snapshotter, "dedens_validations_total", "verdict"),
+        [("shed".to_owned(), 1)]
+    );
 }

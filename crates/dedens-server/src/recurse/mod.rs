@@ -442,11 +442,6 @@ impl Resolving {
         }
     }
 
-    /// Whether its answer was validated: the reply is then the verdict's (D197).
-    pub(crate) const fn validated(&self) -> bool {
-        self.validation.is_some()
-    }
-
     /// Hands over the reply to the query [`Resolving::step`] gave, at `now`.
     pub fn receive(&mut self, reply: Reply<'_>, now: Duration) {
         if let State::Running(resolution) = &mut self.state {

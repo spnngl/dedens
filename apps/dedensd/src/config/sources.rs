@@ -834,6 +834,52 @@ mod tests {
         assert!(format!("{error:#}").contains("line 1"), "{error:#}");
     }
 
+    /// D197: a validating recurse stage trusts the anchors kept in `state_dir` as a forward stage does (D128); one
+    /// that does not validate, or names its own anchors, reads no kept file: one that does not read refuses
+    /// neither, and its own file is read even by a build that reads no file (the fuzz entry) only when named.
+    #[test]
+    fn kept_root_anchors_key_a_validating_recurse_stage_alone() {
+        let state = tempfile::tempdir().unwrap();
+        let recursing = |settings: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\nstate_dir: '{}'\npipeline: [cache, root]\nstages:\n  cache:\n    type: cache\n  root:\n    type: recurse\n{settings}",
+                state.path().display()
+            )
+        };
+        let build = |text: &str| {
+            crate::config::read(text, env, &Pipeline::default(), &mut Store::default())
+                .map(|config| config.pipeline)
+        };
+        let tag = |pipeline: &Pipeline| match pipeline.stages() {
+            [Stage::Cache(_), Stage::Recurse(recurse)] => {
+                recurse.validation_tag().map(str::to_owned)
+            }
+            stages => unreachable!("{stages:?}"),
+        };
+        let file = state.path().join(roots::ANCHORS);
+        let rolled = KEPT.replace("from 1485993600", "from 1485993600 until 1735689600");
+        fs::write(&file, rolled).unwrap();
+        let validate = build(&recursing("    dnssec: validate\n")).unwrap();
+        let kept = tag(&validate).unwrap();
+        assert!(!kept.contains("20326") && kept.contains("38696"), "{kept}");
+
+        fs::write(&file, "dedens root anchors 2\n").unwrap();
+        assert_eq!(tag(&build(&recursing("")).unwrap()), None);
+        let own = state.path().join("anchors.txt");
+        fs::write(&own, TrustAnchors::root().to_string()).unwrap();
+        let named = recursing(&format!(
+            "    dnssec: validate\n    trust_anchors: '{}'\n",
+            own.display()
+        ));
+        assert!(build(&named).is_ok());
+
+        fs::remove_file(&own).unwrap();
+        assert!(build(&named).is_err(), "its anchors are read");
+        assert!(crate::config::read_without_files(&named, env).is_ok());
+        let refused = recursing("    insecure: [corp.example]\n");
+        assert!(crate::config::read_without_files(&refused, env).is_err());
+    }
+
     /// D128: kept anchors with no key valid now, by a clock likelier wrong than every key ended, refuse neither a
     /// start nor a reload: every key of them is trusted, dates ignored. The kept text is [`KEPT`], each key edited
     /// to start in 2100.

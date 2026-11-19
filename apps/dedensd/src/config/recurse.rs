@@ -427,6 +427,12 @@ mod tests {
         assert!(Arc::ptr_eq(&recurse(&same).0, &cache), "unchanged");
         assert!(Arc::ptr_eq(recurse(&same).1.caches(), stage.caches()));
         assert_eq!(recurse(&same).1.validation_tag(), stage.validation_tag());
+        let validator =
+            |stage: &dedens_server::Recurse| stage.validation().unwrap().validator().clone();
+        assert!(
+            validator(recurse(&same).1).shares_cache(&validator(stage)),
+            "the keys proven kept"
+        );
         let insecure = format!("{text}    insecure: [corp.example]\n");
         let insecure = read(&insecure, env, &same).expect("valid").pipeline;
         assert!(

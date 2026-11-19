@@ -1873,7 +1873,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     fail `Failure::Indeterminate(code)`. Both failures carry the validator's EDE (RFC 8914 §4, D77).
   - Not judged: YXDOMAIN (the validator takes none: insecure, as a forwarded one); RRSIG questions stay NOTIMP
     (D195); a query with CD, or not class IN, is resolved without the validator (RFC 4035 §3.2.2), and gets what the
-    `RRset` cache holds, bogus data included, as Unbound.
+    `RRset` cache holds as it is held: AD when every RRset is held secure (RFC 4035 §3.2.3, RFC 6840 §5.8), bogus
+    data included (RFC 6840 §5.9), as Unbound. The reply follows the verdicts held (`Resolved::checked`), not
+    whether the stage validates.
   - Bounds: `Limits::validation` 32, the queries all the validator's questions of one client question may send
     (`Limit::Validation`), beside `queries`, which counts the client's own: a validation needs about two per zone
     of the chain, and the client's 32 are not to be spent on it. Unbound gives each validator fetch its own
@@ -1913,9 +1915,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     one insecure; a stripped signature, a changed DS, another zone's keys bogus; a KeyTrap-shaped DNSKEY set within
     the budget; a budget of one verification indeterminate; the validation's queries bounded; forged glue not the
     answer; an unvalidated cached answer validated; the DS from the child asked again of the parent, standing
-    when no parent shows, and no cut sought for another type), `crates/dedens-server/tests/recurse.rs` (AD on each secure capture, from the cache stage
-    too; bogus SERVFAIL EDE 10, asked again with no query; CD not validated; the allowance's two ends), the config
-    tests in `apps/dedensd/src/config/recurse.rs`.
+    when no parent shows, and no cut sought for another type), `crates/dedens-server/tests/recurse.rs` (AD on each
+    secure capture, from the cache stage
+    too; bogus SERVFAIL EDE 10, asked again with no query; CD not validated, AD on data held secure, the bogus
+    data held; the allowance's ends, a refused query counted shed; a validator question unanswered indeterminate;
+    the validation's cost), the config tests in `apps/dedensd/src/config/recurse.rs` and `sources.rs` (the kept
+    root anchors of a validating recurse stage).
   - Rejected: the validator beside the resolution in the server, each question a resolution of its own (two state
     machines, limits per question: a client question could cost 64 resolutions); Unbound's quota per validator
     fetch (64 questions of 32 queries); judging cached verdicts again (the signature memo, D86, makes it cheap, but

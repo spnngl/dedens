@@ -10,7 +10,7 @@ use dedens_dnssec::crypto::{Budget, Verifications};
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Dnskey, Ds, RData};
-use dedens_proto::{Class, Message, Name, Question, Record, RecordType};
+use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType};
 use dedens_resolver::{Caches, Failure, Limit, Limits, Minimisation, Ranked, Resolution, Resolved};
 use dedens_testkit::recursion;
 
@@ -436,4 +436,38 @@ fn rfc4035_3_1_4_1_only_a_ds_question_looks_for_the_parent() {
         .map(|(zone, name, rtype)| format!("{zone} {name} {rtype}"))
         .collect();
     assert_eq!(asked, [". sidn.nl. SRV"]);
+}
+
+#[test]
+fn d197_a_validator_question_unanswered_is_indeterminate() {
+    // The servers of sidn.nl fail its DNSKEY question: the validator has no keys to check the answer with.
+    let (resolved, _) = changed(&|zone, message| {
+        if is(zone, "sidn.nl.") && answers(message, "sidn.nl.", RecordType::DNSKEY) {
+            message.header.rcode = Rcode::SERVFAIL;
+            message.answer.clear();
+        }
+    });
+    let unreachable = Failure::Indeterminate(InfoCode::NO_REACHABLE_AUTHORITY);
+    assert_eq!(resolved, Resolved::Failed(unreachable));
+}
+
+#[test]
+fn d197_the_validation_tells_its_cost() {
+    let capture = recursion::Resolution::read("signed-nl");
+    let unchecked = caches(false);
+    let mut unvalidated = start(&capture, &unchecked, Limits::default());
+    assert!(unvalidated.validation_cost().is_none());
+    let _ = served(&capture, &unchecked, &mut unvalidated, &|_, _| {});
+    assert!(unvalidated.validation_cost().is_none());
+    let defaults = (
+        Limits::default(),
+        validator(dedens_dnssec::Limits::default()),
+    );
+    let (resolution, _, _) = check(&capture, &caches(false), defaults, &|_, _| {});
+    let cost = resolution.validation_cost().expect("a validation");
+    // The DNSKEY of ., nl and sidn.nl, the DS of nl and sidn.nl; a signature checked for each, and for the A.
+    assert_eq!(
+        (cost.questions, cost.verifications, cost.nsec3_blocks),
+        (5, 6, 0)
+    );
 }
