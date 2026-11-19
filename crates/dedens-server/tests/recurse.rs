@@ -472,9 +472,13 @@ fn rfc6303_3_a_reverse_zone_of_private_addresses_is_served_empty() {
 #[test]
 fn rfc6303_3_a_zone_turned_off_is_resolved() {
     let zone: Name<'static> = "10.in-addr.arpa.".parse().expect("a name");
-    let recurse = Recurse::new(caches(Config::default()))
-        .resolving(&zone)
-        .expect("a zone served locally");
+    let served = Recurse::new(caches(Config::default()));
+    assert!(served.local_zones().any(|local| *local == zone));
+    let recurse = served.resolving(&zone).expect("a zone served locally");
+    // Listed no more, so that a reload turning it off flushes the cache stage.
+    assert!(!recurse.local_zones().any(|local| *local == zone));
+    let invalid: Name<'static> = "invalid.".parse().expect("a name");
+    assert!(recurse.local_zones().any(|local| *local == invalid));
     let pipeline = pipeline(Config::default(), recurse);
     let query = client_query(
         "1.2.3.10.in-addr.arpa.",
