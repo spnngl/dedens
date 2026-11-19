@@ -1447,7 +1447,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a cache cleared, would accept a replayed pair); an ETag for the anchors (a 304 on the XML says nothing of the
   signature); refusing a start for a root directory that cannot be written (`roots` is on by default, the bundled
   copies serve); separate settings of refresh (one schedule, one thread).
-- D191 (builds on D188, D190, D192, D193, D194; amended by D196) The recursive resolver's iteration,
+- D191 (builds on D188, D190, D192, D193, D194; amended by D196, D197) The recursive resolver's iteration,
   `dedens_resolver::Resolution` (recursive step 04): one client question from the closest delegation known down the
   referrals to the answer (RFC 1034 §5.3.3), sans-IO, one query in flight.
   - Driving: `Resolution::start(question, Arc<Caches>, now, limits)` refuses a question it cannot resolve
@@ -1740,7 +1740,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     always (RFC 5452 §4.4); a `480 s` blacklist, which Unbound's `BLACKLIST_PENALTY` is not: 480,000 ms added to a
     server's RTT for one query (`iterator/iterator.c`), the iterator's (step 04) to apply.
     Open: times per (address, zone) if a server is measured slow for one zone only (TODECIDE).
-- D195 (builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
+- D195 (amended by D197; builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
   from the root, `Stage::Recurse` behind the cache stage where a forwarder has a forward stage.
   - Shape: `dedens_server::Recurse` holds the resolver's caches (`Arc<Caches>`: RRsets D193, servers D194, the root
     and TLD hints D126), `Limits` (D191), the locally served zones and the client budget. Sans-IO as the rest of the
@@ -1849,6 +1849,70 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: the resolution inside `Upstream` (its forward accessors would mean nothing for it); stepping it in
     `Pipeline::query` (no clock nor randomness there); D86's process-wide flights (a lock across threads); waiters
     without bound (one slow server holding every client).
+- D197 (amends D191, D195; builds on D73, D75, D77, D86, D93, D114, D117, D128, D186, D193) DNSSEC validation in
+  the recursive resolver (recursive step 10): the resolution judges its answer (RFC 4035 §5), each question of the
+  validator iterated by the resolution itself.
+  - Shape: `Resolution::validated(Validator, unix)`. When the client question ends `Answer`, `NoData` or
+    `NxDomain`, `Resolved::message(question, true)` rebuilds the response (chain, data, SOA, and the `denials` the
+    scrubber kept: NSEC, NSEC3 and their RRSIGs, now in `Resolved`) and `Validator::start` judges it; each
+    `Next::Ask` (a DS or a DNSKEY) becomes the resolution's next question, iterated as the client's: same caches,
+    servers, `restarts`, `referrals` and `time`, a DS asked of the parent (D191), a DNSKEY of the zone. Its outcome
+    is handed back as a message (`answer(None)` for a failure: indeterminate). One state machine, one set of limits,
+    sans-IO as D191; the server drives a validated resolution as any other.
+  - Outcomes already judged are not judged again: every RRset `Secure` in the `RRset` cache gives a secure answer,
+    `Secure` or `Insecure` an insecure one, any `Bogus` a bogus one, and one `Unchecked` (glue, a resolution without
+    the validator, a referral's NS) has the whole answer validated. So an answer made of unsigned glue or additional
+    data, or cached by a resolution that did not validate, is never taken for secure.
+  - Verdicts (D193's merge: the same data held unchecked takes the verdict): `Secure { ttl }` re-inserts each RRset
+    `Checked::Secure`, its TTL capped to `ttl` (`Rrset::cap_ttl`: the signatures' validity, RFC 4035 §5.3.3);
+    `Insecure` `Checked::Insecure`, capped by D93; `Bogus { ede }` every RRset of the answer `Checked::Bogus` for the
+    bogus TTL (D124; the validator does not say which one failed, so all are held bogus), and the resolution fails
+    `Failure::Bogus(code)`; `Indeterminate` and the verdicts a final answer cannot give (`Incomplete`, `Referral`)
+    fail `Failure::Indeterminate(code)`. Both failures carry the validator's EDE (RFC 8914 §4, D77).
+  - Not judged: YXDOMAIN (the validator takes none: insecure, as a forwarded one); RRSIG questions stay NOTIMP
+    (D195); a query with CD, or not class IN, is resolved without the validator (RFC 4035 §3.2.2), and gets what the
+    `RRset` cache holds, bogus data included, as Unbound.
+  - Bounds: `Limits::validation` 32, the queries all the validator's questions of one client question may send
+    (`Limit::Validation`), beside `queries`, which counts the client's own: a validation needs about two per zone
+    of the chain, and the client's 32 are not to be spent on it. Unbound gives each validator fetch its own
+    `max-sent-count` within `MAX_GLOBAL_QUOTA` 200 (`iterator/iterator.h`): `limits.validation` is capped at 200
+    too, and D195's "`queries`, validation's included" now reads: the client's queries. The validator's own
+    bounds (D75: questions, depth, verification budget, KeyTrap's failed checks) hold as in a forward stage.
+  - DS from the child (Unbound's `iter_ds_toolow` and `processDSNSFind`, `iterator/iter_utils.c`,
+    `iterator/iterator.c`): a DS question answered NODATA with an SOA at or below the name, by a zone more than one
+    label above it, was answered by the child (a server serving both sides): the NS of the name's parent are looked
+    up (`Purpose::Cut`), then of its parent, up to the zone asked; an NS answer or referral for that name makes it
+    the delegation the DS is asked of. Reaching the zone asked, the NODATA stands, as Unbound's. Each lookup is a
+    sub-resolution under `depth` and the limits, one per label between the name and the zone asked, where Unbound
+    stops at `MAX_DSNS_FIND_COUNT` 20: `queries` bounds them first.
+  - The recurse stage: `Recurse::validating(Validating)` as a forward stage (D77): AD on a secure answer (D114's
+    `present`, signatures and denials cut to those that cover it), SERVFAIL with the EDE for a bogus one, no stale
+    data in its place and no failure held (asked again, the `RRset` cache answers bogus without a query); an
+    indeterminate one is a failure (D43). The allowance: a unit at the start (`admit`), then at each step what the
+    validation grew by (questions, verifications, NSEC3 blocks, D106's `work`); past `per_query` indeterminate,
+    the bucket in debt SERVFAIL with EDE 14, not parked (D186: a parked resolution would hold its state and
+    queries; the client asks again). The share is the validation's (`DEFAULT_SHARE`, D117), the stage's
+    `client_share` stays the queries'.
+  - Configuration: a recurse stage takes `dnssec` (`off` by default, as a forward stage: `docs/TODECIDE.md`),
+    `trust_anchors` and `insecure` as a forward stage (D77, D127, D128: the root's anchors from `state_dir`) and
+    `limits.validation`. A reload validating the same way keeps the validator (its key cache, D86) and the caches;
+    one validating otherwise flushes the `RRset` cache and the cache stage, which hold the old verdicts.
+  - Deviations from the step file: no `start_referral` at each referral: the walk of the final answer asks the DS
+    of every cut from the anchor down (D73's walk by labels, the key cache D86 keeping zones), so a stripped
+    signature anywhere is bogus all the same, for one walk instead of two. The simulation's validated run of every
+    capture is left to step 09, which owns `dedens-sim`. The capture tool asks the DS of each label of the
+    answer's owners below their zone, as the validator walks them (`dname` recaptured).
+  - Tests: `crates/dedens-resolver/tests/validation.rs` (every signed capture secure and cached so, every unsigned
+    one insecure; a stripped signature, a changed DS, another zone's keys bogus; a KeyTrap-shaped DNSKEY set within
+    the budget; a budget of one verification indeterminate; the validation's queries bounded; forged glue not the
+    answer; an unvalidated cached answer validated; the DS from the child asked again of the parent, and standing
+    when no parent shows), `crates/dedens-server/tests/recurse.rs` (AD on each secure capture, from the cache stage
+    too; bogus SERVFAIL EDE 10, asked again with no query; CD not validated; the allowance's two ends), the config
+    tests in `apps/dedensd/src/config/recurse.rs`.
+  - Rejected: the validator beside the resolution in the server, each question a resolution of its own (two state
+    machines, limits per question: a client question could cost 64 resolutions); Unbound's quota per validator
+    fetch (64 questions of 32 queries); judging cached verdicts again (the signature memo, D86, makes it cheap, but
+    the verdict is held already); stale data for a bogus answer (the data is what failed).
 - D198 (builds on D191, D195) The recursive resolver minimises its questions (recursive step 11, RFC 9156),
   relaxed by default: privacy without the failures strict mode meets on servers that deny empty non-terminals.
   - Shape: `dedens_resolver::Minimisation { Off, Relaxed, Strict }`, the fifth argument of `Resolution::start`;

@@ -46,8 +46,13 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 - The transport owns the wire: ID, DO, `0x20`, TC then TCP, EDNS fallback and the matching (D190). `Query` stays
   typed, without bytes. A `Reply::LocalError` is ours: it never touches the infra cache.
 - Every CNAME hop counts against `Limits::restarts`, through `Resolution::hops`, from the cache or a response.
-- Every query leaves through `Resolution::send`, which checks `Limits::queries`. A new bound is a `Limits` field
+- Every query leaves through `Resolution::send`, which checks `Limits::queries`, or `Limits::validation` for the
+  validator's questions. A new bound is a `Limits` field
   with its number and prior art, in D191, and a test in `tests/iteration.rs`.
+- A validated answer is secure only when every `RRset` of it is (`Resolved::checked`): one `Unchecked` (glue, a
+  referral's NS, a resolution without the validator) has the whole answer judged. A verdict is written back to the
+  `RRset` cache through `insert`, its TTL capped first (`Rrset::cap_ttl`); a bogus one fails the resolution with
+  its EDE (D197).
 - `tests/iteration.rs` replays the captures by steering the infra cache's draw (`steer`: every other address
   lame): a capture refreshed may change the server followed, not the test.
 - The captures of `testdata/recursion` are of a full-name iterator: replay them with `Minimisation::Off`, or
@@ -64,7 +69,10 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 - A DS is the parent's (RFC 4035 §3.1.4.1): `closest` starts above the name for one, and a DS question referred to
   the name asked is not followed. Its proof (NSEC or NSEC3) is in the referral, the validator's to read (step 10):
   the child's answer would be NODATA from the wrong side of the cut. A server above the parent serving the child
-  too still gives such a NODATA, taken as the denial: `docs/TODECIDE.md`, for step 10.
+  too gives such a NODATA: `Resolution::below_cut` takes it for the child's and looks the cut up (`Cut`, D197).
+- `tests/validation.rs` replays a capture with the validator, which asks the DS of every label below a zone down to
+  the answer's owners: a capture lacking one fails `Limit::Validation` asking servers that refuse. The capture tool
+  asks them (`walk`): recapture rather than drop the case.
 - NSEC and NSEC3 records are not capped by count (a proof needs what it needs): the validator bounds their cost
   (KeyTrap, CVE-2023-50387 and CVE-2023-50868).
 - Names keep the case the server sent: `Name`'s equality folds case, so `scrub` matches a `0x20` question, and

@@ -977,6 +977,11 @@ impl Pipeline {
             return reply(&client, Message::default(), Rcode::SERVFAIL, out);
         };
         match ended {
+            // Bogus: SERVFAIL with its code, no stale data in its place, as a forwarded bogus answer (D77); the
+            // `RRset` cache holds the verdict for the bogus TTL, so asking again sends nothing.
+            Ended::Resolved(dedens_resolver::Resolved::Failed(
+                dedens_resolver::Failure::Bogus(code),
+            )) => servfail(&client, *code, out),
             Ended::Resolved(dedens_resolver::Resolved::Failed(failure)) => {
                 finish.failed(Some(failure.info_code()), out)
             }
@@ -987,9 +992,11 @@ impl Pipeline {
                     return finish.plain(decoded, Ttls::Bounded, out);
                 }
                 // Validated: secure when each RRset is (RFC 4035 §5), insecure when one is, or is not judged.
+                // A YXDOMAIN is not judged (the validator takes none): insecure, as a forwarded one.
                 let outcome = match resolved.checked() {
                     Checked::Secure => Outcome::Secure,
-                    _ => Outcome::Insecure,
+                    Checked::Bogus(code) => return servfail(&client, code, out),
+                    Checked::Insecure | Checked::Unchecked => Outcome::Insecure,
                 };
                 finish.deliver(outcome, decoded, None, Ttls::Bounded, out)
             }
