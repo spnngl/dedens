@@ -278,7 +278,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   the root hints, within the same `Limits` (D191), in `Resolution::ask` (the recurse stage, D195, left it as is).
 - Validation by default in a recurse stage (D197): `dnssec` is `off` unless set, as a forward stage's (D77), where
   Unbound and BIND validate a recursive resolver by default. Default: off, as the forwarder; `validate` the default
-  once the simulation (D196) runs every capture validated.
+  once the simulation (recursive step 09) runs every capture validated.
 - A wildcard answer from the `RRset` cache validated anew (D197): the cache keeps the answer's RRsets, not the
   denial proving the wildcard's expansion, so an unvalidated cached wildcard answer is judged without it, bogus.
   Default: as is (a resolution that cached it unvalidated is one without a validator); kept with the answer when

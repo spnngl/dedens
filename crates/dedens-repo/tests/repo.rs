@@ -180,6 +180,16 @@ fn id_at(text: &str, at: usize) -> Option<Id> {
     })
 }
 
+/// Whether `line` is base64 data alone, such as a captured response in `testdata/`, where a `D`, a digit and a
+/// letter between `+` and `/` cite nothing: 40 characters at least of its alphabet, no space.
+fn is_base64(line: &str) -> bool {
+    let data = line.trim();
+    data.len() >= 40
+        && data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+}
+
 /// Every decision `text` cites, in order, a range such as `D64-D66` (or with an en dash) expanded.
 fn cited(text: &str) -> Vec<String> {
     let mut ids = Vec::new();
@@ -278,7 +288,7 @@ fn undefined_or_duplicated(sections: &[Source], others: &[Source]) -> Vec<String
         }
     }
     for source in sections.iter().chain(others) {
-        for (line, text) in source.lines() {
+        for (line, text) in source.lines().filter(|(_, text)| !is_base64(text)) {
             problems.extend(
                 cited(text)
                     .into_iter()
@@ -908,8 +918,15 @@ fn undefined_and_duplicated_decisions_fail() {
         ),
     ];
     let code = Source::new("crates/x/src/lib.rs", "//! D9 and D2\n");
+    let data = Source::new(
+        "testdata/x.yaml",
+        concat!(
+            "  response: >-\n    gvKM0+D",
+            "8t/RYzofAAABAAEAAAABBnNpZG5ubANubAAA\n"
+        ),
+    );
     assert_eq!(
-        undefined_or_duplicated(&sections, &[code]),
+        undefined_or_duplicated(&sections, &[code, data]),
         [
             "docs/decisions/b.md:2: D1 is defined twice, first at docs/decisions/a.md:3",
             "docs/decisions/a.md:4: D3 is not defined in docs/decisions/",
