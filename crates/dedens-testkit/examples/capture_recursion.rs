@@ -4,7 +4,8 @@
 //! Usage: `capture_recursion <dir> [id]...`, every case of [`CASES`] when no id is given.
 //!
 //! Each resolution starts with priming (RFC 8109 §3) and asks the DS of each zone it enters at the parent and its
-//! DNSKEY at the zone, the root's included. Each question goes to one server of each family, the first in address
+//! DNSKEY at the zone, the root's included, then the DS of each name of the answer below its zone, at the zone,
+//! as the validator walks the labels (RFC 4035 §5.2). Each question goes to one server of each family, the first in address
 //! order that answers, so a recapture asks the same servers while they stay; the iterator goes on with the IPv4
 //! response. Queries set DO alone, with no cookie and no 0x20, and advertise 1232 bytes (RFC 9715 §3.2); a
 //! truncated response is asked again over TCP, both recorded (RFC 9471 §2.1). A referral's glue is taken for the
@@ -121,10 +122,11 @@ async fn capture(name: Name<'static>, rtype: RecordType) -> Result<Resolution, B
         exchanges: Vec::new(),
     };
     iterator.prime().await?;
-    iterator
+    let answer = iterator
         .resolve(&name, rtype, 0)
         .await
         .ok_or_else(|| format!("{name} {rtype}: the resolution failed"))?;
+    iterator.walk(&answer).await;
     // Signatures made on demand start at the time of the query: the end of the run is within them all.
     let captured_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     Ok(Resolution {
@@ -197,6 +199,32 @@ impl Iterator {
             self.ask(zone, &cut, RecordType::DNSKEY).await;
         }
         None
+    }
+
+    /// Asks the DS of each name of `answer` below the zone holding it, and of the names between, at that zone:
+    /// the validator walks every label down to an owner (RFC 4035 §5.2).
+    async fn walk(&mut self, answer: &[Record<'static>]) {
+        let mut owners: Vec<&Name<'static>> = Vec::new();
+        for record in answer
+            .iter()
+            .filter(|r| r.rdata.rtype() != RecordType::RRSIG)
+        {
+            if !owners.contains(&&record.name) {
+                owners.push(&record.name);
+            }
+        }
+        for owner in owners {
+            let owner = owner.clone();
+            let zone = self.closest(&owner);
+            let depth = self.zones[zone].name.label_count();
+            for below in depth + 1..=owner.label_count() {
+                let skip = owner.label_count() - below;
+                let Ok(name) = Name::from_labels(owner.labels().skip(skip)) else {
+                    continue;
+                };
+                self.ask(zone, &name.into_owned(), RecordType::DS).await;
+            }
+        }
     }
 
     /// The `answer` to `name` and `rtype`, with the records of its CNAME chain's target when the answer stops at
