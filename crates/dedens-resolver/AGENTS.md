@@ -55,7 +55,7 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   TTL is capped first (`Rrset::cap_ttl`) to the time it has left; a bogus answer is asked again of other servers
   (`Resolution::retry`), then fails the resolution with its EDE (D197).
 - With a validator, `Resolution::begin` takes no wildcard expansion (`Rrset::expanded`) the cache holds secure or
-  unchecked: its proof is not cached (D197). A CNAME a DNAME synthesized is not cached.
+  unchecked: its proof is not cached (D197). Without one, a secure expansion is served unchecked (`unproven`). A CNAME a DNAME synthesized is not cached.
 - A query moved to TCP that times out there (`Reply::TcpTimeout`) does not back the server off (D197): only
   `Reply::Timeout` reaches `InfraCache::timeout`.
 - `tests/iteration.rs` replays the captures by steering the infra cache's draw (`steer`: every other address

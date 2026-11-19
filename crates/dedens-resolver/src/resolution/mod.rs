@@ -1169,7 +1169,11 @@ impl Resolution {
         let task = self.tasks.active();
         let Question { name, qtype, .. } = &task.asked;
         let qtype = *qtype;
-        if let Some(data) = rrsets.get(name, qtype, Class::IN, now).filter(usable) {
+        if let Some(data) = rrsets
+            .get(name, qtype, Class::IN, now)
+            .filter(usable)
+            .map(unproven)
+        {
             debug!(%name, rtype = %qtype, "answered from the cache");
             let chain = std::mem::take(&mut task.chain);
             let denials = std::mem::take(&mut task.denials);
@@ -1184,6 +1188,7 @@ impl Resolution {
             && let Some(cname) = rrsets
                 .get(name, RecordType::CNAME, Class::IN, now)
                 .filter(usable)
+                .map(unproven)
             && let Some(target) = target(&cname.rrset)
         {
             return self.restart(vec![cname], target);
@@ -1869,6 +1874,15 @@ fn recorded(verdict: &Verdict) -> Option<(Checked, Option<Ttl>)> {
 /// Whether `held` may answer a question (RFC 2181 §5.4.1, D193).
 fn answers(held: &Ranked) -> bool {
     held.rank >= Rank::AnswerNonAuthoritative || held.checked == dedens_cache::Checked::Secure
+}
+
+/// `held` as served from the cache without a validator: a secure wildcard expansion goes without the proof that
+/// no closer name exists (RFC 4035 §5.3.4), which the cache does not keep, so it is served unchecked, without AD.
+fn unproven(mut held: Ranked) -> Ranked {
+    if held.checked == Checked::Secure && held.rrset.expanded() {
+        held.checked = Checked::Unchecked;
+    }
+    held
 }
 
 /// The addresses of an A or AAAA `RRset`.

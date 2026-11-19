@@ -327,7 +327,7 @@ fn rfc4035_5_3_4_a_wildcard_expansion_cached_unchecked_is_asked_again() {
 }
 
 #[test]
-fn rfc4035_5_3_4_a_secure_wildcard_expansion_is_served_with_its_proof() {
+fn rfc4035_5_3_4_a_secure_wildcard_expansion_is_served_with_its_proof_or_without_ad() {
     // The cache holds the expansion without its proof, which a client that validates needs: asked again.
     let capture = recursion::Resolution::read("wildcard");
     let caches = caches(false);
@@ -339,6 +339,10 @@ fn rfc4035_5_3_4_a_secure_wildcard_expansion_is_served_with_its_proof() {
         };
         assert!(!denials.is_empty(), "{sent:?}");
     }
+    // Asked with CD, the expansion held secure is served without its proof: without AD.
+    let (resolved, sent) = ask(&capture, &caches, question(&capture), false, &|_, _| {});
+    assert!(sent.is_empty(), "{sent:?}");
+    assert_eq!(resolved.checked(), Checked::Unchecked, "{resolved:?}");
 }
 
 #[test]
