@@ -23,6 +23,7 @@ use thiserror::Error;
 use tracing::debug;
 
 use crate::infra_cache::{self, InfraCache, Marks};
+use crate::metrics::Sent;
 use crate::rank::Rank;
 use crate::rrset::{self, Rrset};
 use crate::rrset_cache::{Ranked, RrsetCache};
@@ -488,6 +489,36 @@ impl Resolution {
 
     /// Hands over the reply to the query [`Resolution::step`] gave, at `now`; ignored when none is awaited.
     pub fn receive(&mut self, reply: Reply<'_>, now: Duration) {
+        self.take(reply, now, true);
+    }
+
+    /// As [`Resolution::receive`], for the reply to the same query another resolution sent while this one waited on
+    /// it (RFC 5452 §5, D195): the server is judged once, by the resolution that sent the query, so the
+    /// infrastructure cache is left as that one left it. A timeout counted by each waiter would back the server off
+    /// once per waiter.
+    pub fn receive_shared(&mut self, reply: Reply<'_>, now: Duration) {
+        self.take(reply, now, false);
+    }
+
+    /// [`Resolution::receive`], the server judged in the infrastructure cache when `judge`.
+    /// The reply to `query` at second `now` brought no response to read, as `sent` says: a timeout or a server
+    /// error backs the server off, when it is `judge`d; a timeout tells nothing of the delegation's servers.
+    fn unanswered(&mut self, query: &Query, sent: Sent, now: u32, judge: bool) {
+        debug!(server = %query.server, ?sent, "no response");
+        if judge {
+            crate::metrics::query(sent);
+            if matches!(sent, Sent::Timeout | Sent::ServerError) {
+                self.caches.infra.timeout(query.server, query.timeout, now);
+            }
+        }
+        match sent {
+            Sent::Timeout => {}
+            Sent::Undecodable => self.heard(Heard::Responses),
+            _ => self.heard(Heard::Errors),
+        }
+    }
+
+    fn take(&mut self, reply: Reply<'_>, now: Duration, judge: bool) {
         let query = match self.settled.take() {
             Some(Settled::Waiting(query)) => query,
             other => {
@@ -503,32 +534,31 @@ impl Resolution {
         let (message, seen, rtt) = match reply {
             Reply::Response { message, seen, rtt } => (message, seen, rtt),
             Reply::Undecodable => {
-                debug!(%server, "undecodable response");
-                return self.heard(Heard::Responses);
+                return self.unanswered(&query, Sent::Undecodable, now_secs, judge);
             }
-            Reply::Timeout => {
-                debug!(%server, "timeout");
-                infra.timeout(server, query.timeout, now_secs);
-                return;
-            }
+            Reply::Timeout => return self.unanswered(&query, Sent::Timeout, now_secs, judge),
             Reply::ServerError => {
-                debug!(%server, "server error");
-                infra.timeout(server, query.timeout, now_secs);
-                return self.heard(Heard::Errors);
+                return self.unanswered(&query, Sent::ServerError, now_secs, judge);
             }
-            Reply::LocalError => {
-                debug!(%server, "local error");
-                return self.heard(Heard::Errors);
-            }
+            Reply::LocalError => return self.unanswered(&query, Sent::LocalError, now_secs, judge),
         };
         self.heard(Heard::Responses);
         let scrubbed = scrub(message, &query.question, &query.zone);
         // Only a response that serves the question credits the server; one that does not, REFUSED and SERVFAIL
         // among them, has the next server asked and leaves this one as it was, as Unbound's `THROWAWAY` (D191).
         match &scrubbed.outcome {
-            Outcome::Lame => infra.lame(server, &query.zone, now_secs),
-            Outcome::NoSoa(_) | Outcome::Signatures { .. } | Outcome::Unusable(_) => {}
-            _ => infra.reply(server, rtt, seen, now_secs),
+            _ if !judge => {}
+            Outcome::Lame => {
+                crate::metrics::query(Sent::Lame);
+                infra.lame(server, &query.zone, now_secs);
+            }
+            Outcome::NoSoa(_) | Outcome::Signatures { .. } | Outcome::Unusable(_) => {
+                crate::metrics::query(Sent::Unusable);
+            }
+            _ => {
+                crate::metrics::query(Sent::Answer);
+                infra.reply(server, rtt, seen, now_secs);
+            }
         }
         let referral = matches!(scrubbed.outcome, Outcome::Referral { .. });
         let ranked = self.cache(scrubbed.ranked(), referral, now_secs);

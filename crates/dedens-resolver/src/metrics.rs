@@ -20,9 +20,50 @@
 //! The resolution's (D191), from the recorder installed when it is counted:
 //!
 //! - `dedens_resolver_limits_total{limit}`: bounds of `Limits` reached, by bound (`Limit`'s field name).
+//! - `dedens_resolver_queries_total{outcome}`: queries sent, by what came of each (D195): `answer` (a response that
+//!   serves: an answer, a denial or a referral), `lame`, `unusable` (a response that does not serve: REFUSED,
+//!   SERVFAIL, no SOA, signatures missing), `undecodable`, `timeout`, `server_error` (ICMP, TCP, responses dropped
+//!   as forged) or `local_error` (ours: no socket, no port). A reply shared by a coalesced query is counted once, by
+//!   the resolution that sent it.
 
 use crate::resolution::Limit;
 use crate::rrset_cache::Inserted;
+
+/// What came of a query sent, for `dedens_resolver_queries_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sent {
+    Answer,
+    Lame,
+    Unusable,
+    Undecodable,
+    Timeout,
+    ServerError,
+    LocalError,
+}
+
+/// Counts a query sent by what came of it: a registry lookup, which a query to the network affords.
+#[cfg(feature = "metrics")]
+pub(crate) fn query(sent: Sent) {
+    const QUERIES: &str = "dedens_resolver_queries_total";
+    metrics::describe_counter!(
+        QUERIES,
+        "Queries sent to authoritative servers, by outcome."
+    );
+    let outcome = match sent {
+        Sent::Answer => "answer",
+        Sent::Lame => "lame",
+        Sent::Unusable => "unusable",
+        Sent::Undecodable => "undecodable",
+        Sent::Timeout => "timeout",
+        Sent::ServerError => "server_error",
+        Sent::LocalError => "local_error",
+    };
+    metrics::counter!(QUERIES, "outcome" => outcome).increment(1);
+}
+
+/// Counts a query sent: nothing without the `metrics` feature.
+#[cfg(not(feature = "metrics"))]
+pub(crate) const fn query(_: Sent) {}
 
 /// Counts `limit` reached: a registry lookup, which the rarity of a limit affords.
 #[cfg(feature = "metrics")]

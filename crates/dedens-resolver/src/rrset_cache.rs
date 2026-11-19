@@ -335,6 +335,12 @@ impl RrsetCache {
     pub fn used(&self) -> usize {
         self.store.used()
     }
+
+    /// The TTL bounds and shards it was made with: a reply from it bounds its TTLs so (D195).
+    #[must_use]
+    pub const fn config(&self) -> &Config {
+        &self.config
+    }
 }
 
 /// The longest key: a name, a type and a class.

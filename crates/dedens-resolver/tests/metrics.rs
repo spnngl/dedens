@@ -166,3 +166,29 @@ fn limits_count() {
     assert_eq!(count("dedens_resolver_limits_total servers"), 1);
     assert_eq!(count("dedens_resolver_limits_total time"), 0);
 }
+
+#[test]
+fn queries_count_by_outcome() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let (answered, timed_out) = metrics::with_local_recorder(&recorder, || {
+        let (_, answered) = crate::iteration::limited("unsigned", Limits::default());
+        let (_, timed_out) = crate::iteration::unanswered(Limits::default());
+        (answered, timed_out)
+    });
+    let counters = counters(&snapshotter);
+    let count = |name: &str| {
+        counters
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(0, |(_, n)| *n)
+    };
+    assert_eq!(
+        usize::try_from(count("dedens_resolver_queries_total answer")).ok(),
+        Some(answered)
+    );
+    assert_eq!(
+        usize::try_from(count("dedens_resolver_queries_total timeout")).ok(),
+        Some(timed_out)
+    );
+}
