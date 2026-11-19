@@ -192,6 +192,40 @@ mod tests {
         }
     }
 
+    /// The recurse example of the module docs reads, and sets the defaults it says.
+    #[test]
+    fn d195_the_documented_example_reads() {
+        let docs = include_str!("mod.rs");
+        let example = (docs.split("//! ```yaml\n").nth(2))
+            .and_then(|block| block.split("//! ```").next())
+            .expect("a second example")
+            .lines()
+            .map(|line| {
+                line.trim_start_matches("//!")
+                    .strip_prefix(' ')
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let config = read(&example, env, &Pipeline::default()).expect("the example reads");
+        let [Stage::Cache(_), Stage::Recurse(recurse)] = config.pipeline.stages() else {
+            panic!("a cache stage, then a recurse stage")
+        };
+        let defaults = read(RECURSIVE, env, &Pipeline::default()).expect("valid");
+        let [_, Stage::Recurse(default)] = defaults.pipeline.stages() else {
+            panic!("a cache stage, then a recurse stage")
+        };
+        assert_eq!(
+            recurse.caches().rrsets.capacity(),
+            default.caches().rrsets.capacity()
+        );
+        assert_eq!(
+            recurse.caches().infra.capacity(),
+            default.caches().infra.capacity()
+        );
+        assert_eq!(recurse.limits(), default.limits());
+    }
+
     #[test]
     fn d195_a_pipeline_forwards_or_recurses_not_both() {
         let both = "listen: [\'127.0.0.1:53\']\npipeline: [root, up]\nstages:\n  root:\n    type: recurse\n  up:\n    type: forward\n    servers: [\'192.0.2.1\']\n";

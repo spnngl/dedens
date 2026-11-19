@@ -81,6 +81,25 @@
 //!     insecure: [corp.example]         # names not validated, with what is below them (RFC 7646)
 //!     client_share: {rate: 1000, burst: 2000}  # validation units a client network may spend (D117)
 //! ```
+//!
+//! A resolver from the root (D195) has a recurse stage where a forwarder has a forward stage: a pipeline has one or
+//! the other. These are the defaults:
+//!
+//! ```yaml
+//! listen: ["127.0.0.1:53"]
+//! pipeline: [cache, root]
+//! stages:
+//!   cache:
+//!     type: cache                    # its TTL bounds are the recurse stage's too
+//!   root:
+//!     type: recurse
+//!     limits: {queries: 32, restarts: 11, referrals: 30, depth: 4, servers: 13, targets: 5, time_ms: 4500}   # each resolution (D191)
+//!     local_zones:                   # RFC 6303, home.arpa, resolver.arpa, localhost and invalid, answered here
+//!       resolve: []                  # those of them to resolve instead, by apex: [home.arpa] for a router's
+//!     client_share: {rate: 1000, burst: 2000}  # queries to authoritative servers a client network may send (D117)
+//!     rrset_cache_bytes: 134217728   # the RRsets learnt (D193)
+//!     infra_cache_bytes: 4194304     # the servers' round-trip times and quirks (D194)
+//! ```
 
 mod access;
 #[cfg_attr(
