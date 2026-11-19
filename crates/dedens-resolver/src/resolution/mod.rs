@@ -1372,8 +1372,8 @@ impl Resolution {
     }
 
     /// Whether a NODATA of `soa` to `query` is a DS question's from below its cut: the SOA is of the name asked or
-    /// below, from a zone the parent of which the zone asked is not, so that a server of the parent may still be
-    /// found below it (Unbound's `iter_ds_toolow` and `iter_dp_cangodown`). Once per question.
+    /// below (Unbound's `iter_ds_toolow`). Once per question. The zone asked may be the name's parent, which
+    /// `seek_cut_at` finds at once, taking the NODATA (Unbound's `iter_dp_cangodown`).
     fn below_cut(&self, query: &Query, soa: &Ranked) -> bool {
         let task = self.tasks.current();
         let name = &query.question.name;
@@ -1382,7 +1382,6 @@ impl Resolution {
             && task.cut.is_none()
             && task.chain.is_empty()
             && soa.rrset.owner().is_within(name)
-            && name.label_count() > query.zone.label_count() + 1
     }
 
     /// Starts the search of the active DS question's cut, from its parent up to `zone`, the zone whose server gave
@@ -1424,9 +1423,8 @@ impl Resolution {
             return;
         };
         match outcome {
-            Resolved::Answer { chain, data, .. }
-                if chain.is_empty() && *data.rrset.owner() == point =>
-            {
+            // Through a CNAME the name is an alias, no cut: the name above is looked up.
+            Resolved::Answer { chain, data, .. } if chain.is_empty() => {
                 debug!(%point, "zone cut found");
                 let delegation = self.delegation(point, data, &[], now);
                 let task = self.tasks.active();

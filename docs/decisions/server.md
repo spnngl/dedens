@@ -1879,10 +1879,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     too, and D195's "`queries`, validation's included" now reads: the client's queries. The validator's own
     bounds (D75: questions, depth, verification budget, KeyTrap's failed checks) hold as in a forward stage.
   - DS from the child (Unbound's `iter_ds_toolow` and `processDSNSFind`, `iterator/iter_utils.c`,
-    `iterator/iterator.c`): a DS question answered NODATA with an SOA at or below the name, by a zone more than one
-    label above it, was answered by the child (a server serving both sides): the NS of the name's parent are looked
-    up (`Purpose::Cut`), then of its parent, up to the zone asked; an NS answer or referral for that name makes it
-    the delegation the DS is asked of. Reaching the zone asked, the NODATA stands, as Unbound's. Each lookup is a
+    `iterator/iterator.c`): a DS question answered NODATA with an SOA at or below the name was answered by the
+    child (a server serving both sides): the NS of the name's parent are looked up (`Purpose::Cut`), then of its
+    parent, up to the zone asked; an NS answer (not through a CNAME: an alias is no cut) or a referral for that name
+    makes it the delegation the DS is asked of. Reaching the zone asked, the NODATA stands, as Unbound's: from the
+    name's parent at once (`iter_dp_cangodown`). Each lookup is a
     sub-resolution under `depth` and the limits, one per label between the name and the zone asked, where Unbound
     stops at `MAX_DSNS_FIND_COUNT` 20: `queries` bounds them first.
   - The recurse stage: `Recurse::validating(Validating)` as a forward stage (D77): AD on a secure answer (D114's

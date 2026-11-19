@@ -204,6 +204,9 @@ exclude_re = [
   # D97: the capacity a DNSCrypt response packet is allocated with; another one only grows the packet, or wastes
   # room, the bytes written the same (the allocations are the `dnscrypt` bench's). `-` overflows, which tests see.
   'dnscrypt/src/resolver\.rs:\d+:\d+: (replace packet_capacity -> usize with [01]|replace (\+ with \*|\* with [+/]) in packet_capacity)$',
+  # An NS lookup of a DS's ancestor answered through a CNAME: no capture holds an alias above a cut, and the DS
+  # then asked of the alias's servers is still judged by the validator (D197).
+  'resolution/mod\.rs:\d+:\d+: replace match guard chain\.is_empty\(\) with true in Resolution::cut$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
