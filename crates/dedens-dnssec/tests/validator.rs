@@ -14,7 +14,7 @@ use dedens_dnssec::{
     covered,
 };
 use dedens_proto::edns::InfoCode;
-use dedens_proto::rdata::{Nsec, RData, Rrsig};
+use dedens_proto::rdata::{Nsec, RData, Rrsig, Soa};
 use dedens_proto::{
     Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Ttl, WireRdata,
 };
@@ -532,6 +532,36 @@ fn each_rrset_of_an_insecure_answer_has_its_own_verdict() {
             );
         }
     }
+}
+
+/// Of the authority section of an insecure zone's answer, its SOA is judged with it, insecure, and an NS set about
+/// no name of the answer is not judged at all (D197). The capture has no authority section: both are added.
+#[test]
+fn only_the_proofs_of_an_insecure_zone_have_its_verdict() {
+    let mut response = response("google_com_a");
+    let soa = Soa {
+        mname: name("ns1.google.com."),
+        rname: name("dns-admin.google.com."),
+        serial: 1,
+        refresh: 900,
+        retry: 900,
+        expire: 1800,
+        minimum: 60,
+    };
+    response.authority.push(Record {
+        name: name("google.com."),
+        class: Class::IN,
+        ttl: Ttl::from_wire(60),
+        rdata: WireRdata::new(&RData::Soa(soa)),
+    });
+    response.authority.push(ns("example.", "ns.example."));
+    let validation = Script::new().validation(&response);
+    let soa = validation.verdict_of(&name("google.com."), RecordType::SOA);
+    assert!(matches!(soa, Some(Verdict::Insecure { .. })), "{soa:?}");
+    assert_eq!(
+        validation.verdict_of(&name("example."), RecordType::NS),
+        None
+    );
 }
 
 /// The SOA, NSEC and NSEC3 `RRsets` of a denial have their own verdict too, their signatures': secure, whether the
