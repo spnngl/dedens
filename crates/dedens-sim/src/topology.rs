@@ -78,6 +78,8 @@ pub struct Topology {
     epoch: SystemTime,
     duration: Duration,
     tick: Duration,
+    /// The least and the most a message takes, if not turmoil's.
+    latency: Option<(Duration, Duration)>,
     repair_rate: Option<f64>,
     pipeline: Build,
     software: Software,
@@ -94,6 +96,7 @@ impl fmt::Debug for Topology {
             .field("epoch", &self.epoch)
             .field("duration", &self.duration)
             .field("tick", &self.tick)
+            .field("latency", &self.latency)
             .field("repair_rate", &self.repair_rate)
             .field("software", &self.software)
             .finish_non_exhaustive()
@@ -109,6 +112,7 @@ impl Default for Topology {
             epoch: UNIX_EPOCH + EPOCH,
             duration: DURATION,
             tick: TICK,
+            latency: None,
             repair_rate: None,
             pipeline: Rc::new(resolver::pipeline),
             software: Software::Driver,
@@ -191,6 +195,14 @@ impl Topology {
         self
     }
 
+    /// Has each message take between `min` and `max`, most near `min` (turmoil's exponential curve), in place of
+    /// turmoil's 0 to 100 ms: a round trip's spread then within what a timer near the round trip waits (D196).
+    #[must_use]
+    pub const fn latency(mut self, min: Duration, max: Duration) -> Self {
+        self.latency = Some((min, max));
+        self
+    }
+
     /// The probability for a link that [`Fault::Loss`] broke to be repaired by each message sent on it; by
     /// default 1, turmoil's. turmoil has no setter for it during a run, so it holds from the start.
     #[must_use]
@@ -231,10 +243,8 @@ impl Topology {
         self
     }
 
-    /// Makes the simulation: the resolver (`resolver`), the upstream servers (`upstream-<n>`) and the authoritative
-    /// ones (named by their address), on a network whose latencies and order of hosts follow `seed`. Clients are added to the [`World`].
-    #[must_use]
-    pub fn build(self, seed: Seed) -> World {
+    /// Turmoil's settings of the run: `seed`'s order of hosts and latencies, and the topology's times.
+    fn turmoil(&self, seed: Seed) -> turmoil::Builder {
         let mut builder = turmoil::Builder::new();
         builder
             .rng_seed(seed.0)
@@ -245,7 +255,17 @@ impl Topology {
         if let Some(rate) = self.repair_rate {
             builder.repair_rate(rate);
         }
-        let mut sim = builder.build();
+        if let Some((min, max)) = self.latency {
+            builder.min_message_latency(min).max_message_latency(max);
+        }
+        builder
+    }
+
+    /// Makes the simulation: the resolver (`resolver`), the upstream servers (`upstream-<n>`) and the authoritative
+    /// ones (named by their address), on a network whose latencies and order of hosts follow `seed`. Clients are added to the [`World`].
+    #[must_use]
+    pub fn build(self, seed: Seed) -> World {
+        let mut sim = self.turmoil(seed).build();
         let trace = Trace::new();
         let expected: Rc<[Expected]> = self
             .upstreams
