@@ -13,7 +13,7 @@ use std::time::Duration;
 use dedens_cache::{Cache, StalePolicy};
 use dedens_proto::edns::{Cookie, EdnsOption, InfoCode};
 use dedens_proto::{
-    Class, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
+    Class, Decoded, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
 };
 
 use self::finish::{Finish, Refused, prohibit, reply, servfail, slip};
@@ -24,6 +24,7 @@ use crate::cache::{self, Looked, Read};
 use crate::cookie::{Cookies, Standing};
 use crate::forward::{self, Forward, Server, Via};
 use crate::plugin::{Answer, Plugin};
+use crate::recurse::{self, Asker, Asking, Ended, Recurse, Resolving};
 use crate::reply::Client;
 use crate::rrl::{Admission, RateLimit};
 use crate::validate::{Check, Outcome, Payer, Progress, Source, Validating};
@@ -39,6 +40,8 @@ pub enum Stage {
     Forward(Forward),
     /// Answers from what it holds, or passes the query on (D54).
     Plugin(Box<dyn Plugin>),
+    /// Resolves from the root down (D195), in place of a forward stage: the last stage a query reaches.
+    Recurse(Recurse),
 }
 
 /// The stages a listener runs on each query, in order (D23); a query no stage answers is refused. Without
@@ -78,6 +81,9 @@ pub enum Step {
     /// of the clock until it is admitted, and to [`Pipeline::shed`] once [`Parked::wait`] ran out first. A thread
     /// keeps its parked queries in a [`Parking`](crate::Parking) line.
     Park(Parked),
+    /// Step the resolution, sending each query it gives, until it is done, then hand it to
+    /// [`Pipeline::resolved`] (D195).
+    Resolve(Box<Resolving>),
 }
 
 /// A client's query to validate that found the allowance spent (D186): made, holding its share's unit (D117), and
@@ -451,7 +457,7 @@ impl Pipeline {
                             .map_or(Step::Drop, Step::Reply);
                     }
                 }
-                Stage::Forward(_) if !recursion => {
+                Stage::Forward(_) | Stage::Recurse(_) if !recursion => {
                     return client
                         .reply(
                             Message::default(),
@@ -461,7 +467,7 @@ impl Pipeline {
                         )
                         .map_or(Step::Drop, Step::Reply);
                 }
-                Stage::Forward(_) if truncate => {
+                Stage::Forward(_) | Stage::Recurse(_) if truncate => {
                     return client.truncated(out).map_or(Step::Drop, Step::Reply);
                 }
                 Stage::Forward(_) => {
@@ -485,6 +491,9 @@ impl Pipeline {
                         return Step::Park(self.park(upstream));
                     }
                     return Step::Upstream(upstream);
+                }
+                Stage::Recurse(resolver) => {
+                    return self.recurse((index, resolver), query, client, source, cache, out);
                 }
             }
         }
@@ -510,7 +519,7 @@ impl Pipeline {
             .skip(from)
             .find_map(|(index, stage)| match stage {
                 Stage::Forward(forward) => Some((index, forward)),
-                Stage::Cache(_) | Stage::Plugin(_) => None,
+                Stage::Cache(_) | Stage::Plugin(_) | Stage::Recurse(_) => None,
             })
             .ok_or(Refused::NoServer)?;
         let question = query.question().ok_or(Refused::NoServer)?;
@@ -657,7 +666,7 @@ impl Pipeline {
                     .reviewer()?
                     .review(query, response)
                     .map(|answer| (at, answer)),
-                Stage::Cache(_) | Stage::Forward(_) => None,
+                Stage::Cache(_) | Stage::Forward(_) | Stage::Recurse(_) => None,
             })
     }
 
@@ -720,7 +729,7 @@ impl Pipeline {
     fn cache(&self, index: usize) -> Option<&Cache> {
         match self.stages.get(index) {
             Some(Stage::Cache(cache)) => Some(cache),
-            Some(Stage::Forward(_) | Stage::Plugin(_)) | None => None,
+            Some(Stage::Forward(_) | Stage::Plugin(_) | Stage::Recurse(_)) | None => None,
         }
     }
 
@@ -884,6 +893,111 @@ impl Pipeline {
         };
         let client = Client::of(&query, upstream.transport).with_cookie(upstream.cookie);
         reply(&client, Message::default(), Rcode::SERVFAIL, out)
+    }
+
+    /// The recurse stage `stage` at `index` on a query with RD, not ANY over UDP: the answer of a zone served
+    /// locally, AA set (RFC 6303 §3), or the resolution of its question, storing into the cache stage `cache`.
+    fn recurse(
+        &self,
+        (index, stage): (usize, &Recurse),
+        query: &Query<'_>,
+        client: &Client<'_>,
+        source: Source,
+        cache: Option<usize>,
+        out: &mut [u8],
+    ) -> Step {
+        let Some(question) = query.question() else {
+            return reply(client, Message::default(), Rcode::REFUSED, out);
+        };
+        if let Some((rcode, message)) = stage.local(question) {
+            let Some(len) = client.reply(message, rcode, None, out) else {
+                return Step::Drop;
+            };
+            let [high, _] = Flags::AA.bits().to_be_bytes();
+            out[2] |= high;
+            return Step::Reply(len);
+        }
+        let exempt = self
+            .rate_limit
+            .as_ref()
+            .is_some_and(|limit| limit.exempts(source.address));
+        let asking = Asking {
+            query: query.wire().into(),
+            transport: client.transport,
+            cookie: client.cookie,
+            stage: index,
+            cache,
+        };
+        Step::Resolve(stage.resolving_for(
+            question.clone().into_owned(),
+            asking,
+            (source.address, source.proven, exempt),
+        ))
+    }
+
+    /// Writes the reply of `resolving` into `out`, at second `now`, as [`Pipeline::receive`] does a response's:
+    /// the answer stored in the cache stage, a failure held there and answered with expired data or SERVFAIL with
+    /// its extended error (D191), SERVFAIL with EDE 14 (Not Ready) when the client's network could pay no more
+    /// queries (D117), NOTIMP for a type it does not resolve (D195) and REFUSED for a class other than IN. One
+    /// that did not end, such as one given up for want of a socket, is answered SERVFAIL, nothing held, as
+    /// [`Pipeline::abandon`] answers. A priming ends in [`Step::Drop`].
+    ///
+    /// `resolving` comes from this pipeline.
+    pub fn resolved(&self, resolving: &Resolving, now: u32, out: &mut [u8]) -> Step {
+        let Asker::Client(asking) = &resolving.asker else {
+            return Step::Drop;
+        };
+        // Read once already: this reads it again.
+        let Ok(query) = Query::read(&asking.query) else {
+            return Step::Drop;
+        };
+        let client = Client::of(&query, asking.transport).with_cookie(asking.cookie);
+        let finish = Finish {
+            pipeline: self,
+            query: &query,
+            client: &client,
+            forward: asking.stage,
+            cache: asking.cache,
+            purpose: Purpose::Reply,
+            now,
+        };
+        let Some((ended, config)) = resolving.ended() else {
+            return reply(&client, Message::default(), Rcode::SERVFAIL, out);
+        };
+        match ended {
+            Ended::Resolved(dedens_resolver::Resolved::Failed(failure)) => {
+                finish.failed(Some(failure.info_code()), out)
+            }
+            Ended::Resolved(resolved) => {
+                let (rcode, message) =
+                    recurse::message(resolving.question(), resolved, config, client.dnssec());
+                let mut decoded = Decoded::default();
+                decoded.message = message;
+                if decoded.message.set_rcode(rcode).is_err() {
+                    return reply(&client, Message::default(), Rcode::SERVFAIL, out);
+                }
+                finish.plain(decoded, out)
+            }
+            Ended::Shed => finish.shed(out),
+            Ended::Unsupported(dedens_resolver::Unsupported::Type(_)) => {
+                reply(&client, Message::default(), Rcode::NOTIMP, out)
+            }
+            Ended::Unsupported(dedens_resolver::Unsupported::Class(_)) => {
+                reply(&client, Message::default(), Rcode::REFUSED, out)
+            }
+        }
+    }
+
+    /// The priming of the root's servers by the recurse stage at `now`, on the clock of [`Resolving::step`], if it
+    /// is due (RFC 8109 §3.1): its cache holds no fresh root NS `RRset`, and no priming is under way on any thread.
+    /// Step it as a client's resolution; its answer goes to the `RRset` cache, and the next resolutions start from
+    /// it. Until it does, they start from the hints, the TLDs' for a name under a TLD (D126).
+    #[must_use]
+    pub fn prime(&self, now: Duration) -> Option<Box<Resolving>> {
+        self.stages.iter().find_map(|stage| match stage {
+            Stage::Recurse(recurse) => recurse.priming(now),
+            Stage::Cache(_) | Stage::Forward(_) | Stage::Plugin(_) => None,
+        })
     }
 }
 

@@ -6,6 +6,7 @@ mod dnssec;
 #[cfg(feature = "metrics")]
 mod metrics;
 mod prewarm;
+mod recurse;
 mod stages;
 mod util;
 mod wire;
