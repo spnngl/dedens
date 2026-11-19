@@ -1827,9 +1827,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     hard)` instead: refused, the soft limit is raised to that, `OPEN_MAX` 10240, or kept where it is above already
     (`launchctl limit maxfiles`). The limit obtained is logged.
   - Metrics:
-    `dedens_resolver_queries_total{outcome=answer|lame|unusable|undecodable|timeout|server_error|local_error}` (a
-    shared reply counted once); `dedensd_recurse_errors_total{error=no_socket|tcp_busy|ports_exhausted|local|
-    forged|unreachable|tcp}`, D190's errors (`ports_exhausted` the bind's `AddrInUse`, `unreachable` the ICMP);
+    `dedens_resolver_queries_total{outcome=answer|lame|unusable|undecodable|timeout|tcp_timeout|server_error|
+    local_error}` (a shared reply counted once; `tcp_timeout` a query moved to TCP, D197);
+    `dedensd_recurse_errors_total{error=no_socket|tcp_busy|ports_exhausted|local|forged|unreachable|tcp}`, D190's
+    errors (`ports_exhausted` the bind's `AddrInUse`, `unreachable` the ICMP);
     `dedensd_recurse_shed_total`; gauges `dedensd_recurse_{rrset,infra}_cache_{entries,bytes}`, set after
     each resolution; D191's `dedens_resolver_limits_total{limit}`.
   - Left to later steps or open: no prefetch nor stale refresh with a recurse stage (the cache stage's refresh

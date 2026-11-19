@@ -177,6 +177,7 @@ fn hand(resolving: &mut Resolving, query: &Query, asked: Asked, now: Duration) {
             Err(_) => Reply::Undecodable,
         },
         Outcome::Timeout => Reply::Timeout,
+        Outcome::TcpTimeout => Reply::TcpTimeout,
         Outcome::ServerError => Reply::ServerError,
         Outcome::LocalError => Reply::LocalError,
     };
@@ -196,6 +197,7 @@ enum Outcome {
         rtt: Duration,
     },
     Timeout,
+    TcpTimeout,
     ServerError,
     LocalError,
 }
@@ -284,6 +286,7 @@ fn outcome(answered: Result<Answer, AuthoritativeError>, server: SocketAddr) -> 
             wire: answer.response.wire.into(),
         },
         Err(AuthoritativeError::Server(ServerError::TimedOut { .. })) => Outcome::Timeout,
+        Err(AuthoritativeError::Server(ServerError::TcpTimedOut { .. })) => Outcome::TcpTimeout,
         Err(AuthoritativeError::Server(error)) => {
             let label = match error {
                 ServerError::Forged { .. } => "forged",
@@ -789,6 +792,7 @@ mod tests {
             let kind = match outcome {
                 Outcome::Response { .. } => "response",
                 Outcome::Timeout => "timeout",
+                Outcome::TcpTimeout => "tcp timeout",
                 Outcome::ServerError => "server",
                 Outcome::LocalError => "local",
             };
@@ -814,6 +818,10 @@ mod tests {
         assert_eq!(
             remote(ServerError::TimedOut { sends: 2 }),
             ("timeout", vec![])
+        );
+        assert_eq!(
+            remote(ServerError::TcpTimedOut { sends: 2 }),
+            ("tcp timeout", vec![])
         );
         assert_eq!(
             remote(ServerError::Forged { sends: 2 }),

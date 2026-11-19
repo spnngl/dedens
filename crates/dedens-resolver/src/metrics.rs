@@ -37,6 +37,7 @@ pub(crate) enum Sent {
     Unusable,
     Undecodable,
     Timeout,
+    TcpTimeout,
     ServerError,
     LocalError,
 }
@@ -55,6 +56,7 @@ pub(crate) fn query(sent: Sent) {
         Sent::Unusable => "unusable",
         Sent::Undecodable => "undecodable",
         Sent::Timeout => "timeout",
+        Sent::TcpTimeout => "tcp_timeout",
         Sent::ServerError => "server_error",
         Sent::LocalError => "local_error",
     };

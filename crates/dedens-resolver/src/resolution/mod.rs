@@ -400,6 +400,10 @@ pub enum Reply<'a> {
     /// No response within [`Query::timeout`]: D190's `ServerError::TimedOut`. A delegation whose servers all time out
     /// fails [`Failure::Unreachable`], EDE 22 (No Reachable Authority).
     Timeout,
+    /// No response over TCP, the query moved there from UDP (D190's `ServerError::TcpTimedOut`): a
+    /// [`Reply::Timeout`] for the delegation, but the server's time over UDP, which [`Query::timeout`] estimates,
+    /// is not backed off, as Unbound's `serviced_tcp_callback`.
+    TcpTimeout,
     /// The server could not be reached, or would not talk: ICMP unreachable, TCP refused or reset, responses
     /// dropped for their cookie only (D190's `ServerError` but `TimedOut`, which is [`Reply::Timeout`]). It is backed
     /// off as after a timeout, and makes a delegation that fails [`Failure::Network`], EDE 23 (Network Error).
@@ -904,8 +908,12 @@ impl Resolution {
             }
         }
         match sent {
-            Sent::Timeout => {
+            Sent::Timeout | Sent::TcpTimeout => {
                 if let Some(delegation) = self.tasks.asking() {
+                    debug_assert_eq!(
+                        query.zone, delegation.zone,
+                        "the query is of the zone asked"
+                    );
                     delegation.timed_out.push(query.server);
                 }
             }
@@ -933,6 +941,10 @@ impl Resolution {
             Reply::Timeout => {
                 self.timed_out(&query.question);
                 return self.unanswered(&query, Sent::Timeout, now, judge);
+            }
+            Reply::TcpTimeout => {
+                self.timed_out(&query.question);
+                return self.unanswered(&query, Sent::TcpTimeout, now, judge);
             }
             Reply::ServerError => return self.unanswered(&query, Sent::ServerError, now, judge),
             Reply::LocalError => return self.unanswered(&query, Sent::LocalError, now, judge),

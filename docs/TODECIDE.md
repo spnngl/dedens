@@ -280,10 +280,15 @@ Open questions, each with its proposed default. Once answered, record the outcom
   Unbound and BIND validate a recursive resolver by default. The simulation runs the captures validated (D197), but
   at their own time: a test of `dedensd` on its own clock needs captures signed now, recaptured as their signatures
   end. Default: off, as the forwarder; `validate` the default once a recipe keeps the captures fresh.
-- A wildcard answer from the `RRset` cache validated anew (D197): the cache keeps the answer's RRsets, not the
-  denial proving the wildcard's expansion, so an unvalidated cached wildcard answer is judged without it, bogus.
-  Default: as is (a resolution that cached it unvalidated is one without a validator); kept with the answer when
-  negative caching keeps denials (recursive step 12).
+- A wildcard expansion in the `RRset` cache (D197): the cache keeps the answer's RRsets, not the denial proving the
+  expansion, so with a validator `Resolution::begin` takes no expansion not judged insecure from the cache and asks
+  the authorities each time: a wildcard name costs a resolution per query. Default: keep the proof with the
+  expansion when negative caching keeps denials (recursive step 12), and serve both from the cache.
+- A server whose queries moved to TCP time out there (D197's `Reply::TcpTimeout`): the server is not backed off,
+  its time over UDP being fine, so each truncated answer from it waits `TCP_TIMEOUT` (3 s) on a TCP slot again,
+  up to `TCP_PER_SERVER` (4) of the 32 (`crates/dedens-net/src/authoritative.rs`). Unbound leaves it so too
+  (`serviced_tcp_callback`). Default: as is; give such a server fewer TCP slots for a while (one, its timeout's
+  time) if a deployment sees its TCP pool held by one.
 - ANY over TCP with a recurse stage: answered NOTIMP, a meta type the resolution does not ask (D195); RFC 8482 §4
   asks for a minimal answer instead: one RRset of the name (§4.1) or a synthesized HINFO (§4.2). Over UDP it is
   truncated, as the forward stage's. Default: the cached RRsets of the name if any, else resolve its A and answer
