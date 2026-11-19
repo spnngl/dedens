@@ -222,12 +222,12 @@ async fn ask<N: Io>(thread: &Thread<N>, query: &Query) -> Asked {
 }
 
 /// What became of `query`, asked on `io` with `send` by the queries in flight `flights`, its resolution ending at
-/// `ends` (`query.left`, so `Limits::time` holds whatever the wait): sent until `query.timeout` from now, or shared
-/// with another resolution that sent it first, its outcome taken until `ends`, a local error included. The one
-/// sending waits for its own server's timeout, which may be longer than the waiter's estimate of it: the waiter waits
-/// for it rather than send again. One the other gave up on unsent, cancelled, is sent with the time left, as is one
-/// whose sender's resolution ended before its server's timeout: that timeout is not the server's, and those waiting
-/// may have more time.
+/// `ends` (`query.left`, so `Limits::time` holds whatever the wait): sent until `query.timeout` from now (moved to
+/// TCP, the transport's `TCP_TIMEOUT` at least, D196, but not past `ends`), or shared with another resolution that
+/// sent it first, its outcome taken until `ends`, a local error included. The one sending waits for its own server's
+/// timeout, which may be longer than the waiter's estimate of it: the waiter waits for it rather than send again. One
+/// the other gave up on unsent, cancelled, is sent with the time left, as is one whose sender's resolution ended
+/// before its server's timeout: that timeout is not the server's, and those waiting may have more time.
 async fn asked<N: Io>(
     io: &N,
     flights: &Flights,
@@ -249,8 +249,11 @@ async fn asked<N: Io>(
         }
     };
     let deadline = (io.now() + query.timeout).min(ends);
-    let outcome = send(deadline).await;
-    if deadline == ends && matches!(outcome, Outcome::Timeout) {
+    // A query moved to TCP waits past `deadline` (D196), never past `ends`.
+    let outcome = io.timeout_at(ends, send(deadline)).await;
+    let cut = deadline == ends || outcome.is_err();
+    let outcome = outcome.unwrap_or(Outcome::Timeout);
+    if cut && matches!(outcome, Outcome::Timeout) {
         drop(lead);
     } else {
         lead.finish(&outcome);
@@ -546,6 +549,33 @@ mod tests {
                     assert!(matches!(flights.enter(&key()), Entered::Lead(_)));
                 }
             }
+        });
+    }
+
+    /// A query moved to TCP waits past its deadline (D196) but not past its resolution's end: cut there, its timeout is
+    /// not shared.
+    #[test]
+    fn d196_a_send_past_the_resolution_s_end_is_cut_there_and_not_shared() {
+        Runtime::new().expect("a runtime").block_on(async {
+            let flights = Flights::default();
+            let ends = Compio.now() + Duration::from_millis(50);
+            let waiting = RefCell::new(None);
+            let query = query(Duration::from_millis(10));
+            let asked = asked(&Compio, &flights, &query, ends, async |_| {
+                waiting.replace(Some(flights.enter(&key())));
+                compio::time::sleep(SECOND).await;
+                Outcome::ServerError
+            })
+            .await;
+            assert!(matches!(asked, Asked::Sent(Outcome::Timeout)));
+            assert!(Compio.now() < ends + SECOND / 2);
+            let Some(Entered::Follow(waiting)) = waiting.take() else {
+                panic!("a waiter")
+            };
+            assert!(matches!(
+                waiting.try_recv(),
+                Err(flume::TryRecvError::Disconnected)
+            ));
         });
     }
 

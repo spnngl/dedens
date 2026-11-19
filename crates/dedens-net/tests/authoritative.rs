@@ -22,6 +22,7 @@ use compio::buf::{IoBuf, IoBufMut};
 use compio::net::TcpStream;
 use dedens_net::authoritative::{
     Authoritative, AuthoritativeError, Edns, Limits, LocalError, Quirks, SERVER_FLOOR, ServerError,
+    TCP_TIMEOUT,
 };
 use dedens_net::exchange::Moved;
 use dedens_net::io::{Compio, Io, TimedOut, Udp};
@@ -1026,6 +1027,35 @@ async fn a_truncated_response_moves_to_tcp() {
     assert!(!answer.quirks.tcp);
     assert!(decode(&answer.response.wire).answer.len() > 1);
     assert_eq!(queries.lock().expect("not poisoned").len(), 1);
+}
+
+/// D196: the query moved to TCP waits past the deadline, the server's time over UDP, until [`TCP_TIMEOUT`] from its
+/// send: the connection takes a round trip more.
+#[compio::test]
+async fn a_query_moved_to_tcp_waits_past_the_deadline() {
+    let late = Duration::from_millis(300);
+    let addr = server(
+        |query| {
+            vec![(
+                From::Server,
+                AUTHORITIES.answer(MICROSOFT, recursion::Transport::Udp, query),
+            )]
+        },
+        move |query| {
+            thread::sleep(late);
+            AUTHORITIES.answer(MICROSOFT, recursion::Transport::Tcp, query)
+        },
+    );
+    let (client, _) = client(Limits::default());
+    let question = Question::new("microsoft.com.".parse().expect("a name"), RecordType::TXT);
+    let start = Instant::now();
+    let answer = client
+        .query(question, addr, Quirks::default(), start + late / 2)
+        .await
+        .expect("answered");
+    assert_eq!(answer.response.transport, Transport::Tcp);
+    let waited = start.elapsed();
+    assert!(late <= waited && waited < TCP_TIMEOUT, "{waited:?}");
 }
 
 /// RFC 7873 §5.3: a server answering BADCOOKIE twice over UDP is asked over TCP and marked; the next query, told

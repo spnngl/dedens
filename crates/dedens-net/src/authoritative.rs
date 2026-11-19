@@ -7,7 +7,7 @@
 //! of its question in a random case (`0x20`, D184), EDNS advertising 1232 bytes (DNS flag day 2020) and the DO bit,
 //! and a cookie (RFC 7873 §5.1) from a table of [`Limits::cookies`] pairs. A truncated response asks again over TCP
 //! (RFC 7766 §5), on a connection per server kept while idle (RFC 7766 §6.2.3), [`Limits::tcp`] at most, the
-//! queries past them waiting.
+//! queries past them waiting. A query moved to TCP waits [`TCP_TIMEOUT`] at least, past the caller's deadline.
 //!
 //! A response that answers the query but for the case of its question, its cookie checked, comes from a forger or
 //! from a server that does not repeat the case (draft-vixie-dnsext-dns0x20 §6.2): the query goes again over TCP
@@ -67,6 +67,14 @@ const PORT_TRIES: usize = 8;
 /// which the caller's server selection would count against it (D190). 50 ms is the least timeout Unbound gives a
 /// server (`RTT_MIN_TIMEOUT`, `util/rtt.c`), as an infra cache passes it in through the deadline.
 pub const SERVER_FLOOR: Duration = Duration::from_millis(50);
+
+/// The least a query over TCP waits from its send, past the caller's deadline if need be: Unbound's
+/// `tcp-auth-query-timeout` (`util/config_file.c`), which it gives a query moved to TCP after truncation
+/// (`serviced_tcp_initiate`, `services/outside_network.c`). The deadline is the server's timeout over UDP, its
+/// round-trip time and a margin (D194), measured over UDP, where TCP takes a round trip more for the connection: a
+/// truncated answer would time out from a server whose times vary little (D196). A query over TCP from the start
+/// keeps the deadline, its time measured over TCP.
+pub const TCP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The default [`Limits::sockets`].
 const SOCKETS: NonZeroUsize = NonZeroUsize::new(1024).expect("1024 is not zero");
@@ -302,10 +310,11 @@ impl<N: Io> Authoritative<N> {
     }
 
     /// Asks `server` for `question`, once, until `deadline`: the wait for a socket, the query over UDP, and its
-    /// fallbacks, to TCP on a truncated response or a case mismatch, without EDNS unless [`Edns::Supported`], or
-    /// with a fresh server cookie (D27), all end by then; a wait for a socket or a TCP connection leaves the server
-    /// [`SERVER_FLOOR`] at least, or fails. The query has RD clear, and its question's name in the case given comes
-    /// back in [`Answer::response`]. With [`Quirks::tcp`], the query goes over TCP from the start, without `0x20`,
+    /// fallbacks, without EDNS unless [`Edns::Supported`], or with a fresh server cookie (D27), all end by then; a
+    /// wait for a socket or a TCP connection leaves the server [`SERVER_FLOOR`] at least, or fails. But a query moved
+    /// to TCP, on a truncated response or a case mismatch, waits until [`TCP_TIMEOUT`] from the move if that is later
+    /// (D196): a caller bounding the whole drops the future. The query has RD clear, and its question's name in the
+    /// case given comes back in [`Answer::response`]. With [`Quirks::tcp`], the query goes over TCP from the start, without `0x20`,
     /// which an off-path forger cannot answer anyway, nor a cookie, the source being known to the server's
     /// handshake. Trying again, maybe another server, is the caller's.
     ///
@@ -361,7 +370,7 @@ impl<N: Io> Authoritative<N> {
     }
 
     /// Runs the exchange of `query` with `server` until `deadline`, over `socket` while it stays on UDP: the socket
-    /// closes when the query moves to TCP.
+    /// closes when the query moves to TCP, which waits until [`TCP_TIMEOUT`] from then if that is later.
     async fn exchange(
         &self,
         query: Message<'_>,
@@ -369,7 +378,7 @@ impl<N: Io> Authoritative<N> {
         options: Options,
         mut socket: Option<Socket<N::Udp>>,
         pair: Option<Pair>,
-        deadline: Instant,
+        mut deadline: Instant,
     ) -> Result<Response, AuthoritativeError> {
         let mut spare_ids = [0; SPARE_IDS];
         for id in &mut spare_ids {
@@ -406,8 +415,8 @@ impl<N: Io> Authoritative<N> {
                 Progress::Send(next) => {
                     self.io.sending(&next);
                     self.cookies.borrow_mut().keep(pair, next.cookie());
-                    if next.transport() != Transport::Udp {
-                        socket = None;
+                    if next.transport() != Transport::Udp && socket.take().is_some() {
+                        deadline = deadline.max(self.io.now() + TCP_TIMEOUT);
                     }
                     match &socket {
                         Some(socket) => {
@@ -444,15 +453,14 @@ impl<N: Io> Authoritative<N> {
         }
     }
 
-    /// Sends the query of `exchange` over TCP and takes the response, until its deadline or `deadline`.
+    /// Sends the query of `exchange` over TCP and takes the response, until `deadline`.
     async fn tcp(
         &self,
         exchange: Exchange,
         deadline: Instant,
     ) -> Result<Progress, AuthoritativeError> {
         let server = exchange.server();
-        let until = exchange.deadline().min(deadline);
-        match self.tcp.exchange(server, exchange.wire(), until).await {
+        match self.tcp.exchange(server, exchange.wire(), deadline).await {
             Ok(bytes) => {
                 let now = self.io.now();
                 Ok(match exchange.receive(server, Transport::Tcp, bytes, now) {
