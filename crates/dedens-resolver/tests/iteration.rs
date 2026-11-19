@@ -388,6 +388,18 @@ fn d193_an_address_pinned_to_glue_is_asked_again() {
     let capture = recursion::Resolution::read("dname");
     let caches = caches(false);
     let _ = resolve(&capture, &caches, Limits::default());
+    let cname = |owner: &str| {
+        let now = secs(at(&capture));
+        (caches
+            .rrsets
+            .get(&name(owner), RecordType::CNAME, Class::IN, now))
+        .is_some()
+    };
+    assert!(!cname("www.dname.dns.netmeister.org."));
+    assert!(
+        cname("www.dns.netmeister.org."),
+        "the CNAME the DNAME leads to"
+    );
     let (_, resent) = resolve(&capture, &caches, Limits::default());
     let resent: Vec<_> = (resent.iter().take(2))
         .map(|(zone, name, _)| (zone.to_string(), name.to_string()))
