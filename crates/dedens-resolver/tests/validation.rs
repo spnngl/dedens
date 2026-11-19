@@ -369,10 +369,10 @@ fn rfc4035_5_an_unvalidated_cached_answer_is_validated() {
 
 /// The `DS sidn.nl` question of `nodata-signed` asked from the root, whose servers answer it with sidn.nl's own
 /// NODATA, as a server serving the root, nl and sidn.nl would; the root answers `NS nl` with `referral` when given.
-fn too_low(referral: bool) -> (Resolved, Vec<Sent>) {
+fn too_low(rtype: RecordType, referral: bool) -> (Resolved, Vec<Sent>) {
     let capture = recursion::Resolution::read("nodata-signed");
     let caches = caches(false);
-    let question = Question::new(name("sidn.nl."), RecordType::DS);
+    let question = Question::new(name("sidn.nl."), rtype);
     let own = to(
         exchanged(&capture, "sidn.nl.", "sidn.nl.", RecordType::SRV),
         &question,
@@ -380,7 +380,7 @@ fn too_low(referral: bool) -> (Resolved, Vec<Sent>) {
     let nl = Question::new(name("nl."), RecordType::NS);
     let cut = to(exchanged(&capture, ".", "sidn.nl.", RecordType::SRV), &nl);
     let change = |zone: &Name<'_>, message: &mut Message<'static>| {
-        if is(zone, ".") && answers(message, "sidn.nl.", RecordType::DS) {
+        if is(zone, ".") && answers(message, "sidn.nl.", rtype) {
             *message = own.clone();
         } else if referral && is(zone, ".") && answers(message, "nl.", RecordType::NS) {
             *message = cut.clone();
@@ -401,7 +401,7 @@ fn too_low(referral: bool) -> (Resolved, Vec<Sent>) {
 fn rfc4035_5_2_a_ds_denied_by_the_child_is_asked_again_of_the_parent() {
     // Unbound's iter_ds_toolow and processDSNSFind: the SOA of the NODATA is the name's own, so the server answered
     // from the child; the NS of the name's parent show the parent, which holds the DS.
-    let (resolved, sent) = too_low(true);
+    let (resolved, sent) = too_low(RecordType::DS, true);
     let Resolved::Answer { data, .. } = &resolved else {
         panic!("{resolved:?}");
     };
@@ -416,7 +416,7 @@ fn rfc4035_5_2_a_ds_denied_by_the_child_is_asked_again_of_the_parent() {
 #[test]
 fn rfc4035_5_2_a_ds_denied_by_the_child_stands_when_no_parent_shows() {
     // No NS of nl to be had: the search reaches the zone asked, whose answer stands.
-    let (resolved, sent) = too_low(false);
+    let (resolved, sent) = too_low(RecordType::DS, false);
     assert!(matches!(resolved, Resolved::NoData { .. }), "{resolved:?}");
     let nl = (name("nl."), RecordType::NS);
     assert!(
@@ -424,4 +424,16 @@ fn rfc4035_5_2_a_ds_denied_by_the_child_stands_when_no_parent_shows() {
             .any(|(_, name, rtype)| (name, *rtype) == (&nl.0, nl.1)),
         "{sent:?}"
     );
+}
+
+#[test]
+fn rfc4035_3_1_4_1_only_a_ds_question_looks_for_the_parent() {
+    // The same NODATA from the child's apex, to its own SRV question: the child's to give, no cut sought.
+    let (resolved, sent) = too_low(RecordType::SRV, true);
+    assert!(matches!(resolved, Resolved::NoData { .. }), "{resolved:?}");
+    let asked: Vec<_> = sent
+        .iter()
+        .map(|(zone, name, rtype)| format!("{zone} {name} {rtype}"))
+        .collect();
+    assert_eq!(asked, [". sidn.nl. SRV"]);
 }
