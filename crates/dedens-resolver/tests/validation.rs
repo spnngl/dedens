@@ -250,11 +250,6 @@ fn d197_a_bogus_answer_is_asked_again_of_another_server() {
     // spoofer or a garbling path would. The other, 2001:500:89::53, answers as captured: asked again, the answer
     // is secure (Unbound's val_blacklist).
     let capture = recursion::Resolution::read("cname-signed");
-    let caches = caches(false);
-    let validator = validator(dedens_dnssec::Limits::default());
-    let mut resolution =
-        start(&capture, &caches, Limits::default()).validated(validator, at(&capture).as_secs());
-    steer(&caches, &capture);
     let authorities = recursion::Authorities::new([&capture]);
     let garbling = "199.4.138.53"
         .parse::<std::net::IpAddr>()
@@ -266,13 +261,32 @@ fn d197_a_bogus_answer_is_asked_again_of_another_server() {
         }
         Answered::Response(response)
     };
-    let (resolved, sent) = run(&mut resolution, &server, at(&capture));
+    let resolve = |limits: Limits| {
+        let caches = caches(false);
+        let validator = validator(dedens_dnssec::Limits::default());
+        let mut resolution =
+            start(&capture, &caches, limits).validated(validator, at(&capture).as_secs());
+        steer(&caches, &capture);
+        run(&mut resolution, &server, at(&capture))
+    };
+    let (resolved, sent) = resolve(Limits::default());
     assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?} {sent:?}");
     let www = name("www.icann.org.");
     let asked = sent.iter().filter(|(zone, name, rtype)| {
         is(zone, "icann.org.") && *name == www && *rtype == RecordType::A
     });
     assert_eq!(asked.count(), 2, "{sent:?}");
+    // The query asked again is the validation's: the client's own, up to the first DS or DNSKEY, are enough.
+    let validating = |(_, _, rtype): &Sent| matches!(*rtype, RecordType::DS | RecordType::DNSKEY);
+    let queries = sent
+        .iter()
+        .position(validating)
+        .expect("a validator question");
+    let (resolved, sent) = resolve(Limits {
+        queries,
+        ..Limits::default()
+    });
+    assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?} {sent:?}");
 }
 
 #[test]
