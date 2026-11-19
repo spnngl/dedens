@@ -11,7 +11,7 @@ use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType};
-use dedens_resolver::{Caches, Failure, Limits, Minimisation, Ranked, Resolution, Resolved};
+use dedens_resolver::{Caches, Failure, Limits, Minimisation, Ranked, Resolution, Resolved, Rrset};
 use dedens_testkit::recursion;
 
 use crate::iteration::{
@@ -318,6 +318,24 @@ fn rfc6672_2_2_a_yxdomain_is_validated() {
         matches!(resolved, Resolved::Failed(Failure::Bogus(_))),
         "{resolved:?} {sent:?}"
     );
+}
+
+#[test]
+fn rfc4035_5_3_4_an_expansion_is_told_by_its_signature_s_labels() {
+    // Changed: the expansion's owner made the wildcard's own name, which its signature covers whole.
+    let capture = recursion::Resolution::read("wildcard");
+    let owner = capture.name.to_string();
+    let mut answer = exchanged(&capture, "sidnlabs.nl.", &owner, capture.rtype).answer;
+    let set = |answer: &[Record<'_>]| {
+        let sets = Rrset::group(answer);
+        let set = sets.into_iter().find(|set| set.rtype() == capture.rtype);
+        set.expect("the answer")
+    };
+    assert!(set(&answer).expanded());
+    for record in &mut answer {
+        record.name = name("*.sidnlabs.nl.");
+    }
+    assert!(!set(&answer).expanded());
 }
 
 #[test]
