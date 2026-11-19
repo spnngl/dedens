@@ -172,7 +172,9 @@ fn d195_past_the_waiters_on_a_silent_server_a_resolution_is_shed() {
         let silent = {
             let heard = Rc::clone(&heard);
             Answers::new().faulty(move |question, _| {
-                heard.borrow_mut().push(question.clone());
+                heard
+                    .borrow_mut()
+                    .push((tokio::time::Instant::now(), question.clone()));
                 Verdict::Drop
             })
         };
@@ -196,11 +198,17 @@ fn d195_past_the_waiters_on_a_silent_server_a_resolution_is_shed() {
             Ok(())
         });
         world.run().expect("the run passes its checks");
-        // The client's question, asked of the silent server once; the root's servers primed besides.
-        let sent = (heard.borrow().iter())
-            .filter(|&asked| *asked == question())
+        // The client's question, asked of the silent server once until that query timed out; the root's servers
+        // primed besides. Past it, resolutions with no other server ask it again (D196).
+        let heard = heard.borrow();
+        let first = (heard.iter())
+            .find(|(_, asked)| *asked == question())
+            .map(|&(at, _)| at)
+            .expect("the question asked");
+        let sent = (heard.iter())
+            .filter(|(at, asked)| *asked == question() && *at < first + InfraCache::UNKNOWN_TIMEOUT)
             .count();
-        assert_eq!(sent, 1, "{:#?}", heard.borrow());
+        assert_eq!(sent, 1, "{heard:#?}");
         let replies = replies.borrow();
         assert_eq!(replies.len(), WAITERS + 2);
         let shed = (replies.iter())

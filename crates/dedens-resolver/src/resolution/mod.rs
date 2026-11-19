@@ -22,7 +22,7 @@ use rand_core::CryptoRng;
 use thiserror::Error;
 use tracing::debug;
 
-use crate::infra_cache::{self, InfraCache, Marks};
+use crate::infra_cache::{self, Choice, InfraCache, Marks};
 use crate::metrics::Sent;
 use crate::rank::Rank;
 use crate::rrset::{self, Rrset};
@@ -507,6 +507,8 @@ struct Delegation {
     known: HashSet<IpAddr>,
     /// The addresses not asked yet.
     untried: Vec<SocketAddr>,
+    /// The addresses whose last query timed out, asked again once nothing new is left to ask (RFC 1035 §7.2, D196).
+    timed_out: Vec<SocketAddr>,
     /// The addresses asked.
     asked: usize,
     /// Servers without an address, to look up in random order.
@@ -530,6 +532,7 @@ impl Delegation {
             source,
             known: HashSet::new(),
             untried: Vec::new(),
+            timed_out: Vec::new(),
             asked: 0,
             missing,
             aaaa: None,
@@ -651,7 +654,11 @@ impl Resolution {
             }
         }
         match sent {
-            Sent::Timeout => {}
+            Sent::Timeout => {
+                if let Some(delegation) = self.tasks.asking() {
+                    delegation.timed_out.push(query.server);
+                }
+            }
             Sent::Undecodable => self.heard(Heard::Responses),
             _ => self.heard(Heard::Errors),
         }
@@ -1081,49 +1088,93 @@ fn ask(
     loop {
         // Past the bound, an address is neither asked nor looked up, which would spend queries on one never asked.
         let left = !delegation.untried.is_empty()
+            || !delegation.timed_out.is_empty()
             || delegation.aaaa.is_some()
             || !delegation.missing.is_empty();
         if left && delegation.asked >= limits.servers {
             return Ask::Fail(Failure::Limit(Limit::Servers));
         }
-        if let Some(choice) =
-            infra.select(&delegation.untried, &delegation.zone, remaining, now, rng)
-        {
-            delegation.untried.retain(|&server| server != choice.server);
-            delegation.asked += 1;
-            return Ask::Send(Query {
-                question: question.clone(),
-                server: choice.server,
-                zone: delegation.zone.clone(),
-                marks: choice.marks,
-                timeout: choice.timeout,
-                left: remaining,
-            });
+        let zone = &delegation.zone;
+        if let Some(choice) = pick(&mut delegation.untried, zone, infra, remaining, now, rng) {
+            return send(delegation, question, &choice, remaining);
         }
+        // The servers timed out are asked again, each timeout backed off, until the infra cache skips them (D194):
+        // a datagram lost costs a try, not the server (RFC 1035 §7.2, Unbound's `outbound-msg-retry`). They come
+        // after a name's AAAA, whose A was looked up, and before a name not looked up yet, which costs queries (D196).
         let lookup = if let Some(name) = delegation.aaaa.take() {
-            Question::new(name, RecordType::AAAA)
+            Some(Question::new(name, RecordType::AAAA))
+        } else if let Some(choice) =
+            pick(&mut delegation.timed_out, zone, infra, remaining, now, rng)
+        {
+            return send(delegation, question, &choice, remaining);
         } else if delegation.missing.is_empty() {
-            debug!(zone = %delegation.zone, "every server tried");
-            return Ask::Fail(delegation.heard.failure());
+            None
         } else {
             let at = infra_cache::draw(rng, delegation.missing.len());
             let name = delegation.missing.swap_remove(at);
             delegation.aaaa = Some(name.clone());
-            Question::new(name, RecordType::A)
+            Some(Question::new(name, RecordType::A))
         };
-        if let Some(addresses) = found.get(&lookup) {
-            delegation.add(addresses.iter().copied());
-            continue;
+        let mut limit = None;
+        if let Some(lookup) = lookup {
+            if let Some(addresses) = found.get(&lookup) {
+                delegation.add(addresses.iter().copied());
+                continue;
+            }
+            if depth >= limits.depth {
+                limit = Some(Limit::Depth);
+            } else if delegation.looked_up >= limits.targets {
+                limit = Some(Limit::Targets);
+            } else {
+                delegation.looked_up += 1;
+                return Ask::Lookup(lookup);
+            }
         }
-        if depth >= limits.depth {
-            return Ask::Fail(Failure::Limit(Limit::Depth));
+        // No lookup left within the limits: the servers timed out are all that is left.
+        let zone = &delegation.zone;
+        if let Some(choice) = pick(&mut delegation.timed_out, zone, infra, remaining, now, rng) {
+            return send(delegation, question, &choice, remaining);
         }
-        if delegation.looked_up >= limits.targets {
-            return Ask::Fail(Failure::Limit(Limit::Targets));
-        }
-        delegation.looked_up += 1;
-        return Ask::Lookup(lookup);
+        return Ask::Fail(limit.map_or_else(
+            || {
+                debug!(zone = %delegation.zone, "every server tried");
+                delegation.heard.failure()
+            },
+            Failure::Limit,
+        ));
     }
+}
+
+/// The server of `servers` to ask, drawn for `zone` (D194), taken out of them.
+fn pick(
+    servers: &mut Vec<SocketAddr>,
+    zone: &Name<'_>,
+    infra: &InfraCache,
+    remaining: Duration,
+    now: u32,
+    rng: &mut impl CryptoRng,
+) -> Option<Choice> {
+    let choice = infra.select(servers, zone, remaining, now, rng)?;
+    servers.retain(|&server| server != choice.server);
+    Some(choice)
+}
+
+/// The query of `delegation` asking `question` of the server `choice` names.
+fn send(
+    delegation: &mut Delegation,
+    question: &Question<'static>,
+    choice: &Choice,
+    remaining: Duration,
+) -> Ask {
+    delegation.asked += 1;
+    Ask::Send(Query {
+        question: question.clone(),
+        server: choice.server,
+        zone: delegation.zone.clone(),
+        marks: choice.marks,
+        timeout: choice.timeout,
+        left: remaining,
+    })
 }
 
 /// The port of a name server (RFC 1035 §4.2).
