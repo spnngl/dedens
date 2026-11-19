@@ -277,8 +277,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   point is useless (`iterator/iterator.c` `iter_dp_is_useless`, then the parent side or the root). Default: once from
   the root hints, within the same `Limits` (D191), in `Resolution::ask` (the recurse stage, D195, left it as is).
 - Validation by default in a recurse stage (D197): `dnssec` is `off` unless set, as a forward stage's (D77), where
-  Unbound and BIND validate a recursive resolver by default. Default: off, as the forwarder; `validate` the default
-  once the simulation (recursive step 09) runs every capture validated.
+  Unbound and BIND validate a recursive resolver by default. The simulation runs the captures validated (D197), but
+  at their own time: a test of `dedensd` on its own clock needs captures signed now, recaptured as their signatures
+  end. Default: off, as the forwarder; `validate` the default once a recipe keeps the captures fresh.
 - A wildcard answer from the `RRset` cache validated anew (D197): the cache keeps the answer's RRsets, not the
   denial proving the wildcard's expansion, so an unvalidated cached wildcard answer is judged without it, bogus.
   Default: as is (a resolution that cached it unvalidated is one without a validator); kept with the answer when
