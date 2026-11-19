@@ -118,7 +118,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   as received, not a report (D37): RDAP has its schema, a report would only rename it; YAML is the same tree. A 404
   is an answer, exit 0 (RFC 7480 §5.3): the bundled TLD list (D126) gives a special-use name's kind, status and
   purpose (`onion`), else "not a TLD". Another status, or a 200 that is no `domain` object, is exit 10 with the
-  body's title and description (RFC 9083 §6); no answer, a refused or reset connection, exit 9 as for DNS (D33). A
+  body's title and description (RFC 9083 §6); no answer, a body cut by the timeout, a refused or reset connection,
+  exit 9 as for DNS (D33). A
   name, `@server`, `-p`, `-x`, `-f`, `--save-wire`, `+repeat`, `+trace`, `+search`, `--short` and every query
   option but `+time` are refused. The reader (`apps/dedens/src/rdap.rs`, for `+rdap` too) types the members
   printed, others ignored (RFC 9083 §2.1), and is fuzzed (`parse_rdap`). `DEDENS_RDAP` replaces the server for

@@ -1,7 +1,7 @@
 //! Helpers shared by the tests of the command: the binary, its output, the queries a responder received, an RDAP
 //! server.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -83,6 +83,10 @@ pub(crate) fn queries(responder: &Responder) -> Vec<(Transport, Message<'static>
         })
         .collect()
 }
+
+/// The status of a path whose answer stops after its head: a 200 promising a body that never comes, the connection
+/// held until the client leaves.
+pub(crate) const STALL: u16 = 0;
 
 /// An HTTPS server on the loopback answering each path of its table with a status and a body, 500 for another, and
 /// the heads of the requests it read. The body of a redirect (3xx) is the path it sends to, on this server.
@@ -190,6 +194,13 @@ fn serve(
         body = b"";
     }
     let tls = tls.get_mut();
+    if status == STALL {
+        let _ = write!(tls, "HTTP/1.1 200 X\r\ncontent-length: 1\r\n\r\n");
+        let _ = tls.flush();
+        // Returns once the client closes the connection.
+        let _ = tls.read(&mut [0]);
+        return;
+    }
     let _ = write!(
         tls,
         "HTTP/1.1 {status} X\r\ncontent-type: application/rdap+json\r\n{location}content-length: {}\r\nconnection: close\r\n\r\n",
