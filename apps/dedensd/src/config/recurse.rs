@@ -1,6 +1,6 @@
-//! A `recurse` stage, as written and built (D195): the resolution's limits (D191), the zones served locally to
-//! resolve instead (RFC 6303 §3), a client network's share of the queries (D117), and the sizes of its caches (D193,
-//! D194). A reload keeps its caches while their sizes and the cache stage's settings stay, and the share's buckets
+//! A `recurse` stage, as written and built (D195): the resolution's limits (D191), its QNAME minimisation (D198),
+//! the zones served locally to resolve instead (RFC 6303 §3), a client network's share of the queries (D117), and the
+//! sizes of its caches (D193, D194). A reload keeps its caches while their sizes and the cache stage's settings stay, and the share's buckets
 //! while its budget stays.
 
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, ensure};
 use dedens_proto::Name;
-use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, RrsetCache};
+use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, Minimisation, RrsetCache};
 use dedens_roots::{RootHints, Tlds};
 use dedens_server::{Budgets, DEFAULT_SHARE, Pipeline, Recurse, Stage};
 use serde::Deserialize;
@@ -22,6 +22,8 @@ use super::limits::BudgetFile;
 pub(super) struct RecurseFile {
     #[serde(default)]
     limits: LimitsFile,
+    #[serde(default)]
+    qname_minimisation: MinimisationFile,
     #[serde(default)]
     local_zones: LocalZonesFile,
     client_share: Option<BudgetFile>,
@@ -62,6 +64,27 @@ const MAX: Limits = Limits {
     // A client gives up well before, and a resolution holds one of the thread's upstream queries (D47) all along.
     time: Duration::from_secs(30),
 };
+
+/// How much of the names asked the servers see (RFC 9156, D198).
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MinimisationFile {
+    #[default]
+    Relaxed,
+    Strict,
+    /// `none`: YAML reads `off` as the boolean false.
+    None,
+}
+
+impl From<MinimisationFile> for Minimisation {
+    fn from(file: MinimisationFile) -> Self {
+        match file {
+            MinimisationFile::Relaxed => Self::Relaxed,
+            MinimisationFile::Strict => Self::Strict,
+            MinimisationFile::None => Self::Off,
+        }
+    }
+}
 
 /// The zones served locally, all of them unless listed in `resolve`.
 #[derive(Debug, Default, Deserialize)]
@@ -132,7 +155,10 @@ pub(super) fn recurse(
             Budgets::new(share).with_context(|| format!("stage `{name}`: `client_share`"))?,
         ),
     };
-    let mut stage = Recurse::new(caches).with_limits(limits).with_share(share);
+    let mut stage = Recurse::new(caches)
+        .with_limits(limits)
+        .with_minimisation(file.qname_minimisation.into())
+        .with_share(share);
     let mut resolved: Vec<Name<'static>> = Vec::new();
     for zone in file.local_zones.resolve {
         let zone: Name<'static> = zone
@@ -189,6 +215,7 @@ fn limits(file: LimitsFile) -> anyhow::Result<Limits> {
 mod tests {
     use std::sync::Arc;
 
+    use dedens_resolver::Minimisation;
     use dedens_server::{Pipeline, Stage};
 
     use super::super::tests::{env, error, read};
@@ -301,6 +328,26 @@ mod tests {
             default.caches().infra.capacity()
         );
         assert_eq!(recurse.limits(), default.limits());
+        assert_eq!(recurse.minimisation(), default.minimisation());
+        assert_eq!(recurse.minimisation(), Minimisation::Relaxed);
+    }
+
+    #[test]
+    fn d198_qname_minimisation_reads() {
+        for (written, minimisation) in [
+            ("relaxed", Minimisation::Relaxed),
+            ("strict", Minimisation::Strict),
+            ("none", Minimisation::Off),
+        ] {
+            let config = format!("{RECURSIVE}    qname_minimisation: {written}\n");
+            let config = read(&config, env, &Pipeline::default()).expect("valid");
+            let [_, Stage::Recurse(recurse)] = config.pipeline.stages() else {
+                panic!("a cache stage, then a recurse stage")
+            };
+            assert_eq!(recurse.minimisation(), minimisation, "{written}");
+        }
+        let message = error(&format!("{RECURSIVE}    qname_minimisation: lax\n"));
+        assert!(message.contains("lax"), "{message}");
     }
 
     #[test]
