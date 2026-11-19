@@ -14,7 +14,9 @@ use dedens_cache::{Cache, Config};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Rcode, RecordType, Transport};
-use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Marks, Query, Reply, RrsetCache};
+use dedens_resolver::{
+    Caches, DEFAULT_CAPACITY, InfraCache, Marks, Query, Reply, Resolved, RrsetCache,
+};
 use dedens_roots::RootHints;
 use dedens_server::{Budget, Budgets, Pipeline, Recurse, Resolving, Stage, Step, Turn};
 use dedens_testkit::recursion::{self, Authorities};
@@ -333,7 +335,10 @@ fn rfc8109_3_priming_asks_the_root_ns_once_until_it_expires() {
     assert_eq!(priming.question().qtype, RecordType::NS);
     // One at a time, whichever thread starts it.
     assert!(pipeline.prime(secs).is_none());
+    assert!(priming.resolved().is_none());
     assert_eq!(drive(&mut priming, &authorities, now), 1);
+    // What it resolved to, which the server logs.
+    assert!(matches!(priming.resolved(), Some(Resolved::Answer { .. })));
     let mut out = vec![0; 512];
     assert!(matches!(
         pipeline.resolved(&priming, now, &mut out),
