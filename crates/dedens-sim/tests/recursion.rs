@@ -2,6 +2,7 @@
 //! capture's question in turn: the oracle's answer (D133) whatever the servers do wrong, each question within the
 //! queries a resolution may send (D191), SERVFAIL before the client's timer when a delegation is lame (RFC 4697
 //! §2.1), and the same again after a restart, which empties the caches and primes anew (RFC 8109 §3). D196.
+//! Validating (D197): AD on each signed capture's answer and none on the unsigned ones' (RFC 4035 §3.2.3, §5).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -12,11 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Config};
+use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Name, Question, Rcode, RecordType};
 use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, Minimisation, RrsetCache};
 use dedens_roots::RootHints;
-use dedens_server::{Pipeline, Recurse, Stage};
+use dedens_server::{Pipeline, Recurse, Stage, Validating};
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Server};
 use dedens_sim::seed::{self, Rng, Seed};
@@ -81,8 +83,8 @@ fn zones(captures: &[Resolution]) -> Zones {
 }
 
 /// A cache stage, one shard (D133), then a recurse stage whose caches are steered to the servers `zones` holds, its
-/// questions not minimised as the captures' were not (D198).
-fn pipeline(zones: &Zones, captures: &[Resolution]) -> Pipeline {
+/// questions not minimised as the captures' were not (D198), validating at the time `clock` if any (D197).
+fn pipeline(zones: &Zones, captures: &[Resolution], clock: Option<u64>) -> Pipeline {
     let config = Config {
         shards: 1,
         ..Config::default()
@@ -94,9 +96,17 @@ fn pipeline(zones: &Zones, captures: &[Resolution]) -> Pipeline {
         tlds: None,
     };
     steer(&caches, zones, captures);
+    let recurse = Recurse::new(Arc::new(caches)).with_minimisation(Minimisation::Off);
+    let recurse = match clock {
+        Some(at) => {
+            let validator = Validator::new(TrustAnchors::root(), dedens_dnssec::Limits::default());
+            recurse.validating(Validating::new(validator, Arc::new(move || at)))
+        }
+        None => recurse,
+    };
     Pipeline::new(vec![
         Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
-        Stage::Recurse(Recurse::new(Arc::new(caches)).with_minimisation(Minimisation::Off)),
+        Stage::Recurse(recurse),
     ])
 }
 
@@ -142,16 +152,16 @@ enum Broken {
 /// The questions the servers heard, in order, each counted once whether answered or not, with the server.
 type Heard = Rc<RefCell<Vec<(IpAddr, Question<'static>)>>>;
 
-/// A world of every capture's servers, `broken` misbehaving and each losing one UDP response in `loss` if any, and
-/// `dedensd` resolving from the root, with what the servers heard. Each server of a zone answers every question the
-/// zone was asked with the response first captured: servers of one zone may refer to different servers of a child
-/// (Akamai's do), and the capture asked those of the first referral.
+/// A world of the servers of `captures`, `broken` misbehaving and each losing one UDP response in `loss` if any, and
+/// `dedensd` resolving from the root, validating at the time `clock` if any, with what the servers heard. Each
+/// server of a zone answers every question the zone was asked with the response first captured: servers of one zone
+/// may refer to different servers of a child (Akamai's do), and the capture asked those of the first referral.
 fn world(
     seed: Seed,
     broken: &BTreeMap<IpAddr, Broken>,
     loss: Option<NonZeroU64>,
+    (captures, clock): (Vec<Resolution>, Option<u64>),
 ) -> (World, Heard) {
-    let captures = captures();
     let zones = zones(&captures);
     let heard: Heard = Rc::default();
     let mut topology = Topology::new();
@@ -191,7 +201,7 @@ fn world(
         topology = topology.authoritative_at(server, answers);
     }
     let world = topology
-        .resolver(move |_| pipeline(&zones, &captures))
+        .resolver(move |_| pipeline(&zones, &captures, clock))
         .dedensd()
         .latency(LATENCY.0, LATENCY.1)
         .tick(TICK)
@@ -247,7 +257,7 @@ async fn round(
 /// Asks each capture's question in turn of the servers, `broken` misbehaving and each losing one UDP response
 /// in `loss` if any.
 fn resolves_each(seed: Seed, broken: &BTreeMap<IpAddr, Broken>, loss: Option<NonZeroU64>) {
-    let (mut world, heard) = world(seed, broken, loss);
+    let (mut world, heard) = world(seed, broken, loss, (captures(), None));
     world.client(async move |mut stub| {
         round(&mut stub, &questions(&captures()), &[], &heard).await?;
         Ok(())
@@ -366,7 +376,7 @@ fn rfc4697_2_1_a_lame_delegation_fails_before_the_clients_timer() {
             .map(|capture| Question::new(capture.name.clone(), capture.rtype))
             .collect();
         assert!(!failing.is_empty(), "{lame:?}");
-        let (mut world, heard) = world(seed, &broken, None);
+        let (mut world, heard) = world(seed, &broken, None, (captures.clone(), None));
         let questions = questions(&captures);
         world.client(async move |mut stub| {
             round(&mut stub, &questions, &failing, &heard).await?;
@@ -384,7 +394,7 @@ const ROUND: Duration = Duration::from_secs(5);
 #[test]
 fn rfc8109_3_a_restarted_resolver_primes_again_and_asks_anew() {
     seed::each(SEEDS, |seed| {
-        let (mut world, heard) = world(seed, &BTreeMap::new(), None);
+        let (mut world, heard) = world(seed, &BTreeMap::new(), None, (captures(), None));
         let at = world.pick(ROUND, ROUND + SECOND);
         world.fault(at, Fault::Bounce(Server::Resolver));
         world.client(async move |mut stub| {
@@ -402,6 +412,65 @@ fn rfc8109_3_a_restarted_resolver_primes_again_and_asks_anew() {
             assert!(primed > 0, "no priming after the restart");
             let asked = |costs: &[usize]| costs.iter().map(|&cost| cost > 0).collect::<Vec<_>>();
             assert_eq!(asked(&first), asked(&second), "{questions:?}");
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+/// The captures of the first run of the capture tool, `run` the latest time of one. `dname` and `rrsig` were captured
+/// again a day on (D197): their zones' signatures are newer than some of the others' last (`example.com`'s), so no
+/// one clock finds every capture's valid, and the servers answer each question with the first response captured.
+fn first_run() -> (Vec<Resolution>, u64) {
+    let all = captures();
+    let first = (all.iter()).map(|capture| capture.captured_at).min();
+    let within = first.expect("a capture") + 60;
+    let run: Vec<Resolution> = (all.into_iter())
+        .filter(|capture| capture.captured_at <= within)
+        .collect();
+    let at = (run.iter()).map(|capture| capture.captured_at).max();
+    (run, at.expect("a capture"))
+}
+
+/// The captures of [`first_run`] whose answers are signed down from the root, as `dedens-resolver`'s validation
+/// tests list them.
+const SIGNED: &[&str] = &[
+    "glueless",
+    "nodata-signed",
+    "nxdomain-nsec3",
+    "nxdomain-signed",
+    "priming",
+    "signed-com",
+    "signed-nl",
+];
+
+/// D197: a validating recurse stage resolves each capture of [`first_run`] from the root at its time, the
+/// validator's DS and DNSKEY questions iterated too (RFC 4035 §5), each question within `Limits::queries` and
+/// `Limits::validation`; a stub with DO gets AD on each signed capture's answer and none on the others' (RFC 4035
+/// §3.2.3, RFC 6840 §5.8).
+#[test]
+fn rfc4035_5_each_capture_resolves_validated_from_the_root() {
+    seed::each(SEEDS, |seed| {
+        let (run, at) = first_run();
+        let ids: Vec<String> = (Resolution::all().into_iter())
+            .filter(|(_, capture)| run.contains(capture))
+            .map(|(id, _)| id)
+            .collect();
+        let (mut world, heard) = world(seed, &BTreeMap::new(), None, (run.clone(), Some(at)));
+        world.client(async move |mut stub| {
+            stub.rules.dnssec = true;
+            for (id, capture) in ids.iter().zip(&run) {
+                let question = Question::new(capture.name.clone(), capture.rtype);
+                stub.rules.authentic = SIGNED.contains(&id.as_str());
+                let before = heard.borrow().len();
+                stub.expect(question.clone(), Carrier::Udp).await?;
+                let sent = paid(&heard.borrow()[before..]);
+                let limits = Limits::default();
+                assert!(
+                    sent <= limits.queries + limits.validation,
+                    "{id}: {sent} queries"
+                );
+            }
             Ok(())
         });
         world.run().expect("the run passes its checks");

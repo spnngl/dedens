@@ -1906,9 +1906,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     one validating otherwise flushes the `RRset` cache and the cache stage, which hold the old verdicts.
   - Deviations from the step file: no `start_referral` at each referral: the walk of the final answer asks the DS
     of every cut from the anchor down (D73's walk by labels, the key cache D86 keeping zones), so a stripped
-    signature anywhere is bogus all the same, for one walk instead of two. The simulation's validated run of every
-    capture is left to step 09, which owns `dedens-sim`. The capture tool asks the DS of each label of the
-    answer's owners below their zone, as the validator walks them (`dname` recaptured).
+    signature anywhere is bogus all the same, for one walk instead of two. The simulation's validated run (on
+    D196's world) covers the captures of the tool's first run only, at its time: `dname` and `rrsig`, captured
+    again a day on, hold zones signed anew whose signatures start after `example.com`'s end, and the world answers
+    each question with the first response captured, so no one clock finds them all valid. The capture tool asks
+    the DS of each label of the answer's owners below their zone, as the validator walks them (`dname`
+    recaptured).
   - Tests: `crates/dedens-resolver/tests/validation.rs` (every signed capture secure and cached so, every unsigned
     one insecure; a stripped signature, a changed DS, another zone's keys bogus; a KeyTrap-shaped DNSKEY set within
     the budget; a budget of one verification indeterminate; the validation's queries bounded; forged glue not the
@@ -1918,7 +1921,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     too; bogus SERVFAIL EDE 10, asked again with no query; CD not validated, AD on data held secure, the bogus
     data held; the allowance's ends, a refused query counted shed; a validator question unanswered indeterminate;
     the validation's cost), the config tests in `apps/dedensd/src/config/recurse.rs` and `sources.rs` (the kept
-    root anchors of a validating recurse stage).
+    root anchors of a validating recurse stage), `crates/dedens-sim/tests/recursion.rs` (each capture of the first
+    run resolved validated from the root by `dedensd`'s loop, AD as signed, within `queries` and `validation`).
   - Rejected: the validator beside the resolution in the server, each question a resolution of its own (two state
     machines, limits per question: a client question could cost 64 resolutions); Unbound's quota per validator
     fetch (64 questions of 32 queries); judging cached verdicts again (the signature memo, D86, makes it cheap, but
