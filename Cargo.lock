@@ -1087,7 +1087,9 @@ version = "0.1.0"
 name = "dedens-resolver"
 version = "0.1.0"
 dependencies = [
+ "compio",
  "dedens-cache",
+ "dedens-net",
  "dedens-proto",
  "dedens-roots",
  "dedens-testkit",

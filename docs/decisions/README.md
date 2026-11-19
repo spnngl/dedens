@@ -197,3 +197,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D193 [server](server.md): the resolver's `RRset` cache: RFC 2181 ranks, Unbound's replacement rules, the response cache's TTLs and store
 - D194 [server](server.md): the resolver's infra cache: RFC 6298 times per server, lameness per zone, a random server within 400 ms
 - D195 [server](server.md): the recurse stage: sans-IO steps the driver sends, RFC 8109 priming beside the hints, RFC 6303 local zones, queries shared per thread (past 100 waiters shed), D117 per query, limits capped
+- D198 [server](server.md): QNAME minimisation, relaxed by default (strict, none): one label below each zone, type A; Unbound's 10 questions per name, 4 one label at a time, 3 timeouts; the full name after NXDOMAIN, REFUSED, SERVFAIL

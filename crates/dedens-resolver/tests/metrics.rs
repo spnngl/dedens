@@ -9,7 +9,7 @@ use dedens_resolver::{InfraCache, Inserted, Limits, Marks, Rank, Rrset, RrsetCac
 use dedens_testkit::{captured, message};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 
-use crate::infra_cache::Seeded;
+use crate::seeded::Seeded;
 
 /// The counters `snapshotter` holds, as `name label` and value.
 fn counters(snapshotter: &Snapshotter) -> Vec<(String, u64)> {

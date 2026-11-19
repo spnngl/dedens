@@ -2,7 +2,7 @@
 
 The recursive resolver. Sans-IO: the caller passes the time and the random source, so tests drive both. The
 rustdoc holds the rules; D191 the iteration's choices, D192 the scrubber's, D193 the `RRset` cache's, D194 the
-infra cache's.
+infra cache's, D198 QNAME minimisation's.
 
 The caches keep their entries in `dedens_cache::Store` (D193): its sharding, byte budget and S3-FIFO are
 `dedens-cache`'s, tested there. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in `tests/metrics.rs`.
@@ -50,6 +50,11 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   with its number and prior art, in D191, and a test in `tests/iteration.rs`.
 - `tests/iteration.rs` replays the captures by steering the infra cache's draw (`steer`: every other address
   lame): a capture refreshed may change the server followed, not the test.
+- The captures of `testdata/recursion` are of a full-name iterator: replay them with `Minimisation::Off`, or
+  `Authorities` refuses the minimised questions. `testdata/recursion/minimised/` holds the resolver's own
+  minimised resolutions, for `tests/minimisation.rs` (D198); a change to the questions it asks means a recapture
+  (`just capture-minimisation`).
+- Every minimised question leaves through `Resolution::send` too; its bounds are D198's constants, not `Limits`.
 - The metric names are public: Prometheus series.
 
 ## Traps

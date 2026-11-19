@@ -26,6 +26,10 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# D198: the tool capturing the minimised resolutions (`examples/capture_minimisation.rs`, run by
+# `just capture-minimisation`).
+compio.workspace = true
+dedens-net.workspace = true
 # D188: the captured resolutions the scrubber's and the iteration's tests replay.
 dedens-testkit = { workspace = true, features = ["recursion"] }
 insta.workspace = true

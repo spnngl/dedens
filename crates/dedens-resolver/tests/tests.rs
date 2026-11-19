@@ -6,5 +6,7 @@ mod infra_cache;
 mod iteration;
 #[cfg(feature = "metrics")]
 mod metrics;
+mod minimisation;
 mod rrset_cache;
 mod scrub;
+mod seeded;

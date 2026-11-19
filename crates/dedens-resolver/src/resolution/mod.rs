@@ -91,6 +91,21 @@ impl Default for Limits {
     }
 }
 
+/// How much of the name a resolution shows the servers above it (RFC 9156, D198).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Minimisation {
+    /// The full name to every server.
+    Off,
+    /// Each zone's servers asked the name one label below the zone, type A (RFC 9156 §2.1, §3), the full name
+    /// after a minimised question failed: answered NXDOMAIN, REFUSED, SERVFAIL or not usable, or 3 timeouts in a
+    /// row (Unbound's `qname-minimisation-strict: no`).
+    #[default]
+    Relaxed,
+    /// As [`Minimisation::Relaxed`] with no fallback: NXDOMAIN on a minimised name ends the resolution (RFC 8020
+    /// §2), other failures have the next server asked the minimised name.
+    Strict,
+}
+
 /// A bound of [`Limits`] reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum Limit {
@@ -256,6 +271,7 @@ pub enum Reply<'a> {
 pub struct Resolution {
     caches: Arc<Caches>,
     limits: Limits,
+    minimisation: Minimisation,
     /// When it started, for [`Limits::time`].
     started: Duration,
     /// When it started, on the caches' clock: the time an NS `RRset` is stored at (D193).
@@ -323,17 +339,125 @@ struct Task {
     /// The CNAMEs followed so far.
     chain: Vec<Ranked>,
     at: At,
+    minimise: Minimise,
 }
 
 impl Task {
-    fn new(question: Question<'static>) -> Self {
+    fn new(question: Question<'static>, minimisation: Minimisation) -> Self {
         Self {
             asked: question.clone(),
             question,
             chain: Vec::new(),
             at: At::Start,
+            minimise: Minimise::new(minimisation),
         }
     }
+
+    /// Moves the minimised question one step down from the zone it asks, or from the last one asked if below
+    /// (RFC 9156 §3 step 3; Unbound's `processQueryTargets`): to the full question once it reaches the name.
+    fn descend(&mut self) {
+        let At::Asking(delegation) = &self.at else {
+            return;
+        };
+        let Minimise::On {
+            question,
+            count,
+            timeouts,
+        } = &mut self.minimise
+        else {
+            return;
+        };
+        let zone = delegation.zone.label_count();
+        if question.name.label_count() < zone {
+            *count = 0;
+            question.name = delegation.zone.clone();
+        }
+        *count += 1;
+        *timeouts = 0;
+        let full = self.asked.name.label_count();
+        let labels = minimised(full, question.name.label_count(), *count);
+        if labels >= full {
+            self.minimise = Minimise::Off;
+        } else {
+            question.name = ancestor(&self.asked.name, labels);
+        }
+    }
+}
+
+/// Where a task's minimisation stands (RFC 9156 §3).
+#[derive(Debug)]
+enum Minimise {
+    /// The full question is asked.
+    Off,
+    /// An ancestor of the name is asked, type A (RFC 9156 §2.1).
+    On {
+        question: Question<'static>,
+        /// Minimised questions asked for the name, toward [`MINIMISE_COUNT`].
+        count: usize,
+        /// Timeouts in a row on `question`, toward [`MINIMISE_TIMEOUTS`].
+        timeouts: usize,
+    },
+}
+
+impl Minimise {
+    /// The state of a new name: the root, below which [`Task::descend`] takes the zone asked.
+    fn new(minimisation: Minimisation) -> Self {
+        match minimisation {
+            Minimisation::Off => Self::Off,
+            Minimisation::Relaxed | Minimisation::Strict => Self::On {
+                question: Question::new(Name::root(), RecordType::A),
+                count: 0,
+                timeouts: 0,
+            },
+        }
+    }
+}
+
+/// Minimised questions per name, the last one the full name: 10, RFC 9156 §2.3's `MAX_MINIMISE_COUNT` and
+/// Unbound's (`iterator/iterator.h`). It bounds what a long name costs: 34 labels of `ip6.arpa` take 10 queries
+/// with referrals, not 34.
+const MINIMISE_COUNT: usize = 10;
+/// The first minimised questions, each one label longer: 4, RFC 9156 §2.3's `MINIMISE_ONE_LAB` and Unbound's.
+const ONE_LABEL: usize = 4;
+/// Timeouts in a row on one minimised question before [`Minimisation::Relaxed`] asks the full name: 3, Unbound's
+/// `MAX_MINIMISE_TIMEOUT_COUNT` (`iterator/iterator.h`).
+const MINIMISE_TIMEOUTS: usize = 3;
+
+/// The labels of the `count`th minimised question of a name of `full` labels, after one of `last` labels
+/// (RFC 9156 §2.3; Unbound's `processQueryTargets`): one label more for the first [`ONE_LABEL`], then as many as
+/// spread the rest of a name of [`MINIMISE_COUNT`] labels or more over the questions left, the full name at the
+/// [`MINIMISE_COUNT`]th.
+fn minimised(full: usize, last: usize, count: usize) -> usize {
+    if count >= MINIMISE_COUNT {
+        return full;
+    }
+    // Unbound counts the root label: its `qchaselabs > MAX_MINIMISE_COUNT` is `full >= MINIMISE_COUNT` here.
+    let extra = if full >= MINIMISE_COUNT && count > ONE_LABEL {
+        let several = full - ONE_LABEL;
+        let questions = MINIMISE_COUNT - ONE_LABEL;
+        let extra = several / questions;
+        if MINIMISE_COUNT - count >= several % questions {
+            extra - 1
+        } else {
+            extra
+        }
+    } else {
+        0
+    };
+    (last + 1 + extra).min(full)
+}
+
+/// The ancestor of `name` with `labels` labels, `labels` at most its own.
+fn ancestor(name: &Name<'_>, labels: usize) -> Name<'static> {
+    let mut buf = [0; MAX_NAME_LEN];
+    let wire = name.to_wire(&mut buf);
+    let mut at = 0;
+    for _ in labels..name.label_count() {
+        at += 1 + wire.get(at).map_or(0, |&length| usize::from(length));
+    }
+    (wire.get(at..))
+        .and_then(|suffix| Name::from_uncompressed(suffix).ok())
+        .map_or_else(Name::root, Name::into_owned)
 }
 
 #[derive(Debug)]
@@ -435,7 +559,7 @@ enum Ask {
 
 impl Resolution {
     /// A resolution of `question` at `now`, a time of any origin that [`Resolution::step`] and
-    /// [`Resolution::receive`] keep to.
+    /// [`Resolution::receive`] keep to, its names and its servers' minimised as `minimisation` says.
     ///
     /// # Errors
     ///
@@ -445,6 +569,7 @@ impl Resolution {
         caches: Arc<Caches>,
         now: Duration,
         limits: Limits,
+        minimisation: Minimisation,
     ) -> Result<Self, Unsupported> {
         if question.qclass != Class::IN {
             return Err(Unsupported::Class(question.qclass));
@@ -455,6 +580,7 @@ impl Resolution {
         Ok(Self {
             caches,
             limits,
+            minimisation,
             started: now,
             started_secs: secs(now),
             sent: 0,
@@ -462,7 +588,7 @@ impl Resolution {
             referrals: 0,
             limit: None,
             tasks: Tasks {
-                client: Task::new(question),
+                client: Task::new(question, minimisation),
                 lookups: Vec::new(),
             },
             found: HashMap::new(),
@@ -547,7 +673,10 @@ impl Resolution {
         let (message, seen, rtt) = match reply {
             Reply::Response { message, seen, rtt } => (message, seen, rtt),
             Reply::Undecodable => return self.unanswered(&query, Sent::Undecodable, now, judge),
-            Reply::Timeout => return self.unanswered(&query, Sent::Timeout, now, judge),
+            Reply::Timeout => {
+                self.timed_out(&query.question);
+                return self.unanswered(&query, Sent::Timeout, now, judge);
+            }
             Reply::ServerError => return self.unanswered(&query, Sent::ServerError, now, judge),
             Reply::LocalError => return self.unanswered(&query, Sent::LocalError, now, judge),
         };
@@ -572,6 +701,9 @@ impl Resolution {
         let referral = matches!(scrubbed.outcome, Outcome::Referral { .. });
         let ranked = self.cache(scrubbed.ranked(), referral, now_secs);
         let sets = |records: &[Record<'_>]| sets(records, &ranked);
+        if self.minimised(&query.question) && self.went_on(&scrubbed.outcome, server) {
+            return;
+        }
         match &scrubbed.outcome {
             Outcome::Answer { chain, records, .. } => {
                 if let Some(data) = sets(records).pop()
@@ -638,13 +770,22 @@ impl Resolution {
         }
         let now_secs = secs(now);
         let depth = self.tasks.lookups.len();
-        let Task { asked, at, .. } = self.tasks.active();
+        let Task {
+            asked,
+            at,
+            minimise,
+            ..
+        } = self.tasks.active();
         let At::Asking(delegation) = at else {
             return self.begin(now_secs);
         };
+        let question = match minimise {
+            Minimise::On { question, .. } => question,
+            Minimise::Off => asked,
+        };
         let ask = ask(
             delegation,
-            asked,
+            question,
             &self.caches.infra,
             &self.limits,
             &self.found,
@@ -657,7 +798,7 @@ impl Resolution {
             Ask::Send(query) => self.send(query),
             Ask::Lookup(question) => {
                 debug!(name = %question.name, rtype = %question.qtype, depth = depth + 1, "address lookup");
-                self.tasks.lookups.push(Task::new(question));
+                (self.tasks.lookups).push(Task::new(question, self.minimisation));
             }
             Ask::Fail(failure) => {
                 if let Failure::Limit(limit) = failure {
@@ -696,7 +837,73 @@ impl Resolution {
         if let Some(task) = self.tasks.looping(&delegation.zone) {
             return self.abandon(&task);
         }
-        self.tasks.active().at = At::Asking(delegation);
+        let task = self.tasks.active();
+        task.at = At::Asking(delegation);
+        task.descend();
+    }
+
+    /// Whether `question` is the active task's minimised question.
+    fn minimised(&mut self, question: &Question<'_>) -> bool {
+        matches!(&self.tasks.active().minimise, Minimise::On { question: asked, .. } if asked == question)
+    }
+
+    /// Whether `outcome`, from `server` to the minimised question, had the next question chosen (RFC 9156 §3
+    /// step 6); else it is read as any other response.
+    fn went_on(&mut self, outcome: &Outcome<'_>, server: SocketAddr) -> bool {
+        let full = match outcome {
+            Outcome::Referral { .. } => return false,
+            // The name exists: the next label is asked (RFC 9156 §3 step 6c), of any server.
+            Outcome::Answer { .. } | Outcome::Cname { .. } | Outcome::NoData { .. } => false,
+            // A CNAME to a name that does not exist: the name asked does (step 6c), and the chain is no answer for
+            // the client's name.
+            Outcome::NxDomain { chain, .. } if !chain.is_empty() => false,
+            // Strict, NXDOMAIN ends the resolution (RFC 8020 §2), any other response has the next server asked the
+            // same question.
+            _ if self.minimisation == Minimisation::Strict => return false,
+            // A server may answer NXDOMAIN for an empty non-terminal, or fail on a name it does not expect: the
+            // full name is asked, of any server, as Unbound's relaxed mode does (RFC 9156 §1, §3).
+            _ => true,
+        };
+        self.give_back(server, full);
+        true
+    }
+
+    /// After a response to the minimised question from `server`: `server` may be asked again, the next question
+    /// being another, the full name's when `full`, else the next minimised one. Each zone's servers may then hear
+    /// as many questions as [`MINIMISE_COUNT`] allows, each within [`Limits::queries`].
+    fn give_back(&mut self, server: SocketAddr, full: bool) {
+        let task = self.tasks.active();
+        if let At::Asking(delegation) = &mut task.at {
+            delegation.untried.push(server);
+            delegation.asked = delegation.asked.saturating_sub(1);
+        }
+        if full {
+            debug!(name = %task.asked.name, "minimisation failed, the full name asked");
+            task.minimise = Minimise::Off;
+        } else {
+            task.descend();
+        }
+    }
+
+    /// Counts a timeout on `question`, the active task's minimised question: [`MINIMISE_TIMEOUTS`] in a row have
+    /// [`Minimisation::Relaxed`] ask the full name.
+    fn timed_out(&mut self, question: &Question<'static>) {
+        let relaxed = self.minimisation == Minimisation::Relaxed;
+        let task = self.tasks.active();
+        if let Minimise::On {
+            question: asked,
+            timeouts,
+            ..
+        } = &mut task.minimise
+            && asked == question
+            && relaxed
+        {
+            *timeouts += 1;
+            if *timeouts >= MINIMISE_TIMEOUTS {
+                debug!(name = %task.asked.name, "minimised questions time out, the full name asked");
+                task.minimise = Minimise::Off;
+            }
+        }
     }
 
     /// Caches the `RRsets` the scrubber kept, at the rank it gave each (D192), and returns them. The NS records of
@@ -760,6 +967,7 @@ impl Resolution {
         task.chain = chain;
         task.asked.name = target;
         task.at = At::Start;
+        task.minimise = Minimise::new(self.minimisation);
     }
 
     /// Follows a referral to `zone`, within [`Limits::referrals`], to the first [`Limits::servers`] servers of `ns`
@@ -786,7 +994,9 @@ impl Resolution {
             }
             known.extend(at);
         }
-        self.tasks.active().at = At::Asking(Delegation::new(zone, Source::Parent, known, missing));
+        let task = self.tasks.active();
+        task.at = At::Asking(Delegation::new(zone, Source::Parent, known, missing));
+        task.descend();
     }
 
     /// Records what the server asked did, for the failure of its delegation.
