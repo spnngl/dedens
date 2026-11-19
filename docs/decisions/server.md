@@ -1439,9 +1439,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   a cache cleared, would accept a replayed pair); an ETag for the anchors (a 304 on the XML says nothing of the
   signature); refusing a start for a root directory that cannot be written (`roots` is on by default, the bundled
   copies serve); separate settings of refresh (one schedule, one thread).
-- D191 (builds on D188, D190, D192, D193, D194) The recursive resolver's iteration, `dedens_resolver::Resolution`
-  (recursive step 04): one client question from the closest delegation known down the referrals to the answer
-  (RFC 1034 §5.3.3), sans-IO, one query in flight.
+- D191 (builds on D188, D190, D192, D193, D194; amended by D196) The recursive resolver's iteration,
+  `dedens_resolver::Resolution` (recursive step 04): one client question from the closest delegation known down the
+  referrals to the answer (RFC 1034 §5.3.3), sans-IO, one query in flight.
   - Driving: `Resolution::start(question, Arc<Caches>, now, limits)` refuses a question it cannot resolve
     (`Unsupported`: ANY and the other QTYPEs and meta types, RRSIG, part of the `RRset` it covers (D176), a class
     other than IN); `step(now, rng)` gives `Next::Send(&Query)` or `Next::Done(&Resolved)`, the same query again
@@ -1474,9 +1474,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Negative answers are not cached (step 12). An address that came as glue keeps the glue's rank when answered
     (D193's pin), so a later client question for it is asked again.
   - Servers: the first `servers` names of a referral's NS `RRset`; each name's addresses are its glue, else those
-    cached; `InfraCache::select` draws among those not tried. When none is left, a server without an address, drawn
-    at random with the resolution's `rng`, is looked up, A then AAAA, by a sub-resolution on the same stack sharing
-    the limits; its result is memoised by its question for the whole resolution. A lookup whose closest delegation
+    cached; `InfraCache::select` draws among those not tried (and those timed out, D196). When none is left, a
+    server without an address, drawn at random with the resolution's `rng`, is looked up, A then AAAA, by a
+    sub-resolution on the same stack sharing the limits; its result is memoised by its question for the whole resolution. A lookup whose closest delegation
     or referral is a zone an ancestor on the stack is waiting on ends at once, its name given no address (the loop
     of a zone reachable only through itself costs one query per name). An A lookup ending NXDOMAIN skips the
     name's AAAA.

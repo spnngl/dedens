@@ -7,7 +7,7 @@
 //! RFC 8914 §4 (the extended error of a failure), RFC 9471 §2 (glue within the zone asked), and each bound of
 //! `Limits` (D191).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -718,9 +718,22 @@ fn d191_servers_bound() {
     assert_eq!(sent, Limits::default().servers);
 }
 
+/// A server timed out and asked again counts against `Limits::servers`, as a server first asked does (D196).
+#[test]
+fn d196_a_server_asked_again_counts_against_the_servers_bound() {
+    // The root hints give 26 addresses, each timing out: one more is a server asked again.
+    let servers = 27;
+    let (outcome, sent) = unanswered(Limits {
+        servers,
+        ..Limits::default()
+    });
+    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Servers)));
+    assert_eq!(sent, servers);
+}
+
 /// Resolves `unsigned`'s question with com's referral to google.com naming `glued` servers with an IPv4 glue each,
 /// the first an IPv6 one too, and ns.example.net without glue, whose lookup gives one IPv4 address; every server of
-/// google.com times out.
+/// google.com fails, a server error, which is not asked again as a timeout is (D196).
 fn spent(glued: usize) -> (Resolved, Vec<Sent>) {
     let capture = recursion::Resolution::read("unsigned");
     let google = name("google.com.");
@@ -749,7 +762,7 @@ fn spent(glued: usize) -> (Resolved, Vec<Sent>) {
     let server = |query: &Query| {
         let question = &query.question;
         if query.zone == google {
-            Answered::Timeout
+            Answered::ServerError
         } else if question.name == unglued && question.qtype == RecordType::A {
             Answered::Response(to(found.clone(), question))
         } else if is(&query.zone, "com.") {
@@ -764,7 +777,7 @@ fn spent(glued: usize) -> (Resolved, Vec<Sent>) {
 
 #[test]
 fn d191_servers_bound_stops_lookups() {
-    // 13 glued addresses time out: the unglued name is not looked up.
+    // 13 glued addresses fail: the unglued name is not looked up.
     let servers = Limits::default().servers;
     let google = name("google.com.");
     let (outcome, sent) = spent(servers - 1);
@@ -782,19 +795,21 @@ fn d191_servers_bound_stops_lookups() {
 #[test]
 fn rfc8914_4_no_server_answering_is_no_reachable_authority() {
     let limits = Limits {
-        servers: 100,
+        queries: 1000,
+        servers: 1000,
         ..Limits::default()
     };
     let roots: usize = (RootHints::bundled().servers().iter())
         .map(|s| s.addresses().count())
         .sum();
+    // Each asked until the infra cache skips it (D196).
     let (outcome, sent) = unanswered(limits);
     assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
     assert_eq!(
         Failure::Unreachable.info_code(),
         InfoCode::NO_REACHABLE_AUTHORITY
     );
-    assert_eq!(sent, roots);
+    assert_eq!(sent, roots * usize::from(InfraCache::TIMEOUT_LIMIT));
     // Exchanges failing, on the network or here, are a network error.
     for answered in [|| Answered::ServerError, || Answered::LocalError] {
         let (outcome, sent) = unreached(limits, answered);
@@ -823,11 +838,41 @@ fn d191_a_delegation_fails_on_what_its_own_servers_did() {
         }
     };
     let limits = Limits {
-        servers: 100,
+        queries: 1000,
+        servers: 1000,
         ..Limits::default()
     };
     let (outcome, _) = run(&mut start(&capture, &caches, limits), &server, at(&capture));
     assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
+}
+
+#[test]
+fn rfc1035_7_2_a_server_timing_out_is_asked_again_before_a_name_is_looked_up() {
+    // D196: microsoft.com's one glued server times out once; it is asked again, and its servers without glue are
+    // not looked up.
+    let capture = recursion::Resolution::read("truncated");
+    let caches = caches(false);
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let microsoft = name("microsoft.com.");
+    let lost = Cell::new(false);
+    let asked = RefCell::new(Vec::new());
+    let server = |query: &Query| {
+        if query.zone == microsoft {
+            asked.borrow_mut().push(query.server);
+            if !lost.replace(true) {
+                return Answered::Timeout;
+            }
+        }
+        Answered::Response(captured(&authorities, query))
+    };
+    let limits = Limits::default();
+    let (outcome, sent) = run(&mut start(&capture, &caches, limits), &server, at(&capture));
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
+    assert!(sent.iter().all(|s| s.1 == microsoft), "{sent:?}");
+    let asked = asked.into_inner();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[0], asked[1]);
 }
 
 #[test]
@@ -1104,7 +1149,8 @@ fn d191_a_referral_read_whatever_the_order_of_its_records() {
 
 #[test]
 fn d191_an_address_given_twice_is_asked_once() {
-    // com's referral gives each server of google.com the address of the one followed; it times out.
+    // com's referral gives each server of google.com the address of the one followed; it fails (a timeout would
+    // have it asked again, D196).
     let capture = recursion::Resolution::read("unsigned");
     let google = name("google.com.");
     let IpAddr::V4(followed) = followed(&capture)[&google] else {
@@ -1115,7 +1161,7 @@ fn d191_an_address_given_twice_is_asked_once() {
     steer(&caches, &capture);
     let server = |query: &Query| {
         if query.zone == google {
-            return Answered::Timeout;
+            return Answered::ServerError;
         }
         let mut response = captured(&authorities, query);
         if is(&query.zone, "com.") {
@@ -1136,21 +1182,21 @@ fn d191_an_address_given_twice_is_asked_once() {
         &server,
         at(&capture),
     );
-    assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
+    assert_eq!(outcome, Resolved::Failed(Failure::Network));
     assert_eq!(sent.iter().filter(|s| s.0 == google).count(), 1, "{sent:?}");
 }
 
 #[test]
 fn d191_an_address_looked_up_after_it_was_asked_is_not_asked_again() {
-    // `glueless`, gandi.net giving each server of netmeister.org ns-143-b.gandi.net's addresses, which time out:
-    // each is asked once, though every name looked up gives it again.
+    // `glueless`, gandi.net giving each server of netmeister.org ns-143-b.gandi.net's addresses, which fail (a
+    // timeout would have them asked again, D196): each is asked once, though every name looked up gives it again.
     let capture = recursion::Resolution::read("glueless");
     let caches = caches(false);
     steer(&caches, &capture);
     let authorities = Authorities::new([&capture]);
     let server = |query: &Query| {
         if is(&query.zone, "netmeister.org.") {
-            return Answered::Timeout;
+            return Answered::ServerError;
         }
         if !query.question.name.is_within(&name("gandi.net.")) {
             return Answered::Response(captured(&authorities, query));
