@@ -1,7 +1,8 @@
 # dedens-resolver
 
-The recursive resolver. Sans-IO: the caller passes the time in seconds and the random source, so tests drive
-both. The rustdoc holds the rules; D192 the scrubber's choices, D193 the `RRset` cache's, D194 the infra cache's.
+The recursive resolver. Sans-IO: the caller passes the time and the random source, so tests drive both. The
+rustdoc holds the rules; D191 the iteration's choices, D192 the scrubber's, D193 the `RRset` cache's, D194 the
+infra cache's.
 
 The caches keep their entries in `dedens_cache::Store` (D193): its sharding, byte budget and S3-FIFO are
 `dedens-cache`'s, tested there. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in `tests/metrics.rs`.
@@ -36,7 +37,18 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 - The infra cache's random draw takes a `CryptoRng` (RFC 5452 §4.4): the server asked must not be predictable.
 - The value is an enum (`Entry`) so that negative entries (step 12) share the `RRset` cache's key space: add a
   variant, not a second store.
-- Time is `u32` seconds from any origin and may go back: use saturating arithmetic.
+- Time is `u32` seconds from any origin (a `Duration` in `Resolution`, its seconds to the caches) and may go back:
+  use saturating arithmetic.
+- A response is judged in one place, `resolution/read.rs`, every rank decided there; the scrubber (step 05)
+  replaces it, its output already shaped as `Scrubbed`. Nothing else reads a response, and the infra cache credits
+  only one read as usable (D191).
+- The transport owns the wire: ID, DO, `0x20`, TC then TCP, EDNS fallback and the matching (D190). `Query` stays
+  typed, without bytes. A `Reply::LocalError` is ours: it never touches the infra cache.
+- Every CNAME hop counts against `Limits::restarts`, through `Resolution::hops`, from the cache or a response.
+- Every query leaves through `Resolution::send`, which checks `Limits::queries`. A new bound is a `Limits` field
+  with its number and prior art, in D191, and a test in `tests/iteration.rs`.
+- `tests/iteration.rs` replays the captures by steering the infra cache's draw (`steer`: every other address
+  lame): a capture refreshed may change the server followed, not the test.
 - The metric names are public: Prometheus series.
 
 ## Traps

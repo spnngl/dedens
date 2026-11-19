@@ -16,8 +16,34 @@
 //! - `dedens_resolver_infra_evictions_total`: entries evicted to stay under the byte budget.
 //!
 //! Handles are taken once, when the cache is built, from the recorder installed then: install the recorder first.
+//!
+//! The resolution's (D191), from the recorder installed when it is counted:
+//!
+//! - `dedens_resolver_limits_total{limit}`: bounds of `Limits` reached, by bound (`Limit`'s field name).
 
+use crate::resolution::Limit;
 use crate::rrset_cache::Inserted;
+
+/// Counts `limit` reached: a registry lookup, which the rarity of a limit affords.
+#[cfg(feature = "metrics")]
+pub(crate) fn limit(limit: Limit) {
+    const LIMITS: &str = "dedens_resolver_limits_total";
+    metrics::describe_counter!(LIMITS, "Resolution bounds reached, by bound.");
+    let field = match limit {
+        Limit::Queries => "queries",
+        Limit::Restarts => "restarts",
+        Limit::Referrals => "referrals",
+        Limit::Depth => "depth",
+        Limit::Servers => "servers",
+        Limit::Targets => "targets",
+        Limit::Time => "time",
+    };
+    metrics::counter!(LIMITS, "limit" => field).increment(1);
+}
+
+/// Counts `limit` reached: nothing without the `metrics` feature.
+#[cfg(not(feature = "metrics"))]
+pub(crate) const fn limit(_: Limit) {}
 
 /// The counters of one cache.
 #[cfg(feature = "metrics")]

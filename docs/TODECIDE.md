@@ -263,6 +263,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Validating forwarder (D77): an upstream SERVFAIL or REFUSED for the client's question, and a held failure, reply a
   bare SERVFAIL, with no EDE 22 (No Reachable Authority) or 23 (Network Error). Default: bare.
 
+## Recursive resolver
+
+- A delegation from the cache or the TLD hints whose servers all fail ends the resolution
+  (`crates/dedens-resolver/src/resolution/mod.rs`, `Resolution::ask`); Unbound goes up instead when the delegation
+  point is useless (`iterator/iterator.c` `iter_dp_is_useless`, then the parent side or the root). Default: once from
+  the root hints, within the same `Limits` (D191), with the stage (recursive step 08).
+
 ## Later
 
 - RAPx on dedens-proto (D187): 0.7.75 stops with an internal compiler error (`item_name: no name for DefPath`,

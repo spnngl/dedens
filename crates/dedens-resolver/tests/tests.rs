@@ -3,6 +3,7 @@
 //! `#[global_allocator]`.
 
 mod infra_cache;
+mod iteration;
 #[cfg(feature = "metrics")]
 mod metrics;
 mod rrset_cache;
