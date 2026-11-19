@@ -1780,9 +1780,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     instead would turn a hot question into a hundred queries to its other servers. The waiters take the reply with
     `Resolution::receive_shared`, which leaves the infra cache alone: the sender's `receive` judged the server once,
     and a timeout shared by a hundred would back it off a hundred times. A local error is shared too (D190's
-    `NoSocket` comes at the deadline: each waiter sending again after it would wait its own timeout in turn). Each ask
-    has one deadline, `Query::timeout` from its start: a waiter waits for the reply until then and takes a timeout,
-    judging no server; one whose sender was cancelled sends in the time left, so `Limits::time` holds.
+    `NoSocket` comes at the deadline: each waiter sending again after it would wait its own timeout in turn). A waiter
+    waits for the reply until its resolution ends (`Query::left`, so `Limits::time` holds), not its own estimate of
+    the server's timeout: learnt meanwhile, it may be shorter than the sender's, and each waiter timing out would
+    send the query again (`just sim` showed it). Past its end it takes a timeout, judging no server. The sender, or
+    a waiter sending after its sender was cancelled, waits `Query::timeout` from then, within its resolution's end.
   - Client budget (D117): each query a resolution sends costs its client network one unit of the stage's
     `client_share` (default 1000/s, burst 2000, as the forward stage's); one refused ends it, SERVFAIL with EDE 14
     (Not Ready), as validation's shed. The rate limit's exempt networks pay nothing. A reload with the same budget
@@ -1817,7 +1819,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     asked for a capture resolved from the process: a process cannot reach the captured servers' addresses, so the
     capture is resolved in the simulation), the config tests in `apps/dedensd/src/config/recurse.rs`, the shared
     queries' unit tests in `apps/dedensd/src/serve/recurse.rs` (`asked`, a send given: the outcome handed over, a local
-    error too, a waiter's own deadline, the shed), the shared reply in `crates/dedens-resolver/tests/iteration.rs`. The
+    error too, a waiter's wait past its own timeout and until its end, the shed), the shared reply in `crates/dedens-resolver/tests/iteration.rs`. The
     `serve_query` fuzz target answers through a recurse stage, its input every server's response.
   - Rejected: the resolution inside `Upstream` (its forward accessors would mean nothing for it); stepping it in
     `Pipeline::query` (no clock nor randomness there); D86's process-wide flights (a lock across threads); waiters

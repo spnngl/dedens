@@ -195,7 +195,7 @@ enum Asked {
     /// It sent the query: the server is judged on this outcome.
     Sent(Outcome),
     /// Another resolution of the thread sent the same question to the same server first, and this one took its
-    /// outcome, or [`Outcome::Timeout`] when its own deadline came first: the server is judged by the one sending.
+    /// outcome, or [`Outcome::Timeout`] when its time ran out first: the server is judged by the one sending.
     Shared(Outcome),
     /// [`WAITERS`] waited on it already: the resolution is shed, nothing sent (D195).
     Shed,
@@ -203,30 +203,31 @@ enum Asked {
 
 /// Asks `query` with the thread's transport, or shares the same one in flight ([`asked`]).
 async fn ask<N: Io>(thread: &Thread<N>, query: &Query) -> Asked {
-    let deadline = thread.io.now() + query.timeout;
+    let ends = thread.io.now() + query.left;
     let flights = &thread.recursion.flights;
-    asked(&thread.io, flights, query, deadline, async |deadline| {
+    asked(&thread.io, flights, query, ends, async |deadline| {
         send(thread, query, deadline).await
     })
     .await
 }
 
-/// What became of `query`, asked on `io` with `send` by the queries in flight `flights` until `deadline`, one for
-/// the whole ask (`query.timeout`, at most the time the resolution has left: `Limits::time` holds): sent, or shared
-/// with another resolution that sent it first, its outcome taken until `deadline`, a local error included; one the
-/// other gave up on unsent, cancelled, is sent with the time left.
+/// What became of `query`, asked on `io` with `send` by the queries in flight `flights`, its resolution ending at
+/// `ends` (`query.left`, so `Limits::time` holds whatever the wait): sent until `query.timeout` from now, or shared
+/// with another resolution that sent it first, its outcome taken until `ends`, a local error included. The one
+/// sending waits for its own server's timeout, which may be longer than the waiter's estimate of it: the waiter waits
+/// for it rather than send again. One the other gave up on unsent, cancelled, is sent with the time left.
 async fn asked<N: Io>(
     io: &N,
     flights: &Flights,
     query: &Query,
-    deadline: Instant,
+    ends: Instant,
     send: impl AsyncFnOnce(Instant) -> Outcome,
 ) -> Asked {
     let key = (query.server, query.question.clone());
     let lead = loop {
         match flights.enter(&key) {
             Entered::Lead(lead) => break lead,
-            Entered::Follow(waiting) => match io.timeout_at(deadline, waiting.recv_async()).await {
+            Entered::Follow(waiting) => match io.timeout_at(ends, waiting.recv_async()).await {
                 Ok(Ok(outcome)) => return Asked::Shared(outcome),
                 // Gone without an outcome: this one sends it.
                 Ok(Err(flume::RecvError::Disconnected)) => {}
@@ -235,7 +236,7 @@ async fn asked<N: Io>(
             Entered::Full => return Asked::Shed,
         }
     };
-    let outcome = send(deadline).await;
+    let outcome = send((io.now() + query.timeout).min(ends)).await;
     lead.finish(&outcome);
     Asked::Sent(outcome)
 }
@@ -447,7 +448,7 @@ mod tests {
         assert!(matches!(flights.enter(&key()), Entered::Lead(_)));
     }
 
-    /// The query of [`key`], timed out after `timeout`.
+    /// The query of [`key`], timed out after `timeout`, its resolution with a second left (`asked` is given its end).
     fn query(timeout: Duration) -> Query {
         let (server, question) = key();
         Query {
@@ -456,6 +457,7 @@ mod tests {
             zone: Name::root(),
             marks: Marks::default(),
             timeout,
+            left: SECOND,
         }
     }
 
@@ -465,15 +467,16 @@ mod tests {
     }
 
     /// The one sending hands the waiters its outcome, a local error too: a query it could not send has the others
-    /// wait no more for the same, nor send it each in turn, each its own time out.
+    /// wait no more for the same, nor send it each in turn, each its own time out. It sends until its server's
+    /// timeout, at most until its resolution ends.
     #[test]
-    fn d195_the_one_sending_hands_its_outcome_and_its_deadline_is_the_asks() {
+    fn d195_the_one_sending_hands_its_outcome_and_sends_until_its_resolution_ends() {
         Runtime::new().expect("a runtime").block_on(async {
             for outcome in [Outcome::LocalError, Outcome::ServerError] {
                 let flights = Flights::default();
-                let deadline = Compio.now() + Duration::from_secs(1);
+                let ends = Compio.now() + Duration::from_millis(100);
                 let (sent, waiting) = (Cell::new(None), RefCell::new(None));
-                let asked = asked(&Compio, &flights, &query(SECOND), deadline, async |until| {
+                let asked = asked(&Compio, &flights, &query(SECOND), ends, async |until| {
                     sent.set(Some(until));
                     waiting.replace(Some(flights.enter(&key())));
                     outcome.clone()
@@ -483,7 +486,7 @@ mod tests {
                     panic!("sent")
                 };
                 assert_eq!(discriminant(&got), discriminant(&outcome));
-                assert_eq!(sent.get(), Some(deadline));
+                assert_eq!(sent.get(), Some(ends));
                 let Some(Entered::Follow(waiting)) = waiting.take() else {
                     panic!("a waiter")
                 };
@@ -503,46 +506,71 @@ mod tests {
             let Entered::Lead(lead) = flights.enter(&key()) else {
                 panic!("the first sends")
             };
-            let deadline = Compio.now() + Duration::from_secs(10);
+            let ends = Compio.now() + Duration::from_secs(10);
             let query = query(SECOND);
-            let mut waiting = pin!(asked(&Compio, &flights, &query, deadline, unsent));
+            let mut waiting = pin!(asked(&Compio, &flights, &query, ends, unsent));
             assert!(waiting.as_mut().now_or_never().is_none());
             lead.finish(&Outcome::LocalError);
             assert!(matches!(waiting.await, Asked::Shared(Outcome::LocalError)));
         });
     }
 
-    /// A waiter whose deadline comes first takes a timeout, which judges no server, and waits no more: one stuck
-    /// sending does not hold the others past their time (`Limits::time`).
+    /// A waiter waits for the one sending past its own estimate of the server's timeout, which may be shorter than
+    /// the sender's: it would send the same query again else.
     #[test]
-    fn d195_a_waiter_waits_until_its_own_deadline() {
+    fn d195_a_waiter_waits_past_its_own_timeout_for_the_one_sending() {
         Runtime::new().expect("a runtime").block_on(async {
             let flights = Flights::default();
-            let _lead = flights.enter(&key());
-            let deadline = Compio.now() + Duration::from_millis(10);
-            let asked = asked(&Compio, &flights, &query(SECOND), deadline, unsent).await;
-            assert!(matches!(asked, Asked::Shared(Outcome::Timeout)));
-            assert!(Compio.now() >= deadline);
+            let Entered::Lead(lead) = flights.enter(&key()) else {
+                panic!("the first sends")
+            };
+            let ends = Compio.now() + Duration::from_secs(10);
+            let query = query(Duration::from_millis(1));
+            let sending = async {
+                compio::time::sleep(Duration::from_millis(50)).await;
+                lead.finish(&Outcome::ServerError);
+            };
+            let (asked, ()) =
+                futures_util::future::join(asked(&Compio, &flights, &query, ends, unsent), sending)
+                    .await;
+            assert!(matches!(asked, Asked::Shared(Outcome::ServerError)));
         });
     }
 
-    /// The one sending cancelled, a waiter sends the query itself, within the deadline of its ask, not a new one.
+    /// A waiter whose resolution ends first takes a timeout, which judges no server, and waits no more: one stuck
+    /// sending does not hold the others past their time (`Limits::time`).
+    #[test]
+    fn d195_a_waiter_waits_until_its_resolution_ends() {
+        Runtime::new().expect("a runtime").block_on(async {
+            let flights = Flights::default();
+            let _lead = flights.enter(&key());
+            let ends = Compio.now() + Duration::from_millis(10);
+            let asked = asked(&Compio, &flights, &query(SECOND), ends, unsent).await;
+            assert!(matches!(asked, Asked::Shared(Outcome::Timeout)));
+            assert!(Compio.now() >= ends);
+        });
+    }
+
+    /// The one sending cancelled, a waiter sends the query itself, until its server's timeout from then, within
+    /// its resolution's end.
     #[test]
     fn d195_a_waiter_sends_in_the_time_left_when_the_one_sending_is_gone() {
         Runtime::new().expect("a runtime").block_on(async {
             let flights = Flights::default();
             let lead = flights.enter(&key());
-            let deadline = Compio.now() + Duration::from_secs(10);
+            let ends = Compio.now() + Duration::from_secs(10);
             let sent = Cell::new(None);
             let query = query(SECOND);
-            let mut waiting = pin!(asked(&Compio, &flights, &query, deadline, async |until| {
+            let mut waiting = pin!(asked(&Compio, &flights, &query, ends, async |until| {
                 sent.set(Some(until));
                 Outcome::Timeout
             }));
             assert!(waiting.as_mut().now_or_never().is_none());
+            let gone = Compio.now();
             drop(lead);
             assert!(matches!(waiting.await, Asked::Sent(Outcome::Timeout)));
-            assert_eq!(sent.get(), Some(deadline));
+            let until = sent.get().expect("sent");
+            assert!(until >= gone + SECOND && until < ends, "{until:?}");
         });
     }
 
@@ -553,8 +581,8 @@ mod tests {
             let flights = Flights::default();
             let _lead = flights.enter(&key());
             let mut waiting: Vec<_> = (0..WAITERS).map(|_| flights.enter(&key())).collect();
-            let deadline = Compio.now() + SECOND;
-            let asked = asked(&Compio, &flights, &query(SECOND), deadline, unsent).await;
+            let ends = Compio.now() + SECOND;
+            let asked = asked(&Compio, &flights, &query(SECOND), ends, unsent).await;
             assert!(matches!(asked, Asked::Shed));
             waiting.pop();
             assert!(matches!(flights.enter(&key()), Entered::Follow(_)));
