@@ -50,9 +50,14 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   validator's questions. A new bound is a `Limits` field
   with its number and prior art, in D191, and a test in `tests/iteration.rs`.
 - A validated answer is secure only when every `RRset` of it is (`Resolved::checked`): one `Unchecked` (glue, a
-  referral's NS, a resolution without the validator) has the whole answer judged. A verdict is written back to the
-  `RRset` cache through `insert`, its TTL capped first (`Rrset::cap_ttl`); a bogus one fails the resolution with
-  its EDE (D197).
+  referral's NS, a resolution without the validator) has the whole answer judged. Each `RRset` is written back to
+  the `RRset` cache with its own verdict (`Validation::verdict_of`), never the answer's: a chain crosses zones. Its
+  TTL is capped first (`Rrset::cap_ttl`) to the time it has left; a bogus answer is asked again of other servers
+  (`Resolution::retry`), then fails the resolution with its EDE (D197).
+- With a validator, `Resolution::begin` takes no wildcard expansion (`Rrset::expanded`) the cache holds secure or
+  unchecked: its proof is not cached (D197). A CNAME a DNAME synthesized is not cached.
+- A query moved to TCP that times out there (`Reply::TcpTimeout`) does not back the server off (D197): only
+  `Reply::Timeout` reaches `InfraCache::timeout`.
 - `tests/iteration.rs` replays the captures by steering the infra cache's draw (`steer`: every other address
   lame): a capture refreshed may change the server followed, not the test.
 - The captures of `testdata/recursion` are of a full-name iterator: replay them with `Minimisation::Off`, or

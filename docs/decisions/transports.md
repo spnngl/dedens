@@ -892,7 +892,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     memory, `docs/TODECIDE.md`), the decapsulation budgets as settings (`docs/TODECIDE.md`), and the network-change
     rule of the ticket (above). Reviewer: the choice of the KEM crate, the ticket and control-field parsing and
     the order a resumed query is checked are the places a mistake would matter.
-- D190 (amends D27; builds on D31, D47, D50, D108, D184; amended by D196) The client's authoritative mode
+- D190 (amends D27; builds on D31, D47, D50, D108, D184; amended by D196, D197) The client's authoritative mode
   (`dedens_net::authoritative::Authoritative`, per thread), for the recursive resolver: one query to one of the
   thousands of servers it asks, with RFC 5452's defences and bounded resources.
   - Ports (RFC 5452 §9.2, §10): each query over UDP binds a socket of its own to a port drawn by `Io::random` from
@@ -909,7 +909,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bits a forger has to guess, a fresh port about 32.
   - One deadline per query, given by the caller: the wait for a socket, the UDP exchange and its fallbacks (TCP,
     no EDNS, a fresh cookie, the `0x20` fallback) all end by it, so the worst case is the deadline (but a query
-    moved to TCP: `TCP_TIMEOUT` at least, D196). One send: retrying, maybe another server, is the caller's.
+    moved to TCP: `TCP_TIMEOUT` at least, D196). One send: retrying, maybe another server, is the caller's. A
+    query moved to TCP that times out there fails `ServerError::TcpTimedOut`, not `TimedOut`: the server answered
+    over UDP, its timeout there not to back off (D197).
   - The server's time starts at the send, as Unbound starts a server's timer once the query leaves its pending
     list (`services/outside_network.c`): a wait of ours, for a UDP socket or a TCP connection, that leaves less
     than `SERVER_FLOOR` (50 ms, Unbound's least server timeout, `RTT_MIN_TIMEOUT`, `util/rtt.c`) before the

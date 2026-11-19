@@ -1850,7 +1850,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: the resolution inside `Upstream` (its forward accessors would mean nothing for it); stepping it in
     `Pipeline::query` (no clock nor randomness there); D86's process-wide flights (a lock across threads); waiters
     without bound (one slow server holding every client).
-- D197 (amends D191, D195; builds on D73, D75, D77, D86, D93, D114, D117, D128, D186, D193) DNSSEC validation in
+- D197 (amends D190, D191, D195; builds on D73, D75, D77, D86, D93, D114, D117, D128, D186, D193) DNSSEC validation in
   the recursive resolver (recursive step 10): the resolution judges its answer (RFC 4035 §5), each question of the
   validator iterated by the resolution itself.
   - Shape: `Resolution::validated(Validator, unix)`. When the client question ends `Answer`, `NoData` or
@@ -1863,14 +1863,29 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Outcomes already judged are not judged again: every RRset `Secure` in the `RRset` cache gives a secure answer,
     `Secure` or `Insecure` an insecure one, any `Bogus` a bogus one, and one `Unchecked` (glue, a resolution without
     the validator, a referral's NS) has the whole answer validated. So an answer made of unsigned glue or additional
-    data, or cached by a resolution that did not validate, is never taken for secure.
-  - Verdicts (D193's merge: the same data held unchecked takes the verdict): `Secure { ttl }` re-inserts each RRset
-    `Checked::Secure`, its TTL capped to `ttl` (`Rrset::cap_ttl`: the signatures' validity, RFC 4035 §5.3.3);
-    `Insecure` `Checked::Insecure`, capped by D93; `Bogus { ede }` every RRset of the answer `Checked::Bogus` for the
-    bogus TTL (D124; the validator does not say which one failed, so all are held bogus), and the resolution fails
-    `Failure::Bogus(code)`; `Indeterminate` and the verdicts a final answer cannot give (`Incomplete`, `Referral`)
-    fail `Failure::Indeterminate(code)`. Both failures carry the validator's EDE (RFC 8914 §4, D77).
-  - Not judged: YXDOMAIN (the validator takes none: insecure, as a forwarded one); RRSIG questions stay NOTIMP
+    data, or cached by a resolution that did not validate, is never taken for secure. A wildcard expansion (an RRSIG
+    of fewer labels than its owner, RFC 4035 §5.3.4, `Rrset::expanded`) is not taken from the cache unless judged
+    insecure or bogus: the cache holds no proof of it, so the authorities are asked (`docs/TODECIDE.md`).
+  - Verdicts, each RRset's own (`Validation::verdict_of`, Unbound's `val_verify_rrset_entry` and
+    `rrset_update_sec_status`): an answer's parts may be of other zones, so a CNAME from an unsigned or a bogus zone
+    does not make its signed target insecure or bogus in the cache. Each RRset, NSEC and NSEC3 included, is
+    re-inserted with its verdict (D193's merge: the same data held unchecked takes it) and the time it has left:
+    `Secure { ttl }` `Checked::Secure` capped to `ttl` (`Rrset::cap_ttl`: the signatures' validity, RFC 4035
+    §5.3.3), `Insecure` capped by D93, `Bogus` for the bogus TTL (D124). One without a verdict of its own (after a
+    bogus one, or a CNAME a DNAME synthesized) stays as held. The answer served takes the response's verdict:
+    `Bogus { ede }` fails `Failure::Bogus(code)`; `Indeterminate` and the verdicts a final answer cannot give
+    (`Incomplete`, `Referral`) fail `Failure::Indeterminate(code)`. Both failures carry the validator's EDE (RFC
+    8914 §4, D77). A CNAME synthesized from a DNAME is not cached at all (RFC 6672 §3.4 lets its TTL be 0): it is
+    the DNAME's to give, and not signed.
+  - A bogus answer is asked again of other servers, as Unbound's `val_blacklist`: the servers of the zone each RRset
+    bogus by itself came from (all that answered the client's question when none is) are left out of every
+    delegation, the client's question asked anew, what the cache holds bogus not taken, at most 5 times (Unbound's
+    `VAL_MAX_RESTART_COUNT`), its queries counted in `limits.validation` and the time in `time`. A spoofed or
+    garbled response from one server then does not make the answer bogus while another serves it right. Out of
+    servers, retries or a bound, the answer is bogus with the first code. Unlike Unbound, a bogus DNSKEY or DS is
+    not asked again of other servers: D86's key cache holds its verdict.
+  - YXDOMAIN is judged as an answer: bogus unless the chain ends in a DNAME whose substitution makes a name longer
+    than 255 bytes (RFC 6672 §2.2, `Chain::overflow`), that DNAME validated. RRSIG questions stay NOTIMP
     (D195); a query with CD, or not class IN, is resolved without the validator (RFC 4035 §3.2.2), and gets what the
     `RRset` cache holds as it is held: AD when every RRset is held secure (RFC 4035 §3.2.3, RFC 6840 §5.8), bogus
     data included (RFC 6840 §5.9), as Unbound. The reply follows the verdicts held (`Resolved::checked`), not
@@ -1880,13 +1895,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     of the chain, and the client's 32 are not to be spent on it. Unbound gives each validator fetch its own
     `max-sent-count` within `MAX_GLOBAL_QUOTA` 200 (`iterator/iterator.h`): `limits.validation` is capped at 200
     too, and D195's "`queries`, validation's included" now reads: the client's queries. The validator's own
-    bounds (D75: questions, depth, verification budget, KeyTrap's failed checks) hold as in a forward stage.
+    bounds (D75: questions, depth, verification budget, KeyTrap's failed checks) hold as in a forward stage. A bound
+    of the resolution reached while validating leaves the answer indeterminate: `Failure::Indeterminate` with EDE 5
+    (DNSSEC Indeterminate, RFC 8914 §4.7), not the bound's EDE 22.
   - DS from the child (Unbound's `iter_ds_toolow` and `processDSNSFind`, `iterator/iter_utils.c`,
     `iterator/iterator.c`): a DS question answered NODATA with an SOA at or below the name was answered by the
     child (a server serving both sides): the NS of the name's parent are looked up (`Purpose::Cut`), then of its
     parent, up to the zone asked; an NS answer (not through a CNAME: an alias is no cut) or a referral for that name
-    makes it the delegation the DS is asked of. Reaching the zone asked, the NODATA stands, as Unbound's: from the
-    name's parent at once (`iter_dp_cangodown`). Each lookup is a sub-resolution under `depth` and the limits, one
+    makes it the delegation the DS is asked of. Only a NODATA, an NXDOMAIN or a CNAME goes on up; a lookup that
+    fails (no server answers, a bound) fails the DS question, which leaves the validation indeterminate, as
+    `processDSNSFind`. Reaching the zone asked, the NODATA stands, as Unbound's: from the name's parent at once
+    (`iter_dp_cangodown`). Each lookup is a sub-resolution under `depth` and the limits, one
     per label between the name and the zone asked, where Unbound stops at `MAX_DSNS_FIND_COUNT` 20: `queries`
     bounds them first.
   - With D198: each validator question and each cut's NS lookup is a task, minimised as the client's. D198's
@@ -1913,11 +1932,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     each question with the first response captured, so no one clock finds them all valid. The capture tool asks
     the DS of each label of the answer's owners below their zone, as the validator walks them (`dname`
     recaptured).
+  - A query moved to TCP that times out there (`ServerError::TcpTimedOut`, `Reply::TcpTimeout`) has the next server
+    asked, as a timeout, but leaves the server's timeout over UDP as it was, as Unbound's `serviced_tcp_callback`
+    backs off only a query over TCP from the start: the server answered over UDP. A server whose TCP times out is
+    asked again on each truncation (`docs/TODECIDE.md`).
   - Tests: `crates/dedens-resolver/tests/validation.rs` (every signed capture secure and cached so, every unsigned
     one insecure; a stripped signature, a changed DS, another zone's keys bogus; a KeyTrap-shaped DNSKEY set within
-    the budget; a budget of one verification indeterminate; the validation's queries bounded; forged glue not the
-    answer; an unvalidated cached answer validated; the DS from the child asked again of the parent, standing
-    when no parent shows, and no cut sought for another type), `crates/dedens-server/tests/recurse.rs` (AD on each
+    the budget; a budget of one verification indeterminate; the validation's queries bounded, indeterminate; forged
+    glue not the answer; an unvalidated cached answer validated; the DS from the child asked again of the parent,
+    its cut lookup failing the question, and no cut sought for another type; a CNAME from an unsigned and from a
+    bogus zone leaving its signed target's verdict its own; a wildcard expansion asked again, its proof kept; a
+    forged YXDOMAIN bogus; a garbled answer from one server asked again of another),
+    `crates/dedens-dnssec/tests/validator.rs` (each RRset's own verdict, a YXDOMAIN without its DNAME bogus),
+    `crates/dedens-resolver/tests/iteration.rs` and `crates/dedens-net/tests/authoritative.rs` (a TCP timeout
+    leaving the server's timeout), `crates/dedens-server/tests/recurse.rs` (AD on each
     secure capture, from the cache stage
     too; bogus SERVFAIL EDE 10, asked again with no query; CD not validated, AD on data held secure, the bogus
     data held; the allowance's ends, a refused query counted shed; a validator question unanswered indeterminate;
