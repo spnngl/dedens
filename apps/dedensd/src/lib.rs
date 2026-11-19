@@ -471,15 +471,29 @@ mod tests {
 
         // The system refuses with `refused` a soft limit above `OPEN_MAX`.
         for (hard, refused, result, tried) in [
-            (RLIM_INFINITY, Errno::EINVAL, Ok(()), vec![RLIM_INFINITY, OPEN_MAX]),
+            (
+                RLIM_INFINITY,
+                Errno::EINVAL,
+                Ok(()),
+                vec![RLIM_INFINITY, OPEN_MAX],
+            ),
             (20_000, Errno::EINVAL, Ok(()), vec![20_000, OPEN_MAX]),
             (4096, Errno::EINVAL, Ok(()), vec![4096]),
-            (RLIM_INFINITY, Errno::EPERM, Err(Errno::EPERM), vec![RLIM_INFINITY]),
+            (
+                RLIM_INFINITY,
+                Errno::EPERM,
+                Err(Errno::EPERM),
+                vec![RLIM_INFINITY],
+            ),
         ] {
             let set = RefCell::new(Vec::new());
             let got = raise(hard, |soft| {
                 set.borrow_mut().push(soft);
-                if soft > OPEN_MAX { Err(refused) } else { Ok(()) }
+                if soft > OPEN_MAX {
+                    Err(refused)
+                } else {
+                    Ok(())
+                }
             });
             assert_eq!((got, set.take()), (result, tried), "{hard}");
         }

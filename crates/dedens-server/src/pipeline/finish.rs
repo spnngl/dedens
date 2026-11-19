@@ -70,15 +70,13 @@ impl Finish<'_> {
             .as_ref()
             .is_none_or(|&(at, _)| self.cache.is_some_and(|cache| at < cache));
         let mark = if blocked.is_none() { pipeline.id } else { 0 };
-        let stored = self
-            .store()
-            .filter(|cache| {
-                keep && match ttls {
-                    Ttls::Received => cache.insert(query, &decoded, now, mark),
-                    Ttls::Bounded => cache.insert_bounded(query, &decoded, now, mark),
-                }
-                .is_ok()
-            });
+        let stored = self.store().filter(|cache| {
+            keep && match ttls {
+                Ttls::Received => cache.insert(query, &decoded, now, mark),
+                Ttls::Bounded => cache.insert_bounded(query, &decoded, now, mark),
+            }
+            .is_ok()
+        });
         if let Some((_, answer)) = blocked {
             return self.blocked(&answer, out);
         }
