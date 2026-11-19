@@ -39,6 +39,8 @@ turmoil.workspace = true
 [dev-dependencies]
 dedens-dnscrypt.workspace = true
 dedens-dnssec.workspace = true
+dedens-resolver.workspace = true
+dedens-roots.workspace = true
 divan.workspace = true
 rand_core.workspace = true
 

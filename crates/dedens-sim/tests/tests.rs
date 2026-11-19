@@ -11,6 +11,7 @@ mod limits;
 mod loss;
 mod partition;
 mod pools;
+mod recurse;
 mod replay;
 mod serving;
 mod util;

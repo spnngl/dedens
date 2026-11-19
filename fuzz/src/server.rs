@@ -3,16 +3,20 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use dedens_cache::{Cache, Config, Lookup, StalePolicy};
 use dedens_plugins::TopLevel;
 use dedens_proto::edns::{Cookie, Edns, EdnsOption as CookieOption};
 use dedens_proto::{Flags, Header, MAX_MESSAGE_LEN, Message, Query, Rcode, Transport, Ttl};
-use dedens_roots::Tlds;
+use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Marks, Reply, RrsetCache};
+use dedens_roots::{RootHints, Tlds};
 use dedens_server::{
-    Access, Cookies, Denial, Forward, Network, Pipeline, Rate, RateLimit, RateLimitConfig, Secret,
-    Secrets, Stage, Standing, Step,
+    Access, Cookies, Denial, Forward, Network, Pipeline, Rate, RateLimit, RateLimitConfig, Recurse,
+    Secret, Secrets, Stage, Standing, Step, Turn,
 };
+
+use crate::odoh::Fixed;
 
 /// A response off the wire, stored in the cache as the answer to a query for its question, then served again into
 /// a buffer whose size comes from the response's ID (at least [`Cache::MIN_OUT`]): the hit must decode without
@@ -91,7 +95,8 @@ static BUNDLED: LazyLock<Arc<Tlds>> = LazyLock::new(|| Arc::new(Tlds::bundled().
 /// under its ID (D91). A server limiting rates and giving cookies (D113) answers the input, sent over UDP from a
 /// source over its rate, with nothing or a conforming reply (TC=1, BADCOOKIE), and a query for the input's question
 /// with a Client Cookie from the bytes of the input gets a Server Cookie that verifies and lets the next through.
-/// A `tlds` stage (D128) answers the input, any class, with a conforming reply or passes it on.
+/// A `tlds` stage (D128) answers the input, any class, with a conforming reply or passes it on. A `recurse` stage
+/// (D195) answers it, or resolves it with the input as each authoritative server's response, into a conforming reply.
 ///
 /// # Panics
 ///
@@ -102,6 +107,7 @@ pub fn serve_query(data: &[u8]) {
     limited_cookied(data, &mut out);
     let denying = Pipeline::default().with_access(Access::new([], [], Denial::Refuse));
     for transport in [Transport::Udp, Transport::Tcp] {
+        recursing(data, transport, &mut out);
         match denying.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, &mut out) {
             Step::Drop => {}
             Step::Reply(len) => {
@@ -114,7 +120,7 @@ pub fn serve_query(data: &[u8]) {
                     "a denied client is refused"
                 );
             }
-            Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) => {
+            Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
                 panic!("a denied client's query goes upstream")
             }
         }
@@ -166,6 +172,56 @@ pub fn serve_query(data: &[u8]) {
         {
             check_reply(&out[..len], id, transport);
         }
+    }
+}
+
+/// The most queries `recursing` answers with the input: the resolution's own limit, 32, is reached long after.
+const RESPONSES: usize = 8;
+
+/// The checks of `serve_query` on a pipeline of a cache stage and a recurse stage, whose servers all respond with
+/// `data`.
+fn recursing(data: &[u8], transport: Transport, out: &mut [u8]) {
+    let config = Config {
+        shards: 1,
+        ..Config::default()
+    };
+    let caches = Caches {
+        rrsets: RrsetCache::new(DEFAULT_CAPACITY, config.clone()).expect("a valid config"),
+        infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 1).expect("a valid size"),
+        roots: RootHints::bundled().clone(),
+        tlds: None,
+    };
+    let pipeline = Pipeline::new(vec![
+        Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
+        Stage::Recurse(Recurse::new(Arc::new(caches))),
+    ]);
+    let Some(id) = Header::peek(data).map(|header| header.id) else {
+        return;
+    };
+    let mut resolving = match pipeline.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, out) {
+        Step::Reply(len) => return check_reply(&out[..len], id, transport),
+        Step::Resolve(resolving) => resolving,
+        _ => return,
+    };
+    let response = Message::decode(data).ok();
+    let mut now = Duration::ZERO;
+    for _ in 0..RESPONSES {
+        let Turn::Send(query) = resolving.step(now, &mut Fixed(1)) else {
+            break;
+        };
+        now += query.timeout / 2;
+        let reply = match &response {
+            Some(decoded) => Reply::Response {
+                message: &decoded.message,
+                seen: Marks::default(),
+                rtt: Duration::from_millis(20),
+            },
+            None => Reply::Undecodable,
+        };
+        resolving.receive(reply, now);
+    }
+    if let Step::Reply(len) = pipeline.resolved(&resolving, 0, out) {
+        check_reply(&out[..len], id, transport);
     }
 }
 

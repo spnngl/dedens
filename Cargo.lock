@@ -1155,6 +1155,8 @@ dependencies = [
  "dedens-dnssec",
  "dedens-net",
  "dedens-proto",
+ "dedens-resolver",
+ "dedens-roots",
  "dedens-server",
  "dedens-testkit",
  "dedensd",
