@@ -19,6 +19,7 @@
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -108,6 +109,14 @@ impl fmt::Debug for Fickle {
     }
 }
 
+/// One UDP response in `one_in` lost: [`Answers::lossy`].
+#[derive(Debug, Clone)]
+struct Loss {
+    one_in: NonZeroU64,
+    /// How many responses go out before the next lost, drawn at the first; shared by the clones of the answers.
+    next: Rc<Cell<Option<u64>>>,
+}
+
 /// The responses an upstream server holds, each for a question, and the attacker on its host, if any.
 #[derive(Debug, Default, Clone)]
 pub struct Answers {
@@ -115,6 +124,8 @@ pub struct Answers {
     attacker: Option<Attacker>,
     cookie: Option<[u8; 8]>,
     fickle: Option<Fickle>,
+    /// The UDP responses lost, if any: [`Answers::lossy`].
+    loss: Option<Loss>,
     tcp: Behaviour,
     conduct: Conduct,
     /// The connections the host accepted, over every start of it and in every clone of these answers.
@@ -324,6 +335,19 @@ impl Answers {
         self
     }
 
+    /// Has the server lose one UDP response in `one_in` of those [`Answers::faulty`] lets out: one at random among
+    /// the first `one_in`, from the stream of the seed of this host, then every `one_in`th, a datagram lost on its way.
+    /// Never two in a row: three in a row would have the resolver skip a zone's only server (D194). Over TCP a lost
+    /// segment is sent again, the response late, never lost (D196).
+    #[must_use]
+    pub fn lossy(mut self, one_in: NonZeroU64) -> Self {
+        self.loss = Some(Loss {
+            one_in,
+            next: Rc::default(),
+        });
+        self
+    }
+
     /// A server that never answers: [`Verdict::Drop`] for each response, over UDP, TCP and TLS.
     #[must_use]
     pub fn silent(self) -> Self {
@@ -374,6 +398,23 @@ impl Answers {
         self.fickle.as_ref().map_or(Verdict::Answer, |fickle| {
             (fickle.0)(question, &mut rng.borrow_mut())
         })
+    }
+
+    /// The verdict on the UDP response to `question`, [`Answers::verdict`]'s unless [`Answers::lossy`] loses it.
+    fn udp_verdict(&self, question: &Question<'static>, rng: &RefCell<Rng>) -> Verdict {
+        let verdict = self.verdict(question, rng);
+        let lost = |loss: &Loss| {
+            let next =
+                (loss.next.get()).unwrap_or_else(|| rng.borrow_mut().below(loss.one_in.get()));
+            loss.next
+                .set(Some(next.checked_sub(1).unwrap_or(loss.one_in.get() - 1)));
+            next == 0
+        };
+        if verdict != Verdict::Drop && self.loss.as_ref().is_some_and(lost) {
+            Verdict::Drop
+        } else {
+            verdict
+        }
     }
 
     /// What the server answers, to compare with what clients get: the whole response of each entry.
@@ -555,7 +596,7 @@ pub async fn serve(
                     question,
                     transport: Transport::Udp,
                 };
-                match answers.verdict(&sent.question, &rng) {
+                match answers.udp_verdict(&sent.question, &rng) {
                     Verdict::Drop => {}
                     Verdict::Answer => send(&port.udp(), from, &reply, sent, host, &trace).await,
                     Verdict::Delay(delay) => {
@@ -703,9 +744,12 @@ pub(crate) async fn queries<W: Outbound + 'static>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use dedens_proto::RecordType;
 
     use super::*;
+    use crate::seed::Seed;
     use crate::stub::question as ask;
 
     /// The wire of a query for `question` with ID 0x1234, announcing `payload` bytes if EDNS is on.
@@ -856,5 +900,42 @@ mod tests {
         assert!(count > 100, "{count}");
         let all = answers.entries.len();
         assert_eq!(answers.directory(&dir).entries.len(), all, "twice the same");
+    }
+
+    /// One UDP response in `one_in` is lost: the first among the first `one_in`, as the seed draws, then every
+    /// `one_in`-th; a response the server drops anyway is not counted (D196).
+    #[test]
+    fn a_lossy_server_loses_every_one_in_th_udp_response() {
+        const ONE_IN: usize = 4;
+        let one_in = NonZeroU64::new(4).expect("not zero");
+        let question = txt();
+        let mut firsts = BTreeSet::new();
+        for seed in 0..16 {
+            let rng = RefCell::new(Rng::new(Seed(seed), 0));
+            // Every other response dropped by the server.
+            let odd = Cell::new(false);
+            let answers = Answers::new().lossy(one_in).faulty(move |_, _| {
+                odd.set(!odd.get());
+                if odd.get() {
+                    Verdict::Answer
+                } else {
+                    Verdict::Drop
+                }
+            });
+            // The responses the server sends, each lost or not.
+            let lost: Vec<bool> = (0..2 * 3 * ONE_IN)
+                .map(|_| answers.udp_verdict(&question, &rng) == Verdict::Drop)
+                .collect::<Vec<_>>()
+                .chunks(2)
+                .map(|pair| pair[0])
+                .collect();
+            let first = lost.iter().position(|&lost| lost).expect("one lost");
+            firsts.insert(first);
+            let every: Vec<bool> = (0..3 * ONE_IN)
+                .map(|at| at >= first && (at - first) % ONE_IN == 0)
+                .collect();
+            assert_eq!(lost, every, "seed {seed}");
+        }
+        assert_eq!(firsts.len(), ONE_IN, "{firsts:?}");
     }
 }

@@ -215,3 +215,42 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Tests: `crates/dedens-sim/tests/internet.rs` loads every capture in one run (29 servers, at a 10 ms step for
     D164's budget) and a client asks each exchange again with 0x20; then one server of each conduct and a
     silent one, the seed picking which.
+- D196 (amends D190, D191; builds on D133, D164, D182, D189, D194, D195) Recursion in the simulator (recursive step
+  09): `crates/dedens-sim/tests/recursion.rs` runs `dedensd`'s own loop (D182) with a cache stage then a recurse stage
+  (D195) on D189's Internet, every capture's servers hosted, and a client asks each capture's question in turn. The
+  stage does not minimise its questions (D198): the captures' were not, and the servers refuse any other.
+  - Scenarios: all servers well; each losing one UDP response in 10 (`Answers::lossy`: the first at random, then
+    evenly, never two in a row, as three would skip a zone's only server, D194; over TCP a lost segment is sent
+    again, so a TCP response is never lost); one server of each zone with two, the seed picking the family,
+    silent, truncating each UDP response, FORMERR to EDNS, or folding the question's case (D189's conducts); one
+    zone, the seed picking among those whose servers serve no other, all its servers refusing; `dedensd` restarted
+    between two rounds of questions (`Fault::Bounce`).
+  - Oracle: D133's checks of each answer against `Expected::resolved` (D189), live rules: an answer from no captured
+    way, or SERVFAIL, fails. The RRSIG question is answered NOTIMP (D195). Under the refusing zone the questions
+    that reach it are SERVFAIL within the client's 5 s timer (RFC 4697 §2.1, `Limits::time` 4.5 s, D191).
+    Each question sends at most `Limits::queries` (D191) to the servers, priming not counted (D195). After the
+    restart, `dedensd` primes again (RFC 8109 §3) and the round asks the servers again, its caches empty.
+  - Steering: the resolver is to draw among the run's hosts alone. Every address the root's hints and the captures
+    show but the zones' servers is backed off as timing out (D194) until its probe is past the run, as step 04 marks
+    them lame for the iteration tests: lame, they would be asked once the zone's servers were (RFC 4697 §2.2.1).
+    Each server of a zone answers every question the zone was asked: servers of one zone refer to different
+    servers of a child (Akamai's), and a capture asked those of the first referral alone. netmeister.org's servers
+    were found by a lookup of one of its three names, the others refused: its IPv6 server is the broken one, as
+    the AAAA may be past `Limits::targets` when that name is drawn last.
+  - Links: each message takes 20 to 30 ms (`Topology::latency`), at a 10 ms step. Turmoil's 0 to 100 ms spread a
+    round trip past the RTO the infra cache derives from its first samples, from 50 ms (D194): live servers timed
+    out, and with a silent server in each zone of a CNAME chain the question spent `Limits::time`.
+  - Found by the scenarios, amending D190: a query moved to TCP, on TC or a case mismatch, waits until
+    `TCP_TIMEOUT` (3 s, Unbound's `tcp-auth-query-timeout`, `serviced_tcp_initiate`) after the move when that is
+    later than its deadline, which the infra cache measured over UDP: two round trips more (connect, query) than an
+    RTO near the RTT timed out every TC answer (`microsoft.com. TXT`). A query over TCP from the start keeps its
+    deadline, its RTO measured over TCP; the recurse stage bounds the whole by the resolution's end.
+  - Found by the scenarios, amending D191: a server timed out is asked again (RFC 1035 §7.2, Unbound's
+    `outbound-msg-retry`), its timeout backed off, until the infra cache skips it (D194), each send counting
+    against `Limits::servers`: after the servers not tried and a name's AAAA whose A was looked up, before a name
+    not looked up yet, which costs queries. Asked once, a zone of one server (microsoft.com) failed on one lost
+    datagram.
+  - Seeds: 1 and 42 (each failed a draft), within D164's budget: the family took 1.5 s, the binary 1 s more.
+  - Deviations from the step's plan, which predates step 08: `dedensd`'s loop, not the driver, which refuses a
+    recurse stage (D195); lame as refusing servers, since a server answering without AA (`Unauthoritative`) still
+    refers, and its referrals still resolve the captures.
