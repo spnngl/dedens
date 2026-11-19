@@ -403,6 +403,42 @@ mod tests {
         assert!(matches!(flights.enter(&key()), Entered::Lead(_)));
     }
 
+    /// The serving tasks describe the metrics, through `serve::describe` that `main` calls.
+    #[test]
+    fn d195_the_metrics_are_described() {
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            super::super::describe();
+            metrics::counter!(SENT, "error" => "forged").increment(1);
+            metrics::counter!(WAITERS_FULL).increment(1);
+            gauges(&Caches {
+                rrsets: dedens_resolver::RrsetCache::new(1 << 20, dedens_cache::Config::default())
+                    .expect("a valid size"),
+                infra: dedens_resolver::InfraCache::new(1 << 20, 1).expect("a valid size"),
+                roots: dedens_roots::RootHints::bundled().clone(),
+                tlds: None,
+            });
+        });
+        let described: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(_, _, description, _)| description.is_some())
+            .map(|(key, ..)| key.key().name().to_owned())
+            .collect();
+        for name in [
+            SENT,
+            WAITERS_FULL,
+            RRSETS,
+            RRSET_BYTES,
+            SERVERS,
+            SERVER_BYTES,
+        ] {
+            assert!(described.iter().any(|d| d == name), "{name}");
+        }
+    }
+
     #[test]
     fn d194_marks_and_quirks_are_the_same() {
         for edns in [
