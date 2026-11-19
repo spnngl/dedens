@@ -112,7 +112,11 @@ fn chains_cross_zones_to_an_address() {
             .iter()
             .any(|r| r.answer.iter().any(|a| a.rdata.rtype() == alias));
         assert!(aliased, "{id}: an {alias}");
-        let last = responses.last().expect("a response");
+        // The validator's DS of each label (the walk) come after the answer.
+        let last = (resolution.exchanges.iter().zip(&responses))
+            .rfind(|(e, _)| e.rtype == resolution.rtype)
+            .map(|(_, r)| r)
+            .expect("a response");
         assert!(
             last.answer.iter().any(|r| r.rdata.rtype() == RecordType::A),
             "{id}: an address"
