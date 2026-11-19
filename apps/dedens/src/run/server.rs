@@ -3,6 +3,7 @@
 //! `DoH` template (D81 for CoAP) and Oblivious `DoH` proxy (D79).
 
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::num::NonZeroU16;
 use std::path::PathBuf;
 
 use anyhow::{Context, anyhow, bail};
@@ -185,10 +186,12 @@ pub(super) fn server(
     let encrypted = (forced.is_some() && !coap) || options.encrypted() || doh;
     let (host, written) = split_port(text);
     let port = match written {
+        // Port 0 is no destination (RFC 6335 §6).
         Some(written) => written
-            .parse()
+            .parse::<NonZeroU16>()
             .with_context(|| format!("server {given}: not a port"))
-            .map_err(Usage)?,
+            .map_err(Usage)?
+            .get(),
         None => port.unwrap_or(match (doh, coap, encrypted) {
             (true, ..) => HTTPS_PORT,
             (_, true, _) => COAP_PORT,

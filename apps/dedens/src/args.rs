@@ -37,7 +37,7 @@ pub(crate) struct Cli {
     server: Vec<String>,
     /// The port of a server given without one, a stamp having its own; with `+trace`, of every server asked, as dig.
     /// Default: 443 over HTTPS, 5683 over CoAP, 853 over TLS or QUIC, else 53.
-    #[arg(short, long, value_name = "PORT")]
+    #[arg(short, long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
     pub(crate) port: Option<u16>,
     /// Trust the certificate authorities of this PEM file over TLS, instead of the system's.
     #[arg(long, value_name = "FILE")]
