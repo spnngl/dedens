@@ -333,6 +333,17 @@ impl Resolving {
         }
     }
 
+    /// What it resolved to; `None` before it ended, or when it ended shed or unsupported.
+    #[must_use]
+    pub const fn resolved(&self) -> Option<&Resolved> {
+        match &self.state {
+            State::Ended(Ended::Resolved(resolved)) => Some(resolved),
+            State::Ended(Ended::Shed | Ended::Unsupported(_))
+            | State::Ready
+            | State::Running(_) => None,
+        }
+    }
+
     /// How it ended; `None` before it did.
     pub(crate) const fn ended(&self) -> Option<&Ended> {
         match &self.state {

@@ -17,7 +17,7 @@ use dedens_net::authoritative::{
 use dedens_net::entropy::Entropy;
 use dedens_net::io::{Io, TimedOut};
 use dedens_proto::{Message, Question, Transport};
-use dedens_resolver::{Caches, Edns, Marks, Query, Reply};
+use dedens_resolver::{Caches, Edns, Marks, Query, Reply, Resolved};
 use dedens_server::{Pipeline, Resolving, Step, Turn};
 use futures_util::future::join;
 
@@ -97,7 +97,10 @@ pub(super) async fn resolve<N: Io>(
     let priming = async {
         if let Some(mut priming) = pipeline.prime(clock(thread)) {
             drive(thread, &mut priming).await;
-            tracing::debug!("root servers primed");
+            match priming.resolved() {
+                Some(Resolved::Answer { .. }) => tracing::debug!("root servers primed"),
+                resolved => tracing::warn!(?resolved, "root servers not primed"),
+            }
         }
     };
     let reply = async {
