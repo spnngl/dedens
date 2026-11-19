@@ -20,7 +20,7 @@ use dedens_sim::trace::{Event, What};
 use dedens_testkit::recursion::Resolution;
 use futures_util::future::join_all;
 
-use crate::util::SEEDS;
+use crate::util::{SECOND, SEEDS};
 
 /// The clients asking the same question at once: as many as wait on one query in flight, the one sending it
 /// apart (`WAITERS`, D195).
@@ -126,6 +126,9 @@ fn rfc1034_5_3_3_dedensd_resolves_the_capture_from_the_root() {
             let answer = stub.expect(question(), Carrier::Udp).await?;
             assert_eq!(answer.message.rcode(), Rcode::NOERROR);
             assert!(!answer.message.answer.is_empty(), "{answer:?}");
+            // The priming goes on after the reply, which does not wait for it: the run ends once it has, each message
+            // taking up to turmoil's 100 ms, far below the first timeout of a server.
+            tokio::time::sleep(SECOND).await;
             Ok(())
         });
         let events = world.run().expect("the run passes its checks");
