@@ -39,9 +39,9 @@ use crate::tls::{self, Trust};
 /// unanswered or the last response read, the later: a shorter one, as of a query with a short deadline left, tells
 /// nothing of a server other queries share the connection with. Counted from the oldest query, not from the one
 /// timing out, so that queries with short deadlines, each sent after the last timed out, do not keep a dead
-/// connection open. Unbound closes the connection on any
-/// query's timeout (`outnet_tcptimer`, `services/outside_network.c`); 376 ms is the timeout it gives a server it
-/// knows nothing of (`UNKNOWN_SERVER_NICENESS`, `iterator/iterator.c`).
+/// connection open. Unbound closes the connection on any query's timeout (`outnet_tcptimer`,
+/// `services/outside_network.c`); 376 ms is the timeout it gives a server it knows nothing of
+/// (`UNKNOWN_SERVER_NICENESS`, `iterator/iterator.c`).
 pub const STALLED: Duration = Duration::from_millis(376);
 
 /// Why a TCP or TLS exchange failed.
@@ -214,9 +214,8 @@ impl<N: Io> TcpPool<N> {
     /// more queries, all its IDs taken for one; a connection that closes before the response is replaced once and
     /// the query sent again (D27). A query that times out closes its open connection when it has been silent for
     /// [`STALLED`] at least, from the send of its oldest query unanswered or its last response, the later: the
-    /// server stopped answering, or reading. With no
-    /// room for a connection, see [`TcpPool::at_most`], the query waits for one until `deadline`, less
-    /// [`TcpPool::leaving`].
+    /// server stopped answering, or reading. With no room for a connection, see [`TcpPool::at_most`], the query
+    /// waits for one until `deadline`, less [`TcpPool::leaving`].
     ///
     /// # Errors
     ///
