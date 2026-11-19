@@ -93,7 +93,7 @@
 //!     type: cache                    # its TTL bounds are the recurse stage's too
 //!   root:
 //!     type: recurse
-//!     limits: {queries: 32, restarts: 11, referrals: 30, depth: 4, servers: 13, targets: 5, time_ms: 4500}   # each resolution (D191)
+//!     limits: {queries: 32, restarts: 11, referrals: 30, depth: 4, servers: 13, targets: 5, time_ms: 4500}   # each resolution (D191), capped (D195)
 //!     local_zones:                   # RFC 6303, home.arpa, resolver.arpa, localhost and invalid, answered here
 //!       resolve: []                  # those of them to resolve instead, by apex: [home.arpa] for a router's
 //!     client_share: {rate: 1000, burst: 2000}  # queries to authoritative servers a client network may send (D117)

@@ -1,6 +1,7 @@
 //! A `recurse` stage, as written and built (D195): the resolution's limits (D191), the zones served locally to
 //! resolve instead (RFC 6303 §3), a client network's share of the queries (D117), and the sizes of its caches (D193,
-//! D194). A reload keeps its caches while their sizes and the cache stage's settings stay.
+//! D194). A reload keeps its caches while their sizes and the cache stage's settings stay, and the share's buckets
+//! while its budget stays.
 
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
@@ -41,9 +42,24 @@ struct LimitsFile {
     time_ms: Option<NonZeroU32>,
 }
 
-/// The longest `time_ms`: a client gives up well before, and a resolution holds one of the thread's upstream
-/// queries (D47) all along.
-const MAX_TIME_MS: u32 = 30_000;
+/// The most each count of `limits` may be set to, the highest BIND or Unbound allows or uses, so that no setting
+/// lets one client question cost what neither would (D195).
+const MAX: Limits = Limits {
+    // BIND's `max-query-count` 200: the queries of a client question, validation's included.
+    queries: 200,
+    // BIND's `max-query-restarts` range, 1 to 255.
+    restarts: 255,
+    // Unbound's `MAX_REFERRAL_COUNT` 130 (`iterator/iterator.h`).
+    referrals: 130,
+    // BIND's `max-recursion-depth` 7.
+    depth: 7,
+    // BIND's `max-delegation-servers` range, 1 to 100.
+    servers: 100,
+    // Unbound's `MAX_DP_TARGET_COUNT` 16 (`iterator/iterator.h`).
+    targets: 16,
+    // A client gives up well before, and a resolution holds one of the thread's upstream queries (D47) all along.
+    time: Duration::from_secs(30),
+};
 
 /// The zones served locally, all of them unless listed in `resolve`.
 #[derive(Debug, Default, Deserialize)]
@@ -58,7 +74,7 @@ struct LocalZonesFile {
 ///
 /// # Errors
 ///
-/// `time_ms` above [`MAX_TIME_MS`]; a zone in `local_zones.resolve` that is not a name or not served locally; a
+/// A limit above [`MAX`]'s; a zone in `local_zones.resolve` that is not a name, not served locally or listed twice; a
 /// `client_share` [`Budgets::new`] refuses; caches [`RrsetCache::new`] or [`InfraCache::new`] refuses.
 pub(super) fn recurse(
     name: &str,
@@ -103,12 +119,28 @@ pub(super) fn recurse(
         }),
     };
     let share = BudgetFile::over(file.client_share, DEFAULT_SHARE);
-    let share = Budgets::new(share).with_context(|| format!("stage `{name}`: `client_share`"))?;
+    // The buckets of the same budget are kept, what each network spent with them: a reload is no fresh burst.
+    let kept = previous.stages().iter().find_map(|stage| match stage {
+        Stage::Recurse(held) => held.share().filter(|held| held.config() == share).cloned(),
+        _ => None,
+    });
+    let share = match kept {
+        Some(share) => share,
+        None => Arc::new(
+            Budgets::new(share).with_context(|| format!("stage `{name}`: `client_share`"))?,
+        ),
+    };
     let mut stage = Recurse::new(caches).with_limits(limits).with_share(share);
+    let mut resolved: Vec<Name<'static>> = Vec::new();
     for zone in file.local_zones.resolve {
         let zone: Name<'static> = zone
             .parse()
             .with_context(|| format!("stage `{name}`: `local_zones.resolve`: `{zone}`"))?;
+        ensure!(
+            !resolved.contains(&zone),
+            "stage `{name}`: `local_zones.resolve`: `{zone}` is listed twice"
+        );
+        resolved.push(zone.clone());
         stage = stage
             .resolving(&zone)
             .with_context(|| format!("stage `{name}`: `local_zones.resolve`"))?;
@@ -119,24 +151,30 @@ pub(super) fn recurse(
 /// The limits of `file`, the default's where unset.
 fn limits(file: LimitsFile) -> anyhow::Result<Limits> {
     let default = Limits::default();
-    let or = |set: Option<NonZeroUsize>, default| set.map_or(default, NonZeroUsize::get);
+    let or = |set: Option<NonZeroUsize>, default, (name, max): (&str, usize)| {
+        let value = set.map_or(default, NonZeroUsize::get);
+        ensure!(value <= max, "`limits.{name}` is above {max}");
+        Ok::<_, anyhow::Error>(value)
+    };
     let time = match file.time_ms {
         Some(ms) => {
+            let time = Duration::from_millis(ms.get().into());
             ensure!(
-                ms.get() <= MAX_TIME_MS,
-                "`limits.time_ms` is above {MAX_TIME_MS}"
+                time <= MAX.time,
+                "`limits.time_ms` is above {}",
+                MAX.time.as_millis()
             );
-            Duration::from_millis(ms.get().into())
+            time
         }
         None => default.time,
     };
     Ok(Limits {
-        queries: or(file.queries, default.queries),
-        restarts: or(file.restarts, default.restarts),
-        referrals: or(file.referrals, default.referrals),
-        depth: or(file.depth, default.depth),
-        servers: or(file.servers, default.servers),
-        targets: or(file.targets, default.targets),
+        queries: or(file.queries, default.queries, ("queries", MAX.queries))?,
+        restarts: or(file.restarts, default.restarts, ("restarts", MAX.restarts))?,
+        referrals: or(file.referrals, default.referrals, ("referrals", MAX.referrals))?,
+        depth: or(file.depth, default.depth, ("depth", MAX.depth))?,
+        servers: or(file.servers, default.servers, ("servers", MAX.servers))?,
+        targets: or(file.targets, default.targets, ("targets", MAX.targets))?,
         time,
     })
 }
@@ -179,6 +217,17 @@ mod tests {
         );
         let same = read(&limited, env, &first.pipeline).expect("valid");
         assert!(Arc::ptr_eq(caches(&first.pipeline), caches(&same.pipeline)));
+        // The client share too, its budget the same, not when it changes.
+        let share = |pipeline: &Pipeline| {
+            let [_, Stage::Recurse(recurse)] = pipeline.stages() else {
+                panic!("a cache stage, then a recurse stage")
+            };
+            Arc::clone(recurse.share().expect("a share"))
+        };
+        assert!(Arc::ptr_eq(&share(&first.pipeline), &share(&same.pipeline)));
+        let other = format!("{RECURSIVE}    client_share: {{burst: 10}}\n");
+        let other = read(&other, env, &first.pipeline).expect("valid");
+        assert!(!Arc::ptr_eq(&share(&first.pipeline), &share(&other.pipeline)));
         for changed in [
             RECURSIVE.replace("3600", "7200"),
             format!("{RECURSIVE}    rrset_cache_bytes: 16777216\n"),
@@ -247,6 +296,12 @@ mod tests {
                 "limits: {time_ms: 30001}",
                 "stage `root`: `limits.time_ms` is above 30000",
             ),
+            ("limits: {queries: 201}", "`limits.queries` is above 200"),
+            ("limits: {restarts: 256}", "`limits.restarts` is above 255"),
+            ("limits: {referrals: 131}", "`limits.referrals` is above 130"),
+            ("limits: {depth: 8}", "`limits.depth` is above 7"),
+            ("limits: {servers: 101}", "`limits.servers` is above 100"),
+            ("limits: {targets: 17}", "`limits.targets` is above 16"),
             ("limits: {queries: 0}", "nonzero"),
             ("limits: {speed: 1}", "speed"),
             (
@@ -257,6 +312,10 @@ mod tests {
                 "local_zones: {resolve: [\'a..b\']}",
                 "`local_zones.resolve`: `a..b`",
             ),
+            (
+                "local_zones: {resolve: [home.arpa, home.arpa.]}",
+                "`local_zones.resolve`: `home.arpa.` is listed twice",
+            ),
             ("client_share: {burst: 2000000000}", "client_share"),
             ("rrset_cache_bytes: 1", "rrset_cache_bytes"),
             ("infra_cache_bytes: 1", "infra_cache_bytes"),
@@ -265,6 +324,9 @@ mod tests {
             let message = error(&format!("{RECURSIVE}    {setting}\n"));
             assert!(message.contains(expected), "{setting}: {message}");
         }
+        let most = "limits: {queries: 200, restarts: 255, referrals: 130, depth: 7, servers: 100, targets: 16, \
+                    time_ms: 30000}";
+        read(&format!("{RECURSIVE}    {most}\n"), env, &Pipeline::default()).expect("the most reads");
         let warm = RECURSIVE.replace("max_ttl: 3600", "prewarm: {entries: [example.com]}");
         assert!(error(&warm).contains("`prewarm` has no forward stage"));
     }

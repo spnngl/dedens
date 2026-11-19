@@ -368,19 +368,38 @@ fn process() {
 /// Raises the soft limit of open descriptors to the hard one: a recurse stage opens a socket per query to an
 /// authoritative server, up to 1056 a thread (D190), past the 1024 most systems start a process with. Done whatever
 /// the pipeline, which a reload may give a recurse stage, as BIND's `named_os_adjustnofile` and Unbound's
-/// `checkrlimits` do at start (D195). A failure is logged: the queries past the limit wait, then fail.
+/// `checkrlimits` do at start (D195). The limit obtained is logged, or the failure: the queries past the limit wait,
+/// then fail.
 #[cfg(unix)]
 fn descriptors() {
     use nix::sys::resource::{Resource, getrlimit, setrlimit};
     let raised = getrlimit(Resource::RLIMIT_NOFILE).and_then(|(soft, hard)| {
         if soft < hard {
-            setrlimit(Resource::RLIMIT_NOFILE, hard, hard)?;
+            raise(hard, |soft| setrlimit(Resource::RLIMIT_NOFILE, soft, hard))?;
         }
-        Ok(hard)
+        getrlimit(Resource::RLIMIT_NOFILE)
     });
     match raised {
-        Ok(limit) => tracing::debug!(limit, "open descriptors"),
+        Ok((limit, _)) => tracing::info!(limit, "open descriptors"),
         Err(error) => tracing::warn!(%error, "cannot raise the limit of open descriptors"),
+    }
+}
+
+/// macOS's `OPEN_MAX` (`sys/syslimits.h`), the soft limit of open descriptors its `setrlimit(2)` asks for when the
+/// hard one is refused: it refuses an unlimited soft limit, and one above `kern.maxfilesperproc`, with `EINVAL`.
+#[cfg(unix)]
+const OPEN_MAX: nix::sys::resource::rlim_t = 10_240;
+
+/// Sets the soft limit of open descriptors with `set`: to `hard`, or to [`OPEN_MAX`] at most where `hard` is refused
+/// with `EINVAL`, as macOS refuses an unlimited one.
+#[cfg(unix)]
+fn raise(
+    hard: nix::sys::resource::rlim_t,
+    set: impl Fn(nix::sys::resource::rlim_t) -> nix::Result<()>,
+) -> nix::Result<()> {
+    match set(hard) {
+        Err(nix::errno::Errno::EINVAL) => set(hard.min(OPEN_MAX)),
+        set => set,
     }
 }
 
@@ -438,6 +457,46 @@ fn build(
 
 #[cfg(test)]
 mod tests {
+    /// D195: an unlimited hard limit refused, as macOS refuses it, the soft limit is raised to `OPEN_MAX`; a hard
+    /// limit taken, or refused for another reason, is the end of it.
+    #[cfg(unix)]
+    #[test]
+    fn d195_the_descriptors_are_raised_to_open_max_where_the_hard_limit_is_refused() {
+        use std::cell::RefCell;
+
+        use nix::errno::Errno;
+        use nix::sys::resource::RLIM_INFINITY;
+
+        use super::{OPEN_MAX, raise};
+
+        // The system refuses with `refused` a soft limit above `OPEN_MAX`.
+        for (hard, refused, result, tried) in [
+            (RLIM_INFINITY, Errno::EINVAL, Ok(()), vec![RLIM_INFINITY, OPEN_MAX]),
+            (20_000, Errno::EINVAL, Ok(()), vec![20_000, OPEN_MAX]),
+            (4096, Errno::EINVAL, Ok(()), vec![4096]),
+            (RLIM_INFINITY, Errno::EPERM, Err(Errno::EPERM), vec![RLIM_INFINITY]),
+        ] {
+            let set = RefCell::new(Vec::new());
+            let got = raise(hard, |soft| {
+                set.borrow_mut().push(soft);
+                if soft > OPEN_MAX { Err(refused) } else { Ok(()) }
+            });
+            assert_eq!((got, set.take()), (result, tried), "{hard}");
+        }
+    }
+
+    /// D195: this process's soft limit is raised to its hard one, or to `OPEN_MAX` at least where the system refuses
+    /// that (macOS's unlimited one).
+    #[cfg(unix)]
+    #[test]
+    fn d195_the_descriptors_are_raised() {
+        use nix::sys::resource::{Resource, getrlimit};
+
+        super::descriptors();
+        let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE).expect("the limit");
+        assert!(soft >= hard.min(super::OPEN_MAX), "{soft} of {hard}");
+    }
+
     /// D158: the packaged man page is this command line's, section 8, without the version, which the package has;
     /// `just man` writes it again.
     #[test]
