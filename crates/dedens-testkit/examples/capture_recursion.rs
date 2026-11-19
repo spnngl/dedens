@@ -46,6 +46,8 @@ const CASES: &[(&str, &str, &str)] = &[
     ("nodata-unsigned", "google.com", "SRV"),
     // An answer over 1232 bytes: truncated over UDP, asked again over TCP.
     ("truncated", "microsoft.com", "TXT"),
+    // An RRSIG question: the answer is signatures, no RRset of their own (D176).
+    ("rrsig", "sidn.nl", "RRSIG"),
 ];
 
 /// The servers of a family a question goes to before the iterator gives the family up.

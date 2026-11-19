@@ -1,7 +1,7 @@
 //! Targets of dedens-resolver: the scrubbing of a response (D192), and its `RRset` cache fed the records of
 //! responses off the wire.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dedens_cache::{Checked, Config};
@@ -107,8 +107,8 @@ fn assert_order_free(records: &[Record<'_>], rrsets: &[Rrset]) {
 /// every record kept is of the question's class, within that zone, and of RDATA that parses; a referral's child is
 /// below the zone and above the name; each record dropped is one of the response's, once; and the records kept and
 /// those dropped are the response's, each in one of the two, but for the CNAMEs synthesised from a DNAME kept;
-/// each record kept is in an `RRset` of its rank, an RRSIG with the `RRset` it covers. A lame or unusable response
-/// keeps and drops nothing.
+/// each record kept for the cache is in an `RRset` of its rank, an RRSIG with the `RRset` it covers; the others are
+/// the signatures answering an RRSIG question. A lame or unusable response keeps and drops nothing.
 ///
 /// # Panics
 ///
@@ -127,7 +127,16 @@ pub fn scrub_response(data: &[u8]) {
         return;
     };
     let scrubbed = scrub(response, question, &zone);
-    let kept = scrubbed.records();
+    let signatures = match &scrubbed.outcome {
+        Outcome::Signatures { records, .. } => records.as_slice(),
+        _ => &[],
+    };
+    let kept: Vec<&Record<'_>> = scrubbed
+        .records()
+        .into_iter()
+        .map(|(_, record)| record)
+        .chain(signatures)
+        .collect();
     if matches!(scrubbed.outcome, Outcome::Lame | Outcome::Unusable(_)) {
         assert!(kept.is_empty(), "{:?} keeps records", scrubbed.outcome);
         assert!(
@@ -137,20 +146,20 @@ pub fn scrub_response(data: &[u8]) {
         );
         return;
     }
-    for (rank, record) in &kept {
+    for record in &kept {
         assert!(
             record.name.is_within(&zone),
-            "{rank:?} {} kept outside {zone}",
+            "{} kept outside {zone}",
             record.name
         );
         assert_eq!(
             record.class, question.qclass,
-            "{rank:?} {} kept of another class",
+            "{} kept of another class",
             record.name
         );
         assert!(
             !malformed(record),
-            "{rank:?} {} {} kept malformed",
+            "{} {} kept malformed",
             record.name,
             record.rtype()
         );
@@ -167,6 +176,12 @@ pub fn scrub_response(data: &[u8]) {
             question.name
         );
     }
+    partitioned(response, &scrubbed, &kept);
+}
+
+/// Whether each record of `response` is either one of `kept` or dropped by `scrubbed`, once, but for the CNAMEs
+/// synthesised from a DNAME kept.
+fn partitioned(response: &Message<'_>, scrubbed: &Scrubbed<'_>, kept: &[&Record<'_>]) {
     let section = |section| match section {
         Section::Answer => &response.answer,
         Section::Authority => &response.authority,
@@ -182,25 +197,24 @@ pub fn scrub_response(data: &[u8]) {
     {
         *left.entry(record).or_default() += 1;
     }
-    let mut seen = Vec::new();
+    let mut seen = HashSet::new();
     for d in &scrubbed.dropped {
         let records = section(d.section);
         assert!(d.index < records.len(), "{d:?} past its section");
-        assert!(!seen.contains(&(d.section, d.index)), "{d:?} dropped twice");
-        seen.push((d.section, d.index));
+        assert!(seen.insert((d.section, d.index)), "{d:?} dropped twice");
         if let Some(n) = left.get_mut(&records[d.index]) {
             *n -= 1;
         }
     }
-    for (rank, record) in &kept {
+    for record in kept {
         match left.get_mut(*record) {
             Some(n) if *n > 0 => *n -= 1,
             _ => assert!(
                 record.rtype() == RecordType::CNAME
-                    && kept.iter().any(|(_, d)| d.rtype() == RecordType::DNAME
+                    && kept.iter().any(|d| d.rtype() == RecordType::DNAME
                         && record.name.is_within(&d.name)
                         && record.name != d.name),
-                "{rank:?} {} {} kept, not the response's",
+                "{} {} kept, not the response's",
                 record.name,
                 record.rtype()
             ),

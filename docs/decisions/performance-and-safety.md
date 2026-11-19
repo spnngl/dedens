@@ -342,8 +342,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   and type, then each exchange: server address, zone asked as, question name and type, query flags, transport (`udp`
   or `tcp`), response bytes in base64. The cases (`testdata/recursion/README.md`): priming, signed names under com and
   nl, an unsigned name, a CNAME chain across three zones, a DNAME, a glueless delegation, NXDOMAIN and NODATA signed
-  and unsigned, NXDOMAIN by NSEC3, an answer over 1232 bytes; no zone served by IPv6 servers alone was found. The
-  recipe replaces only the files of a run that succeeded; a recapture keeps the cases, not the bytes. The feature
+  and unsigned, NXDOMAIN by NSEC3, an answer over 1232 bytes, an answer to an RRSIG question (D192); no zone served
+  by IPv6 servers alone was found. The recipe replaces only the files of a run that succeeded; a recapture keeps the
+  cases, not the bytes. The feature
   `recursion` of `dedens-testkit` (on serde and serde-saphyr; the default build stays as D161 left it) reads them
   (`Resolution`) and replays them in memory (`Authorities`): by server address and question (name without case, type),
   the response over the transport asked when there is one, under the query's ID and question; anything else gets

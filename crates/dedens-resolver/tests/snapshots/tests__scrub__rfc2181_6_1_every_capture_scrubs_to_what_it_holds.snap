@@ -218,6 +218,24 @@ priming . . NS @170.247.170.2: Answer chain=[] records=[. NS, . NS, . NS, . NS, 
 priming . . NS @2001:500:1::53: Answer chain=[] records=[. NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . RRSIG] denials=[] additional=26
 priming . . DNSKEY @170.247.170.2: Answer chain=[] records=[. DNSKEY, . DNSKEY, . DNSKEY, . RRSIG] denials=[] additional=0
 priming . . DNSKEY @2001:500:1::53: Answer chain=[] records=[. DNSKEY, . DNSKEY, . DNSKEY, . RRSIG] denials=[] additional=0
+rrsig . . NS @170.247.170.2: Answer chain=[] records=[. NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . RRSIG] denials=[] additional=23
+rrsig . . NS @2001:500:1::53: Answer chain=[] records=[. NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . RRSIG] denials=[] additional=26
+rrsig . . DNSKEY @170.247.170.2: Answer chain=[] records=[. DNSKEY, . DNSKEY, . DNSKEY, . RRSIG] denials=[] additional=0
+rrsig . . DNSKEY @2001:500:1::53: Answer chain=[] records=[. DNSKEY, . DNSKEY, . DNSKEY, . RRSIG] denials=[] additional=0
+rrsig . sidn.nl. RRSIG @170.247.170.2: Referral child=nl. ns=3 proof=[nl. DS, nl. RRSIG] glue=6
+rrsig . sidn.nl. RRSIG @2001:500:1::53: Referral child=nl. ns=3 proof=[nl. DS, nl. RRSIG] glue=6
+rrsig . nl. DS @170.247.170.2: Answer chain=[] records=[nl. DS, nl. RRSIG] denials=[] additional=0
+rrsig . nl. DS @2001:500:1::53: Answer chain=[] records=[nl. DS, nl. RRSIG] denials=[] additional=0
+rrsig nl. nl. DNSKEY @185.159.199.200: Answer chain=[] records=[nl. DNSKEY, nl. DNSKEY, nl. RRSIG] denials=[] additional=0
+rrsig nl. nl. DNSKEY @2001:678:20::24: Answer chain=[] records=[nl. DNSKEY, nl. DNSKEY, nl. RRSIG] denials=[] additional=0
+rrsig nl. sidn.nl. RRSIG @185.159.199.200: Referral child=sidn.nl. ns=3 proof=[sidn.nl. DS, sidn.nl. RRSIG] glue=6
+rrsig nl. sidn.nl. RRSIG @2001:678:20::24: Referral child=sidn.nl. ns=3 proof=[sidn.nl. DS, sidn.nl. RRSIG] glue=6
+rrsig nl. sidn.nl. DS @185.159.199.200: Answer chain=[] records=[sidn.nl. DS, sidn.nl. RRSIG] denials=[] additional=0
+rrsig nl. sidn.nl. DS @2001:678:20::24: Answer chain=[] records=[sidn.nl. DS, sidn.nl. RRSIG] denials=[] additional=0
+rrsig sidn.nl. sidn.nl. DNSKEY @176.97.158.144: Answer chain=[] records=[sidn.nl. DNSKEY, sidn.nl. DNSKEY, sidn.nl. RRSIG] denials=[] additional=0
+rrsig sidn.nl. sidn.nl. DNSKEY @2001:678:2c:0:194:0:28:10: Answer chain=[] records=[sidn.nl. DNSKEY, sidn.nl. DNSKEY, sidn.nl. RRSIG] denials=[] additional=0
+rrsig sidn.nl. sidn.nl. RRSIG @176.97.158.144: Signatures chain=[] records=[sidn.nl. RRSIG]
+rrsig sidn.nl. sidn.nl. RRSIG @2001:678:2c:0:194:0:28:10: Signatures chain=[] records=[sidn.nl. RRSIG]
 signed-com . . NS @170.247.170.2: Answer chain=[] records=[. NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . RRSIG] denials=[] additional=23
 signed-com . . NS @2001:500:1::53: Answer chain=[] records=[. NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . NS, . RRSIG] denials=[] additional=26
 signed-com . . DNSKEY @170.247.170.2: Answer chain=[] records=[. DNSKEY, . DNSKEY, . DNSKEY, . RRSIG] denials=[] additional=0
