@@ -171,7 +171,11 @@ fn limits(file: LimitsFile) -> anyhow::Result<Limits> {
     Ok(Limits {
         queries: or(file.queries, default.queries, ("queries", MAX.queries))?,
         restarts: or(file.restarts, default.restarts, ("restarts", MAX.restarts))?,
-        referrals: or(file.referrals, default.referrals, ("referrals", MAX.referrals))?,
+        referrals: or(
+            file.referrals,
+            default.referrals,
+            ("referrals", MAX.referrals),
+        )?,
         depth: or(file.depth, default.depth, ("depth", MAX.depth))?,
         servers: or(file.servers, default.servers, ("servers", MAX.servers))?,
         targets: or(file.targets, default.targets, ("targets", MAX.targets))?,
@@ -227,7 +231,10 @@ mod tests {
         assert!(Arc::ptr_eq(&share(&first.pipeline), &share(&same.pipeline)));
         let other = format!("{RECURSIVE}    client_share: {{burst: 10}}\n");
         let other = read(&other, env, &first.pipeline).expect("valid");
-        assert!(!Arc::ptr_eq(&share(&first.pipeline), &share(&other.pipeline)));
+        assert!(!Arc::ptr_eq(
+            &share(&first.pipeline),
+            &share(&other.pipeline)
+        ));
         for changed in [
             RECURSIVE.replace("3600", "7200"),
             format!("{RECURSIVE}    rrset_cache_bytes: 16777216\n"),
@@ -298,7 +305,10 @@ mod tests {
             ),
             ("limits: {queries: 201}", "`limits.queries` is above 200"),
             ("limits: {restarts: 256}", "`limits.restarts` is above 255"),
-            ("limits: {referrals: 131}", "`limits.referrals` is above 130"),
+            (
+                "limits: {referrals: 131}",
+                "`limits.referrals` is above 130",
+            ),
             ("limits: {depth: 8}", "`limits.depth` is above 7"),
             ("limits: {servers: 101}", "`limits.servers` is above 100"),
             ("limits: {targets: 17}", "`limits.targets` is above 16"),
@@ -326,7 +336,12 @@ mod tests {
         }
         let most = "limits: {queries: 200, restarts: 255, referrals: 130, depth: 7, servers: 100, targets: 16, \
                     time_ms: 30000}";
-        read(&format!("{RECURSIVE}    {most}\n"), env, &Pipeline::default()).expect("the most reads");
+        read(
+            &format!("{RECURSIVE}    {most}\n"),
+            env,
+            &Pipeline::default(),
+        )
+        .expect("the most reads");
         let warm = RECURSIVE.replace("max_ttl: 3600", "prewarm: {entries: [example.com]}");
         assert!(error(&warm).contains("`prewarm` has no forward stage"));
     }

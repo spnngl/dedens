@@ -281,8 +281,10 @@ fn d124_an_answer_from_the_rrset_cache_is_served_its_time_left_not_the_floor() {
     let first = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
     let (reply, _) = ask(&first, (&query, CLIENT), &authorities, now);
     assert_ne!(decode(reply.as_deref().expect("a reply")).answer, []);
-    let held = (caches.rrsets.get(&capture.name, capture.rtype, Class::IN, now))
-        .expect("the answer cached");
+    let held = (caches
+        .rrsets
+        .get(&capture.name, capture.rtype, Class::IN, now))
+    .expect("the answer cached");
     let floor = Config::default().min_ttl;
     assert!(held.ttl.get() > floor);
     // Three seconds left, under the floor; a new response cache, so that the `RRset` cache answers.
@@ -550,7 +552,8 @@ fn rfc6761_6_3_localhost_is_the_loopback() {
 fn d195_the_local_zones_answer_class_in_only() {
     let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
     for name in ["localhost.", "10.in-addr.arpa.", "host.invalid."] {
-        let mut question = dedens_proto::Question::new(name.parse().expect("a name"), RecordType::A);
+        let mut question =
+            dedens_proto::Question::new(name.parse().expect("a name"), RecordType::A);
         question.qclass = Class::CH;
         let mut query = Message::query(7, question);
         query.header.flags = Flags::RD;
@@ -567,7 +570,10 @@ fn d195_the_local_zones_answer_class_in_only() {
 fn rfc6761_6_4_invalid_does_not_exist() {
     let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
     let invalid: Name<'static> = "invalid.".parse().expect("a name");
-    for (name, rtype) in [("host.invalid.", RecordType::A), ("invalid.", RecordType::DS)] {
+    for (name, rtype) in [
+        ("host.invalid.", RecordType::A),
+        ("invalid.", RecordType::DS),
+    ] {
         let reply = local(&pipeline, name, rtype);
         assert_eq!(reply.header.rcode, Rcode::NXDOMAIN, "{name}");
         // A SOA to cache the NXDOMAIN by (RFC 2308 §5).

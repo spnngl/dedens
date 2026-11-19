@@ -366,7 +366,8 @@ impl Cache {
         bounds: Bounds,
     ) -> Result<(), NotCached> {
         let (hash, shard) = self.store.shard(key.as_bytes());
-        let mut response = match Response::build(key, response, now, checked, bounds, &self.config) {
+        let mut response = match Response::build(key, response, now, checked, bounds, &self.config)
+        {
             // Answered and not stored: an answer the cache holds is outdated by it, not to be served stale
             // (RFC 8767 §4: only data that cannot be refreshed), and a failure held is over. A response refused
             // as broken or as no answer to the query leaves both: it may be forged.

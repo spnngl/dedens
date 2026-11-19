@@ -14,9 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dedens_proto::edns::Cookie;
-use dedens_proto::{
-    Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport,
-};
+use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport};
 use dedens_resolver::{Caches, Limits, Query, Ranked, Reply, Resolution, Resolved, Unsupported};
 use rand_core::CryptoRng;
 use thiserror::Error;

@@ -508,10 +508,7 @@ mod tests {
             let mut waiting = pin!(asked(&Compio, &flights, &query, deadline, unsent));
             assert!(waiting.as_mut().now_or_never().is_none());
             lead.finish(&Outcome::LocalError);
-            assert!(matches!(
-                waiting.await,
-                Asked::Shared(Outcome::LocalError)
-            ));
+            assert!(matches!(waiting.await, Asked::Shared(Outcome::LocalError)));
         });
     }
 
@@ -600,14 +597,7 @@ mod tests {
             .filter(|(_, _, description, _)| description.is_some())
             .map(|(key, ..)| key.key().name().to_owned())
             .collect();
-        for name in [
-            SENT,
-            SHED,
-            RRSETS,
-            RRSET_BYTES,
-            SERVERS,
-            SERVER_BYTES,
-        ] {
+        for name in [SENT, SHED, RRSETS, RRSET_BYTES, SERVERS, SERVER_BYTES] {
             assert!(described.iter().any(|d| d == name), "{name}");
         }
     }

@@ -116,7 +116,8 @@ impl LocalZones {
             .iter()
             .find(|(zone, _)| question.name.is_within(zone))?;
         let apex = question.name == *zone;
-        if apex && question.qtype == RecordType::DS && matches!(local, Local::Empty | Local::NoData) {
+        if apex && question.qtype == RecordType::DS && matches!(local, Local::Empty | Local::NoData)
+        {
             return None;
         }
         let ttl = Ttl::from_wire(TTL);
