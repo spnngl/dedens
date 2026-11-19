@@ -14,6 +14,9 @@
 //! out below is then in, save the threads, and the trace has none of the resolver's `Replied`, `Forwarded` and
 //! `Stored`, which only this driver records.
 //!
+//! A recurse stage is served by [`Resolver::serve_dedensd`] only: its queries go to the authoritative servers through
+//! `dedensd`'s transport and the queries in flight it shares (D195); this driver stops at one (D133).
+//!
 //! Left out (D133): socket pools, the inboxes of D108, connection reuse and idle timeouts (a connection's queries
 //! are answered one after the other, in order), the shared flights of D86, the cap on connections and on
 //! upstream queries, the line of the queries that wait for the validation allowance (D186: a query parked is given
@@ -305,6 +308,7 @@ impl Shared {
                 upstream
             }
             Step::Upstream(upstream) => upstream,
+            Step::Resolve(_) => recursion(),
             // Given up at once: the line of D186 is left out.
             Step::Park(parked) => {
                 if let Step::Reply(len) = self.pipeline.shed(parked, self.now(), out) {
@@ -391,9 +395,24 @@ impl Shared {
                 // `receive` does not park: the query was admitted.
                 Step::Drop | Step::Park(_) => return,
                 Step::Upstream(next) => upstream = next,
+                // `receive` answers for a forward stage, never a recurse one.
+                Step::Resolve(_) => recursion(),
             }
         }
     }
+}
+
+/// Stops the run at a resolution from the root, which this driver does not serve: [`Resolver::serve_dedensd`] does.
+///
+/// # Panics
+///
+/// Always.
+#[expect(
+    clippy::panic,
+    reason = "a pipeline the driver cannot serve is a broken scenario"
+)]
+fn recursion() -> ! {
+    panic!("the driver serves no recurse stage: use Resolver::serve_dedensd (D195)")
 }
 
 /// How the client reaches `server` for a query that came over `client`, as `dedensd`'s `target` (D65): a plain
