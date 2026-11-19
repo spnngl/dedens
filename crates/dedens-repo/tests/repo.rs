@@ -21,6 +21,9 @@ const CITING_EXTENSIONS: [&str; 10] = [
 ];
 /// The folder whose files all cite decisions, whatever their extension: man pages, systemd units, package scripts.
 const CITING_FOLDER: &str = "deploy/";
+/// The folder of captured resolutions (`just capture-recursion`, `just capture-minimisation`): their YAML is a
+/// tool's base64, where a `D` and digits are no citation. Its `README.md` cites.
+const CAPTURED_FOLDER: &str = "testdata/recursion/";
 /// Where a path of a coverage cell starts.
 const PATH_ROOTS: [&str; 6] = ["crates/", "apps/", "fuzz/", "tests/", "docs/", "testdata/"];
 
@@ -97,6 +100,11 @@ fn sections(tracked: &[String]) -> Vec<Source> {
 /// its target's copy.
 fn citing(tracked: &[String]) -> Vec<Source> {
     let wanted = |path: &str| {
+        if path.starts_with(CAPTURED_FOLDER)
+            && Path::new(path).extension() != Some(OsStr::new("md"))
+        {
+            return false;
+        }
         path.starts_with(CITING_FOLDER)
             || Path::new(path).extension().is_none_or(|extension| {
                 extension

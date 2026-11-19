@@ -18,23 +18,23 @@ use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Opaque, RData};
 use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, Record, RecordType};
 use dedens_resolver::{
-    Caches, DEFAULT_CAPACITY, Failure, InfraCache, Limit, Limits, Marks, Next, Query, Rank, Reply,
-    Resolution, Resolved, Rrset, RrsetCache, Unsupported,
+    Caches, DEFAULT_CAPACITY, Failure, InfraCache, Limit, Limits, Marks, Minimisation, Next, Query,
+    Rank, Reply, Resolution, Resolved, Rrset, RrsetCache, Unsupported,
 };
 use dedens_roots::{RootHints, Tlds};
 use dedens_testkit::recursion::{self, Authorities, Exchange};
 
-use crate::infra_cache::Seeded;
+use crate::seeded::Seeded;
 
 /// A question sent: the zone asked, the name and the type.
-type Sent = (Name<'static>, Name<'static>, RecordType);
+pub(crate) type Sent = (Name<'static>, Name<'static>, RecordType);
 
 /// The seed of the draws: of a server per zone, which the steering makes, and of the server names looked up, for
 /// which it falls on the names the captures looked up.
 const SEED: u64 = 0;
 
 /// Empty caches; the TLD hints when `tlds`.
-fn caches(tlds: bool) -> Arc<Caches> {
+pub(crate) fn caches(tlds: bool) -> Arc<Caches> {
     Arc::new(Caches {
         rrsets: RrsetCache::new(DEFAULT_CAPACITY, Config::default()).expect("a valid config"),
         infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 64).expect("a valid size"),
@@ -44,7 +44,7 @@ fn caches(tlds: bool) -> Arc<Caches> {
 }
 
 /// The time of the capture, so that every TTL it holds is fresh.
-fn at(capture: &recursion::Resolution) -> Duration {
+pub(crate) fn at(capture: &recursion::Resolution) -> Duration {
     Duration::from_secs(capture.captured_at)
 }
 
@@ -59,7 +59,7 @@ fn followed(capture: &recursion::Resolution) -> HashMap<&Name<'static>, IpAddr> 
 
 /// Marks lame, for each zone the capture asked, every address it shows but the server it followed: the draw then
 /// falls on that server.
-fn steer(caches: &Caches, capture: &recursion::Resolution) {
+pub(crate) fn steer(caches: &Caches, capture: &recursion::Resolution) {
     let mut known: HashSet<IpAddr> = caches
         .roots
         .servers()
@@ -95,7 +95,7 @@ fn secs(now: Duration) -> u32 {
 }
 
 /// How the transport ends an exchange.
-enum Answered {
+pub(crate) enum Answered {
     Response(Message<'static>),
     Undecodable,
     Timeout,
@@ -104,10 +104,14 @@ enum Answered {
 }
 
 /// The authoritative servers and the network: what comes of a query.
-type Server<'a> = dyn Fn(&Query) -> Answered + 'a;
+pub(crate) type Server<'a> = dyn Fn(&Query) -> Answered + 'a;
 
 /// Runs `resolution` to its end at `now`, each query answered by `server`; the outcome, and the questions sent.
-fn run(resolution: &mut Resolution, server: &Server<'_>, now: Duration) -> (Resolved, Vec<Sent>) {
+pub(crate) fn run(
+    resolution: &mut Resolution,
+    server: &Server<'_>,
+    now: Duration,
+) -> (Resolved, Vec<Sent>) {
     seeded(resolution, server, now, SEED)
 }
 
@@ -156,7 +160,14 @@ fn reply(answered: &Answered) -> Reply<'_> {
 /// A resolution of `capture`'s question.
 fn start(capture: &recursion::Resolution, caches: &Arc<Caches>, limits: Limits) -> Resolution {
     let question = Question::new(capture.name.clone(), capture.rtype);
-    Resolution::start(question, Arc::clone(caches), at(capture), limits).expect("an IN question")
+    Resolution::start(
+        question,
+        Arc::clone(caches),
+        at(capture),
+        limits,
+        Minimisation::Off,
+    )
+    .expect("an IN question")
 }
 
 /// Starts `capture`'s question on `caches`, steered to its servers, under `limits`, and runs it.
@@ -169,7 +180,7 @@ fn resolve(
 }
 
 /// Changes the response a server of a zone gives.
-type Change<'a> = dyn Fn(&Name<'_>, &mut Message<'static>) + 'a;
+pub(crate) type Change<'a> = dyn Fn(&Name<'_>, &mut Message<'static>) + 'a;
 
 /// [`resolve`], each captured response passed through `change` with the zone of the server giving it.
 fn changed(
@@ -182,7 +193,7 @@ fn changed(
 }
 
 /// Runs `resolution` on `caches`, steered to `capture`'s servers, each captured response passed through `change`.
-fn served(
+pub(crate) fn served(
     capture: &recursion::Resolution,
     caches: &Arc<Caches>,
     resolution: &mut Resolution,
@@ -199,16 +210,20 @@ fn served(
 }
 
 /// Whether `zone` is the zone written `text`.
-fn is(zone: &Name<'_>, text: &str) -> bool {
+pub(crate) fn is(zone: &Name<'_>, text: &str) -> bool {
     zone.to_string() == text
 }
 
-fn name(text: &str) -> Name<'static> {
+pub(crate) fn name(text: &str) -> Name<'static> {
     text.parse().expect("a name")
 }
 
 /// The response of `capture` to `name` from a server of `zone`.
-fn response(capture: &recursion::Resolution, zone: &str, name: &str) -> Message<'static> {
+pub(crate) fn response(
+    capture: &recursion::Resolution,
+    zone: &str,
+    name: &str,
+) -> Message<'static> {
     let exchange = (capture.exchanges.iter())
         .find(|e| is(&e.zone, zone) && is(&e.name, name))
         .expect("a captured exchange");
@@ -216,13 +231,13 @@ fn response(capture: &recursion::Resolution, zone: &str, name: &str) -> Message<
 }
 
 /// `response` as the answer to `question`.
-fn to(mut response: Message<'static>, question: &Question<'static>) -> Message<'static> {
+pub(crate) fn to(mut response: Message<'static>, question: &Question<'static>) -> Message<'static> {
     response.questions = vec![question.clone()];
     response
 }
 
 /// The response `authorities` captured to `query`, over TCP after a truncated one, as the transport has it.
-fn captured(authorities: &Authorities, query: &Query) -> Message<'static> {
+pub(crate) fn captured(authorities: &Authorities, query: &Query) -> Message<'static> {
     let wire = Message::query(0, query.question.clone())
         .to_vec()
         .expect("a query encodes");
@@ -413,6 +428,7 @@ fn ds_after(capture: &recursion::Resolution, change: &Change<'_>) -> (Resolved, 
         Arc::clone(&caches),
         at(capture),
         Limits::default(),
+        Minimisation::Off,
     )
     .expect("an IN question");
     served(capture, &caches, &mut resolution, change)
@@ -465,6 +481,7 @@ fn rfc6895_3_meta_types_and_other_classes_are_not_resolved() {
             Arc::clone(&caches),
             Duration::ZERO,
             Limits::default(),
+            Minimisation::Off,
         )
         .err()
     };
@@ -558,8 +575,14 @@ fn deep(lame: bool) -> (Resolved, Vec<Sent>) {
         Answered::Response(referral(&template, question, &child, &addresses))
     };
     let question = Question::new(deep, RecordType::A);
-    let mut resolution =
-        Resolution::start(question, caches, at(&capture), Limits::default()).expect("IN");
+    let mut resolution = Resolution::start(
+        question,
+        caches,
+        at(&capture),
+        Limits::default(),
+        Minimisation::Off,
+    )
+    .expect("IN");
     run(&mut resolution, &server, at(&capture))
 }
 
@@ -1345,8 +1368,14 @@ fn rfc6672_2_2_a_dname_making_a_name_too_long_is_yxdomain() {
             Answered::Response(response)
         };
         let question = Question::new(long.clone(), RecordType::A);
-        let mut resolution =
-            Resolution::start(question, caches, at(&capture), Limits::default()).expect("IN");
+        let mut resolution = Resolution::start(
+            question,
+            caches,
+            at(&capture),
+            Limits::default(),
+            Minimisation::Off,
+        )
+        .expect("IN");
         run(&mut resolution, &server, at(&capture)).0
     };
     // 205 + 51 = 256 bytes: too long, said by the DNAME of the zone asked above the name.

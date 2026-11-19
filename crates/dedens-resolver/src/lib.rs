@@ -12,11 +12,11 @@
 //!
 //! [`Resolution`] is one question's resolution: from the closest delegation the caches know, down the referrals,
 //! across CNAMEs, to the answer, one query in flight, every response read through [`scrub()`], within the bounds of
-//! [`Limits`] (D191).
+//! [`Limits`] (D191), minimising the names servers see as [`Minimisation`] says (D198).
 //!
 //! RFCs: 1034 §4.3.2/§5.3.3, 1035 §3.2.1/§4.1/§7, 2181 §5/§5.2/§5.4.1/§6.1/§8/§10.1, 2308 §2,
 //! 4035 §2.3/§3.1.3/§3.1.4/§4.7, 4343, 4697 §2.2, 5452 §4.3/§4.4/§6, 6298 §2/§5, 6672 §2.2/§3.4, 6895 §3.1, 7766 §5,
-//! 8914 §4, 9471 §2.
+//! 8020 §2, 8914 §4, 9156 §2/§3, 9471 §2.
 //!
 //! Feature `metrics`: selection, lookup, insert, eviction and limit counters through the `metrics` facade; without it they compile
 //! away.
@@ -35,7 +35,8 @@ mod scrub;
 pub use infra_cache::{Choice, Edns, InfraCache, Marks};
 pub use rank::Rank;
 pub use resolution::{
-    Caches, Failure, Limit, Limits, Next, Query, Reply, Resolution, Resolved, Unsupported,
+    Caches, Failure, Limit, Limits, Minimisation, Next, Query, Reply, Resolution, Resolved,
+    Unsupported,
 };
 pub use rrset::Rrset;
 pub use rrset_cache::{DEFAULT_CAPACITY, Inserted, NotCached, Ranked, RrsetCache};

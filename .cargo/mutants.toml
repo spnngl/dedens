@@ -186,6 +186,9 @@ exclude_re = [
   # D194: an infra cache entry owns no allocation; a byte more each shows only against the store's private slot
   # cost, which `dedens-cache` tests.
   'infra_cache\.rs:\d+:\d+: replace <impl Cost for Entry>::cost -> usize with 1$',
+  # D198: a minimised name that is a CNAME, in its zone, to a name that does not exist; no captured resolution has
+  # one, and test data is real.
+  'resolution/mod\.rs:\d+:\d+: replace match guard !chain\.is_empty\(\) with false in Resolution::went_on$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never

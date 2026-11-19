@@ -15,7 +15,7 @@ use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Rcode, RecordType, Transport};
 use dedens_resolver::{
-    Caches, DEFAULT_CAPACITY, InfraCache, Marks, Query, Reply, Resolved, RrsetCache,
+    Caches, DEFAULT_CAPACITY, InfraCache, Marks, Minimisation, Query, Reply, Resolved, RrsetCache,
 };
 use dedens_roots::RootHints;
 use dedens_server::{Budget, Budgets, Pipeline, Recurse, Resolving, Stage, Step, Turn};
@@ -69,6 +69,12 @@ fn pipeline(config: Config, recurse: Recurse) -> Pipeline {
         Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
         Stage::Recurse(recurse),
     ])
+}
+
+/// The recurse stage on `caches`, its questions not minimised: the captures are of an iterator asking the full name
+/// (D198).
+fn unminimised(caches: Arc<Caches>) -> Recurse {
+    Recurse::new(caches).with_minimisation(Minimisation::Off)
 }
 
 /// The second of the capture, so that every TTL it holds is fresh.
@@ -213,7 +219,7 @@ fn rfc1034_5_3_3_each_capture_resolves_through_the_pipeline_and_the_cache_answer
         }
         let caches = caches(Config::default());
         steer(&caches, &capture);
-        let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+        let pipeline = pipeline(Config::default(), unminimised(Arc::clone(&caches)));
         let authorities = Authorities::new([&capture]);
         let query = question(&capture);
         let now = at(&capture);
@@ -255,7 +261,7 @@ fn d124_an_answer_is_served_within_the_cache_lifetime() {
     };
     let caches = caches(config.clone());
     steer(&caches, &capture);
-    let pipeline = pipeline(config, Recurse::new(Arc::clone(&caches)));
+    let pipeline = pipeline(config, unminimised(Arc::clone(&caches)));
     let authorities = Authorities::new([&capture]);
     let (reply, _) = ask(
         &pipeline,
@@ -280,7 +286,7 @@ fn d124_an_answer_from_the_rrset_cache_is_served_its_time_left_not_the_floor() {
     let authorities = Authorities::new([&capture]);
     let query = question(&capture);
     let now = at(&capture);
-    let first = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let first = pipeline(Config::default(), unminimised(Arc::clone(&caches)));
     let (reply, _) = ask(&first, (&query, CLIENT), &authorities, now);
     assert_ne!(decode(reply.as_deref().expect("a reply")).answer, []);
     let held = (caches
@@ -291,7 +297,7 @@ fn d124_an_answer_from_the_rrset_cache_is_served_its_time_left_not_the_floor() {
     assert!(held.ttl.get() > floor);
     // Three seconds left, under the floor; a new response cache, so that the `RRset` cache answers.
     let later = now + held.ttl.get() - 3;
-    let second = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let second = pipeline(Config::default(), unminimised(Arc::clone(&caches)));
     let (reply, sent) = ask(&second, (&query, CLIENT), &authorities, later);
     assert_eq!(sent, Some(0));
     let reply = decode(reply.as_deref().expect("a reply"));
@@ -304,7 +310,7 @@ fn rfc4035_3_2_1_signatures_go_to_a_client_asking_with_do() {
     let capture = recursion::Resolution::read("signed-com");
     let caches = caches(Config::default());
     steer(&caches, &capture);
-    let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let pipeline = pipeline(Config::default(), unminimised(Arc::clone(&caches)));
     let authorities = Authorities::new([&capture]);
     let query = client_query("example.com.", RecordType::A, Flags::NONE, true);
     let (reply, _) = ask(&pipeline, (&query, CLIENT), &authorities, at(&capture));
@@ -323,7 +329,7 @@ fn rfc8109_3_priming_asks_the_root_ns_once_until_it_expires() {
     let capture = recursion::Resolution::read("priming");
     let caches = caches(Config::default());
     steer(&caches, &capture);
-    let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let pipeline = pipeline(Config::default(), unminimised(Arc::clone(&caches)));
     let authorities = Authorities::new([&capture]);
     let now = at(&capture);
     let secs = Duration::from_secs(now.into());
@@ -361,7 +367,7 @@ fn rfc5452_5_a_resolution_on_shared_replies_resolves_and_judges_no_server() {
     steer(&caches, &capture);
     // The lame marks of the steering alone.
     let known = caches.infra.len();
-    let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let pipeline = pipeline(Config::default(), unminimised(Arc::clone(&caches)));
     let authorities = Authorities::new([&capture]);
     let now = at(&capture);
     let mut out = vec![0; 65535];
@@ -381,7 +387,7 @@ fn rfc5452_5_a_resolution_on_shared_replies_resolves_and_judges_no_server() {
 
 #[test]
 fn rfc8109_3_a_priming_given_up_lets_the_next_start() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let priming = pipeline.prime(Duration::ZERO).expect("due");
     drop(priming);
     assert!(pipeline.prime(Duration::ZERO).is_some());
@@ -405,7 +411,7 @@ fn soa(message: &Message<'_>) -> Option<Name<'static>> {
 
 #[test]
 fn rfc6303_3_a_reverse_zone_of_private_addresses_is_served_empty() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let zone: Name<'static> = "10.in-addr.arpa.".parse().expect("a name");
     // Below the apex: NXDOMAIN, the zone's SOA to cache it with.
     let below = local(&pipeline, "1.2.3.10.in-addr.arpa.", RecordType::PTR);
@@ -472,7 +478,7 @@ fn rfc6303_3_a_reverse_zone_of_private_addresses_is_served_empty() {
 #[test]
 fn rfc6303_3_a_zone_turned_off_is_resolved() {
     let zone: Name<'static> = "10.in-addr.arpa.".parse().expect("a name");
-    let served = Recurse::new(caches(Config::default()));
+    let served = unminimised(caches(Config::default()));
     assert!(served.local_zones().any(|local| *local == zone));
     let recurse = served.resolving(&zone).expect("a zone served locally");
     // Listed no more, so that a reload turning it off flushes the cache stage.
@@ -491,7 +497,7 @@ fn rfc6303_3_a_zone_turned_off_is_resolved() {
     assert!(matches!(step, Step::Resolve(_)), "{step:?}");
     // A zone not served locally cannot be turned off.
     let other: Name<'static> = "example.com.".parse().expect("a name");
-    let error = Recurse::new(caches(Config::default()))
+    let error = unminimised(caches(Config::default()))
         .resolving(&other)
         .expect_err("not served locally");
     assert_eq!(error.0, other);
@@ -499,7 +505,7 @@ fn rfc6303_3_a_zone_turned_off_is_resolved() {
 
 #[test]
 fn rfc8375_4_home_arpa_is_served_empty_but_its_ds() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let below = local(&pipeline, "printer.home.arpa.", RecordType::A);
     assert_eq!(below.header.rcode, Rcode::NXDOMAIN);
     assert_eq!(soa(&below), Some("home.arpa.".parse().expect("a name")));
@@ -522,7 +528,7 @@ fn rfc8375_4_home_arpa_is_served_empty_but_its_ds() {
 
 #[test]
 fn rfc9462_6_4_resolver_arpa_has_no_data() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     for (name, rtype) in [
         ("resolver.arpa.", RecordType::SVCB),
         ("_dns.resolver.arpa.", RecordType::SVCB),
@@ -540,7 +546,7 @@ fn rfc9462_6_4_resolver_arpa_has_no_data() {
 
 #[test]
 fn rfc6761_6_3_localhost_is_the_loopback() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let a = local(&pipeline, "www.localhost.", RecordType::A);
     assert_eq!(a.answer[0].data(), RData::A(Ipv4Addr::LOCALHOST));
     let aaaa = local(&pipeline, "localhost.", RecordType::AAAA);
@@ -559,7 +565,7 @@ fn rfc6761_6_3_localhost_is_the_loopback() {
 /// The local zones are class IN's: a question of another class is the stage's, which resolves none (REFUSED).
 #[test]
 fn d195_the_local_zones_answer_class_in_only() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     for name in ["localhost.", "10.in-addr.arpa.", "host.invalid."] {
         let mut question =
             dedens_proto::Question::new(name.parse().expect("a name"), RecordType::A);
@@ -577,7 +583,7 @@ fn d195_the_local_zones_answer_class_in_only() {
 
 #[test]
 fn rfc6761_6_4_invalid_does_not_exist() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let invalid: Name<'static> = "invalid.".parse().expect("a name");
     for (name, rtype) in [
         ("host.invalid.", RecordType::A),
@@ -601,7 +607,7 @@ fn d117_a_network_out_of_queries_gets_servfail_not_ready() {
         table: 1,
     })
     .expect("a budget");
-    let recurse = Recurse::new(Arc::clone(&caches)).with_share(share);
+    let recurse = unminimised(Arc::clone(&caches)).with_share(share);
     let pipeline = pipeline(Config::default(), recurse);
     let authorities = Authorities::new([&capture]);
     let (reply, sent) = ask(
@@ -621,7 +627,7 @@ fn d117_a_network_out_of_queries_gets_servfail_not_ready() {
 #[test]
 fn d195_the_stage_hands_its_client_share() {
     let caches = caches(Config::default());
-    assert!(Recurse::new(Arc::clone(&caches)).share().is_none());
+    assert!(unminimised(Arc::clone(&caches)).share().is_none());
     let share = Arc::new(
         Budgets::new(Budget {
             per_second: 1,
@@ -630,7 +636,7 @@ fn d195_the_stage_hands_its_client_share() {
         })
         .expect("a budget"),
     );
-    let recurse = Recurse::new(caches).with_share(Arc::clone(&share));
+    let recurse = unminimised(caches).with_share(Arc::clone(&share));
     assert!(
         recurse
             .share()
@@ -650,7 +656,7 @@ fn d195_a_resolution_shed_gets_servfail_not_ready_and_pays_nothing() {
         table: 1,
     })
     .expect("a budget");
-    let recurse = Recurse::new(Arc::clone(&caches)).with_share(share);
+    let recurse = unminimised(Arc::clone(&caches)).with_share(share);
     let pipeline = pipeline(Config::default(), recurse);
     let now = at(&capture);
     let mut out = vec![0; 65535];
@@ -682,7 +688,7 @@ fn d195_a_resolution_shed_gets_servfail_not_ready_and_pays_nothing() {
 
 #[test]
 fn d195_a_type_not_resolved_is_not_implemented() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let query = client_query("sidn.nl.", RecordType::RRSIG, Flags::NONE, false);
     let (reply, sent) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
     assert_eq!(sent, Some(0));
@@ -691,7 +697,7 @@ fn d195_a_type_not_resolved_is_not_implemented() {
 
 #[test]
 fn rfc1034_4_3_1_without_rd_the_recurse_stage_refuses() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let mut query = client_query("example.com.", RecordType::A, Flags::NONE, false);
     query[2] &= !Flags::RD.bits().to_be_bytes()[0];
     let (reply, _) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
@@ -702,7 +708,7 @@ fn rfc1034_4_3_1_without_rd_the_recurse_stage_refuses() {
 
 #[test]
 fn rfc8482_any_over_udp_is_truncated() {
-    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let pipeline = pipeline(Config::default(), unminimised(caches(Config::default())));
     let query = client_query("example.com.", RecordType::ANY, Flags::NONE, false);
     let (reply, _) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
     let reply = decode(reply.as_deref().expect("a reply"));

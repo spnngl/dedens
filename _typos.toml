@@ -15,8 +15,9 @@ extend-exclude = [
   "testdata/plugins/",
   # Hex of captured CoAP datagrams.
   "testdata/coap/",
-  # Base64 of captured responses (`just capture-recursion`).
+  # Base64 of captured responses (`just capture-recursion`, `just capture-minimisation`).
   "testdata/recursion/*.yaml",
+  "testdata/recursion/minimised/*.yaml",
   # RDAP answers and IANA's bootstrap file, as published (`just rdap-capture`).
   "testdata/rdap/",
   # The resolver and relay lists of `DNSCrypt/dnscrypt-resolvers`, as published (D102).

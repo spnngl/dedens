@@ -510,6 +510,18 @@ capture-recursion *ids:
     mkdir -p testdata/recursion
     cp "$tmp"/*.yaml testdata/recursion/
 
+# Capture the minimised resolutions of testdata/recursion/minimised/ anew (D198): every case of the capture tool,
+# or those with the ids given, each run by the resolver from the root servers. The files are replaced only when
+# every one succeeded.
+capture-minimisation *ids:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    cargo run -q -p dedens-resolver --example capture_minimisation -- "$tmp" {{ ids }}
+    mkdir -p testdata/recursion/minimised
+    cp "$tmp"/*.yaml testdata/recursion/minimised/
+
 # Ask every public resolver of docs/providers/providers.yaml over the network, IPv4 and IPv6 (D67).
 providers:
     cargo test -p dedens --features dnscrypt --test tests -- --ignored providers:: --nocapture

@@ -1503,8 +1503,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     server the capture followed; the test harness is the transport (UDP, TCP after TC). The defaults are reached on
     referrals built from the captured ones, every query timing out, or captured responses changed; each change is
     written in its test.
-  - Not here: the stage and its transport binding (08), DNSSEC (10), QNAME minimisation (11), negative caching
-    (12), a last resort to the root when a cached delegation fails.
+  - Not here: the stage and its transport binding (08), DNSSEC (10), QNAME minimisation (11, D198), negative
+    caching (12), a last resort to the root when a cached delegation fails.
 - D192 (builds on D188) The recursive resolver scrubs each response before anything reads it:
   `dedens_resolver::scrub(response, question, zone)`, a pure function, keeps what a server asked as authoritative for
   `zone` may say (RFC 2181 §6.1, RFC 5452 §6) and sorts it into an `Outcome`: `Answer`, `Signatures` (the answer
@@ -1824,7 +1824,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     each resolution; D191's `dedens_resolver_limits_total{limit}`.
   - Left to later steps or open: no prefetch nor stale refresh with a recurse stage (the cache stage's refresh
     finds no forward stage and only replies), and `prewarm` needs a forward stage (TODECIDE); validation (step 10),
-    QNAME minimisation (11), negative caching (12).
+    negative caching (12); QNAME minimisation is D198's.
   - Tests: `crates/dedens-server/tests/recurse.rs` (each capture of `testdata/recursion` through the pipeline, the
     cache stage answering it again; TTL bounds; DO; priming; the local zones; the budget),
     `crates/dedens-sim/tests/recurse.rs` (`dedensd`'s loop on the captured servers' simulated Internet: priming
@@ -1841,3 +1841,44 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: the resolution inside `Upstream` (its forward accessors would mean nothing for it); stepping it in
     `Pipeline::query` (no clock nor randomness there); D86's process-wide flights (a lock across threads); waiters
     without bound (one slow server holding every client).
+- D198 (builds on D191, D195) The recursive resolver minimises its questions (recursive step 11, RFC 9156),
+  relaxed by default: privacy without the failures strict mode meets on servers that deny empty non-terminals.
+  - Shape: `dedens_resolver::Minimisation { Off, Relaxed, Strict }`, the fifth argument of `Resolution::start`;
+    `Recurse::with_minimisation` (default `Relaxed`); `dedensd`'s `recurse` stage `qname_minimisation: relaxed |
+    strict | none` (the step's `off` is YAML's boolean false). Each name a task resolves (the client's, a server
+    name looked up, a CNAME's target) is minimised on its own, from the root: the servers of a zone are asked the
+    name one label below it, type A (§2.1, §3 step 3), the full question once that is the name. The QTYPE is the
+    client's at the full name (a DS question asks its parent, one label short, so in full; §3 step 3).
+  - Responses (§3 step 6) to a minimised question: a referral is followed (D191); an answer, a CNAME or NODATA show
+    the name exists, and the next label is asked (6c), as does a CNAME chain to NXDOMAIN, whose chain would answer
+    the client's name wrongly (Unbound reads the RCODE alone and takes it as a failure). Relaxed, NXDOMAIN (§1: servers deny empty non-terminals), REFUSED, SERVFAIL, FORMERR or an
+    unusable response has the full name asked, as Unbound's `qname-minimisation-strict: no`; strict, NXDOMAIN ends the resolution (RFC 8020 §2) and any other
+    failure goes to the next server, minimised. A server that responded usably may be asked the next question,
+    and the one whose response turned minimisation off the full name.
+  - Bounds (§2.3 MUST), Unbound's (`iterator/iterator.h`, `processQueryTargets`): `MINIMISE_COUNT` 10 questions per
+    name, the 10th the full name; `ONE_LABEL` 4, the first questions one label longer each, the rest of a name of 10
+    labels or more spread over the 6 left: 34 labels of `ip6.arpa` take 10 queries, not 34 (labels 1, 2, 3, 4, 9,
+    14, 19, 24, 29, 34). Relaxed, `MINIMISE_TIMEOUTS` 3 timeouts in a row on one minimised question have the full
+    name asked (`MAX_MINIMISE_TIMEOUT_COUNT`). The count restarts at a CNAME's target and at a delegation from the
+    cache below the last question, as Unbound's `INIT` state. Every minimised query leaves through
+    `Resolution::send`, so `Limits::queries` (32) and the time bound hold: a name adds at most 9 minimised
+    questions, within the same bounds. The shared queries of D195 are keyed by the question sent, the
+    minimised one: a resolution waiting on another's minimised query reads the reply against its own question.
+  - Deviations from Unbound and from the step: relaxed NXDOMAIN asks the full name where Unbound ends on a name it
+    expects signed (no validation yet, step 10); a minimised name answered from the cache is asked again where
+    Unbound skips cached NOERROR, left to negative caching (step 12, which also brings RFC 8020's NXDOMAIN cut);
+    no shortcut for underscore labels (§2.3 MAY); the full name's QTYPE is the client's where Unbound asks A first
+    for other types; the step asked NXDOMAIN on a minimised name to end the resolution in every mode, which only
+    strict does, the relaxed mode's point being the servers that deny empty non-terminals.
+  - Test data: `testdata/recursion/minimised/` (`just capture-minimisation`, `examples/capture_minimisation.rs`)
+    holds resolutions the resolver itself made, strict, one server pinned per zone and its draws seeded, so the
+    replay sends the same questions: `ent` (`_xmpp-server._tcp.jabber.org SRV`, through the empty non-terminal
+    `_tcp.jabber.org`) and `ip6` (a 34-label PTR). D188's captures are of a full-name iterator, so their tests
+    resolve with `Minimisation::Off`.
+  - Tests: `crates/dedens-resolver/tests/minimisation.rs`: each zone asked one label below it, type A; the 10
+    questions of a long name and of §2.3's 18-label example; the queries bound reached by minimised questions; the
+    empty non-terminal's response changed to NXDOMAIN (relaxed: the full name; strict: NXDOMAIN) and to REFUSED; 3
+    timeouts; a minimised query shared with a resolution of the name it asks. The config tests in `apps/dedensd/src/config/recurse.rs`.
+  - Rejected: strict by default (RFC 9156 §1 reports relaxed causes almost no failures, strict some); a bound per
+    zone (the per-name count with `Limits::queries` bounds the whole); `Limits` fields for the counts (RFC 9156
+    and Unbound fix them; nobody tunes them).

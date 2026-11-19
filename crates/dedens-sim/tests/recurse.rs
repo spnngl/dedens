@@ -14,7 +14,7 @@ use dedens_cache::{Cache, Config};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Message, Name, Question, Rcode, RecordType, Transport};
-use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, RrsetCache};
+use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, Minimisation, RrsetCache};
 use dedens_roots::RootHints;
 use dedens_server::{Pipeline, Recurse, Stage};
 use dedens_sim::client::Carrier;
@@ -41,7 +41,7 @@ fn capture() -> Resolution {
 }
 
 /// A cache stage, one shard (D133), then a recurse stage whose caches are steered to the servers `capture`
-/// followed.
+/// followed, its questions not minimised as the capture's were not (D198).
 fn pipeline(capture: &Resolution) -> Pipeline {
     let config = Config {
         shards: 1,
@@ -56,7 +56,7 @@ fn pipeline(capture: &Resolution) -> Pipeline {
     steer(&caches, capture);
     Pipeline::new(vec![
         Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
-        Stage::Recurse(Recurse::new(Arc::new(caches))),
+        Stage::Recurse(Recurse::new(Arc::new(caches)).with_minimisation(Minimisation::Off)),
     ])
 }
 

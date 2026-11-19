@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use dedens_proto::edns::Cookie;
 use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport};
-use dedens_resolver::{Caches, Limits, Query, Ranked, Reply, Resolution, Resolved, Unsupported};
+use dedens_resolver::{
+    Caches, Limits, Minimisation, Query, Ranked, Reply, Resolution, Resolved, Unsupported,
+};
 use rand_core::CryptoRng;
 use thiserror::Error;
 
@@ -23,12 +25,13 @@ use self::local::LocalZones;
 use crate::budget::{Budgets, Slot};
 
 /// Resolves the questions that reach it, sharing its caches with every thread: the root's and the TLDs' servers
-/// from the hints, the `RRset` and infrastructure caches (D191, D193, D194). The zones served locally are answered
+/// from the hints, the `RRset` and infrastructure caches (D191, D193, D194), its questions minimised (D198). The zones served locally are answered
 /// without a query (RFC 6303 §3, RFC 8375 §4, RFC 9462 §6.4, RFC 6761 §6.3, §6.4).
 #[derive(Debug)]
 pub struct Recurse {
     caches: Arc<Caches>,
     limits: Limits,
+    minimisation: Minimisation,
     local: LocalZones,
     /// What each client network may spend of the queries sent (D117), none for the rate limit's exempt sources.
     share: Option<Arc<Budgets>>,
@@ -49,6 +52,7 @@ impl Recurse {
         Self {
             caches,
             limits: Limits::default(),
+            minimisation: Minimisation::default(),
             local: LocalZones::default(),
             share: None,
             priming: Arc::new(AtomicBool::new(false)),
@@ -59,6 +63,13 @@ impl Recurse {
     #[must_use]
     pub const fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// The same stage minimising the names it asks as `minimisation` says (D198).
+    #[must_use]
+    pub const fn with_minimisation(mut self, minimisation: Minimisation) -> Self {
+        self.minimisation = minimisation;
         self
     }
 
@@ -108,6 +119,12 @@ impl Recurse {
         self.limits
     }
 
+    /// How much of the names it asks it shows each server.
+    #[must_use]
+    pub const fn minimisation(&self) -> Minimisation {
+        self.minimisation
+    }
+
     /// The answer of a locally served zone to `question`, if one holds it.
     pub(crate) fn local(&self, question: &Question<'_>) -> Option<(Rcode, Message<'static>)> {
         self.local.answer(question)
@@ -131,6 +148,7 @@ impl Recurse {
             question,
             caches: Arc::clone(&self.caches),
             limits: self.limits,
+            minimisation: self.minimisation,
             paid: 0,
             payer,
             asker: Asker::Client(client),
@@ -159,6 +177,7 @@ impl Recurse {
             question: Question::new(root, RecordType::NS),
             caches: Arc::clone(&self.caches),
             limits: self.limits,
+            minimisation: self.minimisation,
             paid: 0,
             payer: None,
             asker: Asker::Priming(Priming(Arc::clone(&self.priming))),
@@ -175,6 +194,7 @@ pub struct Resolving {
     state: State,
     caches: Arc<Caches>,
     limits: Limits,
+    minimisation: Minimisation,
     /// The queries paid for so far.
     paid: usize,
     payer: Option<(Arc<Budgets>, Slot)>,
@@ -269,6 +289,7 @@ impl Resolving {
                 Arc::clone(&self.caches),
                 now,
                 self.limits,
+                self.minimisation,
             ) {
                 Ok(resolution) => State::Running(Box::new(resolution)),
                 Err(unsupported) => State::Ended(Ended::Unsupported(unsupported)),
