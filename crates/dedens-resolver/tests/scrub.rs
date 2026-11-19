@@ -48,7 +48,7 @@ fn rr(line: &str) -> Record<'static> {
 }
 
 /// A DNAME record from `owner` to `target` (RFC 6672 §2.1).
-fn dname(owner: &str, target: &str) -> Record<'static> {
+pub(crate) fn dname(owner: &str, target: &str) -> Record<'static> {
     let target: Name<'static> = target.parse().expect("a name");
     let mut buf = [0; MAX_NAME_LEN];
     let wire = target.to_wire(&mut buf);

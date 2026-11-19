@@ -383,19 +383,21 @@ fn rfc1034_5_3_3_the_cache_answers_again() {
 #[test]
 fn d193_an_address_pinned_to_glue_is_asked_again() {
     // panix.netmeister.org, a server of dns.netmeister.org, came as glue before as the answer: the answer keeps
-    // the glue's rank, which answers no client, so the chain comes from the cache and the address from its zone.
+    // the glue's rank, which answers no client, so the address is asked of its zone. The CNAME the DNAME
+    // synthesized is not cached (RFC 6672 §3.4), so the name is asked first; the rest of the chain is cached.
     let capture = recursion::Resolution::read("dname");
     let caches = caches(false);
     let _ = resolve(&capture, &caches, Limits::default());
     let (_, resent) = resolve(&capture, &caches, Limits::default());
-    let first = resent
-        .first()
-        .map(|(zone, name, _)| (zone.to_string(), name.to_string()));
-    let pinned = (
-        "netmeister.org.".to_owned(),
-        "panix.netmeister.org.".to_owned(),
-    );
-    assert_eq!(first, Some(pinned));
+    let resent: Vec<_> = (resent.iter().take(2))
+        .map(|(zone, name, _)| (zone.to_string(), name.to_string()))
+        .collect();
+    let asked = |zone: &str, name: &str| (zone.to_owned(), name.to_owned());
+    let expected = [
+        asked("dns.netmeister.org.", "www.dname.dns.netmeister.org."),
+        asked("netmeister.org.", "panix.netmeister.org."),
+    ];
+    assert_eq!(resent, expected);
 }
 
 #[test]

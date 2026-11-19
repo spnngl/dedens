@@ -11,13 +11,14 @@ use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType};
-use dedens_resolver::{Caches, Failure, Limit, Limits, Minimisation, Ranked, Resolution, Resolved};
+use dedens_resolver::{Caches, Failure, Limits, Minimisation, Ranked, Resolution, Resolved};
 use dedens_testkit::recursion;
 
 use crate::iteration::{Change, Sent, at, caches, is, name, resolvable, served, start, to};
 
 /// The captures whose answer is signed from the root down.
 const SIGNED: &[&str] = &[
+    "cname-signed",
     "dname",
     "glueless",
     "nodata-signed",
@@ -26,16 +27,22 @@ const SIGNED: &[&str] = &[
     "priming",
     "signed-com",
     "signed-nl",
+    "wildcard",
 ];
 
-/// The captures whose answer is below a delegation its parent proves unsigned.
+/// The captures whose answer is insecure: below a delegation its parent proves unsigned, or a wildcard expansion in
+/// an opt-out span (RFC 5155 §9.2).
 const UNSIGNED: &[&str] = &[
     "cname",
     "nodata-unsigned",
     "nxdomain-unsigned",
     "truncated",
     "unsigned",
+    "wildcard-optout",
 ];
+
+/// The captures whose chain starts in an unsigned zone and ends in a signed one: insecure, the end secure.
+const MIXED: &[&str] = &["cname-to-signed"];
 
 /// A validator from the root's anchors under `limits`.
 fn validator(limits: dedens_dnssec::Limits) -> Validator {
@@ -121,7 +128,9 @@ fn exchanged(
 fn every_capture_is_signed_or_unsigned() {
     let mut ids: Vec<String> = resolvable().into_iter().map(|(id, _)| id).collect();
     ids.sort_unstable();
-    let mut listed: Vec<&str> = SIGNED.iter().chain(UNSIGNED).copied().collect();
+    let mut listed: Vec<&str> = (SIGNED.iter().chain(UNSIGNED).chain(MIXED))
+        .copied()
+        .collect();
     listed.sort_unstable();
     assert_eq!(ids, listed);
 }
@@ -150,6 +159,135 @@ fn rfc4035_5_2_each_unsigned_capture_is_insecure_and_cached_so() {
             Some(Checked::Insecure),
             "{id}"
         );
+    }
+}
+
+/// Resolves `question` on `caches` from `capture`'s servers, validated or not (as for a client setting CD, or an
+/// address lookup: the same responses cached unchecked), each response passed through `change`.
+fn ask(
+    capture: &recursion::Resolution,
+    caches: &Arc<Caches>,
+    question: Question<'static>,
+    validated: bool,
+    change: &Change<'_>,
+) -> (Resolved, Vec<Sent>) {
+    let mut resolution = Resolution::start(
+        question,
+        Arc::clone(caches),
+        at(capture),
+        Limits::default(),
+        Minimisation::Off,
+    )
+    .expect("an IN question");
+    if validated {
+        let validator = validator(dedens_dnssec::Limits::default());
+        resolution = resolution.validated(validator, at(capture).as_secs());
+    }
+    served(capture, caches, &mut resolution, change)
+}
+
+/// The question of `capture`.
+fn question(capture: &recursion::Resolution) -> Question<'static> {
+    Question::new(capture.name.clone(), capture.rtype)
+}
+
+#[test]
+fn d197_each_rrset_of_a_cname_from_an_unsigned_zone_is_cached_as_judged_by_itself() {
+    // www.zendesk.com, unsigned, is a CNAME into cdn.cloudflare.net, signed: the answer is insecure, its end
+    // secure, and cached so (Unbound's rrset_update_sec_status).
+    let id = MIXED[0];
+    let (resolved, caches) = checked(id);
+    assert_eq!(resolved.checked(), Checked::Insecure, "{resolved:?}");
+    let Resolved::Answer { chain, data, .. } = &resolved else {
+        panic!("{resolved:?}");
+    };
+    let cname = chain.first().expect("a CNAME");
+    assert_eq!(cached(&caches, cname, id), Some(Checked::Insecure));
+    assert_eq!(cached(&caches, data, id), Some(Checked::Secure));
+    // Asked by itself, the end is served from the cache, secure: with AD.
+    let capture = recursion::Resolution::read(id);
+    let end = Question::new(data.rrset.owner().clone(), data.rrset.rtype());
+    let (again, sent) = ask(&capture, &caches, end, true, &|_, _| {});
+    assert_eq!((again.checked(), sent), (Checked::Secure, Vec::new()));
+}
+
+#[test]
+fn d197_a_bogus_cname_leaves_its_target_to_be_judged_by_itself() {
+    // The CNAME of www.icann.org stripped of its signatures: bogus. Its target in cdn.cloudflare.net, signed, has
+    // no verdict of its own then, so stays unchecked, and is secure when asked by itself.
+    let id = "cname-signed";
+    let capture = recursion::Resolution::read(id);
+    let caches = caches(false);
+    let (resolved, _) = ask(&capture, &caches, question(&capture), true, &|zone, message| {
+        if is(zone, "icann.org.") && answers(message, "www.icann.org.", RecordType::A) {
+            message
+                .answer
+                .retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+        }
+    });
+    let missing = Failure::Bogus(InfoCode::RRSIGS_MISSING);
+    assert_eq!(resolved, Resolved::Failed(missing));
+    let end = Question::new(name("www.icann.org.cdn.cloudflare.net."), RecordType::A);
+    let now = u32::try_from(capture.captured_at).expect("a time within u32");
+    let held = (caches.rrsets).get(&end.name, end.qtype, Class::IN, now);
+    assert_eq!(held.map(|held| held.checked), Some(Checked::Unchecked));
+    let (again, _) = ask(&capture, &caches, end, true, &|_, _| {});
+    assert_eq!(again.checked(), Checked::Secure, "{again:?}");
+}
+
+#[test]
+fn rfc6672_2_2_a_yxdomain_is_validated() {
+    // Changed: dns.netmeister.org's answer forged into a YXDOMAIN, its DNAME unsigned, to a target of 255 bytes that
+    // makes the name asked too long. Unvalidated, the YXDOMAIN would be served; the DNAME is bogus.
+    let target = format!("{0}.{0}.{0}.{1}.netmeister.org.", "a".repeat(63), "a".repeat(46));
+    let forged = crate::scrub::dname("dname.dns.netmeister.org.", &target);
+    let (resolved, sent) = ask(
+        &recursion::Resolution::read("dname"),
+        &caches(false),
+        Question::new(name("www.dname.dns.netmeister.org."), RecordType::A),
+        true,
+        &|zone, message| {
+            if is(zone, "dns.netmeister.org.")
+                && answers(message, "www.dname.dns.netmeister.org.", RecordType::A)
+            {
+                message.set_rcode(Rcode::YXDOMAIN).expect("a code");
+                message.answer = vec![forged.clone()];
+                message.authority.clear();
+            }
+        },
+    );
+    assert!(matches!(resolved, Resolved::Failed(Failure::Bogus(_))), "{resolved:?} {sent:?}");
+}
+
+#[test]
+fn rfc4035_5_3_4_a_wildcard_expansion_cached_unchecked_is_asked_again() {
+    // A client setting CD, or an address lookup (a server name an attacker put under a victim's wildcard), caches
+    // the expansion unchecked, without the proof that no closer name exists. Validated from the cache it would be
+    // bogus: it is asked again, its proof with it. Secure under NSEC3, insecure under an opt-out span.
+    for (id, verdict) in [("wildcard", Checked::Secure), ("wildcard-optout", Checked::Insecure)] {
+        let capture = recursion::Resolution::read(id);
+        let caches = caches(false);
+        let (unchecked, _) = ask(&capture, &caches, question(&capture), false, &|_, _| {});
+        assert_eq!(unchecked.checked(), Checked::Unchecked, "{id}");
+        let (resolved, sent) = ask(&capture, &caches, question(&capture), true, &|_, _| {});
+        assert_eq!(resolved.checked(), verdict, "{id}: {resolved:?}");
+        let asked = |(_, name, rtype): &Sent| *name == capture.name && *rtype == capture.rtype;
+        assert!(sent.iter().any(asked), "{id}: {sent:?}");
+    }
+}
+
+#[test]
+fn rfc4035_5_3_4_a_secure_wildcard_expansion_is_served_with_its_proof() {
+    // The cache holds the expansion without its proof, which a client that validates needs: asked again.
+    let capture = recursion::Resolution::read("wildcard");
+    let caches = caches(false);
+    for _ in 0..2 {
+        let (resolved, sent) = ask(&capture, &caches, question(&capture), true, &|_, _| {});
+        assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?}");
+        let Resolved::Answer { denials, .. } = &resolved else {
+            panic!("{resolved:?}");
+        };
+        assert!(!denials.is_empty(), "{sent:?}");
     }
 }
 
@@ -302,10 +440,9 @@ fn d197_the_validation_queries_are_bounded() {
     };
     let checking = (limits, validator(dedens_dnssec::Limits::default()));
     let (resolution, resolved, sent) = check(&capture, &caches(false), checking, &|_, _| {});
-    assert_eq!(
-        resolved,
-        Resolved::Failed(Failure::Limit(Limit::Validation))
-    );
+    // A validation a bound stops is DNSSEC Indeterminate (RFC 8914 §4.7), not No Reachable Authority.
+    let indeterminate = Failure::Indeterminate(InfoCode::DNSSEC_INDETERMINATE);
+    assert_eq!(resolved, Resolved::Failed(indeterminate));
     let questions = sent
         .iter()
         .filter(|(_, _, rtype)| *rtype == RecordType::A)
@@ -414,10 +551,11 @@ fn rfc4035_5_2_a_ds_denied_by_the_child_is_asked_again_of_the_parent() {
 }
 
 #[test]
-fn rfc4035_5_2_a_ds_denied_by_the_child_stands_when_no_parent_shows() {
-    // No NS of nl to be had: the search reaches the zone asked, whose answer stands.
+fn rfc4035_5_2_a_ds_question_fails_with_its_cut_lookup() {
+    // No NS of nl to be had, the root refusing: the lookup fails, which tells nothing of the cut, so the DS question
+    // fails with it (Unbound's processDSNSFind) rather than take the child's NODATA, which a validator judges bogus.
     let (resolved, sent) = too_low(RecordType::DS, false);
-    assert!(matches!(resolved, Resolved::NoData { .. }), "{resolved:?}");
+    assert!(matches!(resolved, Resolved::Failed(_)), "{resolved:?}");
     let nl = (name("nl."), RecordType::NS);
     assert!(
         sent.iter()

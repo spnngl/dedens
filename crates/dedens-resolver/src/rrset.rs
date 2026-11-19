@@ -128,6 +128,17 @@ impl Rrset {
     pub fn rrsigs(&self) -> &[WireRdata<'static>] {
         &self.rrsigs
     }
+
+    /// Whether a signature counts fewer labels than the owner name, a leading `*` not counted: the `RRset` is a
+    /// wildcard expansion (RFC 4035 §5.3.4), whose proof that no closer name exists is in another `RRset`.
+    #[must_use]
+    pub fn expanded(&self) -> bool {
+        let starred = self.owner.labels().next() == Some(b"*".as_slice());
+        let counted = self.owner.label_count() - usize::from(starred);
+        (self.rrsigs.iter()).any(|rdata| {
+            matches!(rdata.data(), RData::Rrsig(rrsig) if usize::from(rrsig.labels) < counted)
+        })
+    }
 }
 
 /// The heap bytes an `RRset` takes behind an `Arc`, as the cache holds it: the `Arc`'s allocation, the owner name
