@@ -30,6 +30,9 @@ exclude_re = [
   # dedensd's entry for the simulation: only dedens-sim's `serving` family calls it, and cargo-mutants runs the tests
   # of the mutated package alone (D182).
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated(<N>)? with \(\)$',
+  # The recurse stage's loop (D195) asks authoritative servers on port 53 at the root's addresses, which only
+  # dedens-sim's Internet serves (its `recurse` tests): the same reason.
+  'dedensd/src/serve/recurse\.rs:\d+:\d+: (replace (resolve|clock|drive|ask|send)(<N>)?( -> .*)? with .*|.* in (resolve|clock|drive|ask|send)(<N>)?)$',
   # Every plan but `Unprivileged` takes root, or a `user` naming the one running the tests, which no test sets: under
   # `Unprivileged` `drop_root` applies nothing and returns `Ok(None)` (D122).
   'dedensd/src/lib\.rs:\d+:\d+: replace drop_root -> .* with Ok\(None\)$',
