@@ -811,10 +811,10 @@ impl Resolution {
     /// [`Limits::validation`]; their responses are what the resolution gives, built by [`Resolved::message`] from
     /// the `RRsets` it trusts, so that nothing a server adds to a response (glue, additional data) reaches it.
     ///
-    /// The verdict is recorded on every `RRset` of the answer in the cache (RFC 4035 §4.7): secure ones live no
-    /// longer than their signatures, a bogus answer ends the resolution [`Failure::Bogus`]. An answer whose
-    /// `RRsets` the cache judged already is not validated again. A YXDOMAIN is not validated: the validator judges
-    /// answers and denials only.
+    /// Each `RRset` of the answer is cached with its own verdict (RFC 4035 §4.7): secure ones live no longer than
+    /// their signatures; a bogus answer ends the resolution [`Failure::Bogus`]. An answer whose `RRsets` the cache
+    /// judged already is not validated again. A YXDOMAIN is validated as an answer: bogus without the DNAME that
+    /// makes it (RFC 6672 §2.2).
     #[must_use]
     pub fn validated(mut self, validator: Validator, unix: u64) -> Self {
         self.validator = Some((validator, unix));
@@ -1092,13 +1092,24 @@ impl Resolution {
 
     /// The start of the active task: its answer or CNAME in the cache, else the closest delegation known, above
     /// the name for a DS, which the parent's servers hold (RFC 4035 §3.1.4.1; Unbound's `processInitRequest`).
+    ///
+    /// With a validator, a wildcard expansion not judged insecure or bogus is asked again: the cache holds it
+    /// without the proof that no closer name exists (RFC 4035 §5.3.4), which an unchecked one needs to be judged
+    /// and a secure one to be served to a client that validates.
     fn begin(&mut self, now: u32) {
         let caches = Arc::clone(&self.caches);
         let rrsets = &caches.rrsets;
+        let validating = self.validator.is_some();
+        let usable = |held: &Ranked| {
+            answers(held)
+                && !(validating
+                    && matches!(held.checked, Checked::Unchecked | Checked::Secure)
+                    && held.rrset.expanded())
+        };
         let task = self.tasks.active();
         let Question { name, qtype, .. } = &task.asked;
         let qtype = *qtype;
-        if let Some(data) = rrsets.get(name, qtype, Class::IN, now).filter(answers) {
+        if let Some(data) = rrsets.get(name, qtype, Class::IN, now).filter(usable) {
             debug!(%name, rtype = %qtype, "answered from the cache");
             let chain = std::mem::take(&mut task.chain);
             let denials = std::mem::take(&mut task.denials);
@@ -1112,7 +1123,7 @@ impl Resolution {
         if qtype != RecordType::CNAME
             && let Some(cname) = rrsets
                 .get(name, RecordType::CNAME, Class::IN, now)
-                .filter(answers)
+                .filter(usable)
             && let Some(target) = target(&cname.rrset)
         {
             return self.restart(vec![cname], target);
@@ -1193,14 +1204,22 @@ impl Resolution {
 
     /// Caches the `RRsets` the scrubber kept, at the rank it gave each (D192), and returns them. The NS records of
     /// a `referral` through a delegation the cache gave are stored as of the resolution's start, so that they cannot
-    /// refresh an NS `RRset` that had expired by then (Unbound's `store_rrsets`, D193).
+    /// refresh an NS `RRset` that had expired by then (Unbound's `store_rrsets`, D193). A CNAME below a DNAME of
+    /// the response is not cached: it was synthesized, its TTL as good as 0 (RFC 6672 §3.4), and from the cache it
+    /// would answer without the DNAME that makes it, which a validator judges (Unbound's synthesis does as much).
     fn cache(&mut self, ranked: Vec<(Rank, Rrset)>, referral: bool, now: u32) -> Vec<Ranked> {
         let from_cache = self
             .tasks
             .asking()
             .is_some_and(|delegation| delegation.source == Source::Cache);
+        let dnames: Vec<Name<'static>> = (ranked.iter())
+            .filter(|(_, set)| set.rtype() == RecordType::DNAME)
+            .map(|(_, set)| set.owner().clone())
+            .collect();
         let mut kept = Vec::with_capacity(ranked.len());
         for (rank, set) in ranked {
+            let synthesized = set.rtype() == RecordType::CNAME
+                && (dnames.iter()).any(|dname| set.owner() != dname && set.owner().is_within(dname));
             let at = if referral && from_cache && set.rtype() == RecordType::NS {
                 self.started_secs
             } else {
@@ -1209,8 +1228,9 @@ impl Resolution {
             let rrset = Arc::new(set);
             // The resolution reads what this server said whatever the cache did: an `RRset` too large, or one the
             // cache trusts more and keeps, changes what later questions find, not this response.
-            if let Err(error) =
-                (self.caches.rrsets).insert(Arc::clone(&rrset), rank, Checked::Unchecked, at)
+            if !synthesized
+                && let Err(error) =
+                    (self.caches.rrsets).insert(Arc::clone(&rrset), rank, Checked::Unchecked, at)
             {
                 debug!(owner = %rrset.owner(), rtype = %rrset.rtype(), %error, "not cached");
             }
@@ -1304,11 +1324,17 @@ impl Resolution {
         }
     }
 
-    /// Ends the whole resolution at a global bound.
+    /// Ends the whole resolution at a global bound: a validation stopped there is indeterminate, DNSSEC
+    /// Indeterminate (RFC 8914 §4.7), nothing of it cached.
     fn end(&mut self, limit: Limit) {
         debug!(%limit, "limit reached, resolution ends");
         crate::metrics::limit(limit);
-        self.settled = Some(Settled::Done(Resolved::Failed(Failure::Limit(limit))));
+        let failure = if self.checking.is_some() {
+            Failure::Indeterminate(InfoCode::DNSSEC_INDETERMINATE)
+        } else {
+            Failure::Limit(limit)
+        };
+        self.settled = Some(Settled::Done(Resolved::Failed(failure)));
     }
 
     /// Sends `query`, within [`Limits::queries`], or [`Limits::validation`] for the validator's question.
@@ -1423,6 +1449,13 @@ impl Resolution {
             return;
         };
         match outcome {
+            // A lookup that failed tells nothing of the cut: the DS question fails with it, as Unbound's
+            // `processDSNSFind` does, rather than take the name for no cut and judge the child's NODATA.
+            Resolved::Failed(failure) => {
+                debug!(%point, %failure, "zone cut lookup failed");
+                self.tasks.active().cut = Some(Cut::Over);
+                self.finish(Resolved::Failed(*failure), now);
+            }
             // Through a CNAME the name is an alias, no cut: the name above is looked up.
             Resolved::Answer { chain, data, .. } if chain.is_empty() => {
                 debug!(%point, "zone cut found");
@@ -1475,7 +1508,10 @@ impl Resolution {
         };
         let judged = matches!(
             outcome,
-            Resolved::Answer { .. } | Resolved::NoData { .. } | Resolved::NxDomain { .. }
+            Resolved::Answer { .. }
+                | Resolved::NoData { .. }
+                | Resolved::NxDomain { .. }
+                | Resolved::YxDomain { .. }
         );
         if let Some((validator, unix)) = &self.validator
             && judged
@@ -1518,45 +1554,58 @@ impl Resolution {
                     return;
                 };
                 self.spent = Some(validation.cost());
-                let outcome = self.judged(outcome, verdict, now);
+                let outcome = self.judged(outcome, verdict, &validation, now);
                 debug!(?outcome, "resolution done");
                 self.settled = Some(Settled::Done(outcome));
             }
         }
     }
 
-    /// `outcome` as `verdict` makes it, the verdict recorded on each of its `RRsets` in the cache: a secure one
-    /// lives no longer than the verdict's TTL, the signatures' (RFC 4035 §5.3.3), an insecure one than D93's cap, a
-    /// bogus one than `Config::bogus_ttl` (RFC 4035 §4.7).
-    fn judged(&self, mut outcome: Resolved, verdict: Verdict, now: u32) -> Resolved {
+    /// `outcome` as `verdict` makes it. The cache records each `RRset`'s own verdict (`Validation::verdict_of`,
+    /// Unbound's `rrset_update_sec_status`), not the outcome's, whose parts may be of other zones: a secure one lives
+    /// no longer than its signatures (RFC 4035 §5.3.3), an insecure one than D93's cap, a bogus one than
+    /// `Config::bogus_ttl` (RFC 4035 §4.7); a set with no verdict of its own stays as it is. The outcome served
+    /// takes the verdict.
+    fn judged(
+        &self,
+        mut outcome: Resolved,
+        verdict: Verdict,
+        validation: &Validation,
+        now: u32,
+    ) -> Resolved {
         debug!(?verdict, "validated");
-        let (checked, cap) = match verdict {
-            Verdict::Secure { ttl } => (Checked::Secure, Some(ttl)),
-            Verdict::Insecure { .. } => (Checked::Insecure, None),
-            Verdict::Bogus { ede } => (Checked::Bogus(ede.code), None),
-            Verdict::Indeterminate { ede } => {
-                return Resolved::Failed(Failure::Indeterminate(ede.code));
-            }
-            // Neither comes of a response holding the whole chain, which is no referral.
-            _ => {
-                let code = InfoCode::DNSSEC_INDETERMINATE;
-                return Resolved::Failed(Failure::Indeterminate(code));
-            }
-        };
         let rrsets = &self.caches.rrsets;
+        for ranked in outcome.rrsets_mut() {
+            let own = validation.verdict_of(ranked.rrset.owner(), ranked.rrset.rtype());
+            let Some((checked, cap)) = own.and_then(recorded) else {
+                continue;
+            };
+            // The time left, not the TTL received: the set may have come from the cache, or stayed in it while the
+            // validation ran.
+            let mut rrset = Rrset::clone(&ranked.rrset);
+            rrset.cap_ttl(cap.map_or(ranked.ttl, |cap| cap.min(ranked.ttl)));
+            if let Err(error) = rrsets.insert(Arc::new(rrset), ranked.rank, checked, now) {
+                let (owner, rtype) = (ranked.rrset.owner(), ranked.rrset.rtype());
+                debug!(%owner, %rtype, %error, "verdict not cached");
+            }
+        }
+        let Some((checked, cap)) = recorded(&verdict) else {
+            let code = match verdict {
+                Verdict::Indeterminate { ede } => ede.code,
+                // Neither a referral nor an incomplete chain comes of a response holding the whole chain.
+                _ => InfoCode::DNSSEC_INDETERMINATE,
+            };
+            return Resolved::Failed(Failure::Indeterminate(code));
+        };
         for ranked in outcome.rrsets_mut() {
             let mut rrset = Rrset::clone(&ranked.rrset);
             if let Some(cap) = cap {
                 rrset.cap_ttl(cap);
             }
             let lifetime = rrsets.config().lifetime(rrset.ttl(), checked).unwrap_or(0);
-            let rrset = Arc::new(rrset);
-            if let Err(error) = rrsets.insert(Arc::clone(&rrset), ranked.rank, checked, now) {
-                debug!(owner = %rrset.owner(), rtype = %rrset.rtype(), %error, "verdict not cached");
-            }
             ranked.ttl = ranked.ttl.min(Ttl::from_wire(lifetime));
             ranked.checked = checked;
-            ranked.rrset = rrset;
+            ranked.rrset = Arc::new(rrset);
         }
         match checked {
             Checked::Bogus(code) => Resolved::Failed(Failure::Bogus(code)),
@@ -1688,6 +1737,17 @@ const PORT: u16 = 53;
 /// The caches' clock: seconds, saturating.
 fn secs(now: Duration) -> u32 {
     u32::try_from(now.as_secs()).unwrap_or(u32::MAX)
+}
+
+/// What the cache records of `verdict`, and the cap on the TTL of a secure `RRset` (RFC 4035 §5.3.3): `None` for
+/// a verdict that judges nothing (indeterminate, a referral's, an incomplete chain's).
+fn recorded(verdict: &Verdict) -> Option<(Checked, Option<Ttl>)> {
+    match verdict {
+        Verdict::Secure { ttl } => Some((Checked::Secure, Some(*ttl))),
+        Verdict::Insecure { .. } => Some((Checked::Insecure, None)),
+        Verdict::Bogus { ede } => Some((Checked::Bogus(ede.code), None)),
+        _ => None,
+    }
 }
 
 /// Whether `held` may answer a question (RFC 2181 §5.4.1, D193).

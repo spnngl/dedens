@@ -35,6 +35,12 @@ const CASES: &[(&str, &str, &str)] = &[
     ("unsigned", "google.com", "A"),
     // A CNAME chain across three zones.
     ("cname", "www.microsoft.com", "A"),
+    // A CNAME from an unsigned zone into a signed one, and from a signed zone into another.
+    ("cname-to-signed", "www.zendesk.com", "A"),
+    ("cname-signed", "www.icann.org", "A"),
+    // A wildcard expansion in a signed zone (RFC 4035 §5.3.4), and one under an opt-out NSEC3 (RFC 5155 §9.2).
+    ("wildcard", "wildcard-test.sidnlabs.nl", "MX"),
+    ("wildcard-optout", "dedens.ws", "A"),
     // A DNAME (RFC 6672) in a signed zone, its target in a child zone.
     ("dname", "www.dname.dns.netmeister.org", "A"),
     // A glueless delegation: the servers of netmeister.org are under gandi.net.

@@ -15,6 +15,10 @@ resolver's own minimised resolutions are in [`minimised/`](minimised/README.md) 
 | `signed-nl` | `sidn.nl A` | A signed name under nl |
 | `unsigned` | `google.com A` | An unsigned delegation: com's NSEC3 denies its DS |
 | `cname` | `www.microsoft.com A` | A CNAME chain across microsoft.com, edgekey.net and akamaiedge.net |
+| `cname-to-signed` | `www.zendesk.com A` | A CNAME from unsigned zendesk.com into signed cdn.cloudflare.net |
+| `cname-signed` | `www.icann.org A` | A CNAME from signed icann.org into signed cdn.cloudflare.net |
+| `wildcard` | `wildcard-test.sidnlabs.nl MX` | A wildcard expansion (RFC 4035 §5.3.4), its NSEC3 proof |
+| `wildcard-optout` | `dedens.ws A` | A wildcard expansion in an opt-out NSEC3 span (RFC 5155 §9.2) |
 | `dname` | `www.dname.dns.netmeister.org A` | A DNAME (RFC 6672) in signed netmeister.org, its target in the child dns.netmeister.org |
 | `glueless` | `netmeister.org A` | A glueless delegation: its servers are under gandi.net |
 | `nxdomain-signed` | `dedens-nxdomain.sidn.nl A` | NXDOMAIN denied by NSEC |
