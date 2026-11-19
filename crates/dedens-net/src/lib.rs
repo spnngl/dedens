@@ -14,7 +14,7 @@
 //!   classifier are sans-IO, but `odoh::client` fetches the configurations over `http3` and keeps them by the clock,
 //!   `dnscrypt` (feature `dnscrypt`, D98) the `DNSCrypt` client: a resolver's certificates, fetched and kept by the
 //!   clock, and the sealing of each query, which `client` sends over `udp` and `tcp`, and `entropy` draws the
-//!   system's randomness for both.
+//!   system's randomness for both, and for each step of a recursive resolution (D195).
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
@@ -45,7 +45,6 @@ pub mod dnscrypt;
 #[cfg(feature = "doc")]
 pub mod doc;
 pub mod doh;
-#[cfg(any(feature = "odoh", feature = "dnscrypt"))]
 pub mod entropy;
 pub mod exchange;
 pub mod http3;
