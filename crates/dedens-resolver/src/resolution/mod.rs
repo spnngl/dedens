@@ -64,7 +64,7 @@ pub struct Limits {
     pub depth: usize,
     /// Addresses asked per delegation, and server names kept of a referral: 13, BIND's `max-delegation-servers`
     /// (`bin/include/defaultconfig.h`), the most a referral needs (RFC 1035 §4.2.1's 512 bytes hold 13 root
-    /// servers).
+    /// servers). A delegation that asked as many looks up no more addresses.
     pub servers: usize,
     /// Address lookups per delegation, its servers' A and AAAA each counting: 5, Unbound's `MAX_TARGET_NX`
     /// (`iterator/iterator.h`) against `NXNSAttack` (CVE-2020-12662). Unbound counts the lookups answered NXDOMAIN,
@@ -159,7 +159,8 @@ pub enum Unsupported {
     Class(Class),
 }
 
-/// How a resolution ends. Each `RRset` was cached as it came, at the rank the scrubber gave it (D192).
+/// How a resolution ends. Each `RRset` was cached as it came, at the rank the scrubber gave it (D192), and is given
+/// with the TTL it came with, unbounded: the stage serving it (step 08) must bound it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
     /// The data, after the CNAMEs leading to it.
@@ -234,10 +235,12 @@ pub enum Reply<'a> {
     /// A response matched to the query that does not decode (RFC 1035 §4.1): the next server is asked and nothing
     /// is remembered of this one, as Unbound's `process_response` ignores a response it cannot parse.
     Undecodable,
-    /// No response within [`Query::timeout`].
+    /// No response within [`Query::timeout`]: D190's `ServerError::TimedOut`. A delegation whose servers all time out
+    /// fails [`Failure::Unreachable`], EDE 22 (No Reachable Authority).
     Timeout,
     /// The server could not be reached, or would not talk: ICMP unreachable, TCP refused or reset, responses
-    /// dropped for their cookie only (D190's `ServerError`). It is backed off as after a timeout.
+    /// dropped for their cookie only (D190's `ServerError` but `TimedOut`, which is [`Reply::Timeout`]). It is backed
+    /// off as after a timeout, and makes a delegation that fails [`Failure::Network`], EDE 23 (Network Error).
     ServerError,
     /// The exchange failed here, before the server had a say: the server is not blamed (D191).
     LocalError,
@@ -671,11 +674,15 @@ impl Resolution {
                 now
             };
             let rrset = Arc::new(set);
-            let _ = self
-                .caches
-                .rrsets
-                .insert(Arc::clone(&rrset), rank, Checked::Unchecked, at);
+            // The resolution reads what this server said whatever the cache did: an `RRset` too large, or one the
+            // cache trusts more and keeps, changes what later questions find, not this response.
+            if let Err(error) =
+                (self.caches.rrsets).insert(Arc::clone(&rrset), rank, Checked::Unchecked, at)
+            {
+                debug!(owner = %rrset.owner(), rtype = %rrset.rtype(), %error, "not cached");
+            }
             kept.push(Ranked {
+                // As received, not bounded as the cache bounds what it stores: the stage (step 08) must bound it.
                 ttl: rrset.ttl(),
                 rrset,
                 rank,
@@ -817,7 +824,11 @@ fn ask(
     rng: &mut impl CryptoRng,
 ) -> Ask {
     loop {
-        if !delegation.untried.is_empty() && delegation.asked >= limits.servers {
+        // Past the bound, an address is neither asked nor looked up, which would spend queries on one never asked.
+        let left = !delegation.untried.is_empty()
+            || delegation.aaaa.is_some()
+            || !delegation.missing.is_empty();
+        if left && delegation.asked >= limits.servers {
             return Ask::Fail(Failure::Limit(Limit::Servers));
         }
         if let Some(choice) =
@@ -945,16 +956,21 @@ fn closest(caches: &Caches, name: &Name<'_>, parent: bool, cap: usize, now: u32)
     hinted(Name::root(), caches.roots.servers())
 }
 
-/// The `RRsets` of `records`, as `kept` holds them: the scrubber's ranks (D192).
+/// The `RRsets` of `records`, as `kept` holds them, grouped by the scrubber with its ranks (D192), in the order their
+/// first records come. A record of no `RRset` of `kept` (an RRSIG, held with the `RRset` it covers) adds none.
 fn sets(records: &[Record<'_>], kept: &[Ranked]) -> Vec<Ranked> {
-    Rrset::group(records)
-        .iter()
-        .filter_map(|set| {
-            kept.iter()
-                .find(|held| held.rrset.owner() == set.owner() && held.rrset.rtype() == set.rtype())
-        })
-        .cloned()
-        .collect()
+    let mut sets: Vec<Ranked> = Vec::new();
+    for record in records {
+        let of = |held: &&Ranked| {
+            *held.rrset.owner() == record.name && held.rrset.rtype() == record.rtype()
+        };
+        if !sets.iter().any(|set| of(&set))
+            && let Some(held) = kept.iter().find(of)
+        {
+            sets.push(held.clone());
+        }
+    }
+    sets
 }
 
 /// The name a CNAME `RRset` of one record leads to.

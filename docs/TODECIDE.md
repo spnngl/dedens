@@ -269,6 +269,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   (`crates/dedens-resolver/src/resolution/mod.rs`, `Resolution::ask`); Unbound goes up instead when the delegation
   point is useless (`iterator/iterator.c` `iter_dp_is_useless`, then the parent side or the root). Default: once from
   the root hints, within the same `Limits` (D191), with the stage (recursive step 08).
+- A DS question answered NODATA by the child: a server of a zone above the name's parent, which the resolution
+  asks when it knows no closer cut, that serves the child zone too gives a NODATA whose SOA owner is the name asked,
+  the child's apex (RFC 4035 §3.1.4.1: the wrong side of the cut), and the resolution takes it as the DS's denial
+  (`Resolution::receive`, `crates/dedens-resolver/src/resolution/mod.rs`). Unbound's `iter_ds_toolow`
+  (`iterator/iter_utils.c`) rejects it, unless the zone asked is the name's parent or one label above it
+  (`iter_dp_cangodown`), and looks up the NS of each name from the name's parent up until a cut is found
+  (`processDSNSFind`, `MAX_DSNS_FIND_COUNT` 20). That needs an NS lookup beside the address ones, with its own bound.
+  Default: with the validator (recursive step 10), which needs the parent's DS and reads its proof.
 
 ## Later
 

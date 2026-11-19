@@ -58,7 +58,8 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   deviation from Unbound). It is the chain past an AA answer's first owner.
 - A DS is the parent's (RFC 4035 §3.1.4.1): `closest` starts above the name for one, and a DS question referred to
   the name asked is not followed. Its proof (NSEC or NSEC3) is in the referral, the validator's to read (step 10):
-  the child's answer would be NODATA from the wrong side of the cut.
+  the child's answer would be NODATA from the wrong side of the cut. A server above the parent serving the child
+  too still gives such a NODATA, taken as the denial: `docs/TODECIDE.md`, for step 10.
 - NSEC and NSEC3 records are not capped by count (a proof needs what it needs): the validator bounds their cost
   (KeyTrap, CVE-2023-50387 and CVE-2023-50868).
 - Names keep the case the server sent: `Name`'s equality folds case, so `scrub` matches a `0x20` question, and

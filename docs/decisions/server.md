@@ -1486,7 +1486,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the cache or a response; `referrals` 30, below Unbound's `MAX_REFERRAL_COUNT` 130 and above hickory's 24: the
     captures' deepest follows 4; `depth` 4 sub-resolutions waiting on one another, Unbound's `target-fetch-policy`
     (BIND `max-recursion-depth` 7); `servers` 13 addresses asked and NS names used per delegation, BIND's
-    `max-delegation-servers`; `targets` 5 address lookups per delegation, A and AAAA each counted, after Unbound's
+    `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 address lookups per delegation, A and AAAA each counted, after Unbound's
     `MAX_TARGET_NX` 5 (NXNSAttack, CVE-2020-12662), which counts NXDOMAIN lookups per client question, and its
     `MAX_DP_TARGET_COUNT` 16 per delegation (BIND counts them within its 13); `time` 4.5 s, a stub's 5 s (glibc
     `RES_TIMEOUT`) less the SERVFAIL's way back. `queries`, `restarts`, `referrals` and `time` end the resolution;
