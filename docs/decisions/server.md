@@ -1885,9 +1885,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     child (a server serving both sides): the NS of the name's parent are looked up (`Purpose::Cut`), then of its
     parent, up to the zone asked; an NS answer (not through a CNAME: an alias is no cut) or a referral for that name
     makes it the delegation the DS is asked of. Reaching the zone asked, the NODATA stands, as Unbound's: from the
-    name's parent at once (`iter_dp_cangodown`). Each lookup is a
-    sub-resolution under `depth` and the limits, one per label between the name and the zone asked, where Unbound
-    stops at `MAX_DSNS_FIND_COUNT` 20: `queries` bounds them first.
+    name's parent at once (`iter_dp_cangodown`). Each lookup is a sub-resolution under `depth` and the limits, one
+    per label between the name and the zone asked, where Unbound stops at `MAX_DSNS_FIND_COUNT` 20: `queries`
+    bounds them first.
+  - With D198: each validator question and each cut's NS lookup is a task, minimised as the client's. D198's
+    relaxed NXDOMAIN on a minimised name still asks the full name, where Unbound ends on a zone it expects signed:
+    the full name's response is the one judged, its denial proven or bogus. D188's captures are a full-name
+    iterator's, so the validation tests resolve with `Minimisation::Off`.
   - The recurse stage: `Recurse::validating(Validating)` as a forward stage (D77): AD on a secure answer (D114's
     `present`, signatures and denials cut to those that cover it), SERVFAIL with the EDE for a bogus one, no stale
     data in its place and no failure held (asked again, the `RRset` cache answers bogus without a query); an
@@ -1908,8 +1912,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Tests: `crates/dedens-resolver/tests/validation.rs` (every signed capture secure and cached so, every unsigned
     one insecure; a stripped signature, a changed DS, another zone's keys bogus; a KeyTrap-shaped DNSKEY set within
     the budget; a budget of one verification indeterminate; the validation's queries bounded; forged glue not the
-    answer; an unvalidated cached answer validated; the DS from the child asked again of the parent, and standing
-    when no parent shows), `crates/dedens-server/tests/recurse.rs` (AD on each secure capture, from the cache stage
+    answer; an unvalidated cached answer validated; the DS from the child asked again of the parent, standing
+    when no parent shows, and no cut sought for another type), `crates/dedens-server/tests/recurse.rs` (AD on each secure capture, from the cache stage
     too; bogus SERVFAIL EDE 10, asked again with no query; CD not validated; the allowance's two ends), the config
     tests in `apps/dedensd/src/config/recurse.rs`.
   - Rejected: the validator beside the resolution in the server, each question a resolution of its own (two state
