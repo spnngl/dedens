@@ -103,6 +103,11 @@ impl LocalZones {
         Some(Self(zones.into()))
     }
 
+    /// The zones, in the order of [`ZONES`].
+    pub(super) fn names(&self) -> impl Iterator<Item = &Name<'static>> {
+        self.0.iter().map(|(zone, _)| zone)
+    }
+
     /// The answer to `question`, as its zone serves it, if a zone of these holds it, in class IN, the zones' class:
     /// its rcode, and its answer and authority sections in a message. A DS question at an empty zone's apex is its
     /// parent's (RFC 4035 §3.1.4.1), and RFC 8375 §4 item 4.B asks that it be resolved, so that a validator below

@@ -12,7 +12,7 @@ use anyhow::{Context, anyhow, ensure};
 use dedens_cache::Cache;
 use dedens_dnssec::TrustAnchors;
 use dedens_plugins::{Action, Blocklist, Hosts, ListError, Lists, Merged, Tlds, host_names};
-use dedens_proto::{Question, RecordType, Ttl};
+use dedens_proto::{Name, Question, RecordType, Ttl};
 use dedens_server::{Pipeline, Stage};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -415,9 +415,9 @@ pub(super) fn blocklist(
 }
 
 /// Replaces the cache stages of `built` that are those of `previous` with empty ones when the forward stages
-/// validate differently.
+/// validate differently, or the recurse stages serve other zones locally (D195).
 pub(super) fn flush(built: &mut [Stage], previous: &Pipeline) -> anyhow::Result<()> {
-    if validations(previous.stages()) == validations(built) {
+    if filled(previous.stages()) == filled(built) {
         return Ok(());
     }
     for stage in built {
@@ -433,16 +433,27 @@ pub(super) fn flush(built: &mut [Stage], previous: &Pipeline) -> anyhow::Result<
     Ok(())
 }
 
-/// How each forward stage of `stages` validates, in order: a cache stage built before is only good for the verdicts
-/// it was filled with.
-fn validations(stages: &[Stage]) -> Vec<Option<&str>> {
+/// How each stage of `stages` that fills a cache stage answers, in order: a cache stage built before is only good
+/// for the verdicts it was filled with, and the zones served locally then, whose answers it holds, or those it
+/// would not have, resolved.
+fn filled(stages: &[Stage]) -> Vec<Filled<'_>> {
     stages
         .iter()
         .filter_map(|stage| match stage {
-            Stage::Forward(forward) => Some(forward.validation_tag()),
+            Stage::Forward(forward) => Some(Filled::Validating(forward.validation_tag())),
+            Stage::Recurse(recurse) => Some(Filled::Serving(recurse.local_zones().collect())),
             _ => None,
         })
         .collect()
+}
+
+/// What a cache stage was filled under, by one stage after it.
+#[derive(PartialEq, Eq)]
+enum Filled<'a> {
+    /// A forward stage, validating so.
+    Validating(Option<&'a str>),
+    /// A recurse stage, serving these zones locally.
+    Serving(Vec<&'a Name<'static>>),
 }
 
 /// The questions a cache stage keeps answered, from `prewarm` (D96): each distinct name, in order, once for each of
