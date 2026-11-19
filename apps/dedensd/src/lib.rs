@@ -357,11 +357,6 @@ impl Ending {
     }
 }
 
-/// The text of the configuration file `file`.
-///
-/// # Errors
-///
-/// A file that does not read.
 /// Sets what the whole process holds to before its threads start: the panic hook (D121), and on Unix the limit of
 /// open descriptors ([`descriptors`]).
 fn process() {
@@ -389,6 +384,11 @@ fn descriptors() {
     }
 }
 
+/// The text of the configuration file `file`.
+///
+/// # Errors
+///
+/// A file that does not read.
 fn read(file: &Path) -> anyhow::Result<String> {
     std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))
 }

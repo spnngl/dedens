@@ -33,6 +33,10 @@ exclude_re = [
   # Every plan but `Unprivileged` takes root, or a `user` naming the one running the tests, which no test sets: under
   # `Unprivileged` `drop_root` applies nothing and returns `Ok(None)` (D122).
   'dedensd/src/lib\.rs:\d+:\d+: replace drop_root -> .* with Ok\(None\)$',
+  # The soft limit of open descriptors raised to the hard one (D195) shows past 1024 sockets, which no test opens;
+  # `process` does that and sets the panic hook, which no test sets either (D121, `hook` below).
+  'dedensd/src/lib\.rs:\d+:\d+: replace (process|descriptors) with \(\)$',
+  'dedensd/src/lib\.rs:\d+:\d+: replace .* in descriptors$',
   # The same for the DNSCrypt provider's entry (D99): dedens-sim's `dnscrypt` test calls it.
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated_dnscrypt(<N>)? (with \(\)|-> anyhow::Result<\(\)> with Ok\(\(\)\))$',
   # A key file is read in one `read` or a few: an interrupted read is retried, which no test makes a file do.

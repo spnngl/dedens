@@ -778,6 +778,9 @@ fn rfc8914_4_no_server_answering_is_no_reachable_authority() {
         assert_eq!(outcome, Resolved::Failed(Failure::Network));
         assert_eq!(sent, roots);
     }
+    // Responses that do not decode are servers answering: no network error.
+    let (outcome, _) = unreached(limits, || Answered::Undecodable);
+    assert_eq!(outcome, Resolved::Failed(Failure::Unusable));
     assert_eq!(Failure::Network.info_code(), InfoCode::NETWORK_ERROR);
     assert_eq!(Failure::Unusable.info_code(), InfoCode::OTHER);
 }
@@ -1554,8 +1557,25 @@ fn rfc5452_5_a_reply_shared_does_not_judge_the_server_again() {
     let now = at(&capture);
     let mut rng = Seeded(SEED);
     let mut waiter = start(&capture, &caches, Limits::default());
-    assert!(matches!(waiter.step(now, &mut rng), Next::Send(_)));
+    let Next::Send(first) = waiter.step(now, &mut rng) else {
+        panic!("a query")
+    };
+    let first = first.server;
     waiter.receive_shared(Reply::Timeout, now);
+    assert_eq!(caches.infra.len(), 0);
+    // It took the timeout all the same: the next query goes to another server.
+    let Next::Send(next) = waiter.step(now, &mut rng) else {
+        panic!("a query")
+    };
+    assert_ne!(next.server, first);
+    // A response shared credits no server either.
+    let referral = response(&capture, ".", &capture.name.to_string());
+    let shared = Reply::Response {
+        message: &referral,
+        seen: Marks::default(),
+        rtt: RTT,
+    };
+    waiter.receive_shared(shared, now);
     assert_eq!(caches.infra.len(), 0);
     let mut sender = start(&capture, &caches, Limits::default());
     assert!(matches!(sender.step(now, &mut rng), Next::Send(_)));

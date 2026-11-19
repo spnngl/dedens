@@ -907,7 +907,10 @@ fn d116_an_rrset_larger_than_an_entry_may_be_is_not_cached() {
 #[test]
 fn d193_the_default_capacity_is_twice_the_response_cache_s() {
     assert_eq!(DEFAULT_CAPACITY, 2 * Config::default().capacity);
-    assert!(RrsetCache::new(DEFAULT_CAPACITY, Config::default()).is_ok());
+    let cache = RrsetCache::new(DEFAULT_CAPACITY, Config::default()).expect("a valid size");
+    // What a reload compares to keep the cache (D195).
+    assert_eq!(cache.capacity(), DEFAULT_CAPACITY);
+    assert_eq!(cache.config(), &Config::default());
 }
 
 /// The longest owner name, 255 octets, is a key like any other.

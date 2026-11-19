@@ -410,6 +410,8 @@ fn sizes_checked() {
     ));
     // Room for the longest entry, a lame IPv6 server for a zone of 255 octets.
     let small = InfraCache::new(4096, 1).expect("a valid size");
+    // What a reload compares to keep the cache (D195).
+    assert_eq!(small.capacity(), 4096);
     let label = "a".repeat(63);
     let longest = name(&format!("{label}.{label}.{label}.{}.", &label[..61]));
     small.lame(documentation(1), &longest, 0);
