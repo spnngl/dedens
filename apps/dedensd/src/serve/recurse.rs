@@ -142,38 +142,45 @@ async fn drive<N: Io>(thread: &Thread<N>, resolving: &mut Resolving) {
             tracing::warn!(%error, "a resolution's step drew past its randomness");
             return;
         }
-        let (outcome, sent) = match ask(thread, &query).await {
-            Asked::Sent(outcome) => (outcome, true),
-            Asked::Shared(outcome) => (outcome, false),
-            Asked::Shed => {
-                metrics::counter!(SHED).increment(1);
-                tracing::debug!(server = %query.server, name = %query.question.name, "too many waiting");
-                resolving.shed();
-                continue;
-            }
-        };
-        let decoded;
-        let reply = match &outcome {
-            Outcome::Response { wire, seen, rtt } => match Message::decode(wire) {
-                Ok(message) => {
-                    decoded = message;
-                    Reply::Response {
-                        message: &decoded.message,
-                        seen: *seen,
-                        rtt: *rtt,
-                    }
-                }
-                Err(_) => Reply::Undecodable,
-            },
-            Outcome::Timeout => Reply::Timeout,
-            Outcome::ServerError => Reply::ServerError,
-            Outcome::LocalError => Reply::LocalError,
-        };
-        if sent {
-            resolving.receive(reply, clock(thread));
-        } else {
-            resolving.receive_shared(reply, clock(thread));
+        let asked = ask(thread, &query).await;
+        hand(resolving, &query, asked, clock(thread));
+    }
+}
+
+/// Hands `resolving` what became of the `query` it gave, at `now`: the outcome of one it sent, which judges the
+/// server, or of one shared, which does not; one shed ends it.
+fn hand(resolving: &mut Resolving, query: &Query, asked: Asked, now: Duration) {
+    let (outcome, sent) = match asked {
+        Asked::Sent(outcome) => (outcome, true),
+        Asked::Shared(outcome) => (outcome, false),
+        Asked::Shed => {
+            metrics::counter!(SHED).increment(1);
+            tracing::debug!(server = %query.server, name = %query.question.name, "too many waiting");
+            resolving.shed();
+            return;
         }
+    };
+    let decoded;
+    let reply = match &outcome {
+        Outcome::Response { wire, seen, rtt } => match Message::decode(wire) {
+            Ok(message) => {
+                decoded = message;
+                Reply::Response {
+                    message: &decoded.message,
+                    seen: *seen,
+                    rtt: *rtt,
+                }
+            }
+            Err(_) => Reply::Undecodable,
+        },
+        Outcome::Timeout => Reply::Timeout,
+        Outcome::ServerError => Reply::ServerError,
+        Outcome::LocalError => Reply::LocalError,
+    };
+    if sent {
+        resolving.receive(reply, now);
+    } else {
+        resolving.receive_shared(reply, now);
     }
 }
 
@@ -215,7 +222,9 @@ async fn ask<N: Io>(thread: &Thread<N>, query: &Query) -> Asked {
 /// `ends` (`query.left`, so `Limits::time` holds whatever the wait): sent until `query.timeout` from now, or shared
 /// with another resolution that sent it first, its outcome taken until `ends`, a local error included. The one
 /// sending waits for its own server's timeout, which may be longer than the waiter's estimate of it: the waiter waits
-/// for it rather than send again. One the other gave up on unsent, cancelled, is sent with the time left.
+/// for it rather than send again. One the other gave up on unsent, cancelled, is sent with the time left, as is one
+/// whose sender's resolution ended before its server's timeout: that timeout is not the server's, and those waiting
+/// may have more time.
 async fn asked<N: Io>(
     io: &N,
     flights: &Flights,
@@ -236,8 +245,13 @@ async fn asked<N: Io>(
             Entered::Full => return Asked::Shed,
         }
     };
-    let outcome = send((io.now() + query.timeout).min(ends)).await;
-    lead.finish(&outcome);
+    let deadline = (io.now() + query.timeout).min(ends);
+    let outcome = send(deadline).await;
+    if deadline == ends && matches!(outcome, Outcome::Timeout) {
+        drop(lead);
+    } else {
+        lead.finish(&outcome);
+    }
     Asked::Sent(outcome)
 }
 
@@ -407,10 +421,12 @@ mod tests {
     use std::cell::Cell;
     use std::mem::discriminant;
     use std::pin::pin;
+    use std::sync::Arc;
 
     use compio::runtime::Runtime;
     use dedens_net::io::Compio;
     use dedens_proto::{Name, RecordType};
+    use dedens_server::{Recurse, Stage};
     use futures_util::FutureExt;
 
     use super::*;
@@ -498,6 +514,38 @@ mod tests {
         });
     }
 
+    /// A timeout cut short by the sender's resolution's end is not the server's: those waiting are not handed it,
+    /// and one of them sends the query again in its own time. A timeout of the server's is handed.
+    #[test]
+    fn d195_a_timeout_cut_short_by_the_sender_s_end_is_not_shared() {
+        Runtime::new().expect("a runtime").block_on(async {
+            for (left, shared) in [(Duration::from_millis(10), false), (SECOND, true)] {
+                let flights = Flights::default();
+                let ends = Compio.now() + left;
+                let waiting = RefCell::new(None);
+                let query = query(Duration::from_millis(100));
+                let asked = asked(&Compio, &flights, &query, ends, async |_| {
+                    waiting.replace(Some(flights.enter(&key())));
+                    Outcome::Timeout
+                })
+                .await;
+                assert!(matches!(asked, Asked::Sent(Outcome::Timeout)));
+                let Some(Entered::Follow(waiting)) = waiting.take() else {
+                    panic!("a waiter")
+                };
+                if shared {
+                    assert!(matches!(waiting.try_recv(), Ok(Outcome::Timeout)));
+                } else {
+                    assert!(matches!(
+                        waiting.try_recv(),
+                        Err(flume::TryRecvError::Disconnected)
+                    ));
+                    assert!(matches!(flights.enter(&key()), Entered::Lead(_)));
+                }
+            }
+        });
+    }
+
     /// A waiter takes the outcome of the one sending, and sends nothing itself.
     #[test]
     fn d195_a_waiter_takes_the_outcome_of_the_one_sending() {
@@ -545,7 +593,11 @@ mod tests {
             let flights = Flights::default();
             let _lead = flights.enter(&key());
             let ends = Compio.now() + Duration::from_millis(10);
-            let asked = asked(&Compio, &flights, &query(SECOND), ends, unsent).await;
+            let query = query(SECOND);
+            let asked =
+                compio::time::timeout(SECOND, asked(&Compio, &flights, &query, ends, unsent))
+                    .await
+                    .expect("no wait past the resolution's end");
             assert!(matches!(asked, Asked::Shared(Outcome::Timeout)));
             assert!(Compio.now() >= ends);
         });
@@ -587,6 +639,69 @@ mod tests {
             waiting.pop();
             assert!(matches!(flights.enter(&key()), Entered::Follow(_)));
         });
+    }
+
+    /// A client's resolution of `example.com.` by a recurse stage alone, from the hints, stepped at `now` to its
+    /// first query.
+    fn resolving(now: Duration) -> (Box<Resolving>, Query) {
+        let caches = Arc::new(Caches {
+            rrsets: dedens_resolver::RrsetCache::new(1 << 20, dedens_cache::Config::default())
+                .expect("a valid size"),
+            infra: dedens_resolver::InfraCache::new(1 << 20, 1).expect("a valid size"),
+            roots: dedens_roots::RootHints::bundled().clone(),
+            tlds: None,
+        });
+        let pipeline = Pipeline::new(vec![Stage::Recurse(Recurse::new(caches))]);
+        let name: Name<'static> = "example.com.".parse().expect("a name");
+        let wire = Message::query(1, Question::new(name, RecordType::A))
+            .to_vec()
+            .expect("a query fits");
+        let mut out = vec![0; 65535];
+        let client = [192, 0, 2, 9].into();
+        let Step::Resolve(mut resolving) =
+            pipeline.query(&wire, Transport::Udp, client, 0, &mut out)
+        else {
+            panic!("a resolution")
+        };
+        let mut rng = Entropy::from_io(&Compio).expect("randomness");
+        let Turn::Send(query) = resolving.step(now, &mut rng) else {
+            panic!("a query")
+        };
+        let query = query.clone();
+        (resolving, query)
+    }
+
+    /// What one sent got judges its server; what one shared does not, the one sending judged it (RFC 5452 §5).
+    #[test]
+    fn d195_an_outcome_sent_judges_the_server_one_shared_does_not() {
+        let now = Duration::from_secs(1);
+        for (asked, judged) in [
+            (Asked::Sent(Outcome::Timeout), 1),
+            (Asked::Shared(Outcome::Timeout), 0),
+            (Asked::Sent(Outcome::ServerError), 1),
+            (Asked::Shared(Outcome::ServerError), 0),
+        ] {
+            let (mut resolving, query) = resolving(now);
+            hand(&mut resolving, &query, asked, now);
+            assert_eq!(resolving.caches().infra.len(), judged);
+            // The next query goes to another server.
+            let mut rng = Entropy::from_io(&Compio).expect("randomness");
+            let Turn::Send(next) = resolving.step(now, &mut rng) else {
+                panic!("a query")
+            };
+            assert_ne!(next.server, query.server);
+        }
+    }
+
+    /// One shed ends the resolution, nothing else asked.
+    #[test]
+    fn d195_a_resolution_shed_ends() {
+        let now = Duration::from_secs(1);
+        let (mut resolving, query) = resolving(now);
+        hand(&mut resolving, &query, Asked::Shed, now);
+        let mut rng = Entropy::from_io(&Compio).expect("randomness");
+        assert_eq!(resolving.step(now, &mut rng), Turn::Done);
+        assert_eq!(resolving.caches().infra.len(), 0);
     }
 
     #[test]
