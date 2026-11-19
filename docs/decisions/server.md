@@ -1932,7 +1932,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     again a day on, hold zones signed anew whose signatures start after `example.com`'s end, and the world answers
     each question with the first response captured, so no one clock finds them all valid. The capture tool asks
     the DS of each label of the answer's owners below their zone, as the validator walks them (`dname`
-    recaptured).
+    recaptured). The captures made for the validation's tests (`cname-to-signed`, `cname-signed`, `wildcard`,
+    `wildcard-optout`) stay out of the `recursion` family: they took its time on GitHub's runners from 7.6 s to
+    13.5 s and the crate past D133's budget, for shapes the iteration does not tell apart.
   - A query moved to TCP that times out there (`ServerError::TcpTimedOut`, `Reply::TcpTimeout`) has the next server
     asked, as a timeout, but leaves the server's timeout over UDP as it was, as Unbound's `serviced_tcp_callback`
     backs off only a query over TCP from the start: the server answered over UDP. A server whose TCP times out is

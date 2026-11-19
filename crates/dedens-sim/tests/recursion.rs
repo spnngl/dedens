@@ -49,10 +49,20 @@ fn priming(question: &Question<'_>) -> bool {
     question.name.is_root() && question.qtype == RecordType::NS
 }
 
-/// Every captured resolution.
+/// The captures made for the validation's tests (D197): a CNAME across zones, signed or not, and wildcards, shapes
+/// the iteration does not tell from the others', left out of the simulation, whose time is bounded (D133).
+const VALIDATION_ONLY: &[&str] = &[
+    "cname-to-signed",
+    "cname-signed",
+    "wildcard",
+    "wildcard-optout",
+];
+
+/// Every captured resolution but [`VALIDATION_ONLY`].
 fn captures() -> Vec<Resolution> {
     Resolution::all()
         .into_iter()
+        .filter(|(id, _)| !VALIDATION_ONLY.contains(&id.as_str()))
         .map(|(_, resolution)| resolution)
         .collect()
 }
