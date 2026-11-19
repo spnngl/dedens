@@ -1,7 +1,8 @@
 //! The recurse stage (D195) on the captured resolutions of `testdata/recursion/` (D188), each server answering as
 //! captured through `Authorities`, the harness acting as the transport: RFC 1034 §5.3.3 (each capture resolved
 //! through the pipeline, the cache stage answering it again), RFC 8109 §3 (priming), RFC 6303 §3 and §4, RFC 8375 §4,
-//! RFC 9462 §6.4 and RFC 6761 §6.3, §6.4 (the zones served locally), and D117 (the client's network pays each query).
+//! RFC 9462 §6.4 and RFC 6761 §6.3, §6.4 (the zones served locally), RFC 5452 §5 (a resolution on shared replies),
+//! and D117 (the client's network pays each query).
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -120,11 +121,32 @@ fn captured(authorities: &Authorities, query: &Query) -> Message<'static> {
 
 /// Steps `resolving` at `now` to its end, each query answered from `authorities`; the queries sent.
 fn drive(resolving: &mut Resolving, authorities: &Authorities, now: u32) -> usize {
+    drive_as(resolving, authorities, now, Resolving::receive)
+}
+
+/// [`drive`], each reply handed over by `receive`. Each query is stepped to twice, as a driver may: the client pays
+/// for it once (D117).
+fn drive_as(
+    resolving: &mut Resolving,
+    authorities: &Authorities,
+    now: u32,
+    receive: impl Fn(&mut Resolving, Reply<'_>, Duration),
+) -> usize {
     let now = Duration::from_secs(now.into());
     let mut rng = Seeded(0);
     let mut sent = 0;
     while let Turn::Send(query) = resolving.step(now, &mut rng) {
-        let response = captured(authorities, &query.clone());
+        let query = query.clone();
+        let again = match resolving.step(now, &mut rng) {
+            Turn::Send(again) => Some(again.clone()),
+            Turn::Done => None,
+        };
+        assert_eq!(
+            again,
+            Some(query.clone()),
+            "the same query again, paid for already"
+        );
+        let response = captured(authorities, &query);
         sent += 1;
         assert!(sent <= 1000, "no end in sight");
         let reply = Reply::Response {
@@ -132,7 +154,7 @@ fn drive(resolving: &mut Resolving, authorities: &Authorities, now: u32) -> usiz
             seen: Marks::default(),
             rtt: Duration::from_millis(20),
         };
-        resolving.receive(reply, now);
+        receive(resolving, reply, now);
     }
     sent
 }
@@ -301,6 +323,31 @@ fn rfc8109_3_priming_asks_the_root_ns_once_until_it_expires() {
 }
 
 #[test]
+fn rfc5452_5_a_resolution_on_shared_replies_resolves_and_judges_no_server() {
+    let capture = recursion::Resolution::read("unsigned");
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    // The lame marks of the steering alone.
+    let known = caches.infra.len();
+    let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let authorities = Authorities::new([&capture]);
+    let now = at(&capture);
+    let mut out = vec![0; 65535];
+    let Step::Resolve(mut resolving) =
+        pipeline.query(&question(&capture), Transport::Udp, CLIENT, now, &mut out)
+    else {
+        panic!("a resolution")
+    };
+    assert!(!resolving.is_priming());
+    assert!(drive_as(&mut resolving, &authorities, now, Resolving::receive_shared) > 0);
+    let Step::Reply(len) = pipeline.resolved(&resolving, now, &mut out) else {
+        panic!("a reply")
+    };
+    assert_eq!(decode(&out[..len]).header.rcode, Rcode::NOERROR);
+    assert_eq!(caches.infra.len(), known);
+}
+
+#[test]
 fn rfc8109_3_a_priming_given_up_lets_the_next_start() {
     let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
     let priming = pipeline.prime(Duration::ZERO).expect("due");
@@ -420,6 +467,16 @@ fn rfc8375_4_home_arpa_is_served_empty_but_its_ds() {
     let below = local(&pipeline, "printer.home.arpa.", RecordType::A);
     assert_eq!(below.header.rcode, Rcode::NXDOMAIN);
     assert_eq!(soa(&below), Some("home.arpa.".parse().expect("a name")));
+    // Its apex alone has an SOA and NS records; the SOA answered is not in the authority section too.
+    let apex = local(&pipeline, "home.arpa.", RecordType::SOA);
+    assert_eq!((apex.answer.len(), apex.authority.len()), (1, 0));
+    for rtype in [RecordType::SOA, RecordType::NS] {
+        let below = local(&pipeline, "printer.home.arpa.", rtype);
+        assert_eq!(
+            (below.header.rcode, below.answer.len()),
+            (Rcode::NXDOMAIN, 0)
+        );
+    }
     // Its DS proves it insecure: it is resolved (RFC 8375 §4 item 4.B).
     let query = client_query("home.arpa.", RecordType::DS, Flags::NONE, true);
     let mut out = vec![0; 65535];
@@ -430,8 +487,13 @@ fn rfc8375_4_home_arpa_is_served_empty_but_its_ds() {
 #[test]
 fn rfc9462_6_4_resolver_arpa_has_no_data() {
     let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
-    for name in ["resolver.arpa.", "_dns.resolver.arpa."] {
-        let reply = local(&pipeline, name, RecordType::SVCB);
+    for (name, rtype) in [
+        ("resolver.arpa.", RecordType::SVCB),
+        ("_dns.resolver.arpa.", RecordType::SVCB),
+        ("_dns.resolver.arpa.", RecordType::SOA),
+        ("_dns.resolver.arpa.", RecordType::NS),
+    ] {
+        let reply = local(&pipeline, name, rtype);
         assert_eq!(
             (reply.header.rcode, reply.answer.len()),
             (Rcode::NOERROR, 0),
