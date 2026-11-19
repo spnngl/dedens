@@ -371,6 +371,13 @@ fn rfc4035_5_3_an_answer_stripped_of_its_signatures_is_bogus_and_cached_so() {
         .get(&a.name, RecordType::A, Class::IN, now)
         .expect("cached");
     assert!(matches!(held.checked, Checked::Bogus(_)), "{held:?}");
+    // Asked again, the cache answers bogus: no query, no retry.
+    let (again, sent) = ask(&capture, &caches, question(&capture), true, &|_, _| {});
+    assert_eq!(
+        again,
+        Resolved::Failed(Failure::Bogus(InfoCode::RRSIGS_MISSING))
+    );
+    assert_eq!(sent, vec![]);
 }
 
 #[test]
