@@ -284,6 +284,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   (`iter_dp_cangodown`), and looks up the NS of each name from the name's parent up until a cut is found
   (`processDSNSFind`, `MAX_DSNS_FIND_COUNT` 20). That needs an NS lookup beside the address ones, with its own bound.
   Default: with the validator (recursive step 10), which needs the parent's DS and reads its proof.
+- ANY over TCP with a recurse stage: answered NOTIMP, a meta type the resolution does not ask (D195); RFC 8482 §4
+  asks for a minimal answer instead: one RRset of the name (§4.1) or a synthesized HINFO (§4.2). Over UDP it is truncated, as the forward stage's. Default: the
+  cached RRsets of the name if any, else resolve its A and answer that, as §4.1 allows.
 
 ## Later
 
