@@ -209,6 +209,9 @@ pub struct Query {
     /// How long the exchange may take before [`Reply::Timeout`]: the server's retransmission timeout, at most the
     /// time the resolution has left.
     pub timeout: Duration,
+    /// The time the resolution has left (D191): what a resolution waiting on the same query sent by another may
+    /// wait for its reply (D195), the sender's timeout being its server's, not this one's.
+    pub left: Duration,
 }
 
 /// What the resolution does next.
@@ -877,6 +880,7 @@ fn ask(
                 zone: delegation.zone.clone(),
                 marks: choice.marks,
                 timeout: choice.timeout,
+                left: remaining,
             });
         }
         let lookup = if let Some(name) = delegation.aaaa.take() {

@@ -32,7 +32,7 @@ exclude_re = [
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated(<N>)? with \(\)$',
   # The recurse stage's loop (D195) asks authoritative servers on port 53 at the root's addresses, which only
   # dedens-sim's Internet serves (its `recurse` tests): the same reason. What `ask` decides is `asked`'s, unit tested
-  # with a send given; `ask` adds the transport and the deadline only.
+  # with a send given (D195); `ask` adds the transport and the resolution's end only.
   'dedensd/src/serve/recurse\.rs:\d+:\d+: (replace (resolve|clock|drive|ask|send)(<N>)?( -> .*)? with .*|.* in (resolve|clock|drive|ask|send)(<N>)?)$',
   # Every plan but `Unprivileged` takes root, or a `user` naming the one running the tests, which no test sets: under
   # `Unprivileged` `drop_root` applies nothing and returns `Ok(None)` (D122).
