@@ -200,20 +200,27 @@ pub(super) fn silence(name: &str, url: &str, error: &ureq::Error) -> ExitCode {
 ///
 /// # Errors
 ///
-/// Anything but the server's silence: TLS, too many redirects, a body over [`MAX_LEN`].
+/// Anything but the server's silence, before its head or inside its body: TLS, too many redirects, a body over
+/// [`MAX_LEN`].
 pub(super) fn get(agent: &ureq::Agent, url: &str, accept: &str) -> anyhow::Result<Got> {
     let start = Instant::now();
-    let mut response = match agent.get(url).header("accept", accept).call() {
-        Ok(response) => response,
+    let read = agent
+        .get(url)
+        .header("accept", accept)
+        .call()
+        .and_then(|mut response| {
+            let body = response
+                .body_mut()
+                .with_config()
+                .limit(MAX_LEN)
+                .read_to_vec()?;
+            Ok((response, body))
+        });
+    let (response, body) = match read {
+        Ok(read) => read,
         Err(error) if no_reply(&error) => return Ok(Got::Silence(error)),
         Err(error) => return Err(anyhow!(error).context(url.to_owned())),
     };
-    let body = response
-        .body_mut()
-        .with_config()
-        .limit(MAX_LEN)
-        .read_to_vec()
-        .with_context(|| url.to_owned())?;
     let exchange = Exchange {
         url: response.get_uri().to_string(),
         rtt: start.elapsed(),

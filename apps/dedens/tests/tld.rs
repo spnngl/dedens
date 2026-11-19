@@ -4,7 +4,7 @@
 
 use std::net::TcpListener;
 
-use crate::util::{Rdap, dedens};
+use crate::util::{Rdap, STALL, dedens};
 
 const COM: &[u8] = include_bytes!("../../../testdata/rdap/com.json");
 const FR: &[u8] = include_bytes!("../../../testdata/rdap/fr.json");
@@ -145,6 +145,16 @@ fn a_silent_server_is_exit_9() {
         .code(9)
         .stderr(predicates::str::contains("dedens: fr: "));
     drop(listener);
+}
+
+/// D33, D129: a server that falls silent inside its answer is exit 9 too: `+time` bounds the whole exchange.
+#[test]
+fn a_server_silent_inside_its_answer_is_exit_9() {
+    let rdap = Rdap::start(&[("/domain/fr", STALL, b"")]);
+    rdap.dedens(&["+tld", "fr", "+time=1"])
+        .assert()
+        .code(9)
+        .stderr(predicates::str::contains("dedens: fr: "));
 }
 
 /// D129: `+tld` takes one label, and refuses what only applies to DNS queries; exit 2 (D33).
