@@ -447,61 +447,63 @@ mod tests {
     /// D190's errors: a timeout is the server's silence, the others counted by their kind.
     #[test]
     fn d195_each_error_of_the_transport_is_counted_by_its_kind() {
-        let server: SocketAddr = ([192, 0, 2, 1], 53).into();
-        let recorder = metrics_util::debugging::DebuggingRecorder::new();
-        let outcomes = metrics::with_local_recorder(&recorder, || {
-            let local = |error| outcome(Err(AuthoritativeError::Local(error)), server);
-            let remote = |error| outcome(Err(AuthoritativeError::Server(error)), server);
-            [
-                remote(ServerError::TimedOut { sends: 2 }),
-                remote(ServerError::Forged { sends: 2 }),
-                remote(ServerError::Unreachable {
-                    sends: 1,
-                    kind: io::ErrorKind::ConnectionRefused,
-                }),
-                local(LocalError::NoSocket),
-                local(LocalError::TcpBusy),
-                local(LocalError::Bind(io::ErrorKind::AddrInUse.into())),
-                local(LocalError::Bind(io::ErrorKind::PermissionDenied.into())),
-            ]
-        });
-        let kinds: Vec<_> = outcomes
-            .iter()
-            .map(|outcome| match outcome {
+        // What the resolution takes of `error`, and the label it was counted under, if any.
+        let taken = |error| {
+            let server: SocketAddr = ([192, 0, 2, 1], 53).into();
+            let recorder = metrics_util::debugging::DebuggingRecorder::new();
+            let outcome = metrics::with_local_recorder(&recorder, || outcome(Err(error), server));
+            let kind = match outcome {
                 Outcome::Response { .. } => "response",
                 Outcome::Timeout => "timeout",
                 Outcome::ServerError => "server",
                 Outcome::LocalError => "local",
-            })
-            .collect();
+            };
+            let labels: Vec<_> = recorder
+                .snapshotter()
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .filter(|(key, ..)| key.key().name() == SENT)
+                .flat_map(|(key, ..)| {
+                    let labels: Vec<_> = key.key().labels().map(|l| l.value().to_owned()).collect();
+                    labels
+                })
+                .collect();
+            (kind, labels)
+        };
+        let local = |error| taken(AuthoritativeError::Local(error));
+        let remote = |error| taken(AuthoritativeError::Server(error));
+        let unreachable = ServerError::Unreachable {
+            sends: 1,
+            kind: io::ErrorKind::ConnectionRefused,
+        };
         assert_eq!(
-            kinds,
-            [
-                "timeout", "server", "server", "local", "local", "local", "local"
-            ]
+            remote(ServerError::TimedOut { sends: 2 }),
+            ("timeout", vec![])
         );
-        let mut counted: Vec<_> = recorder
-            .snapshotter()
-            .snapshot()
-            .into_vec()
-            .into_iter()
-            .filter(|(key, ..)| key.key().name() == SENT)
-            .flat_map(|(key, ..)| {
-                let labels: Vec<_> = key.key().labels().map(|l| l.value().to_owned()).collect();
-                labels
-            })
-            .collect();
-        counted.sort();
         assert_eq!(
-            counted,
-            [
-                "forged",
-                "local",
-                "no_socket",
-                "ports_exhausted",
-                "tcp_busy",
-                "unreachable"
-            ]
+            remote(ServerError::Forged { sends: 2 }),
+            ("server", vec!["forged".to_owned()])
+        );
+        assert_eq!(
+            remote(unreachable),
+            ("server", vec!["unreachable".to_owned()])
+        );
+        assert_eq!(
+            local(LocalError::NoSocket),
+            ("local", vec!["no_socket".to_owned()])
+        );
+        assert_eq!(
+            local(LocalError::TcpBusy),
+            ("local", vec!["tcp_busy".to_owned()])
+        );
+        assert_eq!(
+            local(LocalError::Bind(io::ErrorKind::AddrInUse.into())),
+            ("local", vec!["ports_exhausted".to_owned()])
+        );
+        assert_eq!(
+            local(LocalError::Bind(io::ErrorKind::PermissionDenied.into())),
+            ("local", vec!["local".to_owned()])
         );
     }
 
