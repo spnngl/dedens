@@ -505,14 +505,23 @@ impl Resolution {
     }
 
     /// [`Resolution::receive`], the server judged in the infrastructure cache when `judge`.
-    /// The reply to `query` at second `now` brought no response to read, as `sent` says: a timeout or a server
-    /// error backs the server off, when it is `judge`d; a timeout tells nothing of the delegation's servers.
-    fn unanswered(&mut self, query: &Query, sent: Sent, now: u32, judge: bool) {
+    /// The reply to `query` at `now` brought no response to read, as `sent` says: a timeout or a server error backs
+    /// the server off, when it is `judge`d; a timeout tells nothing of the delegation's servers. A timeout that comes
+    /// when the resolution's time is out was cut short by it, the server's own timeout not waited for: it judges no
+    /// server (D195).
+    fn unanswered(&mut self, query: &Query, sent: Sent, now: Duration, judge: bool) {
         debug!(server = %query.server, ?sent, "no response");
         if judge {
             crate::metrics::query(sent);
-            if matches!(sent, Sent::Timeout | Sent::ServerError) {
-                self.caches.infra.timeout(query.server, query.timeout, now);
+            let judged = match sent {
+                Sent::Timeout => !self.remaining(now).is_zero(),
+                Sent::ServerError => true,
+                _ => false,
+            };
+            if judged {
+                self.caches
+                    .infra
+                    .timeout(query.server, query.timeout, secs(now));
             }
         }
         match sent {
@@ -537,14 +546,10 @@ impl Resolution {
         let server = query.server;
         let (message, seen, rtt) = match reply {
             Reply::Response { message, seen, rtt } => (message, seen, rtt),
-            Reply::Undecodable => {
-                return self.unanswered(&query, Sent::Undecodable, now_secs, judge);
-            }
-            Reply::Timeout => return self.unanswered(&query, Sent::Timeout, now_secs, judge),
-            Reply::ServerError => {
-                return self.unanswered(&query, Sent::ServerError, now_secs, judge);
-            }
-            Reply::LocalError => return self.unanswered(&query, Sent::LocalError, now_secs, judge),
+            Reply::Undecodable => return self.unanswered(&query, Sent::Undecodable, now, judge),
+            Reply::Timeout => return self.unanswered(&query, Sent::Timeout, now, judge),
+            Reply::ServerError => return self.unanswered(&query, Sent::ServerError, now, judge),
+            Reply::LocalError => return self.unanswered(&query, Sent::LocalError, now, judge),
         };
         self.heard(Heard::Responses);
         let scrubbed = scrub(message, &query.question, &query.zone);
@@ -620,12 +625,14 @@ impl Resolution {
         }
     }
 
+    /// The time it has left at `now` ([`Limits::time`]).
+    fn remaining(&self, now: Duration) -> Duration {
+        (self.limits.time).saturating_sub(now.saturating_sub(self.started))
+    }
+
     /// One move: the active task's start, or its next query or lookup.
     fn advance(&mut self, now: Duration, rng: &mut impl CryptoRng) {
-        let remaining = self
-            .limits
-            .time
-            .saturating_sub(now.saturating_sub(self.started));
+        let remaining = self.remaining(now);
         if remaining.is_zero() {
             return self.end(Limit::Time);
         }
