@@ -1,0 +1,518 @@
+//! The recurse stage (D195) on the captured resolutions of `testdata/recursion/` (D188), each server answering as
+//! captured through `Authorities`, the harness acting as the transport: RFC 1034 §5.3.3 (each capture resolved
+//! through the pipeline, the cache stage answering it again), RFC 8109 §3 (priming), RFC 6303 §3 and §4, RFC 8375 §4,
+//! RFC 9462 §6.4 and RFC 6761 §6.3, §6.4 (the zones served locally), and D117 (the client's network pays each query).
+
+use std::collections::HashSet;
+use std::convert::Infallible;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
+
+use dedens_cache::{Cache, Config};
+use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, Flags, Message, Name, Rcode, RecordType, Transport};
+use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Marks, Query, Reply, RrsetCache};
+use dedens_roots::RootHints;
+use dedens_server::{Budget, Budgets, Pipeline, Recurse, Resolving, Stage, Step, Turn};
+use dedens_testkit::recursion::{self, Authorities};
+use rand_core::{TryCryptoRng, TryRng};
+
+use crate::util::{client_query, decode};
+
+/// `SplitMix64` from a fixed seed, so that a draw replays: a CSPRNG by marker only, for tests.
+struct Seeded(u64);
+
+impl TryRng for Seeded {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+        Ok(u32::try_from(self.try_next_u64()? >> 32).unwrap_or_default())
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        Ok(z ^ (z >> 31))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
+        for chunk in dst.chunks_mut(8) {
+            let word = self.try_next_u64()?.to_le_bytes();
+            chunk.copy_from_slice(&word[..chunk.len()]);
+        }
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for Seeded {}
+
+/// Empty caches under `config`, without the TLD hints: a resolution starts at the root, as the captures did.
+fn caches(config: Config) -> Arc<Caches> {
+    Arc::new(Caches {
+        rrsets: RrsetCache::new(DEFAULT_CAPACITY, config).expect("a valid config"),
+        infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 64).expect("a valid size"),
+        roots: RootHints::bundled().clone(),
+        tlds: None,
+    })
+}
+
+/// A cache stage under `config`, then `recurse`.
+fn pipeline(config: Config, recurse: Recurse) -> Pipeline {
+    Pipeline::new(vec![
+        Stage::Cache(Arc::new(Cache::new(config).expect("valid settings"))),
+        Stage::Recurse(recurse),
+    ])
+}
+
+/// The second of the capture, so that every TTL it holds is fresh.
+fn at(capture: &recursion::Resolution) -> u32 {
+    u32::try_from(capture.captured_at).expect("a capture time within u32")
+}
+
+/// Marks lame, for each zone `capture` asked, every address it shows but the first server it asked there: the draw
+/// then falls on the server whose responses the capture followed.
+fn steer(caches: &Caches, capture: &recursion::Resolution) {
+    let mut known: HashSet<IpAddr> = (caches.roots.servers().iter())
+        .flat_map(dedens_roots::Server::addresses)
+        .collect();
+    for exchange in &capture.exchanges {
+        let response = dedens_testkit::message(&exchange.response);
+        known.extend(
+            (response.answer.iter().chain(&response.additional)).filter_map(|r| match r.data() {
+                RData::A(v4) => Some(IpAddr::from(v4)),
+                RData::Aaaa(v6) => Some(IpAddr::from(v6)),
+                _ => None,
+            }),
+        );
+    }
+    let mut followed: Vec<(&Name<'static>, IpAddr)> = Vec::new();
+    for e in &capture.exchanges {
+        if !followed.iter().any(|(zone, _)| *zone == &e.zone) {
+            followed.push((&e.zone, e.server));
+        }
+    }
+    for (zone, server) in followed {
+        for &address in known.iter().filter(|&&a| a != server) {
+            caches
+                .infra
+                .lame(SocketAddr::new(address, 53), zone, at(capture));
+        }
+    }
+}
+
+/// The response `authorities` captured to `query`, over TCP after a truncated one, as the transport has it.
+fn captured(authorities: &Authorities, query: &Query) -> Message<'static> {
+    let wire = Message::query(0, query.question.clone())
+        .to_vec()
+        .expect("a query encodes");
+    let udp = authorities.answer(query.server.ip(), recursion::Transport::Udp, &wire);
+    let response = dedens_testkit::message(&udp);
+    if !response.header.flags.contains(Flags::TC) {
+        return response;
+    }
+    let tcp = authorities.answer(query.server.ip(), recursion::Transport::Tcp, &wire);
+    dedens_testkit::message(&tcp)
+}
+
+/// Steps `resolving` at `now` to its end, each query answered from `authorities`; the queries sent.
+fn drive(resolving: &mut Resolving, authorities: &Authorities, now: u32) -> usize {
+    let now = Duration::from_secs(now.into());
+    let mut rng = Seeded(0);
+    let mut sent = 0;
+    while let Turn::Send(query) = resolving.step(now, &mut rng) {
+        let response = captured(authorities, &query.clone());
+        sent += 1;
+        assert!(sent <= 1000, "no end in sight");
+        let reply = Reply::Response {
+            message: &response,
+            seen: Marks::default(),
+            rtt: Duration::from_millis(20),
+        };
+        resolving.receive(reply, now);
+    }
+    sent
+}
+
+/// The reply of `pipeline` at `now` to `query` from `from`, the resolution answered from `authorities`, and the
+/// queries it sent: `None` when nothing was resolved.
+fn ask(
+    pipeline: &Pipeline,
+    (query, from): (&[u8], IpAddr),
+    authorities: &Authorities,
+    now: u32,
+) -> (Option<Vec<u8>>, Option<usize>) {
+    let mut out = vec![0; 65535];
+    match pipeline.query(query, Transport::Udp, from, now, &mut out) {
+        Step::Reply(len) => (Some(out[..len].to_vec()), None),
+        Step::Drop => (None, None),
+        Step::Resolve(mut resolving) => {
+            let sent = drive(&mut resolving, authorities, now);
+            match pipeline.resolved(&resolving, now, &mut out) {
+                Step::Reply(len) => (Some(out[..len].to_vec()), Some(sent)),
+                Step::Drop => (None, Some(sent)),
+                step => unreachable!("a reply, not {step:?}"),
+            }
+        }
+        step => unreachable!("no forward stage: {step:?}"),
+    }
+}
+
+/// The query of `capture`'s question, RD set, DO clear.
+fn question(capture: &recursion::Resolution) -> Vec<u8> {
+    client_query(&capture.name.to_string(), capture.rtype, Flags::NONE, false)
+}
+
+/// The extended error of `reply`, if any.
+fn ede(reply: &Message<'_>) -> Option<InfoCode> {
+    reply
+        .edns
+        .as_ref()?
+        .options
+        .iter()
+        .find_map(|option| match option {
+            EdnsOption::Ede(ede) => Some(ede.code),
+            _ => None,
+        })
+}
+
+const CLIENT: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+
+#[test]
+fn rfc1034_5_3_3_each_capture_resolves_through_the_pipeline_and_the_cache_answers_again() {
+    for (id, capture) in recursion::Resolution::all() {
+        if capture.rtype == RecordType::RRSIG {
+            continue; // d195_a_type_not_resolved_is_not_implemented
+        }
+        let caches = caches(Config::default());
+        steer(&caches, &capture);
+        let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+        let authorities = Authorities::new([&capture]);
+        let query = question(&capture);
+        let now = at(&capture);
+        let (reply, sent) = ask(&pipeline, (&query, CLIENT), &authorities, now);
+        let reply = decode(reply.as_deref().expect("a reply"));
+        assert!(sent > Some(0), "{id}");
+        let rcode = if id.starts_with("nxdomain") {
+            Rcode::NXDOMAIN
+        } else {
+            Rcode::NOERROR
+        };
+        assert_eq!(reply.header.rcode, rcode, "{id}");
+        assert!(reply.header.flags.contains(Flags::RA), "{id}");
+        assert!(!reply.header.flags.contains(Flags::AA), "{id}");
+        let answered = reply.answer.iter().any(|r| r.rtype() == capture.rtype);
+        let denied = id.starts_with("nxdomain") || id.starts_with("nodata");
+        assert_eq!(answered, !denied, "{id}: {reply:?}");
+        if denied {
+            assert!(
+                reply.authority.iter().any(|r| r.rtype() == RecordType::SOA),
+                "{id}"
+            );
+        }
+        // The cache stage answers again: nothing is resolved.
+        let (again, resent) = ask(&pipeline, (&query, CLIENT), &authorities, now + 1);
+        assert_eq!(resent, None, "{id}");
+        let again = decode(again.as_deref().expect("a reply"));
+        assert_eq!(again.header.rcode, rcode, "{id}");
+        assert_eq!(again.answer.len(), reply.answer.len(), "{id}");
+    }
+}
+
+#[test]
+fn d124_an_answer_is_served_within_the_cache_lifetime() {
+    let capture = recursion::Resolution::read("signed-com");
+    let config = Config {
+        max_ttl: 60,
+        ..Config::default()
+    };
+    let caches = caches(config.clone());
+    steer(&caches, &capture);
+    let pipeline = pipeline(config, Recurse::new(Arc::clone(&caches)));
+    let authorities = Authorities::new([&capture]);
+    let (reply, _) = ask(
+        &pipeline,
+        (&question(&capture), CLIENT),
+        &authorities,
+        at(&capture),
+    );
+    let reply = decode(reply.as_deref().expect("a reply"));
+    assert_ne!(reply.answer, []);
+    // The capture's TTLs are over a minute: the cache's lifetime bounds them.
+    let captured = capture.exchanges.last().expect("an exchange");
+    let captured = dedens_testkit::message(&captured.response);
+    assert!(captured.answer.iter().all(|r| r.ttl.get() > 60));
+    assert!(reply.answer.iter().all(|r| r.ttl.get() <= 60), "{reply:?}");
+}
+
+#[test]
+fn rfc4035_3_2_1_signatures_go_to_a_client_asking_with_do() {
+    let capture = recursion::Resolution::read("signed-com");
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let authorities = Authorities::new([&capture]);
+    let query = client_query("example.com.", RecordType::A, Flags::NONE, true);
+    let (reply, _) = ask(&pipeline, (&query, CLIENT), &authorities, at(&capture));
+    let reply = decode(reply.as_deref().expect("a reply"));
+    let types: Vec<_> = reply
+        .answer
+        .iter()
+        .map(dedens_proto::Record::rtype)
+        .collect();
+    // The A RRset of the capture, two records, then its signature.
+    assert_eq!(types, [RecordType::A, RecordType::A, RecordType::RRSIG]);
+}
+
+#[test]
+fn rfc8109_3_priming_asks_the_root_ns_once_until_it_expires() {
+    let capture = recursion::Resolution::read("priming");
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let pipeline = pipeline(Config::default(), Recurse::new(Arc::clone(&caches)));
+    let authorities = Authorities::new([&capture]);
+    let now = at(&capture);
+    let secs = Duration::from_secs(now.into());
+    let mut priming = pipeline
+        .prime(secs)
+        .expect("the cache is empty: priming is due");
+    assert!(priming.is_priming());
+    assert_eq!(priming.question().name, Name::root());
+    assert_eq!(priming.question().qtype, RecordType::NS);
+    // One at a time, whichever thread starts it.
+    assert!(pipeline.prime(secs).is_none());
+    assert_eq!(drive(&mut priming, &authorities, now), 1);
+    let mut out = vec![0; 512];
+    assert!(matches!(
+        pipeline.resolved(&priming, now, &mut out),
+        Step::Drop
+    ));
+    drop(priming);
+    let root = Name::root();
+    let ns =
+        (caches.rrsets.get(&root, RecordType::NS, Class::IN, now)).expect("the root NS cached");
+    // Fresh, it is not asked again; expired, it is.
+    assert!(pipeline.prime(secs).is_none());
+    let expired = secs + Duration::from_secs(u64::from(ns.ttl.get()) + 1);
+    assert!(pipeline.prime(expired).is_some());
+}
+
+#[test]
+fn rfc8109_3_a_priming_given_up_lets_the_next_start() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let priming = pipeline.prime(Duration::ZERO).expect("due");
+    drop(priming);
+    assert!(pipeline.prime(Duration::ZERO).is_some());
+}
+
+/// The reply of `pipeline` to `name` `rtype`, which a zone served locally answers: no query is sent.
+fn local(pipeline: &Pipeline, name: &str, rtype: RecordType) -> Message<'static> {
+    let query = client_query(name, rtype, Flags::NONE, false);
+    let (reply, sent) = ask(pipeline, (&query, CLIENT), &Authorities::default(), 0);
+    assert_eq!(sent, None, "{name} {rtype}");
+    let reply = decode(reply.as_deref().expect("a reply")).into_owned();
+    assert!(reply.header.flags.contains(Flags::AA), "{name} {rtype}");
+    reply
+}
+
+fn soa(message: &Message<'_>) -> Option<Name<'static>> {
+    (message.authority.iter().chain(&message.answer))
+        .find(|r| r.rtype() == RecordType::SOA)
+        .map(|r| r.name.clone().into_owned())
+}
+
+#[test]
+fn rfc6303_3_a_reverse_zone_of_private_addresses_is_served_empty() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let zone: Name<'static> = "10.in-addr.arpa.".parse().expect("a name");
+    // Below the apex: NXDOMAIN, the zone's SOA to cache it with.
+    let below = local(&pipeline, "1.2.3.10.in-addr.arpa.", RecordType::PTR);
+    assert_eq!(below.header.rcode, Rcode::NXDOMAIN);
+    assert_eq!(soa(&below), Some(zone.clone()));
+    // At the apex: its SOA and NS, NODATA for any other type.
+    let apex = local(&pipeline, "10.in-addr.arpa.", RecordType::SOA);
+    assert_eq!(apex.header.rcode, Rcode::NOERROR);
+    let [soa_record] = apex.answer.as_slice() else {
+        panic!("one SOA: {apex:?}")
+    };
+    let RData::Soa(data) = soa_record.data() else {
+        panic!("a SOA")
+    };
+    assert_eq!(
+        (data.mname.clone(), data.rname.to_string()),
+        (zone.clone(), "nobody.invalid.".to_owned())
+    );
+    assert_eq!(
+        (
+            data.serial,
+            data.refresh,
+            data.retry,
+            data.expire,
+            data.minimum
+        ),
+        (1, 3600, 1200, 604_800, 10800)
+    );
+    assert_eq!(soa_record.ttl.get(), 10800);
+    let ns = local(&pipeline, "10.in-addr.arpa.", RecordType::NS);
+    assert_eq!(ns.answer.len(), 1);
+    assert_eq!(ns.answer[0].data(), RData::Ns(zone.clone()));
+    let nodata = local(&pipeline, "10.in-addr.arpa.", RecordType::TXT);
+    assert_eq!(
+        (nodata.header.rcode, nodata.answer.len()),
+        (Rcode::NOERROR, 0)
+    );
+    assert_eq!(soa(&nodata), Some(zone));
+    // Every zone of §4, the IPv6 ones too.
+    for name in [
+        "1.0.0.127.in-addr.arpa.",
+        "5.31.172.in-addr.arpa.",
+        "1.1.168.192.in-addr.arpa.",
+        "1.254.169.in-addr.arpa.",
+        "1.2.0.192.in-addr.arpa.",
+        "1.100.51.198.in-addr.arpa.",
+        "1.113.0.203.in-addr.arpa.",
+        "1.0.0.0.in-addr.arpa.",
+        "255.255.255.255.in-addr.arpa.",
+        "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa.",
+        "0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa.",
+        "1.d.f.ip6.arpa.",
+        "1.8.e.f.ip6.arpa.",
+        "1.9.e.f.ip6.arpa.",
+        "1.a.e.f.ip6.arpa.",
+        "1.b.e.f.ip6.arpa.",
+        "1.8.b.d.0.1.0.0.2.ip6.arpa.",
+    ] {
+        let reply = local(&pipeline, name, RecordType::PTR);
+        assert!(soa(&reply).is_some(), "{name}");
+    }
+}
+
+#[test]
+fn rfc6303_3_a_zone_turned_off_is_resolved() {
+    let zone: Name<'static> = "10.in-addr.arpa.".parse().expect("a name");
+    let recurse = Recurse::new(caches(Config::default()))
+        .resolving(&zone)
+        .expect("a zone served locally");
+    let pipeline = pipeline(Config::default(), recurse);
+    let query = client_query(
+        "1.2.3.10.in-addr.arpa.",
+        RecordType::PTR,
+        Flags::NONE,
+        false,
+    );
+    let mut out = vec![0; 65535];
+    let step = pipeline.query(&query, Transport::Udp, CLIENT, 0, &mut out);
+    assert!(matches!(step, Step::Resolve(_)), "{step:?}");
+    // A zone not served locally cannot be turned off.
+    let other: Name<'static> = "example.com.".parse().expect("a name");
+    let error = Recurse::new(caches(Config::default()))
+        .resolving(&other)
+        .expect_err("not served locally");
+    assert_eq!(error.0, other);
+}
+
+#[test]
+fn rfc8375_4_home_arpa_is_served_empty_but_its_ds() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let below = local(&pipeline, "printer.home.arpa.", RecordType::A);
+    assert_eq!(below.header.rcode, Rcode::NXDOMAIN);
+    assert_eq!(soa(&below), Some("home.arpa.".parse().expect("a name")));
+    // Its DS proves it insecure: it is resolved (RFC 8375 §4 item 4.B).
+    let query = client_query("home.arpa.", RecordType::DS, Flags::NONE, true);
+    let mut out = vec![0; 65535];
+    let step = pipeline.query(&query, Transport::Udp, CLIENT, 0, &mut out);
+    assert!(matches!(step, Step::Resolve(_)), "{step:?}");
+}
+
+#[test]
+fn rfc9462_6_4_resolver_arpa_has_no_data() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    for name in ["resolver.arpa.", "_dns.resolver.arpa."] {
+        let reply = local(&pipeline, name, RecordType::SVCB);
+        assert_eq!(
+            (reply.header.rcode, reply.answer.len()),
+            (Rcode::NOERROR, 0),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn rfc6761_6_3_localhost_is_the_loopback() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let a = local(&pipeline, "www.localhost.", RecordType::A);
+    assert_eq!(a.answer[0].data(), RData::A(Ipv4Addr::LOCALHOST));
+    let aaaa = local(&pipeline, "localhost.", RecordType::AAAA);
+    assert_eq!(
+        aaaa.answer[0].data(),
+        RData::Aaaa(std::net::Ipv6Addr::LOCALHOST)
+    );
+    let mx = local(&pipeline, "localhost.", RecordType::MX);
+    assert_eq!((mx.header.rcode, mx.answer.len()), (Rcode::NOERROR, 0));
+}
+
+#[test]
+fn rfc6761_6_4_invalid_does_not_exist() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let reply = local(&pipeline, "host.invalid.", RecordType::A);
+    assert_eq!(reply.header.rcode, Rcode::NXDOMAIN);
+}
+
+#[test]
+fn d117_a_network_out_of_queries_gets_servfail_not_ready() {
+    let capture = recursion::Resolution::read("signed-com");
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let share = Budgets::new(Budget {
+        per_second: 1,
+        burst: 2,
+        table: 1,
+    })
+    .expect("a budget");
+    let recurse = Recurse::new(Arc::clone(&caches)).with_share(share);
+    let pipeline = pipeline(Config::default(), recurse);
+    let authorities = Authorities::new([&capture]);
+    let (reply, sent) = ask(
+        &pipeline,
+        (&question(&capture), CLIENT),
+        &authorities,
+        at(&capture),
+    );
+    // Root, com and example.com: the third is not paid for.
+    assert_eq!(sent, Some(2));
+    let reply = decode(reply.as_deref().expect("a reply"));
+    assert_eq!(reply.header.rcode, Rcode::SERVFAIL);
+    assert_eq!(ede(&reply), Some(InfoCode::NOT_READY));
+}
+
+#[test]
+fn d195_a_type_not_resolved_is_not_implemented() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let query = client_query("sidn.nl.", RecordType::RRSIG, Flags::NONE, false);
+    let (reply, sent) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
+    assert_eq!(sent, Some(0));
+    assert_eq!(decode(&reply.expect("a reply")).header.rcode, Rcode::NOTIMP);
+}
+
+#[test]
+fn rfc1034_4_3_1_without_rd_the_recurse_stage_refuses() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let mut query = client_query("example.com.", RecordType::A, Flags::NONE, false);
+    query[2] &= !Flags::RD.bits().to_be_bytes()[0];
+    let (reply, _) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
+    let reply = decode(reply.as_deref().expect("a reply"));
+    assert_eq!(reply.header.rcode, Rcode::REFUSED);
+    assert_eq!(ede(&reply), Some(InfoCode::NOT_AUTHORITATIVE));
+}
+
+#[test]
+fn rfc8482_any_over_udp_is_truncated() {
+    let pipeline = pipeline(Config::default(), Recurse::new(caches(Config::default())));
+    let query = client_query("example.com.", RecordType::ANY, Flags::NONE, false);
+    let (reply, _) = ask(&pipeline, (&query, CLIENT), &Authorities::default(), 0);
+    let reply = decode(reply.as_deref().expect("a reply"));
+    assert!(reply.header.flags.contains(Flags::TC));
+}

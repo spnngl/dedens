@@ -157,6 +157,8 @@ impl Pipeline {
                         Err(Refused::NoServer) => Warmth::Unaskable,
                     };
                 }
+                // Prewarming is the forward stage's (D96); the recurse stage has no refresh (D195).
+                Stage::Recurse(_) => return Warmth::Unaskable,
             }
         }
         Warmth::Unaskable
@@ -171,7 +173,7 @@ impl Pipeline {
         let query = Query::read(&wire).ok()?;
         let cache = self.stages.iter().find_map(|stage| match stage {
             Stage::Cache(cache) => Some(cache),
-            Stage::Plugin(_) | Stage::Forward(_) => None,
+            Stage::Plugin(_) | Stage::Forward(_) | Stage::Recurse(_) => None,
         });
         let refresh = cache?.refresh(&query, now)?;
         (!refresh.bogus).then(|| due(refresh))

@@ -10,8 +10,9 @@ publish.workspace = true
 autotests = false
 
 [features]
-# Validation, access, rate limit and cookie counters through the `metrics` facade (D30, D77, D91, D113).
-metrics = ["dep:metrics"]
+# Validation, access, rate limit and cookie counters through the `metrics` facade (D30, D77, D91, D113), and the
+# recursive resolver'"'"'s (D191, D195).
+metrics = ["dep:metrics", "dedens-resolver/metrics"]
 # `Network`, `Denial`, `Secret` read from configuration files (D24, D91, D113).
 serde = ["dep:serde"]
 
@@ -19,9 +20,11 @@ serde = ["dep:serde"]
 dedens-cache.workspace = true
 dedens-dnssec.workspace = true
 dedens-proto.workspace = true
+dedens-resolver.workspace = true
 ipnet.workspace = true
 metrics = { workspace = true, optional = true }
 prefix-trie.workspace = true
+rand_core.workspace = true
 serde = { workspace = true, optional = true }
 siphasher.workspace = true
 subtle.workspace = true
@@ -29,7 +32,8 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-dedens-testkit.workspace = true
+dedens-roots.workspace = true
+dedens-testkit = { workspace = true, features = ["recursion"] }
 metrics.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 

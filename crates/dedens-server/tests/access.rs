@@ -37,7 +37,9 @@ mod networks {
             Step::Upstream(_) => true,
             Step::Reply(len) => decode(&out[..len]).rcode() != Rcode::REFUSED,
             Step::Drop => false,
-            step @ (Step::Refresh(..) | Step::Park(_)) => unreachable!("{step:?}"),
+            step @ (Step::Refresh(..) | Step::Park(_) | Step::Resolve(_)) => {
+                unreachable!("{step:?}")
+            }
         }
     }
 
@@ -378,7 +380,9 @@ mod rrl {
                     rcode => unreachable!("a reply of {rcode:?}"),
                 }
             }
-            step @ (Step::Refresh(..) | Step::Park(_)) => unreachable!("{step:?}"),
+            step @ (Step::Refresh(..) | Step::Park(_) | Step::Resolve(_)) => {
+                unreachable!("{step:?}")
+            }
         }
     }
 
