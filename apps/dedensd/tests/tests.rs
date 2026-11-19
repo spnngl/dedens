@@ -19,6 +19,7 @@ mod prewarm;
 #[cfg(unix)]
 mod privileges;
 mod quic;
+mod recurse;
 #[cfg(unix)]
 mod reload;
 mod rfc6761;
