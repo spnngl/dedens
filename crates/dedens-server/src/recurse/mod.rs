@@ -92,6 +92,12 @@ impl Recurse {
         &self.caches
     }
 
+    /// The bounds of each resolution.
+    #[must_use]
+    pub const fn limits(&self) -> Limits {
+        self.limits
+    }
+
     /// The answer of a locally served zone to `question`, if one holds it.
     pub(crate) fn local(&self, question: &Question<'_>) -> Option<(Rcode, Message<'static>)> {
         self.local.answer(question)
