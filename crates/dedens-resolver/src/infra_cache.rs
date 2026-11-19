@@ -75,6 +75,7 @@ pub struct Choice {
 #[derive(Debug)]
 pub struct InfraCache {
     store: Store<Entry>,
+    capacity: usize,
     metrics: Metrics,
 }
 
@@ -131,6 +132,7 @@ impl InfraCache {
         Ok(Self {
             // An entry is its key alone (`Cost` 0): the longest key is the longest entry.
             store: Store::new(capacity, shards, Some(KEY_LEN), KEY_LEN)?,
+            capacity,
             metrics: Metrics::new(),
         })
     }
@@ -246,6 +248,12 @@ impl InfraCache {
     #[must_use]
     pub fn used(&self) -> usize {
         self.store.used()
+    }
+
+    /// The bytes it was made with: a reload keeps a cache of the same capacity (D195).
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Whether `server` is lame for `zone` at `now`.

@@ -386,6 +386,7 @@ async fn udp_step<N: Io>(
         Step::Upstream(upstream) => (None, Some(Ask::after(thread, pipeline, upstream))),
         Step::Refresh(len, upstream) => (Some(len), Some(Ask::Now(upstream))),
         Step::Park(parked) => (None, Some(Ask::Parked(parked))),
+        Step::Resolve(resolving) => (None, Some(Ask::Resolve(resolving))),
     };
     if let Some(len) = len {
         outbox

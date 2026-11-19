@@ -22,6 +22,8 @@ dedens-net = { workspace = true, features = ["tracing"] }
 dedens-odoh = { workspace = true, optional = true }
 dedens-plugins = { workspace = true, features = ["metrics", "serde"] }
 dedens-proto.workspace = true
+# The recursive resolution of the `recurse` stage (D195).
+dedens-resolver = { workspace = true, features = ["metrics"] }
 # IANA's TLD list of the `tlds` stage (D128).
 dedens-roots.workspace = true
 dedens-server = { workspace = true, features = ["metrics", "serde"] }

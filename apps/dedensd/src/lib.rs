@@ -114,7 +114,7 @@ pub fn main() -> anyhow::Result<()> {
     let plan = privileges::resolve(config.user.as_ref()).with_context(|| format!("in {path}"))?;
     config.warn_access(&config.listen);
     serve::describe();
-    isolate::hook();
+    process();
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..config.threads)
         .map(|_| serve::bind(&config.listen))
@@ -362,6 +362,33 @@ impl Ending {
 /// # Errors
 ///
 /// A file that does not read.
+/// Sets what the whole process holds to before its threads start: the panic hook (D121), and on Unix the limit of
+/// open descriptors ([`descriptors`]).
+fn process() {
+    isolate::hook();
+    #[cfg(unix)]
+    descriptors();
+}
+
+/// Raises the soft limit of open descriptors to the hard one: a recurse stage opens a socket per query to an
+/// authoritative server, up to 1056 a thread (D190), past the 1024 most systems start a process with. Done whatever
+/// the pipeline, which a reload may give a recurse stage, as BIND's `named_os_adjustnofile` and Unbound's
+/// `checkrlimits` do at start (D195). A failure is logged: the queries past the limit wait, then fail.
+#[cfg(unix)]
+fn descriptors() {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+    let raised = getrlimit(Resource::RLIMIT_NOFILE).and_then(|(soft, hard)| {
+        if soft < hard {
+            setrlimit(Resource::RLIMIT_NOFILE, hard, hard)?;
+        }
+        Ok(hard)
+    });
+    match raised {
+        Ok(limit) => tracing::debug!(limit, "open descriptors"),
+        Err(error) => tracing::warn!(%error, "cannot raise the limit of open descriptors"),
+    }
+}
+
 fn read(file: &Path) -> anyhow::Result<String> {
     std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))
 }
