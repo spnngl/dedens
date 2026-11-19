@@ -17,7 +17,7 @@ use crate::rrset::Rrset;
 /// default, holds every cache of a view.
 pub const DEFAULT_CAPACITY: usize = 128 << 20;
 
-/// An `RRset` the cache holds, fresh, and what it knows of it.
+/// An `RRset` and its trust: as the cache holds it, fresh, or as a resolution read it from a response.
 ///
 /// Only an `RRset` of [`Rank::AnswerNonAuthoritative`] or above, or proved [`Checked::Secure`], may answer a
 /// client's question: the lesser ranks are the additional sections and the authority section of a
@@ -27,7 +27,7 @@ pub const DEFAULT_CAPACITY: usize = 128 << 20;
 /// `RRset` answered over glue not yet expired is held at the glue's rank until it expires (D193, CVE-2026-42955), so
 /// it never answers a client from this cache: the response cache serves the answer it came in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hit {
+pub struct Ranked {
     /// The records, shared with the cache.
     pub rrset: Arc<Rrset>,
     /// Where they were read.
@@ -35,7 +35,7 @@ pub struct Hit {
     /// What the validator found of them.
     pub checked: Checked,
     /// What is left of their time in the cache, which a reply gives as their TTL (RFC 1035 §4.1.3); not
-    /// [`Rrset::ttl`], the TTL they were received with.
+    /// [`Rrset::ttl`], the TTL they were received with, but for an `RRset` just read from a response.
     pub ttl: Ttl,
 }
 
@@ -43,18 +43,18 @@ pub struct Hit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inserted {
     /// The `RRset` is stored: the key held none, one expired, or one it replaces (RFC 2181 §5.4.1).
-    Stored(Hit),
+    Stored(Ranked),
     /// The key held the same data unchecked: it takes the verdict, at the greater of the two ranks unless it is an
     /// address pinned to glue (D193), for no longer than it had left.
-    Verdict(Hit),
+    Verdict(Ranked),
     /// The key holds an `RRset` trusted more, or as much and the same data: it stays as it was.
-    Kept(Hit),
+    Kept(Ranked),
 }
 
 impl Inserted {
     /// What the cache holds under the key.
     #[must_use]
-    pub const fn hit(&self) -> &Hit {
+    pub const fn held(&self) -> &Ranked {
         match self {
             Self::Stored(hit) | Self::Verdict(hit) | Self::Kept(hit) => hit,
         }
@@ -128,15 +128,15 @@ impl Cached {
     }
 
     /// The entry as a hit at `now`, if fresh.
-    fn hit(&self, now: u32) -> Option<Hit> {
+    fn hit(&self, now: u32) -> Option<Ranked> {
         match self.left(now) {
             0 => None,
             left => Some(self.with_left(left)),
         }
     }
 
-    fn with_left(&self, left: u32) -> Hit {
-        Hit {
+    fn with_left(&self, left: u32) -> Ranked {
+        Ranked {
             rrset: Arc::clone(&self.rrset),
             rank: self.rank,
             checked: self.checked,
@@ -206,7 +206,7 @@ impl Cached {
 ///
 /// The store is `dedens-cache`'s (D116, D193): sharded, each shard behind its own lock held for one call (never
 /// across an `.await`), S3-FIFO eviction, everything a shard holds counted against its share of the capacity; an
-/// [`Rrset`] a [`Hit`] still holds after its entry was evicted is the caller's. TTLs follow the response cache's
+/// [`Rrset`] a [`Ranked`] still holds after its entry was evicted is the caller's. TTLs follow the response cache's
 /// [`Config`] (D124), one source for both: [`Config::lifetime`]. Time comes in as seconds from the caller.
 #[derive(Debug)]
 pub struct RrsetCache {
@@ -249,11 +249,12 @@ impl RrsetCache {
     /// [`NotCached`] when `rrset` is not stored: the cache is left as it was.
     pub fn insert(
         &self,
-        rrset: Rrset,
+        rrset: impl Into<Arc<Rrset>>,
         rank: Rank,
         checked: Checked,
         now: u32,
     ) -> Result<Inserted, NotCached> {
+        let rrset = rrset.into();
         let ttl = self
             .config
             .lifetime(rrset.ttl(), checked)
@@ -264,7 +265,7 @@ impl RrsetCache {
             return Err(NotCached::TooLarge);
         }
         let new = Cached {
-            rrset: Arc::new(rrset),
+            rrset,
             rank,
             checked,
             ttl,
@@ -298,10 +299,16 @@ impl RrsetCache {
         Ok(inserted)
     }
 
-    /// The fresh `RRset` of `owner`, any case, `rtype` and `class` at `now`, whatever its rank: see [`Hit`] for
+    /// The fresh `RRset` of `owner`, any case, `rtype` and `class` at `now`, whatever its rank: see [`Ranked`] for
     /// the ranks that may answer a client.
     #[must_use]
-    pub fn get(&self, owner: &Name<'_>, rtype: RecordType, class: Class, now: u32) -> Option<Hit> {
+    pub fn get(
+        &self,
+        owner: &Name<'_>,
+        rtype: RecordType,
+        class: Class,
+        now: u32,
+    ) -> Option<Ranked> {
         let mut key = [0; KEY_LEN];
         let key = key_of(&mut key, owner, rtype, class);
         let hit = self.store.get(key, |held| match held {

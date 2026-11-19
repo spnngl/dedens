@@ -1,11 +1,11 @@
-//! The counters of the `metrics` feature (D30).
+//! The counters of the `metrics` feature (D30): the caches' (D193, D194) and the resolution's (D191).
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use dedens_cache::{Checked, Config};
 use dedens_proto::Name;
-use dedens_resolver::{InfraCache, Inserted, Marks, Rank, Rrset, RrsetCache};
+use dedens_resolver::{InfraCache, Inserted, Limits, Marks, Rank, Rrset, RrsetCache};
 use dedens_testkit::{captured, message};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 
@@ -141,4 +141,28 @@ fn selections_and_evictions_count() {
     assert_eq!(count("dedens_resolver_infra_selections_total chosen"), 1);
     let evicted = count("dedens_resolver_infra_evictions_total ");
     assert_eq!(usize::try_from(evicted).ok(), Some(1000 - cache.len()));
+}
+
+#[test]
+fn limits_count() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, || {
+        let queries = Limits {
+            queries: 2,
+            ..Limits::default()
+        };
+        crate::iteration::limited("unsigned", queries);
+        crate::iteration::unanswered(Limits::default());
+    });
+    let counters = counters(&snapshotter);
+    let count = |name: &str| {
+        counters
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(0, |(_, n)| *n)
+    };
+    assert_eq!(count("dedens_resolver_limits_total queries"), 1);
+    assert_eq!(count("dedens_resolver_limits_total servers"), 1);
+    assert_eq!(count("dedens_resolver_limits_total time"), 0);
 }

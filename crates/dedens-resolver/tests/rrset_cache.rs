@@ -7,7 +7,7 @@ use dedens_cache::{Checked, Config, ConfigError, Cost};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Opaque, RData, Rrsig, Txt};
 use dedens_proto::{Class, Message, Record, RecordType, Section, Ttl};
-use dedens_resolver::{DEFAULT_CAPACITY, Hit, Inserted, NotCached, Rank, Rrset, RrsetCache};
+use dedens_resolver::{DEFAULT_CAPACITY, Inserted, NotCached, Rank, Ranked, Rrset, RrsetCache};
 use dedens_testkit::{captured, dns, dnssec, message};
 
 const RANKS: [Rank; 6] = [
@@ -57,13 +57,13 @@ fn a() -> Rrset {
     rrset("a", Section::Answer)
 }
 
-fn get(cache: &RrsetCache, rrset: &Rrset, now: u32) -> Option<Hit> {
+fn get(cache: &RrsetCache, rrset: &Rrset, now: u32) -> Option<Ranked> {
     cache.get(rrset.owner(), rrset.rtype(), rrset.class(), now)
 }
 
 /// The hit of an `RRset` stored.
 #[track_caller]
-fn stored(inserted: Result<Inserted, NotCached>) -> Hit {
+fn stored(inserted: Result<Inserted, NotCached>) -> Ranked {
     match inserted {
         Ok(Inserted::Stored(hit)) => hit,
         other => unreachable!("not stored: {other:?}"),
@@ -72,7 +72,7 @@ fn stored(inserted: Result<Inserted, NotCached>) -> Hit {
 
 /// The hit of the `RRset` kept.
 #[track_caller]
-fn kept(inserted: Result<Inserted, NotCached>) -> Hit {
+fn kept(inserted: Result<Inserted, NotCached>) -> Ranked {
     match inserted {
         Ok(Inserted::Kept(hit)) => hit,
         other => unreachable!("not kept: {other:?}"),
@@ -81,7 +81,7 @@ fn kept(inserted: Result<Inserted, NotCached>) -> Hit {
 
 /// The hit of the `RRset` that took a verdict.
 #[track_caller]
-fn verdict(inserted: Result<Inserted, NotCached>) -> Hit {
+fn verdict(inserted: Result<Inserted, NotCached>) -> Ranked {
     match inserted {
         Ok(Inserted::Verdict(hit)) => hit,
         other => unreachable!("no verdict: {other:?}"),
@@ -848,7 +848,7 @@ fn d124_ttls_follow_the_response_cache_config() {
     let ttl = |rrset: Rrset, checked| {
         cache
             .insert(rrset, Rank::AnswerAuthoritative, checked, 0)
-            .map(|inserted| inserted.hit().ttl.get())
+            .map(|inserted| inserted.held().ttl.get())
     };
     // Capped by `max_ttl`, the insecure and the bogus caps.
     let ns = || rrset("referral_root", Section::Authority);

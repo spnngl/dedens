@@ -387,7 +387,7 @@ fn saturate(value: u64) -> u32 {
 
 /// An index below `len` drawn with `rng`; 0 when `len` is 0, which `get` then misses. Lemire's multiply-shift: a
 /// bias under `len / 2^32`, nothing a forger can use.
-fn draw(rng: &mut impl CryptoRng, len: usize) -> usize {
+pub(crate) fn draw(rng: &mut impl CryptoRng, len: usize) -> usize {
     let len = u64::try_from(len).unwrap_or(u64::MAX);
     usize::try_from((u64::from(rng.next_u32()) * len) >> 32).unwrap_or_default()
 }

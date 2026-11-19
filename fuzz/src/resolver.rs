@@ -64,7 +64,7 @@ pub fn rrset_cache_insert(data: &[u8]) {
             let Ok(inserted) = cache.insert(rrset.clone(), rank, checked, now) else {
                 continue;
             };
-            let held = inserted.hit();
+            let held = inserted.held();
             assert!(
                 (1..=max_ttl).contains(&held.ttl.get()),
                 "a TTL within bounds"

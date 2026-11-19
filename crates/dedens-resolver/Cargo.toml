@@ -17,6 +17,8 @@ metrics = ["dep:metrics"]
 # D193: the sharded byte-budgeted store and the TTL rules of the response cache.
 dedens-cache.workspace = true
 dedens-proto.workspace = true
+# D191: the root's and the TLDs' servers, where a resolution starts when the cache knows no delegation.
+dedens-roots.workspace = true
 metrics = { workspace = true, optional = true }
 # D194: the infra cache draws the server to ask with the caller's CSPRNG (RFC 5452 §4.4).
 rand_core.workspace = true
@@ -24,8 +26,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-dedens-roots.workspace = true
-# D188: the captured resolutions the scrubber's tests replay.
+# D188: the captured resolutions the scrubber's and the iteration's tests replay.
 dedens-testkit = { workspace = true, features = ["recursion"] }
 insta.workspace = true
 metrics.workspace = true
