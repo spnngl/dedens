@@ -4,6 +4,7 @@
 //! caches while their sizes, the cache stage's settings and the validation stay, and the share's buckets while its
 //! budget stays.
 
+use std::fs;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +34,9 @@ pub(super) struct RecurseFile {
     client_share: Option<BudgetFile>,
     rrset_cache_bytes: Option<NonZeroUsize>,
     infra_cache_bytes: Option<NonZeroUsize>,
+    /// A file of root hints (zone text, as `named.root`) in place of the bundled ones, for a private root (D201);
+    /// with it the TLD hints are not used either, as they are the public Internet's.
+    root_hints: Option<PathBuf>,
     /// Whether it validates, `off` by default as a forward stage (D77, D197).
     #[serde(default)]
     dnssec: Dnssec,
@@ -42,9 +46,9 @@ pub(super) struct RecurseFile {
 }
 
 impl RecurseFile {
-    /// Whether building it reads a file it names: its trust anchors.
+    /// Whether building it reads a file it names: its trust anchors or root hints.
     pub(super) const fn names_files(&self) -> bool {
-        self.trust_anchors.is_some()
+        self.trust_anchors.is_some() || self.root_hints.is_some()
     }
 
     /// Whether it validates, read before its trust anchors move into [`Validation`].
@@ -126,7 +130,7 @@ struct LocalZonesFile {
 ///
 /// # Errors
 ///
-/// A limit above [`MAX`]'s; a zone in `local_zones.resolve` that is not a name, not served locally or listed twice; a
+/// A limit above [`MAX`]'s; a `root_hints` file that does not read or holds no root server; a zone in `local_zones.resolve` that is not a name, not served locally or listed twice; a
 /// `client_share` [`Budgets::new`] refuses; caches [`RrsetCache::new`] or [`InfraCache::new`] refuses; validation
 /// settings [`Validation::validating`] refuses.
 pub(super) fn recurse(
@@ -165,11 +169,27 @@ pub(super) fn recurse(
         .map_or(DEFAULT_CAPACITY, NonZeroUsize::get);
     let infra_bytes =
         (file.infra_cache_bytes).map_or(InfraCache::DEFAULT_CAPACITY, NonZeroUsize::get);
+    let (roots, tlds) = match file.root_hints {
+        Some(path) => {
+            let text = fs::read(&path).with_context(|| {
+                format!(
+                    "stage `{name}`: `root_hints`: cannot read {}",
+                    path.display()
+                )
+            })?;
+            let roots = RootHints::read(&text)
+                .with_context(|| format!("stage `{name}`: `root_hints`: {}", path.display()))?;
+            (roots, None)
+        }
+        None => (RootHints::bundled().clone(), Some(Tlds::bundled().clone())),
+    };
     let kept = previous.stages().iter().find_map(|stage| match stage {
         Stage::Recurse(held) => {
             let caches = held.caches();
             let same = caches.rrsets.capacity() == rrset_bytes
                 && caches.infra.capacity() == infra_bytes
+                && caches.roots == roots
+                && caches.tlds.is_some() == tlds.is_some()
                 && caches.rrsets.config() == cache
                 && held.validation_tag() == tag;
             same.then(|| Arc::clone(caches))
@@ -183,8 +203,8 @@ pub(super) fn recurse(
                 .with_context(|| format!("stage `{name}`: `rrset_cache_bytes`"))?,
             infra: InfraCache::new(infra_bytes, cache.shards)
                 .with_context(|| format!("stage `{name}`: `infra_cache_bytes`"))?,
-            roots: RootHints::bundled().clone(),
-            tlds: Some(Tlds::bundled().clone()),
+            roots,
+            tlds,
         }),
     };
     let share = BudgetFile::over(file.client_share, DEFAULT_SHARE);
@@ -281,6 +301,8 @@ mod tests {
         };
         recurse.caches()
     }
+
+    use caches as caches_of;
 
     #[test]
     fn d195_a_recurse_stage_reads_under_the_cache_stages_ttls() {
@@ -382,6 +404,48 @@ mod tests {
         assert_eq!(recurse.limits(), default.limits());
         assert_eq!(recurse.minimisation(), default.minimisation());
         assert_eq!(recurse.minimisation(), Minimisation::Relaxed);
+    }
+
+    /// D201: `root_hints` replaces the bundled root hints and the TLD hints; a reload with the same file keeps the
+    /// caches, one with another file or none does not; a file that is not hints is refused.
+    #[test]
+    fn d201_root_hints_replace_the_bundled_ones() {
+        let path = std::env::temp_dir().join(format!("dedensd-hints-{}", std::process::id()));
+        std::fs::write(
+            &path,
+            ". 3600000 IN NS a.root.\na.root. 3600000 IN A 127.0.0.2\n",
+        )
+        .unwrap();
+        let text = format!("{RECURSIVE}    root_hints: {}\n", path.display());
+        let bundled = read(RECURSIVE, env, &Pipeline::default()).expect("valid");
+        let private = read(&text, env, &bundled.pipeline).expect("valid");
+        let caches = caches(&private.pipeline);
+        let [server] = caches.roots.servers() else {
+            panic!("the one root server of the file")
+        };
+        assert_eq!(server.name().to_string(), "a.root.");
+        assert_eq!(server.ipv4(), [core::net::Ipv4Addr::new(127, 0, 0, 2)]);
+        assert!(caches.tlds.is_none(), "no TLD hints with a private root");
+        assert!(caches_of(&bundled.pipeline).tlds.is_some());
+        assert!(!Arc::ptr_eq(caches, caches_of(&bundled.pipeline)));
+        let same = read(&text, env, &private.pipeline).expect("valid");
+        assert!(Arc::ptr_eq(caches, caches_of(&same.pipeline)));
+        std::fs::write(
+            &path,
+            ". 3600000 IN NS b.root.\nb.root. 3600000 IN A 127.0.0.3\n",
+        )
+        .unwrap();
+        let other = read(&text, env, &private.pipeline).expect("valid");
+        assert!(
+            !Arc::ptr_eq(caches, caches_of(&other.pipeline)),
+            "hints changed"
+        );
+        std::fs::write(&path, ". 3600000 IN NS c.root.\n").unwrap();
+        let message = error(&text);
+        assert!(message.contains("`root_hints`"), "{message}");
+        std::fs::remove_file(&path).unwrap();
+        let message = error(&text);
+        assert!(message.contains("cannot read"), "{message}");
     }
 
     #[test]
