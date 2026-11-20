@@ -389,11 +389,17 @@ fn rfc5011_s2_1_a_revoked_key_is_not_trusted_again_by_a_reseed() {
         .expect("reseeded");
     assert_eq!(trusted(&reseeded), [20326]);
 
-    // Only the revoked key's DS: nothing verifies, the revocation stays.
-    assert!(matches!(
-        kept.reseed(&anchors(DS_2010), &december_2018(), DECEMBER_2018),
-        Err(RolloverError::Unverified(_))
-    ));
+    // Only the revoked key's DS: nothing verifies, the revocation stays. December 2018's `RRset` is signed by KSK-2017
+    // alone; August 2017's is signed by KSK-2010, which the DS digests: only the revoked-key guard refuses it.
+    for (records, now) in [
+        (december_2018(), DECEMBER_2018),
+        (august_2017(), AUGUST_16_2017),
+    ] {
+        assert!(matches!(
+            kept.reseed(&anchors(DS_2010), &records, now),
+            Err(RolloverError::Unverified(_))
+        ));
+    }
 }
 
 /// RFC 5011 §2.1: a state of revoked keys only is read, trusts nothing, and takes the revoked keys out of other
