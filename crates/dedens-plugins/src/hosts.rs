@@ -16,7 +16,7 @@ use crate::text::{self, LineError, LineErrorKind};
 /// ANY is answered with the records of one type of the name, A first, then AAAA, then PTR (RFC 8482 §4.1). A listed
 /// name asked for another type, or for a type it has no address of, has no data (NOERROR, no answer,
 /// RFC 2308 §2.2), unless `fallthrough` passes such queries to the next stage. Other names and classes go to the
-/// next stage.
+/// next stage. The no data has AA and no SOA: the stage holds no zone, so no cache downstream keeps it (§5, D54).
 #[derive(Debug)]
 pub struct Hosts {
     names: HashMap<Box<[u8]>, Entry>,

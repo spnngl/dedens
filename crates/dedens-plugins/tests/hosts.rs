@@ -88,13 +88,15 @@ fn addresses_point_to_their_canonical_name() {
     }
 }
 
-/// RFC 2308 §2.2: a listed name without records of the type has no data; `fallthrough` passes it on instead.
+/// RFC 2308 §2.2: a listed name without records of the type has no data, with AA and no SOA (D54); `fallthrough`
+/// passes it on instead.
 #[test]
 fn other_types_have_no_data_unless_falling_through() {
     for qtype in [RecordType::MX, RecordType::AAAA] {
         let reply = ask(&pipeline(false), "foo.example.org.", qtype, Class::IN).expect("a reply");
         assert_eq!((reply.rcode(), reply.answer.len()), (Rcode::NOERROR, 0));
         assert!(reply.header.flags.contains(Flags::AA));
+        assert_eq!(reply.authority, []);
         assert!(ask(&pipeline(true), "foo.example.org.", qtype, Class::IN).is_none());
     }
 }
