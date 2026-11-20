@@ -568,16 +568,28 @@ fn d197_a_bogus_key_set_is_held_for_the_bogus_ttl() {
 
 #[test]
 fn d197_a_key_set_held_bogus_is_not_asked_again() {
-    // Changed: every server of icann.org strips the signatures of its DNSKEY. The set the first resolution left
-    // bogus in the cache is the cache's settled verdict until it expires (RFC 4035 §4.7), as Unbound's bad key: a
-    // second resolution on the same caches asks no DNSKEY and fails bogus.
+    // Changed: every server of icann.org strips the signatures of its DNSKEY, and gives its answer a TTL of 0, cached
+    // by nothing (no minimum TTL). The key set the first resolution left bogus in the cache is the cache's settled
+    // verdict until it expires (RFC 4035 §4.7), as Unbound's bad key: the second, which gets the answer again,
+    // asks no DNSKEY and fails bogus.
     let capture = recursion::Resolution::read("cname-signed");
     let strip = |zone: &Name<'_>, message: &mut Message<'static>| {
         if is(zone, "icann.org.") && answers(message, "icann.org.", RecordType::DNSKEY) {
             (message.answer).retain(|r| r.rdata.rtype() != RecordType::RRSIG);
         }
+        if is(zone, "icann.org.") && answers(message, "www.icann.org.", RecordType::A) {
+            for record in &mut message.answer {
+                record.ttl = dedens_proto::Ttl::from_wire(0);
+            }
+        }
     };
-    let caches = caches(false);
+    let caches = configured(
+        false,
+        dedens_cache::Config {
+            min_ttl: 0,
+            ..dedens_cache::Config::default()
+        },
+    );
     let checking = || {
         (
             Limits::default(),
