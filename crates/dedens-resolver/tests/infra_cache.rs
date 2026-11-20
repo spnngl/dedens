@@ -438,7 +438,6 @@ fn documentation(n: u16) -> SocketAddr {
     )
 }
 
-
 /// A server that answered BADCOOKIE over UDP and TCP is asked over TCP from then on (D190, D196): its timeout over
 /// UDP, which a connection and a query take two round trips beyond, is no longer the one to wait, nor the estimate to
 /// smooth its TCP times into; the first it answers over TCP starts the estimate again.

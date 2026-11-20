@@ -1289,17 +1289,26 @@ impl Resolution {
             // full name is asked, of any server, as Unbound's relaxed mode does (RFC 9156 §1, §3).
             _ => true,
         };
-        self.give_back(server, full);
+        // A server that failed (REFUSED, lame, unusable) is asked the full name after the others: a server that
+        // refused a minimised name gets nothing from being asked the next one at once, and Unbound's relaxed mode
+        // goes on with its next target too. NXDOMAIN is an answer, an empty non-terminal perhaps, its server kept.
+        let failed = full && !matches!(outcome, Outcome::NxDomain { .. });
+        self.give_back(server, full, failed);
         true
     }
 
     /// After a response to the minimised question from `server`: `server` may be asked again, the next question
     /// being another, the full name's when `full`, else the next minimised one. Each zone's servers may then hear
-    /// as many questions as [`MINIMISE_COUNT`] allows, each within [`Limits::queries`].
-    fn give_back(&mut self, server: SocketAddr, full: bool) {
+    /// as many questions as [`MINIMISE_COUNT`] allows, each within [`Limits::queries`]. A `failed` server is asked
+    /// again after the servers not asked yet, as one that timed out is, not before.
+    fn give_back(&mut self, server: SocketAddr, full: bool, failed: bool) {
         let task = self.tasks.active();
         if let At::Asking(delegation) = &mut task.at {
-            delegation.untried.push(server);
+            if failed {
+                delegation.timed_out.push(server);
+            } else {
+                delegation.untried.push(server);
+            }
             delegation.asked = delegation.asked.saturating_sub(1);
         }
         if full {

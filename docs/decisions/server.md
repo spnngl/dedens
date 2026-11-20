@@ -2045,7 +2045,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the client's name wrongly (Unbound reads the RCODE alone and takes it as a failure). Relaxed, NXDOMAIN (§1: servers deny empty non-terminals), REFUSED, SERVFAIL, FORMERR or an
     unusable response has the full name asked, as Unbound's `qname-minimisation-strict: no`; strict, NXDOMAIN ends the resolution (RFC 8020 §2) and any other
     failure goes to the next server, minimised. A server that responded usably may be asked the next question,
-    and the one whose response turned minimisation off the full name.
+    and the one whose response turned minimisation off the full name, but for one that failed (REFUSED, SERVFAIL,
+    unusable): it is asked the full name after the servers not asked yet, as a timed-out one is (D194), not at
+    once. Unbound's relaxed mode too goes on to its next target.
   - Bounds (§2.3 MUST), Unbound's (`iterator/iterator.h`, `processQueryTargets`): `MINIMISE_COUNT` 10 questions per
     name, the 10th the full name; `ONE_LABEL` 4, the first questions one label longer each, the rest of a name of 10
     labels or more spread over the 6 left: 34 labels of `ip6.arpa` take 10 queries, not 34 (labels 1, 2, 3, 4, 9,
