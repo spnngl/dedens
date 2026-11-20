@@ -26,4 +26,5 @@ back, `Pipeline::resolved` writing the reply (D195). Measure a change to the rat
 - A validating recurse stage (D197) is never parked (D186): past the allowance it is SERVFAIL EDE 14. Its verdict
   is the resolution's (`Resolved::checked`, `Failure::Bogus`), presented by `Finish::deliver` with `Ttls::Bounded`;
   a bogus one is SERVFAIL with its EDE, never stale data.
-  A bound reached while validating is indeterminate, EDE 5, not EDE 22 (D197).
+  A bound reached while validating is indeterminate, EDE 5, not EDE 22 (D197). `Resolution::validation_cost` is
+  cumulative across the resolution's retries: `Charging::charge` charges its growth, never resets it.

@@ -982,7 +982,8 @@ fn a_restart_carries_on_with_what_the_validations_before_it_left() {
 }
 
 /// A bogus answer may be asked again of another server, unless its check gave up on signatures that failed too
-/// often (D73): KeyTrap by RRSIGs, which a restart would only pay for again (D197). One RRSIG that fails does not.
+/// often (D73): `KeyTrap` by RRSIGs, which a restart would only pay for again (D197). One RRSIG that fails does
+/// not.
 #[test]
 fn a_check_that_gave_up_on_failed_signatures_is_not_restarted() {
     let script = Script::new();

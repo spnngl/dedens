@@ -1806,7 +1806,8 @@ impl Resolution {
         }
     }
 
-    /// What the validation cost so far: `None` before it started, or when nothing was validated.
+    /// What the validation cost so far, the validations of every retry summed (`Validator::restart`): `None`
+    /// before it started, or when nothing was validated.
     #[must_use]
     pub fn validation_cost(&self) -> Option<Cost> {
         self.checking

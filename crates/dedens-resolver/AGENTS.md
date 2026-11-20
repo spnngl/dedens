@@ -51,9 +51,14 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   with its number and prior art, in D191, and a test in `tests/iteration.rs`.
 - A validated answer is secure only when every `RRset` of it is (`Resolved::checked`): one `Unchecked` (glue, a
   referral's NS, a resolution without the validator) has the whole answer judged. Each `RRset` is written back to
-  the `RRset` cache with its own verdict (`Validation::verdict_of`), never the answer's: a chain crosses zones. Its
-  TTL is capped first (`Rrset::cap_ttl`) to the time it has left; a bogus answer is asked again of other servers
-  (`Resolution::retry`), then fails the resolution with its EDE (D197).
+  the `RRset` cache with its own verdict (`Validation::verdict_of`, keyed by its data), never the answer's: a chain
+  crosses zones. So is each set the validator's questions fetched (`Checking::fetched`): a bogus DNSKEY held
+  `Unchecked` would be served again on the retry. Its TTL is capped first (`Rrset::cap_ttl`) to the time it has
+  left; a bogus answer is asked again of other servers (`Resolution::retry`), then fails the resolution with its EDE
+  (D197).
+- A retry shuns the servers that gave a bogus set (`Answerer::gave`, validator questions included), each in the
+  zone it was asked of only (`Delegation::shun`), and restarts the validation within what the earlier ones spent
+  (`Validator::restart`): `spent` is cumulative, and the server charges its growth (D197).
 - With a validator, `Resolution::begin` takes no wildcard expansion (`Rrset::expanded`) the cache holds secure or
   unchecked: its proof is not cached (D197). Without one, a secure expansion is served unchecked (`unproven`). A CNAME a DNAME synthesized is not cached.
 - A query moved to TCP that times out there (`Reply::TcpTimeout`) does not back the server off (D197): only
