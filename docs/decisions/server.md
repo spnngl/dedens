@@ -1142,7 +1142,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     serving (D55, D115). A change of `user` or `group` at reload is warned and ignored, as `listen`: `Fixed` in
     `src/reload.rs`; it compares what is written, so `user: 990` for `user: dedens` warns too.
   - Downloads directory (D104): with `downloads.urls`, a missing `dir` is made before the drop (parents included,
-    0755), its last directory given to the user by `lchown`; an existing one is never touched (a `dir` that names
+    0755 whatever the umask: a parent made 0700 under `UMask=0077` shut the user out), its last directory given to the user by `lchown`; an existing one is never touched (a `dir` that names
     `/etc` must not be given away), and after the drop the user must be able to create a file in it, or the start ends
     with the `chown` to run. A `urls` added at reload needs a `dir` writable by the user already. The directories of
     the root files used, `dir` and `state_dir`, are made the same way, but one not writable is only warned of (D128).
