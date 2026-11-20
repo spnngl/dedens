@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use dedens_net::exchange;
 use dedens_proto::edns::{Cookie, EdnsFlags, EdnsOption};
-use dedens_proto::{Flags, Message, Name, Question, RecordType, Transport};
+use dedens_proto::{Flags, Message, Name, Question, RecordType, Transport, Ttl};
 use dedens_scenario::{CookieOption, DnssecStatus, Id, Latency, Options, QueryFile, Timeout};
 
 /// The captured response to `example.com. A`: two A records, TTL 29.
@@ -173,6 +173,32 @@ fn a_record_expected_twice_must_come_twice() {
         expect.check(&decode(A)),
         ["answer: missing example.com. IN A 104.20.23.154"]
     );
+}
+
+/// In any order (D34): an expectation with no TTL does not take the one record another needs for its TTL.
+#[test]
+fn an_expected_ttl_gets_its_record_whatever_the_order() {
+    let file = QueryFile::parse(
+        "queries:
+  - name: example.com
+    type: A
+    expect:
+      answer:
+        - example.com. IN A 104.20.23.154
+        - example.com. 29 IN A 104.20.23.154
+",
+    )
+    .expect("valid");
+    let expect = file.queries[0].expect.as_ref().expect("an expectation");
+    let mut response = decode(A);
+    let held = (response.answer.iter())
+        .find(|record| record.to_string().ends_with("104.20.23.154"))
+        .expect("the record")
+        .clone();
+    let mut shorter = held.clone();
+    shorter.ttl = Ttl::from_wire(held.ttl.get() - 1);
+    response.answer = vec![held, shorter];
+    assert_eq!(expect.check(&response), Vec::<String>::new());
 }
 
 #[test]
