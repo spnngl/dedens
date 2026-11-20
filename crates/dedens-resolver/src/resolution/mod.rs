@@ -2140,10 +2140,10 @@ fn closest(
 
 /// Whether a server at `address` may be asked: any if `local` ([`Resolution::asking_local_addresses`]), else one at an
 /// address outside the special-purpose ranges a zone could aim the resolver at its own host, its network or many
-/// hosts with (D191): `special_v4`, and of IPv6 the unspecified address and loopback, the ranges
-/// `fc00::/7`, `fe80::/10`, the deprecated site-local `fec0::/10` and multicast `ff00::/8`, every IPv4-mapped
-/// address (`::ffff:0:0/96`, as Unbound's `do-not-query-localhost`) and IPv4-compatible one (`::/96`), the
-/// local-use NAT64 prefix (`64:ff9b:1::/48`, RFC 8215), and a NAT64 (`64:ff9b::/96`, RFC 6052) or 6to4
+/// hosts with (D191): `special_v4`, and of IPv6 the ranges `fc00::/7`, `fe80::/10`, the deprecated site-local
+/// `fec0::/10` and multicast `ff00::/8`, every IPv4-mapped address (`::ffff:0:0/96`, as Unbound's
+/// `do-not-query-localhost`) and IPv4-compatible one (`::/96`, which holds the unspecified address and loopback),
+/// the local-use NAT64 prefix (`64:ff9b:1::/48`, RFC 8215), and a NAT64 (`64:ff9b::/96`, RFC 6052) or 6to4
 /// (`2002::/16`, RFC 3056) address embedding an IPv4 address that is `special_v4`.
 #[must_use]
 pub fn askable(address: IpAddr, local: bool) -> bool {
@@ -2173,11 +2173,11 @@ fn special_v4(v4: Ipv4Addr) -> bool {
 fn special_v6(v6: Ipv6Addr) -> bool {
     let segments = v6.segments();
     // The IPv4 address embedded in the segments `high` and `low`.
-    let embedded =
-        |high: u16, low: u16| special_v4(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
-    v6.is_loopback()
-        || v6.is_unspecified()
-        || v6.is_unique_local()
+    let embedded = |high: u16, low: u16| {
+        let ([a, b], [c, d]) = (high.to_be_bytes(), low.to_be_bytes());
+        special_v4(Ipv4Addr::new(a, b, c, d))
+    };
+    v6.is_unique_local()
         || v6.is_unicast_link_local()
         || segments
             .first()
