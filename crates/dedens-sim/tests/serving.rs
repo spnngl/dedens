@@ -448,8 +448,10 @@ fn a_prewarmed_name_is_refreshed_before_it_expires_and_a_client_hits_it() {
 fn refreshed_before_it_expires(config: &Config, queries: &RangeInclusive<usize>) {
     seed::each(FEW, |seed| {
         let config = config.clone();
+        let floor = config.min_ttl;
         let mut world = prewarming(seed, answers(), config, 120 * SECOND, PREWARM_TICK);
-        world.client(async move |stub| {
+        world.client(async move |mut stub| {
+            stub.rules.floor = floor;
             tokio::time::sleep(34 * SECOND).await;
             let answer = stub
                 .expect(question("example.com", RecordType::A), Carrier::Udp)
@@ -887,8 +889,8 @@ mod dnscrypt {
                 sleep(12 * HOUR).await;
                 let found = certificates(&socket, resolver, &provider).await?;
                 assert!(
-                    found.iter().all(|c| c.body().serial > old.body().serial),
-                    "the ended certificate is not served"
+                    !found.is_empty() && found.iter().all(|c| c.body().serial > old.body().serial),
+                    "the ended certificate is not served, the new one is"
                 );
                 assert!(
                     !answered(&socket, resolver, &old, &secret, &mut rng).await?,

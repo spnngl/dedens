@@ -1052,6 +1052,7 @@ fn a_burst_past_the_allowance_waits_and_what_waits_too_long_is_shed() {
         let got = Rc::clone(&seen_by);
         world.client(async move |mut stub| {
             asks(&mut stub);
+            stub.rules.floor = 0;
             let keys = zone_of("debian.org");
             ask(&mut stub, &keys, Carrier::Udp).await?;
             // The allowance refilled.

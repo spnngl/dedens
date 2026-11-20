@@ -592,9 +592,10 @@ fn the_resolver_sends_a_client_cookie_of_the_seed_and_returns_the_servers() {
     // A server that sets no cookie of its own has none returned.
     let without = cookies_seen(Seed(1), None);
     assert!(
-        without
-            .iter()
-            .all(|cookie| matches!(cookie, Some((_, false)))),
+        !without.is_empty()
+            && without
+                .iter()
+                .all(|cookie| matches!(cookie, Some((_, false)))),
         "{without:?}"
     );
 }
@@ -614,7 +615,8 @@ fn the_cache_follows_the_clock() {
                 pipeline_with(config, upstreams)
             })
             .build(seed);
-        world.client(async move |stub| {
+        world.client(async move |mut stub| {
+            stub.rules.floor = 1;
             for pause in [SECOND, Duration::from_secs(u64::from(ttl) + 1)] {
                 stub.ask(question("example.com", RecordType::A), Carrier::Udp)
                     .await?;
@@ -713,7 +715,8 @@ fn a_cache_answers_stale_when_the_server_is_out_of_reach() {
             })
             .build(seed);
         world.fault(SECOND, Fault::Partition(LINK.0, LINK.1));
-        world.client(async move |stub| {
+        world.client(async move |mut stub| {
+            stub.rules.floor = 1;
             let first = stub
                 .ask(question("example.com", RecordType::A), Carrier::Udp)
                 .await?;
