@@ -408,7 +408,8 @@ impl<'a> Writer<'a> {
         if found.is_none() {
             // The table holds every suffix of a name it holds (see below), so the suffixes held are the last
             // ones: a binary search finds the first, and a name of a hundred labels costs a few lookups. By hand:
-            // `partition_point` makes two lookups more (docs/benchmarks.md).
+            // `partition_point` makes two lookups more (docs/benchmarks.md). A name written across offset 0x4000
+            // holds only its suffixes before it, the longest: the search may miss them, which costs bytes only.
             let (mut low, mut high) = (head, hashes.len());
             while low < high {
                 let mid = low + (high - low) / 2;
@@ -437,7 +438,7 @@ impl<'a> Writer<'a> {
         }
         if let Some(names) = &mut self.names {
             // The shortest suffix first: when the table or a group is full, the longest go and the shortest stay,
-            // so what is held stays closed under taking a suffix.
+            // so what is held stays closed under taking a suffix, but for a name across offset 0x4000.
             let fresh = hashes.get(..fresh).unwrap_or_default();
             for &suffix in fresh.iter().rev() {
                 let offset = first + suffix.start();
