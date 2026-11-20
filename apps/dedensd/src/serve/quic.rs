@@ -1,11 +1,12 @@
 //! QUIC listeners: the endpoint and its connections (D66), DNS over QUIC one query per stream (RFC 9250 §4.2), and
 //! HTTP/3 connections handed to `http3.rs` (D84).
 
+use std::cell::Cell;
 use std::io;
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::io::AsyncWriteExt;
@@ -172,16 +173,26 @@ async fn quic(endpoint: Endpoint, service: Rc<Service>, listener: Listener, thre
 
 /// Answers the queries of one QUIC connection (RFC 9250 §4.2), each alone on a stream the client opened, as soon
 /// as it can be; a stream not one query behind its length within [`TCP_IDLE`] is abandoned ([`Reply`]), and a query
-/// breaking the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3). Each stream's task holds the
-/// connection's `slot`.
+/// breaking the protocol closes the connection with `DOQ_PROTOCOL_ERROR` (§4.3.3). A new stream must come within
+/// [`TCP_IDLE`] of the later of the last stream taken and the last reply, unless a query is being answered, as an
+/// HTTP/3 request does ([`Activity`]). Each stream's task holds the connection's `slot`.
 async fn streams(connection: &Connection, origin: &Origin, thread: &Rc<Thread>, slot: &Rc<Slot>) {
-    while let Ok(Ok((send, mut recv))) =
-        compio::time::timeout(TCP_IDLE, connection.accept_bi()).await
-    {
+    let activity = Rc::new(Activity::new());
+    let mut taken = Instant::now();
+    loop {
+        let (send, mut recv) =
+            match compio::time::timeout(activity.idle_left(taken), connection.accept_bi()).await {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(_)) => return,
+                Err(_) if activity.idle_left(taken).is_zero() => return,
+                Err(_) => continue,
+            };
+        taken = Instant::now();
         let (connection, thread, slot) = (connection.clone(), Rc::clone(thread), Rc::clone(slot));
+        let flight = activity.fly();
         let from = origin.peer.ip();
         origin.clone().spawn(&Compio, async move {
-            let _slot = slot;
+            let _held = (slot, flight);
             let reply = Reply(Some(send));
             let read = compio::time::timeout(TCP_IDLE, read_stream(&mut recv)).await;
             match read {
@@ -192,6 +203,63 @@ async fn streams(connection: &Connection, origin: &Origin, thread: &Rc<Thread>, 
                 Ok(Err(_)) | Err(_) => {}
             }
         });
+    }
+}
+
+/// What a QUIC connection is answering, for its idle time (D47, D84): the queries or requests in flight, each holding
+/// a [`Flight`], and when the last one ended.
+pub(super) struct Activity {
+    /// Queries or requests being answered.
+    flights: Cell<usize>,
+    /// When the last [`Flight`] ended, its reply sent or given up, or else when the activity began.
+    landed: Cell<Instant>,
+}
+
+impl Activity {
+    /// No query in flight, from now.
+    pub(super) fn new() -> Self {
+        Self {
+            flights: Cell::new(0),
+            landed: Cell::new(Instant::now()),
+        }
+    }
+
+    /// Whether nothing is being answered.
+    pub(super) fn quiet(&self) -> bool {
+        self.flights.get() == 0
+    }
+
+    /// When the last query being answered ended, or the activity began.
+    pub(super) fn landed(&self) -> Instant {
+        self.landed.get()
+    }
+
+    /// A query taken: in flight until the flight is dropped.
+    pub(super) fn fly(self: &Rc<Self>) -> Flight {
+        self.flights.set(self.flights.get() + 1);
+        Flight(Rc::clone(self))
+    }
+
+    /// What is left of the idle time of a connection whose last query was taken at `taken`: all of [`TCP_IDLE`]
+    /// while one is being answered, closing the connection would lose its reply (RFC 9114 §5.1), else what
+    /// [`TCP_IDLE`] leaves from the later of `taken` and the last reply: counted from the query alone, a reply 5 s
+    /// late left the connection 5 s of idle time (D84).
+    pub(super) fn idle_left(&self, taken: Instant) -> Duration {
+        if self.quiet() {
+            TCP_IDLE.saturating_sub(taken.max(self.landed()).elapsed())
+        } else {
+            TCP_IDLE
+        }
+    }
+}
+
+/// A query or request of an [`Activity`] being answered.
+pub(super) struct Flight(Rc<Activity>);
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        self.0.flights.set(self.0.flights.get() - 1);
+        self.0.landed.set(Instant::now());
     }
 }
 
