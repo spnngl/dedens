@@ -795,7 +795,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     parsed tree (loses the line numbers of errors and numbers' types).
   - Saved lists (D57, D104). A copy that does not exist yet is an empty list, so a blocklist fails open until the
     first fetch; a copy that is no list is warned about and left out, a copy not in UTF-8 too (the downloader saves
-    only text: it was changed on disk). A copy that exists and cannot be read (permissions, a directory) refuses
+    only text: it was changed on disk). Unless it reads as a list with TLDs, as the downloader checks it, its version
+    tag is removed: kept, each fetch got a 304 and the copy stayed out for good. A copy that exists and cannot be read (permissions, a directory) refuses
     the start or the reload, as before: serving without the list would not mend when the next fetch runs. Now tested and documented.
   - `threads` (D42). Serving threads, 1 to 1024, fixed at start (a reload warns, as for `listen`). Default as before:
     one per core on Linux, one elsewhere; above 1 off Linux is refused, where `SO_REUSEPORT` spreads nothing and a
