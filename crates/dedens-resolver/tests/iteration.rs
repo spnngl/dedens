@@ -1316,8 +1316,9 @@ const LOCAL: [IpAddr; 30] = [
 ];
 
 /// `unsigned`, com's referral to google.com giving its servers the addresses of [`LOCAL`] as glue, which fail:
-/// the outcome under `limits`, and the addresses of google.com asked.
-fn local(limits: Limits) -> (Resolved, Vec<IpAddr>) {
+/// the outcome under `limits`, `ask` for [`Resolution::asking_local_addresses`], and the addresses of google.com
+/// asked.
+fn local(limits: Limits, ask: bool) -> (Resolved, Vec<IpAddr>) {
     let capture = recursion::Resolution::read("unsigned");
     let google = name("google.com.");
     let caches = caches(false);
@@ -1335,7 +1336,8 @@ fn local(limits: Limits) -> (Resolved, Vec<IpAddr>) {
         }
         Answered::Response(response)
     };
-    let (outcome, _) = run(&mut start(&capture, &caches, limits), &server, at(&capture));
+    let mut resolution = start(&capture, &caches, limits).asking_local_addresses(ask);
+    let (outcome, _) = run(&mut resolution, &server, at(&capture));
     (outcome, asked.into_inner())
 }
 
@@ -1361,7 +1363,7 @@ fn glued(referral: &mut Message<'static>, addresses: &[IpAddr]) {
 
 #[test]
 fn d191_a_server_at_a_local_address_is_not_asked() {
-    let (outcome, asked) = local(Limits::default());
+    let (outcome, asked) = local(Limits::default(), false);
     assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
     assert_eq!(asked, Vec::<IpAddr>::new());
 }
@@ -1369,11 +1371,10 @@ fn d191_a_server_at_a_local_address_is_not_asked() {
 #[test]
 fn d191_a_server_at_a_local_address_is_asked_when_set() {
     let limits = Limits {
-        query_local_addresses: true,
         servers: LOCAL.len(),
         ..Limits::default()
     };
-    let (outcome, asked) = local(limits);
+    let (outcome, asked) = local(limits, true);
     assert_eq!(outcome, Resolved::Failed(Failure::Network));
     let asked: HashSet<IpAddr> = asked.into_iter().collect();
     assert_eq!(asked, HashSet::from(LOCAL));
@@ -1868,11 +1869,11 @@ fn d191_a_cached_delegation_with_no_address_to_ask_is_skipped() {
     // delegation is the root's, not that one, and no local address is asked.
     let capture = recursion::Resolution::read("unsigned");
     let caches = caches(false);
-    let mut cached = response(&capture, "com.", "google.com.");
-    glued(&mut cached, &LOCAL);
+    let mut referral = response(&capture, "com.", "google.com.");
+    glued(&mut referral, &LOCAL);
     let sections = [
-        (&cached.authority, Rank::AuthorityNonAuthoritative),
-        (&cached.additional, Rank::AdditionalNonAuthoritative),
+        (&referral.authority, Rank::AuthorityNonAuthoritative),
+        (&referral.additional, Rank::AdditionalNonAuthoritative),
     ];
     for (section, rank) in sections {
         for set in Rrset::group(section) {

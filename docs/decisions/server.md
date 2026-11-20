@@ -1509,8 +1509,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     or referral is a zone an ancestor on the stack is waiting on ends at once, its name given no address (the loop
     of a zone reachable only through itself costs one query per name), which leaves an address the name's A lookup found. An A lookup ending NXDOMAIN skips the
     name's AAAA.
-  - Addresses: an address at a special-purpose range of RFC 6890 is not asked unless `Limits::query_local_addresses`
-    (`dedensd`'s `recurse` switch of the same name, default false): loopback (127/8, `::1`), "this network" (0/8,
+  - Addresses: an address at a special-purpose range of RFC 6890 is not asked unless
+    `Resolution::asking_local_addresses` (`Recurse::asking_local_addresses`, `dedensd`'s `recurse` switch
+    `query_local_addresses`, default false; the resolution's, not `Limits`' (counts) or the caches', which a reload
+    keeps while the switch changes): loopback (127/8, `::1`), "this network" (0/8,
     `::`), private (10/8, 172.16/12, 192.168/16, fc00::/7), shared (100.64/10), link-local (169.254/16, fe80::/10),
     IETF protocol assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4, ff00::/8), reserved
     (240/4), broadcast, and of IPv6 also: every IPv4-mapped address (`::ffff:0:0/96`, a public IPv4 too, as
