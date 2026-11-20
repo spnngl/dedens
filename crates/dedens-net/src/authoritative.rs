@@ -407,7 +407,9 @@ impl<N: Io> Authoritative<N> {
                         (Failure::TimedOut { sends }, Some(kind)) => {
                             ServerError::Unreachable { sends, kind }.into()
                         }
-                        (Failure::TimedOut { sends }, None) => {
+                        // `CaseMismatch` not with `CaseMismatch::Tcp`, which drops no response for its case.
+                        (Failure::TimedOut { sends }, None)
+                        | (Failure::CaseMismatch { sends }, _) => {
                             ServerError::TimedOut { sends }.into()
                         }
                     });

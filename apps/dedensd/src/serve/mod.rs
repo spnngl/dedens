@@ -306,6 +306,7 @@ pub(crate) fn describe() {
     isolate::describe();
     prewarm::describe();
     recurse::describe();
+    upstream::describe();
     #[cfg(feature = "dnscrypt")]
     dnscrypt::describe();
 }

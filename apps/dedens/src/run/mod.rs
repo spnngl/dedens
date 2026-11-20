@@ -642,7 +642,9 @@ fn silent(error: &ClientError) -> bool {
         _ => false,
     };
     match error {
-        ClientError::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. })
+        ClientError::Exchange(
+            Failure::TimedOut { .. } | Failure::Forged { .. } | Failure::CaseMismatch { .. },
+        )
         | ClientError::Tcp(TcpError::TimedOut | TcpError::Closed) => true,
         ClientError::Quic(e) => quiet(e),
         ClientError::Https(e) => https_quiet(e),

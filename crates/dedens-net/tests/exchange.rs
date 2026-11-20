@@ -308,6 +308,24 @@ fn random_case_sets_the_case_and_requires_it_back() {
     expect_response(udp(exchange, &wire(&echoed), now));
 }
 
+/// D184: an exchange that dropped responses for their case, and got none other, says so, as one that dropped them
+/// for their cookie does: a forger guessing the ID, or a server folding the case, which `dedensd` counts.
+#[test]
+fn an_exchange_with_only_responses_in_another_case_fails_as_case_mismatch() {
+    let now = t0();
+    let query = query();
+    let mut options = Options::default();
+    options.random_case = Some([0xFF; 32]);
+    options.tries = NonZeroU8::MIN;
+    let mut lower = response(&query, Rcode::NOERROR);
+    lower.questions[0].name = name("example.com.");
+    let exchange = expect_wait(udp(start(&query, options, now), &wire(&lower), now));
+    assert_eq!(
+        expect_failure(exchange.time_out(now + secs(5))),
+        Failure::CaseMismatch { sends: 1 }
+    );
+}
+
 /// D184: the response comes back with its question in the case of the query given, not the random one, and so do the
 /// names compressed against it: an answer's owner, a pointer to the question.
 #[test]
