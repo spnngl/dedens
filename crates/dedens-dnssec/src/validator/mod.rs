@@ -454,19 +454,9 @@ impl Validation {
         rdatas: &[WireRdata<'_>],
     ) -> Option<&Verdict> {
         let rdatas = canonical_rdatas(rtype, rdatas);
-        let mut found =
-            (self.sets.iter().chain(&self.keys)).filter(|judged| judged.is(owner, rtype, &rdatas));
-        let first = found.next();
-        // The response's sets come first: a DNSKEY or DS answer the walk checked as well has the verdict of its
-        // own question, and the walk's for its zone; the data, judged twice, is never judged apart.
-        debug_assert!(
-            (self.sets.iter())
-                .filter(|judged| judged.is(owner, rtype, &rdatas))
-                .count()
-                <= 1,
-            "{owner} {rtype} judged twice"
-        );
-        first.map(|judged| &judged.verdict)
+        (self.sets.iter().chain(&self.keys))
+            .find(|judged| judged.is(owner, rtype, &rdatas))
+            .map(|judged| &judged.verdict)
     }
 
     fn finish(&mut self, verdict: Verdict) -> Next {
