@@ -450,7 +450,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Invalid Server Cookie: answered normally, with a fresh cookie, as a Client Cookie alone (RFC 7873 §5.2.4, §5.2.3
     option 3), not BADCOOKIE: a stub whose cookie went stale (restart, secret change, anycast skew) would get no
     answer without a retry, and BIND does the same by default (`require-server-cookie no`). The cookie only buys the
-    exemption from the limit. A bad length stays FORMERR (§5.2.2); a cookie and no question is a request for a cookie
+    exemption from the limit. A bad length stays FORMERR (§5.2.2), with no cookie; a query breaking another rule is
+    FORMERR with its well-formed cookie answered, Client Cookie and fresh Server Cookie (§5.2.2 drops only a
+    malformed COOKIE option; decided by the user, audit 4). A cookie and no question is a request for a cookie
     (§5.4): NOERROR with it, BADCOOKIE if the Server Cookie sent was invalid.
   - Secrets (RFC 9018 §5). `cookies.secret` (32 hexadecimal digits, quoted in YAML, `${VAR}` keeps it out of the file)
     and `cookies.accept` (others accepted) roll as §5 says for anycast: stage 1 secret OLD, accept NEW; stage 2 secret

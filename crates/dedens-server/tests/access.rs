@@ -859,10 +859,10 @@ mod cookies {
         assert_eq!(verified, Some(Standing::Valid));
     }
 
-    /// §5.2.2: a query that breaks a rule, here two questions (RFC 9619 §4), is FORMERR with no cookie, though its
-    /// own is well-formed.
+    /// §5.2.2, §5.2.3: a query that breaks a rule outside its COOKIE option, here two questions (RFC 9619 §4), is
+    /// FORMERR with its well-formed cookie answered: the Client Cookie and a fresh Server Cookie (D113).
     #[test]
-    fn a_query_breaking_a_rule_is_formerr_without_a_cookie() {
+    fn a_query_breaking_a_rule_is_formerr_with_its_cookie() {
         let pipeline = forwarder().with_cookies(cookies());
         let mut query = query("a", 7);
         query.questions.push(query.questions[0].clone());
@@ -873,7 +873,9 @@ mod cookies {
             None,
         );
         assert_eq!(decode(&answer).rcode(), Rcode::FORMERR);
-        assert_eq!(cookie_of(&answer), None);
+        let fresh = cookie_of(&answer).expect("a cookie");
+        assert_eq!(fresh.client(), CLIENT);
+        assert_eq!(cookies().verify(Some(&fresh), LOOPBACK), Standing::Valid);
     }
 
     /// The request sent upstream carries no cookie of ours or the client's: they are for the hop they were made for.
@@ -945,20 +947,22 @@ mod cookies {
         sent
     }
 
-    /// §5.2.2: a COOKIE option of a length other than 8, or 16 to 40, is FORMERR, with no cookie in the reply; those
-    /// lengths are answered, with a Server Cookie.
+    /// §5.2.2: a COOKIE option of a length other than 8, or 16 to 40, is FORMERR, with no cookie in the reply, though
+    /// a well-formed one follows (§5.2: only the first counts); those lengths are answered, with a Server Cookie.
     #[test]
     fn a_cookie_of_the_wrong_length_is_formerr() {
         let pipeline = forwarder().with_cookies(cookies());
         for length in [0, 7, 9, 12, 15, 41] {
-            let answer = reply(
-                &pipeline,
-                &with_cookie_options(&[length]),
-                Transport::Udp,
-                None,
-            );
-            assert_eq!(decode(&answer).rcode(), Rcode::FORMERR, "{length} bytes");
-            assert_eq!(cookie_of(&answer), None, "{length} bytes");
+            for lengths in [&[length][..], &[length, 8]] {
+                let answer = reply(
+                    &pipeline,
+                    &with_cookie_options(lengths),
+                    Transport::Udp,
+                    None,
+                );
+                assert_eq!(decode(&answer).rcode(), Rcode::FORMERR, "{lengths:?}");
+                assert_eq!(cookie_of(&answer), None, "{lengths:?}");
+            }
         }
         for length in [8, 16, 24, 40] {
             let sent = with_cookie_options(&[length]);

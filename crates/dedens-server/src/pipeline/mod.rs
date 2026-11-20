@@ -379,13 +379,12 @@ impl Pipeline {
         }
     }
 
-    /// The first COOKIE option of `query` (RFC 7873 §5.2), when the pipeline has cookies. A query that breaks a rule
-    /// has none: it is answered FORMERR (§5.2.2).
+    /// The first COOKIE option of `query` (RFC 7873 §5.2), when the pipeline has cookies. A malformed one is none, as
+    /// the reader keeps it unknown: its FORMERR has no cookie (§5.2.2), where a query breaking another rule has its
+    /// own answered (D113).
     fn request_cookie(&self, query: &Query<'_>) -> Option<Cookie> {
-        if self.cookies.is_none() || !query.violations().is_empty() {
-            return None;
-        }
-        query.edns()?.options().find_map(|option| match option {
+        let edns = self.cookies.as_ref().and(query.edns())?;
+        edns.options().find_map(|option| match option {
             EdnsOption::Cookie(cookie) => Some(cookie),
             _ => None,
         })
