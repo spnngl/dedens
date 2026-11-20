@@ -3,9 +3,11 @@
 //! ([`Probe`]); the thread reloading follows it with a [`Rollover`] ([`Kept::observe`]), keeps its state in
 //! `state_dir` ([`STATE`]), written whole (D104), and reloads once the anchors it trusts change. The state read at
 //! start serves before the anchors of D128, downloaded or bundled, which are warned of when they disagree; with no
-//! state, or one that does not read, which is warned of, those anchors serve and seed a new state at the next
-//! answer. A state that comes to trust no key, every one revoked, is dropped the same way: a validator never trusts
-//! nothing; one whose keys sign the root's no more, where those anchors do, is replaced by them.
+//! state those anchors serve and seed a new state at the next answer. A state that does not read is set aside as
+//! [`BAD`], warned of, and those anchors serve the same way. A revoked key is never trusted again (RFC 5011 §2.1):
+//! the state keeps it, alone when every key trusted was revoked, and it is taken out of the anchors of D128 that
+//! serve then, or seed a new state; a state whose keys sign the root's no more, where those anchors do, is replaced
+//! by them, its revoked keys kept.
 
 use std::path::Path;
 use std::sync::{OnceLock, mpsc};
@@ -19,6 +21,10 @@ use crate::sync::{AtomicU64, Ordering};
 
 /// The state of the rollover followed, in `state_dir`.
 pub(crate) const STATE: &str = "root-5011";
+
+/// Where a state that does not read is set aside, in `state_dir`, for the operator to read: its revoked keys are
+/// lost to the new state.
+pub(crate) const BAD: &str = "root-5011.bad";
 
 /// The root's keys asked, by `outcome`: `followed` (the answer verified, the state moved on) or `failed` (no
 /// answer, or none a trusted key signs; asked again after [`RETRY`]).
@@ -128,10 +134,10 @@ pub(crate) struct Observed {
 
 impl Kept {
     /// The rollover kept in `state_dir`, read the first time; `None` when there is none, or it does not read,
-    /// which is warned of: the anchors of D128 seed a new one.
+    /// which is warned of and set aside: the anchors of D128 seed a new one.
     fn rollover(&mut self, state_dir: &Path) -> Option<&mut Rollover> {
         if matches!(self, Self::Unread) {
-            *self = Self::Read(read(&state_dir.join(STATE)));
+            *self = Self::Read(read(state_dir));
         }
         match self {
             Self::Read(rollover) => rollover.as_mut(),
@@ -140,14 +146,19 @@ impl Kept {
     }
 
     /// The root anchors the validators trust, `seed` those of D128: the rollover's, warned of when they disagree
-    /// with `seed`, else `seed`.
+    /// with `seed`; when it holds revoked keys only, `seed` less those; else `seed`.
     pub(crate) fn anchors(&mut self, state_dir: &Path, seed: &TrustAnchors) -> TrustAnchors {
-        let followed = (self.rollover(state_dir))
-            .and_then(|rollover| Some((rollover.anchors()?, rollover.agrees(seed))));
-        let Some((anchors, agrees)) = followed else {
+        let Some(rollover) = self.rollover(state_dir) else {
             return seed.clone();
         };
-        if !agrees {
+        let Some(anchors) = rollover.anchors() else {
+            tracing::warn!(
+                "every root key followed by RFC 5011 is revoked: trusting the downloaded or bundled anchors, less \
+                 the revoked keys"
+            );
+            return rollover.without_revoked(seed);
+        };
+        if !rollover.agrees(seed) {
             tracing::warn!(
                 "the root keys followed by RFC 5011 are not those of the downloaded or bundled anchors: trusting \
                  those followed"
@@ -165,12 +176,13 @@ impl Kept {
         state_dir: &Path,
         now: u64,
     ) -> Observed {
-        let before =
-            (self.rollover(state_dir)).map(|rollover| (rollover.to_string(), rollover.anchors()));
+        let before = (self.rollover(state_dir))
+            .map(|rollover| (rollover.to_string(), served(rollover, seed)));
         let followed = match self.rollover(state_dir) {
-            // A state that missed a whole rollover, offline past it, is replaced by the download that did not.
+            // A state that missed a whole rollover, offline past it, is replaced by the download that did not, its
+            // revoked keys kept.
             Some(rollover) => rollover.observe(records, now).or_else(|error| {
-                let (seeded, wait) = Rollover::seed(seed, records, now).map_err(|_| error)?;
+                let (seeded, wait) = rollover.reseed(seed, records, now).map_err(|_| error)?;
                 tracing::warn!(
                     "the root keys followed by RFC 5011 sign the root's keys no more, the downloaded or bundled \
                      anchors do: following those"
@@ -202,19 +214,13 @@ impl Kept {
                 changed: false,
             };
         };
-        let (text, after) = (rollover.to_string(), rollover.anchors());
+        let (text, after) = (rollover.to_string(), served(rollover, seed));
         let changed = match &before {
             Some((_, before)) => *before != after,
             None => !rollover.agrees(seed),
         };
         let path = state_dir.join(STATE);
-        if after.is_none() {
-            tracing::warn!(
-                "no root key followed by RFC 5011 is trusted any more: trusting the downloaded or bundled anchors"
-            );
-            *self = Self::Read(None);
-            remove(&path);
-        } else if before.is_none_or(|(before, _)| before != text)
+        if before.is_none_or(|(before, _)| before != text)
             && let Err(error) = download::replace(&path, text)
         {
             tracing::warn!(path = %path.display(), %error, "the state of the root keys followed not saved");
@@ -226,10 +232,20 @@ impl Kept {
     }
 }
 
-/// The rollover kept at `path`; `None` when there is none, or it does not read, which is warned of.
-fn read(path: &Path) -> Option<Rollover> {
+/// The anchors the validators trust: those of `rollover`, or `seed` less its revoked keys when it holds no other.
+fn served(rollover: &Rollover, seed: &TrustAnchors) -> TrustAnchors {
+    rollover
+        .anchors()
+        .unwrap_or_else(|| rollover.without_revoked(seed))
+}
+
+/// The rollover kept in `state_dir`; `None` when there is no file, not when it cannot be read: a file that does not
+/// read, whatever the cause, is set aside as [`BAD`] and warned of, not left for the next state to overwrite with its
+/// revoked keys forgotten.
+fn read(state_dir: &Path) -> Option<Rollover> {
+    let path = state_dir.join(STATE);
     let max = u64::try_from(Rollover::MAX_LEN).unwrap_or(u64::MAX);
-    let read = open(path).map_err(anyhow::Error::from).and_then(|opened| {
+    let read = open(&path).map_err(anyhow::Error::from).and_then(|opened| {
         let Some((file, _)) = opened else {
             return Ok(None);
         };
@@ -239,22 +255,17 @@ fn read(path: &Path) -> Option<Rollover> {
     match read {
         Ok(rollover) => rollover,
         Err(error) => {
+            let bad = state_dir.join(BAD);
+            let set_aside = std::fs::rename(&path, &bad);
             tracing::warn!(
                 path = %path.display(),
                 error = format!("{error:#}"),
+                bad = %bad.display(),
+                set_aside = ?set_aside,
                 "the state of the root keys followed does not read: trusting the downloaded or bundled anchors"
             );
             None
         }
-    }
-}
-
-/// Removes the state at `path`, which trusts no key.
-fn remove(path: &Path) {
-    if let Err(error) = std::fs::remove_file(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(path = %path.display(), %error, "the state of the root keys followed not removed");
     }
 }
 
@@ -394,8 +405,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// D200: a state cut short or corrupted is left for the downloaded anchors, never trusting nothing, and replaced
-    /// at the next answer.
+    /// D200: a state cut short or corrupted, or that cannot be read, is set aside as `root-5011.bad` and left for the
+    /// downloaded anchors, never trusting nothing; one that is not there is no state, and sets nothing aside. The next
+    /// answer seeds a new state.
     #[test]
     fn a_state_that_does_not_read_starts_from_the_downloaded_anchors() {
         let state = tempfile::tempdir().unwrap();
@@ -408,17 +420,34 @@ pub(crate) mod tests {
         ] {
             fs::write(dir.join(STATE), broken).unwrap();
             assert_eq!(Kept::default().anchors(dir, &seed), seed, "{broken:?}");
+            assert!(!dir.join(STATE).exists(), "{broken:?}");
+            assert_eq!(fs::read(dir.join(BAD)).unwrap(), broken.as_bytes());
         }
+        // Not a file: no more readable, set aside as well.
+        fs::remove_file(dir.join(BAD)).unwrap();
+        fs::create_dir(dir.join(STATE)).unwrap();
+        assert_eq!(Kept::default().anchors(dir, &seed), seed);
+        assert!(dir.join(BAD).is_dir() && !dir.join(STATE).exists());
+        fs::remove_dir(dir.join(BAD)).unwrap();
+
         let mut kept = Kept::default();
         let seeded = kept.observe(&snapshot("20170716113230"), &seed, dir, JULY_2017);
         assert!(!seeded.changed);
         assert_ne!(Kept::default().anchors(dir, &seed), seed);
+        assert!(!dir.join(BAD).exists());
     }
 
-    /// D200: a state whose every trusted key is revoked is dropped, its file removed: the downloaded anchors serve
-    /// again, and seed the next state.
+    /// Whether `anchors` trust KSK-2010, by its DS or as a DNSKEY.
+    fn trusts_2010(anchors: &TrustAnchors) -> bool {
+        let text = anchors.to_string();
+        text.contains("19036") || text.contains("AwEAAagAIKlVZrpC6Ia7")
+    }
+
+    /// D200, RFC 5011 §2.1: a state whose every trusted key is revoked is kept, the revoked key its tombstone: the
+    /// downloaded anchors serve less that key, whatever form they hold it in, across restarts and a reseed, which
+    /// the stale download that still lists it cannot undo.
     #[test]
-    fn a_state_that_trusts_no_key_is_dropped() {
+    fn a_revoked_key_is_never_trusted_again() {
         let state = tempfile::tempdir().unwrap();
         let (dir, seed) = (state.path(), seed());
         fs::write(
@@ -427,7 +456,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut kept = Kept::default();
-        assert_ne!(kept.anchors(dir, &seed), seed);
+        assert!(trusts_2010(&kept.anchors(dir, &seed)));
         let revoked = kept.observe(&snapshot("20190305003355"), &seed, dir, MARCH_2019);
         assert_eq!(
             revoked,
@@ -436,8 +465,32 @@ pub(crate) mod tests {
                 changed: true
             }
         );
-        assert!(!dir.join(STATE).exists());
-        assert_eq!(kept.anchors(dir, &seed), seed);
+        let text = fs::read_to_string(dir.join(STATE)).unwrap();
+        assert!(text.contains("\nrevoked "), "{text}");
+        assert!(!trusts_2010(&kept.anchors(dir, &seed)));
+        assert!(
+            !trusts_2010(&Kept::default().anchors(dir, &seed)),
+            "restarted"
+        );
+
+        // The predating download lists KSK-2010 and KSK-2017: the second is trusted, the first no more.
+        let predating = TrustAnchors::read(&format!(
+            "{DS_2010}. IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n"
+        ))
+        .unwrap();
+        let april_2019 = 1_554_897_600;
+        let mut restarted = Kept::default();
+        let reseeded = restarted.observe(&snapshot("20190406221638"), &predating, dir, april_2019);
+        assert!(reseeded.changed);
+        let served = restarted.anchors(dir, &predating);
+        assert!(served.to_string().contains("AwEAAaz/tAm8yTn4Mfeh"));
+        assert!(!trusts_2010(&served));
+        let text = fs::read_to_string(dir.join(STATE)).unwrap();
+        assert!(text.contains("\nrevoked "), "{text}");
+        assert!(
+            !trusts_2010(&Kept::default().anchors(dir, &predating)),
+            "restarted"
+        );
     }
 
     /// D200: the metric of the root's keys asked is described, through `describe` that `main` calls, and counts
