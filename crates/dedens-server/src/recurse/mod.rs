@@ -413,33 +413,32 @@ impl Resolving {
     }
 
     /// The state the first step leaves: the resolution started, validated if it is to be once the allowance
-    /// admits it, or ended.
+    /// admits it, or ended. A question it does not resolve ends first: it costs the allowance nothing (D197).
     fn start(&self, now: Duration) -> State {
-        if let Some(charging) = &self.validation
-            && let Err(spent) = charging.validating.admit(charging.payer, secs(now))
-        {
-            // The share's unit taken when the allowance refuses goes back: the query is not parked (D186).
-            if spent == Spent::Global {
-                charging.validating.give_up(charging.payer);
-            }
-            return State::Ended(Ended::Shed);
-        }
-        match Resolution::start(
+        let resolution = match Resolution::start(
             self.question.clone(),
             Arc::clone(&self.caches),
             now,
             self.limits,
             self.minimisation,
         ) {
-            Ok(resolution) => State::Running(Box::new(match &self.validation {
-                Some(charging) => {
-                    let validating = &charging.validating;
-                    resolution.validated(validating.validator().clone(), validating.unix())
-                }
-                None => resolution,
-            })),
-            Err(unsupported) => State::Ended(Ended::Unsupported(unsupported)),
+            Ok(resolution) => resolution,
+            Err(unsupported) => return State::Ended(Ended::Unsupported(unsupported)),
+        };
+        let Some(charging) = &self.validation else {
+            return State::Running(Box::new(resolution));
+        };
+        let validating = &charging.validating;
+        if let Err(spent) = validating.admit(charging.payer, secs(now)) {
+            // The share's unit taken when the allowance refuses goes back: the query is not parked (D186).
+            if spent == Spent::Global {
+                validating.give_up(charging.payer);
+            }
+            return State::Ended(Ended::Shed);
         }
+        State::Running(Box::new(
+            resolution.validated(validating.validator().clone(), validating.unix()),
+        ))
     }
 
     /// Hands over the reply to the query [`Resolving::step`] gave, at `now`.

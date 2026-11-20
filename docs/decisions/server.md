@@ -1936,8 +1936,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - The recurse stage: `Recurse::validating(Validating)` as a forward stage (D77): AD on a secure answer (D114's
     `present`, signatures and denials cut to those that cover it), SERVFAIL with the EDE for a bogus one, no stale
     data in its place and no failure held (asked again, the `RRset` cache answers bogus without a query); an
-    indeterminate one is a failure (D43). The allowance: a unit at the start (`admit`), then at each step what the
-    validation grew by (questions, verifications, NSEC3 blocks, D106's `work`); past `per_query` indeterminate,
+    indeterminate one is a failure (D43). The allowance: a unit at the start (`admit`) of a question it resolves
+    (one refused or not implemented costs none), then at each step what the validation grew by (questions,
+    verifications, NSEC3 blocks, D106's `work`); past `per_query` indeterminate,
     the bucket in debt SERVFAIL with EDE 14, not parked (D186: a parked resolution would hold its state and
     queries; the client asks again). The share is the validation's (`DEFAULT_SHARE`, D117), the stage's
     `client_share` stays the queries'.
