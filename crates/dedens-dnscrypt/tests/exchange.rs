@@ -537,6 +537,24 @@ fn response_must_answer_the_query() {
     );
 }
 
+/// A message without QR is a query, not a response (RFC 1035 §4.1.1): authenticated and with the query's ID and
+/// questions, it is refused all the same, so that a client goes on waiting for the response.
+#[test]
+fn response_must_have_qr() {
+    let system = EncryptionSystem::XChaCha20Poly1305;
+    let (_, query_context, context) = send(system, QueryPadding::to(64));
+    let mut query = hex(DNS_RESPONSE);
+    query[2] &= 0x7f;
+    assert_eq!(
+        query_context.decrypt_response(
+            &context
+                .encrypt_response(&query, Carrier::Tcp, &mut rng())
+                .expect("sent")
+        ),
+        Err(ResponseError::NotResponse)
+    );
+}
+
 /// A client key that is the same for every query shares one key, which `decrypt_query_with` takes: the result is
 /// that of `decrypt_query`, and the key of another client does not open the packet.
 #[test]

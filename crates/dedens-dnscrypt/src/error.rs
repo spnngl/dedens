@@ -153,6 +153,9 @@ pub enum ResponseError {
     /// The plaintext is no DNS message.
     #[error("response is no DNS message: {0}")]
     Dns(#[from] DecodeError),
+    /// The message has no QR flag: a query, not a response (RFC 1035 §4.1.1).
+    #[error("DNS message is not a response: no QR flag")]
+    NotResponse,
     /// The ID is not the query's.
     #[error("DNS ID is not the query's")]
     IdMismatch,

@@ -689,8 +689,11 @@ mod tests {
         };
         let issuing = reply.ticket.as_ref().expect("a ticket for the first reply");
         let issued_at = issuing.unix;
+        // The reply to the query: the same message with QR set, which `open_response` requires (RFC 1035 §4.1.1).
+        let mut response = wire.clone();
+        response[2] |= 0x80;
         let sealed = reply
-            .seal(&thread, &wire, Carrier::Tcp)
+            .seal(&thread, &response, Carrier::Tcp)
             .expect("a sealed reply");
         let resumption = context
             .open_response(&sealed)

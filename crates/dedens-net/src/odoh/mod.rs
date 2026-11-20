@@ -82,6 +82,9 @@ pub enum OdohError {
     /// The query cannot be encrypted or the response decrypted.
     #[error("encryption")]
     Exchange(#[from] ExchangeError),
+    /// The decrypted message has no QR flag: a query, not a response (RFC 1035 §4.1.1).
+    #[error("the decrypted message is not a response: no QR flag")]
+    NotResponse,
     /// A status other than 2xx: no response in it, whatever its body (RFC 9230 §4.3).
     #[error("HTTP status {0}")]
     Status(StatusCode),

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use dedens_proto::{Message, Question};
+use dedens_proto::{Flags, Message, Question};
 use rand_core::CryptoRng;
 use zeroize::Zeroizing;
 
@@ -382,6 +382,9 @@ impl QueryContext {
             None => (plaintext.as_slice(), None),
         };
         let decoded = Message::decode(message)?;
+        if !decoded.message.header.flags.contains(Flags::QR) {
+            return Err(ResponseError::NotResponse);
+        }
         if decoded.message.header.id != self.id {
             return Err(ResponseError::IdMismatch);
         }
@@ -464,7 +467,9 @@ mod tests {
             .to_be_bytes()
             .to_vec();
         plaintext.extend_from_slice(&control);
-        plaintext.extend_from_slice(&Message::query(9, question).to_vec().expect("encodes"));
+        let mut response = Message::query(9, question);
+        response.header.flags = response.header.flags.with(Flags::QR);
+        plaintext.extend_from_slice(&response.to_vec().expect("encodes"));
         let padded = (plaintext.len() + 1).next_multiple_of(BLOCK);
         padding::pad(&mut plaintext, padded);
         let mut full_nonce = [0; NONCE_LEN];
