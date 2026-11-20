@@ -422,6 +422,85 @@ fn rfc5011_s2_1_revoked_keys_alone_are_a_state_that_filters_other_anchors() {
     assert_eq!((left.ds().len(), left.dnskeys().len()), (0, 0));
 }
 
+/// RFC 5011 §4: a new key is not revoked, it is removed when its plain form is gone, as it is when revoked: a key
+/// that signs what it should not cannot leave a key of its own revoked for good. KSK-2010 pending, its revoked form
+/// published beside KSK-2017, which signs and is trusted: no tombstone.
+#[test]
+fn rfc5011_s4_a_new_key_revoked_is_dropped_not_kept_revoked() {
+    let text = format!(
+        "dedens rfc5011 1\naddpend {} {}\nvalid {}\nend\n",
+        MARCH_2019 + 30 * DAY,
+        dnskey(&december_2018(), 19036),
+        dnskey(&december_2018(), 20326),
+    );
+    let mut rollover = Rollover::read(&text).expect("state text");
+    rollover
+        .observe(&march_2019(), MARCH_2019)
+        .expect("observed");
+    assert_eq!(states(&rollover), [(20326, KeyState::Valid)]);
+}
+
+/// The keys revoked are not counted by the bound on the keys followed, and have their own: past it the revocation
+/// seen longest ago is forgotten, the new one kept.
+#[test]
+fn rfc5011_s2_1_the_keys_revoked_have_their_own_bound() {
+    let max = u8::try_from(Rollover::MAX_KEYS).expect("a small bound");
+    let revoked = |seen: std::ops::Range<u8>| -> String {
+        seen.map(|algorithm| {
+            by_algorithms(
+                &format!("revoked {algorithm} "),
+                algorithm..algorithm + 1,
+                "",
+            )
+        })
+        .collect()
+    };
+    // Tombstones beside a state one key short of the bound: room for KSK-2017.
+    let tombstones = revoked(200..205);
+    let text = many_keys(max - 1).replace("end\n", &format!("{tombstones}end\n"));
+    let mut rollover = Rollover::read(&text).expect("a state under the bound");
+    assert!(!rollover.is_full(), "keys revoked are not counted");
+    rollover
+        .observe(&july_2017(), JULY_2017)
+        .expect("KSK-2010 signs");
+    assert!(rollover.is_full());
+    assert!(states(&rollover).iter().any(|&(tag, _)| tag == 20326));
+    let kept = |rollover: &Rollover| {
+        (rollover.keys())
+            .filter(|(_, state)| matches!(state, KeyState::Revoked { .. }))
+            .count()
+    };
+    assert_eq!(kept(&rollover), 5);
+
+    // KSK-2010 and KSK-2017 valid, as many keys revoked as the bound allows: KSK-2010's revocation is one more.
+    let bound = u8::try_from(Rollover::MAX_REVOKED).expect("a small bound");
+    let text = format!(
+        "dedens rfc5011 1\nvalid {}\nvalid {}\n{}end\n",
+        dnskey(&december_2018(), 19036),
+        dnskey(&december_2018(), 20326),
+        revoked(100..100 + bound),
+    );
+    let mut rollover = Rollover::read(&text).expect("a state at the bound");
+    assert_eq!(kept(&rollover), Rollover::MAX_REVOKED);
+    rollover
+        .observe(&march_2019(), MARCH_2019)
+        .expect("KSK-2017 signs");
+    assert_eq!(kept(&rollover), Rollover::MAX_REVOKED);
+    assert!(states(&rollover).contains(&(19036, KeyState::Revoked { seen: MARCH_2019 })));
+    assert!(
+        rollover
+            .keys()
+            .all(|(key, _)| u8::from(key.algorithm()) != 100),
+        "the oldest is forgotten"
+    );
+    assert!(
+        rollover
+            .keys()
+            .any(|(key, _)| u8::from(key.algorithm()) == 101),
+        "the others stay"
+    );
+}
+
 /// The text of a state of `count` valid keys: KSK-2010, then its key under other algorithm numbers (keys no answer
 /// of the root's signs, which only the bound is tried with).
 fn many_keys(count: u8) -> String {
