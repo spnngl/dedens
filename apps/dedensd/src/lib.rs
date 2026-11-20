@@ -19,6 +19,7 @@ mod log;
 mod odoh;
 mod privileges;
 mod reload;
+mod rollover;
 mod roots;
 mod serve;
 mod sync;
@@ -114,6 +115,7 @@ pub fn main() -> anyhow::Result<()> {
     let plan = privileges::resolve(config.user.as_ref()).with_context(|| format!("in {path}"))?;
     config.warn_access(&config.listen);
     serve::describe();
+    rollover::describe();
     process();
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..config.threads)

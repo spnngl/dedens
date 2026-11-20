@@ -1397,7 +1397,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `a_query_past_the_line_is_shed_at_once_and_one_waiting_too_long_once_its_time_is_up`),
     `crates/dedens-sim/tests/dnssec.rs` (`a_burst_past_the_allowance_waits_and_what_waits_too_long_is_shed`),
     `a_query_that_waits_for_the_allowance_is_counted_parked` of `crates/dedens-server/tests/metrics.rs`.
-- D128 (amends D54, D104, D122, D126, D127) The `tlds` stage answers, with no upstream query, the special-use top-level domains and those
+- D128 (amends D54, D104, D122, D126, D127; amended by D200) The `tlds` stage answers, with no upstream query, the special-use top-level domains and those
   not in the root zone: `type: tlds`, `dedens_plugins::TopLevel` over a `dedens_roots::Tlds`. Its table,
   `SPECIAL`, holds each special-use TLD of IANA's list with what item 4 of its RFC asks of a caching server:
   `localhost` and its subnames the loopback addresses to A, AAAA and ANY (one RRset, RFC 8482 §4.1), no data to
@@ -1762,7 +1762,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     always (RFC 5452 §4.4); a `480 s` blacklist, which Unbound's `BLACKLIST_PENALTY` is not: 480,000 ms added to a
     server's RTT for one query (`iterator/iterator.c`), the iterator's (step 04) to apply.
     Open: times per (address, zone) if a server is measured slow for one zone only (TODECIDE).
-- D195 (amended by D197, D201; builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
+- D195 (amended by D197, D200, D201; builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
   from the root, `Stage::Recurse` behind the cache stage where a forwarder has a forward stage.
   - Shape: `dedens_server::Recurse` holds the resolver's caches (`Arc<Caches>`: RRsets D193, servers D194, the root
     and TLD hints D126), `Limits` (D191), the locally served zones and the client budget. Sans-IO as the rest of the
@@ -2051,3 +2051,55 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: strict by default (RFC 9156 §1 reports relaxed causes almost no failures, strict some); a bound per
     zone (the per-name count with `Limits::queries` bounds the whole); `Limits` fields for the counts (RFC 9156
     and Unbound fix them; nobody tunes them).
+- D200 (amends D72, D73, D127, D128, D195) The recursive resolver follows the root's trust anchors through a key
+  rollover by RFC 5011 (recursive step 13), from the root's DNSKEY `RRset` it asks itself; the signed download
+  (D127, D128) seeds it. A server that missed a rollover's download (IANA unreachable, a file refused) follows
+  the zone, the source the keys sign.
+  - Shape: `dedens_dnssec::Rollover` (sans-IO, `anchor/rollover.rs`, beside `TrustAnchors` and the `rrsig`
+    verification it needs; `dedens-roots` holds data, no crypto). Per key `KeyState { AddPend { until }, Valid,
+    Missing { since }, Revoked { seen } }`; RFC 5011 §4's Start and Removed are a key not held, as Unbound drops
+    them (`autr_cleanup_keys`). `Rollover::seed(anchors, records, now)` verifies the `RRset` with the anchors in
+    use, DS or DNSKEY: the keys they name are Valid (Unbound's `key_matches_a_ds`), other SEP keys AddPend.
+    `observe(records, now)` applies revocations first, a REVOKE key signing the `RRset` itself (§2.1;
+    `rrsig::verify_revocation`, the one check a revoked key passes, D73), even when no trusted key signs the
+    rest; then needs a Valid or Missing key's signature, else changes nothing more and errs. The table (§4): a new
+    SEP key AddPend until now plus the larger of 30 days and the TTL (§2.4.1), Valid when seen past it, dropped
+    when unseen before; Valid unseen Missing, Missing seen Valid; Revoked dropped 30 days after last seen
+    (§2.4.2). `anchors()` are the DNSKEYs of Valid and Missing keys, none when none.
+  - Bounds (`Rollover` constants, compared with Unbound's `validator/autotrust.c` and BIND's `lib/dns/zone.c`):
+    hold-downs 30 days (Unbound's defaults, BIND's `dns_zone_mkey_month`); `KEEP_MISSING` 366 days, a Missing key
+    dropped past it while another is Valid (Unbound's `keep-missing`; BIND and RFC 5011 keep it forever); the
+    wait between queries the verified TTL's half (the least of the `RRset`'s, original TTL and seconds to the
+    signatures' end, D73) within 12 hours and 15 days (§2.3 floors it at an hour, as Unbound's `set_tp_times` and
+    BIND's `refresh_time`: the root's TTL of 2 days makes 12 hours the floor of a cached answer only); an hour
+    after a failure (§2.3's `retryTime` floor); the default verification budget per answer; the state text 64 KiB.
+  - `dedensd`: a validating `recurse` stage without `trust_anchors` follows the root's keys. The state is
+    `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
+    file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the
+    first load. Its anchors win over D128's, downloaded or bundled, with a warn! when they disagree: the state
+    was proven from the zone, key by key, since a seed the download gave. No state, one that does not read
+    (warn!), or one whose keys are all revoked (removed, warn!): D128's anchors serve and seed a new state from
+    the next answer. A validator never trusts nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the
+    zone insecure. A state no key of which signs an answer D128's anchors sign, offline past a whole rollover
+    (RFC 5011 §6 leaves it to the operator), is replaced by those, with a warn!. Forward stages keep D128's
+    anchors.
+  - Queries: `Probe` in `reload::Current` holds the next query's time; the first serving thread past it takes it
+    and resolves `. DNSKEY` through `Pipeline::root_keys` beside the query it serves, as priming (D195): no client,
+    no validation (`Rollover` verifies), and the `RRset` cache may answer, its TTL bounding the age. The answer, its
+    RRSIGs with it (empty when it failed), goes to the thread reloading, which observes it, saves the state, sets
+    the next time and reloads (D55's last configuration) when the anchors trusted changed. A server with no
+    queries asks nothing; a start asks at the first query. `dedensd_root_key_probes_total{outcome}`: `followed`,
+    `failed`.
+  - Test data: `testdata/dnssec/rollover-*.zone` (`just capture-rollover`), the root's DNSKEY `RRset` and its
+    RRSIGs from the Internet Archive's copies of `https://www.internic.net/domain/root.zone`, through the
+    KSK-2010 to KSK-2017 rollover (2017 to 2019): KSK-2017 added, signing, KSK-2010 revoked (tag 19164) then gone.
+    The KSK-2017 to KSK-2024 rollover has not revoked yet.
+  - Tests: `crates/dedens-dnssec/tests/rfc5011.rs` (hold-downs, revocation, missing, an answer no trusted key
+    signs, the state text and each of its prefixes), `apps/dedensd/src/rollover.rs` (seeding, a restart, a state
+    that does not read, one revoked whole, the query's time), the config test in `apps/dedensd/src/config/sources.rs`,
+    the `. DNSKEY` resolution in `crates/dedens-server/tests/recurse.rs`; fuzz target `parse_5011_state`.
+  - Rejected: the download winning (a file on a site; the zone is what RFC 5011 trusts, and a download missing
+    the roll would keep a revoked key); following without the download (a start with no state would trust the
+    bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
+    I/O and the stage); Unbound's DS entries kept in the state (the seed's DS name keys that turn Valid at once);
+    following forward stages' anchors (the upstream's answers, out of the step); non-root anchors (out of the step).

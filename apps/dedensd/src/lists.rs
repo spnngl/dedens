@@ -90,6 +90,8 @@ pub(crate) struct Store {
     unions: Vec<Union>,
     /// The root's files read so far: the TLD list of the `tlds` stages and the root anchors kept (D128).
     pub(crate) roots: crate::roots::Held,
+    /// The root key rollover followed by RFC 5011 (D200).
+    pub(crate) rollover: crate::rollover::Kept,
 }
 
 impl Store {

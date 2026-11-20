@@ -225,6 +225,9 @@ pub(crate) struct Downloads {
     pub(crate) refresh: Duration,
     pub(crate) state_dir: PathBuf,
     pub(crate) roots: Used,
+    /// The root anchors of D128, downloaded or bundled, that seed the rollover a validating recurse stage without
+    /// `trust_anchors` follows by RFC 5011 (D200); `None` when no stage follows one.
+    pub(crate) followed: Option<TrustAnchors>,
     /// Where the root files come from.
     sources: RootsFile,
 }
@@ -278,6 +281,7 @@ impl Downloads {
             refresh: refresh(settings.refresh_minutes)?,
             state_dir: state_dir.unwrap_or_else(|| STATE_DIR.into()),
             roots: Used::default(),
+            followed: None,
             sources: roots,
         })
     }
@@ -299,7 +303,7 @@ impl Downloads {
         if self.roots.tlds.is_some() {
             dirs.push(self.dir.as_path());
         }
-        if self.roots.anchors.is_some() {
+        if self.roots.anchors.is_some() || self.followed.is_some() {
             dirs.push(self.state_dir.as_path());
         }
         dirs
@@ -364,6 +368,20 @@ impl Downloads {
             });
         }
         Ok(self.roots.anchors.as_ref().map(|used| used.valid.clone()))
+    }
+
+    /// The root's anchors of a validating recurse stage without `trust_anchors`: those followed by RFC 5011 and kept
+    /// in `state_dir`, held in `store`, else those of [`Downloads::root_anchors`] or the bundled ones, which seed
+    /// the rollover followed from now on (D200).
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Downloads::root_anchors`]; a kept rollover that does not read is warned of, not an error.
+    pub(super) fn followed_anchors(&mut self, store: &mut Store) -> anyhow::Result<TrustAnchors> {
+        let seed = self.root_anchors(store)?.unwrap_or_else(TrustAnchors::root);
+        let anchors = store.rollover.anchors(&self.state_dir, &seed);
+        self.followed = Some(seed);
+        Ok(anchors)
     }
 
     /// Adds `urls`, once each: the downloads run together, two of one URL would save one copy at once (D104).
@@ -891,6 +909,60 @@ mod tests {
         assert!(crate::config::read_without_files(&refused, env).is_err());
     }
 
+    /// D200: a validating recurse stage trusts the root keys followed by RFC 5011 and kept in `state_dir` over the
+    /// downloaded or bundled anchors, which seed the rollover; a kept state that does not read is left for those,
+    /// refusing neither a start nor a reload. A forward stage reads no such state. The state is a real one: KSK-2017
+    /// valid, KSK-2010 revoked.
+    #[test]
+    fn root_keys_followed_by_rfc_5011_key_a_validating_recurse_stage() {
+        let state = tempfile::tempdir().unwrap();
+        let file = state.path().join(crate::rollover::STATE);
+        let text = |stage: &str| {
+            format!(
+                "listen: ['127.0.0.1:53']\nstate_dir: '{}'\npipeline: [root]\nstages:\n  root:\n{stage}    dnssec: validate\n",
+                state.path().display()
+            )
+        };
+        let (recursing, forwarding) = (
+            text("    type: recurse\n"),
+            text("    type: forward\n    servers: ['192.0.2.1']\n"),
+        );
+        let tag = |text: &str, store: &mut Store| {
+            let config =
+                crate::config::read(text, env, (&Pipeline::default(), None), store).unwrap();
+            let tag = match config.pipeline.stages() {
+                [Stage::Recurse(recurse)] => recurse.validation_tag().unwrap().to_owned(),
+                [Stage::Forward(forward)] => forward.validation_tag().unwrap().to_owned(),
+                stages => unreachable!("{stages:?}"),
+            };
+            (tag, config.downloads.followed)
+        };
+        let bundled = format!("validate\n{}", TrustAnchors::root());
+        assert_eq!(
+            tag(&recursing, &mut Store::default()),
+            (bundled.clone(), Some(TrustAnchors::root()))
+        );
+
+        fs::write(
+            &file,
+            include_str!("../../../../fuzz/seeds/root-5011.state"),
+        )
+        .unwrap();
+        let (followed, seed) = tag(&recursing, &mut Store::default());
+        assert!(
+            followed.contains("DNSKEY") && !followed.contains("38696"),
+            "{followed}"
+        );
+        assert_eq!(seed, Some(TrustAnchors::root()));
+        assert_eq!(
+            tag(&forwarding, &mut Store::default()),
+            (bundled.clone(), None)
+        );
+
+        fs::write(&file, "dedens rfc5011 1\nend\n").unwrap();
+        assert_eq!(tag(&recursing, &mut Store::default()).0, bundled);
+    }
+
     /// D128: kept anchors with no key valid now, by a clock likelier wrong than every key ended, refuse neither a
     /// start nor a reload: every key of them is trusted, dates ignored. The kept text is [`KEPT`], each key edited
     /// to start in 2100.
@@ -975,6 +1047,7 @@ mod tests {
                 refresh: Duration::from_hours(24),
                 state_dir: STATE_DIR.into(),
                 roots: Used::default(),
+                followed: None,
                 sources: RootsFile::default(),
             }
         );

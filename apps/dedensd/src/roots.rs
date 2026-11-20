@@ -211,7 +211,7 @@ fn read_anchors(
 
 /// The saved file at `path` opened for reading, with its stamp: a regular file, itself no symbolic link (its
 /// directories may be); `None` when not there.
-fn open(path: &Path) -> io::Result<Option<(File, Stamp)>> {
+pub(crate) fn open(path: &Path) -> io::Result<Option<(File, Stamp)>> {
     let mut options = File::options();
     options.read(true);
     #[cfg(unix)]

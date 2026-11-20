@@ -4,10 +4,12 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{io, thread};
 
+use dedens_dnssec::TrustAnchors;
 use dedens_net::tls::{Presented, Trust};
+use dedens_proto::Record;
 use dedens_server::Pipeline;
 
 use crate::config::{Downloads, Listen, unix_seconds};
@@ -15,6 +17,7 @@ use crate::download::{self, Fetched, Fetcher, sweep};
 use crate::flights::Flights;
 use crate::lists::Store;
 use crate::privileges::Identity;
+use crate::rollover::{self, Probe, Wake};
 use crate::roots::{self, Refresh};
 use crate::sync::{self, AtomicU64, Mutex, Ordering, PoisonError};
 
@@ -29,6 +32,8 @@ pub(crate) struct Current {
     followers: Mutex<Vec<sync::Sender<()>>>,
     /// The validator's questions in flight, for all threads and across reloads (D86).
     flights: Flights,
+    /// When the root's keys are asked next, for all threads and across reloads (D200).
+    probe: Probe,
 }
 
 impl Current {
@@ -38,11 +43,16 @@ impl Current {
             pipeline: Mutex::new(sync::Arc::new(pipeline)),
             followers: Mutex::default(),
             flights: Flights::default(),
+            probe: Probe::default(),
         }
     }
 
     pub(crate) const fn flights(&self) -> &Flights {
         &self.flights
+    }
+
+    pub(crate) const fn probe(&self) -> &Probe {
+        &self.probe
     }
 
     /// Bumped by each [`Current::replace`], after the pipeline is.
@@ -168,11 +178,12 @@ impl Ticks {
 
 /// Starts the thread that replaces the pipeline: on each SIGHUP, reading `file` again (D55), and once the lists of
 /// `downloads` changed, fetched at once, after each SIGHUP, then every refresh interval (D57), building `text`, the
-/// configuration last loaded, again without reading `file`. One thread for both, so a refresh never replaces the
-/// pipeline of a reload with an older one. A panic while fetching or reloading is logged and counts as a failure;
-/// the thread goes on, and a reload that failed after the lists changed is tried again on the next tick (D104). The
-/// SIGHUP handler is installed before this returns: a SIGHUP once the server logged that it serves never ends the
-/// process.
+/// configuration last loaded, again without reading `file`; and once the root keys a serving thread asked changed
+/// the anchors they are followed to (RFC 5011, D200), building `text` again too. One thread for all, so a refresh
+/// never replaces the pipeline of a reload with an older one. A panic while fetching or reloading is logged and
+/// counts as a failure; the thread goes on, and a reload that failed after the lists changed is tried again on the
+/// next tick (D104). The SIGHUP handler is installed before this returns: a SIGHUP once the server logged that it
+/// serves never ends the process.
 ///
 /// # Errors
 ///
@@ -185,7 +196,8 @@ pub(crate) fn control(
     mut downloads: Downloads,
     mut store: Store,
 ) -> io::Result<()> {
-    let (hangup, hangups) = mpsc::channel::<()>();
+    let (hangup, wakes) = mpsc::channel::<Wake>();
+    current.probe().connect(hangup.clone());
     #[cfg(unix)]
     {
         let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGHUP])?;
@@ -194,14 +206,14 @@ pub(crate) fn control(
             .name("dedensd-hangups".to_owned())
             .spawn(move || {
                 for _ in signals.forever() {
-                    let _ = hangup.send(());
+                    let _ = hangup.send(Wake::Hangup);
                 }
             })?;
     }
     thread::Builder::new()
         .name("dedensd-reload".to_owned())
         .spawn(move || {
-            // Held here, so `hangups` is never disconnected, SIGHUP or not.
+            // Held here, so `wakes` is never disconnected, SIGHUP or not.
             let _hangup = hangup;
             let client = Fetcher::new();
             guarded("leftover sweep", || {
@@ -212,11 +224,13 @@ pub(crate) fn control(
                     copies.push(roots::tlds_copy(&downloads.dir, &tlds.url));
                 }
                 sweep(&copies, &downloads.dir);
-                let anchors = downloads.state_dir.join(roots::ANCHORS);
-                sweep(&[anchors], &downloads.state_dir);
+                let kept =
+                    [roots::ANCHORS, rollover::STATE].map(|name| downloads.state_dir.join(name));
+                sweep(&kept, &downloads.state_dir);
             });
             let mut ticks = Ticks::new();
             let mut refresh = Refresh::default();
+            let mut following = false;
             loop {
                 let wait = if downloads.is_empty() {
                     Duration::MAX
@@ -246,17 +260,34 @@ pub(crate) fn control(
                         Some(every)
                     })
                 };
-                // A SIGHUP reloads, then fetches again at once: its lists may have changed with it.
-                if hangups.recv_timeout(wait).is_ok() {
-                    // Those queued meanwhile ask for what this one does (D104).
-                    while hangups.try_recv().is_ok() {}
-                    if let Some(new) =
-                        reload(&file, Read::File, &mut text, &current, &fixed, &mut store)
+                follow(
+                    current.probe(),
+                    &mut following,
+                    downloads.followed.is_some(),
+                );
+                let deadline = Instant::now().checked_add(wait);
+                loop {
+                    let left = deadline.map_or(Duration::MAX, |deadline| {
+                        deadline.saturating_duration_since(Instant::now())
+                    });
+                    let Ok(wake) = wakes.recv_timeout(left) else {
+                        break;
+                    };
+                    let followed = (current.probe(), downloads.followed.as_ref());
+                    let (dir, now) = (&downloads.state_dir, unix_seconds());
+                    let Some(read) = woken(wake, wakes.try_iter(), followed, dir, &mut store, now)
+                    else {
+                        continue;
+                    };
+                    if let Some(new) = reload(&file, read, &mut text, &current, &fixed, &mut store)
                     {
                         downloads = new;
                         refresh = Refresh::default();
                         // Built from the lists on disk, the pending reload included.
                         ticks.served();
+                    }
+                    if matches!(read, Read::File) {
+                        break;
                     }
                 }
             }
@@ -264,8 +295,71 @@ pub(crate) fn control(
     Ok(())
 }
 
+/// Asks the root's keys at once when a configuration starts following them, `follows` whether the new one does and
+/// `following` whether the one before did; no more once it does not (D200).
+fn follow(probe: &Probe, following: &mut bool, follows: bool) {
+    if follows != *following {
+        *following = follows;
+        if follows {
+            probe.start(unix_seconds());
+        } else {
+            probe.stop();
+        }
+    }
+}
+
+/// The reload `wake` asks for, `None` for none, the wakes `queued` after it taken too: an answer of the root's keys
+/// reloads when the anchors trusted changed (D200); a SIGHUP reloads the file, and those queued with it ask for the
+/// same (D104), an answer among them followed all the same. `followed` is the probe and the anchors seeding the
+/// rollover, kept in `state_dir`, `None` when no stage follows one; `now` the time in Unix seconds.
+fn woken(
+    wake: Wake,
+    queued: impl Iterator<Item = Wake>,
+    followed: (&Probe, Option<&TrustAnchors>),
+    state_dir: &Path,
+    store: &mut Store,
+    now: u64,
+) -> Option<Read> {
+    match wake {
+        Wake::RootKeys(answer) => {
+            root_keys(&answer, followed, state_dir, store, now).then_some(Read::Last)
+        }
+        Wake::Hangup => {
+            for wake in queued {
+                if let Wake::RootKeys(answer) = wake {
+                    root_keys(&answer, followed, state_dir, store, now);
+                }
+            }
+            Some(Read::File)
+        }
+    }
+}
+
+/// Follows `answer`, the root's keys asked by a serving thread, when the configuration follows them from the seed
+/// of `followed`, and sets on its probe when they are asked next, `now` in Unix seconds; whether the anchors
+/// trusted changed (D200).
+fn root_keys(
+    answer: &[Record<'_>],
+    (probe, seed): (&Probe, Option<&TrustAnchors>),
+    state_dir: &Path,
+    store: &mut Store,
+    now: u64,
+) -> bool {
+    let Some(seed) = seed else {
+        return false;
+    };
+    let observed = guarded("root key rollover", || {
+        (store.rollover).observe(answer, seed, state_dir, now)
+    });
+    probe.wait(
+        now,
+        observed.map_or(rollover::RETRY, |observed| observed.wait),
+    );
+    observed.is_some_and(|observed| observed.changed)
+}
+
 /// Which configuration a reload builds.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Read {
     /// The file, read again: a SIGHUP.
     File,
@@ -350,10 +444,94 @@ const RELOADS: &str = "dedensd_reloads_total";
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::time::Duration;
 
-    use super::{RETRY, Ticks, guarded};
+    use super::{RETRY, Read, Ticks, follow, guarded, woken};
+    use crate::config::unix_seconds;
     use crate::download::Fetched;
+    use crate::lists::Store;
+    use crate::rollover::tests::{AUGUST_2017, JULY_2017, seed, snapshot};
+    use crate::rollover::{Probe, STATE, Wake};
+
+    /// D200: the root's keys are asked at once when a configuration starts following them, not again at a reload
+    /// that still does, and no more once one does not.
+    #[test]
+    fn the_root_keys_are_asked_when_a_configuration_starts_following_them() {
+        let (probe, mut following, now) = (Probe::default(), false, unix_seconds());
+        follow(&probe, &mut following, false);
+        assert!(!following);
+        assert!(!probe.take(now));
+        follow(&probe, &mut following, true);
+        assert!(following);
+        assert!(probe.take(now));
+        follow(&probe, &mut following, true);
+        assert!(!probe.take(now), "asked once");
+        probe.wait(now, 0);
+        follow(&probe, &mut following, false);
+        assert!(!following);
+        assert!(!probe.take(now), "asked no more");
+    }
+
+    /// D200: an answer of the root's keys reloads once the anchors trusted changed, a SIGHUP reloads the file with
+    /// an answer queued after it followed, and an answer no stage follows changes nothing.
+    #[test]
+    fn an_answer_of_the_root_keys_reloads_when_the_anchors_trusted_change() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed, probe) = (state.path(), seed(), Probe::default());
+        let mut store = Store::default();
+        let keys = |at: &str| Wake::RootKeys(snapshot(at));
+        let unfollowed = woken(
+            keys("20170716113230"),
+            [].into_iter(),
+            (&probe, None),
+            dir,
+            &mut store,
+            JULY_2017,
+        );
+        assert_eq!(unfollowed, None);
+        assert!(!dir.join(STATE).exists());
+
+        let followed = (&probe, Some(&seed));
+        let pending = woken(
+            keys("20170716113230"),
+            [].into_iter(),
+            followed,
+            dir,
+            &mut store,
+            JULY_2017,
+        );
+        assert_eq!(pending, None, "KSK-2017 pending");
+        assert!(dir.join(STATE).exists());
+        assert!(!probe.take(JULY_2017), "asked again in a day");
+        assert!(probe.take(JULY_2017 + 86_400));
+
+        let queued = [keys("20170816120412"), Wake::Hangup].into_iter();
+        let hangup = woken(Wake::Hangup, queued, followed, dir, &mut store, AUGUST_2017);
+        assert_eq!(hangup, Some(Read::File));
+        let state = fs::read_to_string(dir.join(STATE)).unwrap();
+        assert!(!state.contains("addpend"), "{state}");
+
+        fs::remove_file(dir.join(STATE)).unwrap();
+        let mut store = Store::default();
+        woken(
+            keys("20170716113230"),
+            [].into_iter(),
+            followed,
+            dir,
+            &mut store,
+            JULY_2017,
+        );
+        let trusted = woken(
+            keys("20170816120412"),
+            [].into_iter(),
+            followed,
+            dir,
+            &mut store,
+            AUGUST_2017,
+        );
+        assert_eq!(trusted, Some(Read::Last));
+    }
 
     /// D64: a panic in a reload or a download is logged, and the reload thread goes on.
     #[test]

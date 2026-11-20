@@ -243,7 +243,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `nsec3_hash` have the fuzz target `dnssec_crypto`. Rejected: aws-lc-rs (a C build, a second backend beside
   rustls's), RustCrypto crates (more dependencies for what `ring` does; Ed448 alone would justify one, see
   TODECIDE), a `Budget` of wall-clock time (not reproducible, and the clock is passed in, D69).
-- D72 (amended by D127) Trust anchors are `dedens_dnssec::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
+- D72 (amended by D127, D200) Trust anchors are `dedens_dnssec::TrustAnchors`: DS or DNSKEY records per zone (RFC 4035 §4.4),
   and negative trust anchors (RFC 7646). The root's are bundled as `crates/dedens-dnssec/src/root.ds`, DS text
   that `just roots` writes from IANA's `root-anchors.xml`: the `KeyDigest` entries valid at that moment
   (RFC 9718 §2.2), once its CMS signature holds (§3.2, D127). The test is that every bundled DS matches a key of
@@ -256,8 +256,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   anchor restarts validation (RFC 7646 §1.1's example); at the same depth the NTA wins, as the operator added
   it to override. An NTA has no end time, though RFC 7646 §2.1 asks implementations to allow one: it lasts as
   long as the value does, and the caller drops it by building the anchors anew; [`TODECIDE.md`](../TODECIDE.md)
-  holds the rest. Anchors are fixed while running: RFC 5011 stays in TODECIDE.
-- D127 (amends D72, D126; amended by D128) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
+  holds the rest. Anchors are fixed while running; the recursive resolver follows the root'"'"'s through a rollover (RFC 5011, D200).
+- D127 (amends D72, D126; amended by D128, D200) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
   is to fetch it at start and on refresh: there HTTPS from the same site is no longer the only check, the
   signature is checked against ICANN's CA bundled in the binary, `crates/dedens-dnssec/src/icannbundle.pem`.
   That bundle, ICANN Root CA (to 2029-12-18) and Root CA v2 (2025-03-20 to 2045-03-20), was checked out of band:
@@ -311,8 +311,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `load_pem_chain` (it panics on an empty bundle), checking the CMS against the CA fetched beside it (from the
   same site, it proves nothing the HTTPS fetch does not), verifying the received signed-attribute bytes by walking the DER by hand
   (a second parser of outside data, for bytes `der` already gives back). Anchor rollover (RFC 5011) is the
-  recursive resolver's (TODECIDE).
-- D73 (amends D71) `dedens_dnssec::rrsig` authenticates one `RRset` and one DNSKEY `RRset`, sans-IO; chain walking
+  recursive resolver's (D200).
+- D73 (amends D71; amended by D200) `dedens_dnssec::rrsig` authenticates one `RRset` and one DNSKEY `RRset`, sans-IO; chain walking
   and denial are 05 and 06. `RrSet::group` builds `RRset`s from a section (owner, class, type; RFC 2181 §5.2:
   TTL the minimum); `Signature` and `Key` borrow the RRSIG and DNSKEY records of an `RRset`, a DNSKEY whose
   protocol is not 3 being opaque, so never a `Key`. `verify(rrset, sig, key, now, budget)` checks RFC 4035 §5.3.1

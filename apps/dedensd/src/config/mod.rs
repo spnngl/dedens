@@ -44,7 +44,8 @@
 //! downloads:
 //!   dir: /var/cache/dedensd
 //!   refresh_minutes: 1440
-//! state_dir: /var/lib/dedensd      # what dedensd keeps across restarts: the root anchors verified last (D128)
+//! state_dir: /var/lib/dedensd      # what dedensd keeps across restarts: the root anchors verified last (D128),
+//!                                   # the root keys a recurse stage follows (D200)
 //! roots:                            # IANA's files, fetched every `refresh_minutes` (D128); `off`: the bundled ones, the
 //!                                   # list of which, 30 days after its generated time, has a tlds stage pass on what it lacks
 //!   tlds: https://data.iana.org/TLD/v1/tlds.json                     # for a tlds stage, kept in `downloads.dir`; IANA's by default
@@ -195,7 +196,8 @@ struct File {
     /// Where IANA's TLD list and the root's trust anchors are fetched from, or `off` (D128).
     #[serde(default)]
     roots: RootsFile,
-    /// Where what dedensd keeps across restarts is: the root anchors verified last (D128).
+    /// Where what dedensd keeps across restarts is: the root anchors verified last (D128), and the root keys a
+    /// validating recurse stage follows by RFC 5011 (D200).
     state_dir: Option<PathBuf>,
     /// A PEM file of the certificate authorities upstream servers over TLS and QUIC are checked against,
     /// instead of the system's (D65).
@@ -509,9 +511,8 @@ fn stages(
             }
             StageFile::Recurse(file) => {
                 let root = (file.validates_by_root())
-                    .then(|| downloads.root_anchors(store))
-                    .transpose()?
-                    .flatten();
+                    .then(|| downloads.followed_anchors(store))
+                    .transpose()?;
                 recurse(name, file, (&built, previous), (root, allowance))?
             }
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
