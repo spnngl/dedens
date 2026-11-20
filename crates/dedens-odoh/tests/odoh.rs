@@ -179,7 +179,7 @@ fn malformed_configs() -> Vec<Vec<u8>> {
         config(1, 0x20, 1, 1, 0),
         config(1, 0x10, 1, 1, 0),
         trailing,
-        vec![0, 1, 0, 3, 0, 0x20, 0], // the key's length is cut off
+        vec![0, 1, 0, 3, 0, 0x20, 0], // the KDF ID is cut off
     ]
 }
 
@@ -300,7 +300,7 @@ fn padding_hides_the_length_within_a_block() {
     let (long, long_response) = exchange(&key, &[1; 100], &[2; 400]);
     assert_eq!(short.encode().len(), long.encode().len());
     assert_eq!(short_response.encode().len(), long_response.encode().len());
-    // 2 + 2 lengths of the plaintext, 32 of the encapsulated key, 16 of the tag, 5 of the frame.
+    // 2 + 2 lengths of the plaintext, 32 of the encapsulated key, 16 of the tag, 5 of the frame, 32 of the key ID.
     assert_eq!(short.encode().len(), 5 + 32 + QUERY_BLOCK + 4 + 16 + 32);
     assert_eq!(
         short_response.encode().len(),
