@@ -259,7 +259,6 @@ impl Scan {
                 self.other();
                 self.header = Some(self.indent);
             }
-            '+' | '-' | '0'..='9' if self.header.is_some() => {}
             _ => self.other(),
         }
     }
