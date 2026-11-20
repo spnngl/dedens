@@ -2061,13 +2061,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     them (`autr_cleanup_keys`). `Rollover::seed(anchors, records, now)` verifies the `RRset` with the anchors in
     use, DS or DNSKEY: the keys they name are Valid (Unbound's `key_matches_a_ds`), other SEP keys AddPend.
     `observe(records, now)` applies revocations first, a REVOKE key signing the `RRset` itself (§2.1;
-    `rrsig::verify_revocation`, the one check a revoked key passes, D73), even when no trusted key signs the
-    rest; then needs a Valid or Missing key's signature, else changes nothing more and errs. The table (§4): a new
+    `rrsig::verify_revocation`, the one check a revoked key passes, D73), of a Valid or Missing key only (an
+    AddPend key whose plain form is gone is dropped, §4's KeyRem; Unbound's `do_revoked` revokes only VALID or
+    MISSING keys), even when no trusted key signs the rest; then needs a Valid or Missing key's signature, else changes nothing more and errs. The table (§4): a new
     SEP key AddPend until now plus the larger of 30 days and the RRSIGs' original TTL, the lowest one so that a
     bogus signature beside them stretches nothing (§2.4.1), Valid when seen past it, dropped
     when unseen before; Valid unseen Missing, Missing seen Valid; Revoked kept for good, a tombstone (§2.4.2
     lets a resolver forget it after 30 days, but a stale seed would trust it again: §2.1 and §4 make a revocation
-    final, as Unbound keeps the key in its state file). `reseed(anchors, records, now)` replaces the state by
+    final). This deviates from Unbound, which moves a revoked key to REMOVED after the del-holddown and then
+    neither writes nor keeps it (`autr_cleanup_keys`): it never reseeds while a state exists, and `reseed` here
+    does, so a tombstone forgotten would be trusted again by a stale download. `reseed(anchors, records, now)` replaces the state by
     `seed`, the tombstones kept: a key held Revoked is trusted through no DNSKEY anchor, no DS, no answer.
     `without_revoked(anchors)` takes a tombstone's key out of other anchors. `anchors()` are the DNSKEYs of Valid
     and Missing keys, none when none.
@@ -2079,8 +2082,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `refresh_time`: the root's TTL of 2 days makes it a cached answer's or a signature's end drawing near that
     reaches it); an hour after a failure (§2.3's `retryTime` floor); the default verification budget per answer;
     the state text 64 KiB, which is read and written no longer (a longer one is not saved, warn!); 32 keys
-    followed, tombstones and missing keys included (RFC 5011 §2.4.3 expects a handful), a new key past it not
-    followed, warn!.
+    followed that are not revoked, missing ones included (RFC 5011 §2.4.3 expects a handful), a new key past it
+    not followed, warn!; 32 tombstones besides, the oldest revocation forgotten past them, so that a key signing
+    what it should not cannot fill the state: both together fit 64 KiB for keys of any usual size.
   - `dedensd`: a validating `recurse` stage without `trust_anchors` follows the root's keys. The state is
     `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
     file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the

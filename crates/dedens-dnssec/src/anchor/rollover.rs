@@ -43,9 +43,9 @@ pub enum KeyState {
         /// The first validated `RRset` without it.
         since: u64,
     },
-    /// A key whose revocation, signed by itself, was seen, last at `seen` (§2.1): never trusted again.
+    /// A key trusted whose revocation, signed by itself, was seen, first at `seen` (§2.1): never trusted again.
     Revoked {
-        /// The last `RRset` it was seen revoked in.
+        /// The first `RRset` it was seen revoked in.
         seen: u64,
     },
 }
@@ -129,10 +129,15 @@ impl Rollover {
     /// `refresh_time` cap it. The root's TTL of 2 days never reaches it, so no answer of the root's does in a test.
     pub const QUERY_CEILING: u64 = 1_296_000;
 
-    /// The most keys followed, 32: RFC 5011 §2.4.3 expects a handful, the root's holds four or fewer, and the keys
-    /// missing or revoked, kept, add up. A new key past it is not followed ([`Rollover::is_full`]), so that the
+    /// The most keys followed that are not revoked, 32: RFC 5011 §2.4.3 expects a handful, the root's holds four or
+    /// fewer, and the keys missing add up. A new key past it is not followed ([`Rollover::is_full`]), so that the
     /// text stays within [`Rollover::MAX_LEN`] for keys of any usual size.
     pub const MAX_KEYS: usize = 32;
+
+    /// The most keys kept revoked, 32, besides [`Rollover::MAX_KEYS`]: a key is revoked once, as the root's roll
+    /// about once in years, so the bound is met only by a key that signs what it should not. Past it the revocation
+    /// seen longest ago is forgotten, which is of a key no download lists any more.
+    pub const MAX_REVOKED: usize = 32;
 
     /// The longest text [`Rollover::read`] reads, 64 KiB, and a server writes: the text of a key is its base64 and
     /// its state, over a third more than its wire form, so a DNSKEY `RRset` that fits in a message of that size
@@ -228,14 +233,15 @@ impl Rollover {
     /// 1970 (RFC 5011 §4); returns the wait before the next query, in seconds: half the `RRset`'s TTL or of the
     /// time left to its signature, between [`Rollover::QUERY_FLOOR`] and [`Rollover::QUERY_CEILING`] (§2.3).
     ///
-    /// First, each key followed whose revoked form is in the `RRset` and signs it is revoked (§2.1), whatever
-    /// else signs it. Then the `RRset` must be signed by a trusted key; if so, each key is updated: a new key,
+    /// First, each key trusted (valid or missing) whose revoked form is in the `RRset` and signs it is revoked
+    /// (§2.1), whatever else signs it; a new key whose plain form is gone is dropped like any other (§4). Then the `RRset` must be signed by a trusted key; if so, each key is updated: a new key,
     /// a secure entry point of a supported algorithm, waits [`Rollover::ADD_HOLD_DOWN`] (or the TTL when longer)
     /// and is valid when seen after that, unless [`Rollover::MAX_KEYS`] keys are followed; one gone before is
     /// dropped. A valid key gone is missing, a missing key
     /// back is valid, and a missing key is dropped after [`Rollover::KEEP_MISSING`] when another is valid. A
     /// revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver forget it after
-    /// the remove hold-down, but a stale anchor it is seeded with would trust it again (§2.1, §4).
+    /// the remove hold-down, but a stale anchor it is seeded with would trust it again (§2.1, §4), up to
+    /// [`Rollover::MAX_REVOKED`] of them.
     ///
     /// # Errors
     ///
@@ -269,9 +275,12 @@ impl Rollover {
         let [.., a, b, c, d] = now.to_be_bytes();
         let serial = u32::from_be_bytes([a, b, c, d]);
         let mut budget = Budget::new(Budget::DEFAULT_VERIFICATIONS, Budget::DEFAULT_NSEC3_BLOCKS);
+        // Only a key trusted is revoked (RFC 5011 §4: a new key whose plain form is gone is removed, not revoked), so
+        // that a key signing what it should not cannot fill the state with keys revoked.
         for key in published.iter().filter(|key| key.dnskey().is_revoked()) {
             let plain = unrevoked(key.dnskey());
-            if let Some(tracked) = self.keys.iter_mut().find(|tracked| tracked.key == plain)
+            if let Some(tracked) = (self.keys.iter_mut())
+                .find(|tracked| tracked.key == plain && tracked.state.trusted())
                 && rrsig::verify_revocation(dnskeys, &sigs, key, serial, &mut budget)
             {
                 tracked.state = KeyState::Revoked { seen: now };
@@ -341,15 +350,40 @@ impl Rollover {
             };
             self.keys.push(Tracked { key: dnskey, state });
         }
+        self.forget_old_revocations();
         self.sort();
         let half = u64::from(verified.ttl.get()) / 2;
         Ok(half.clamp(Self::QUERY_FLOOR, Self::QUERY_CEILING))
     }
 
-    /// Whether [`Rollover::MAX_KEYS`] keys are followed: a new key is not.
+    /// Whether [`Rollover::MAX_KEYS`] keys are followed that are not revoked: a new key is not. The keys revoked
+    /// have their own bound ([`Rollover::MAX_REVOKED`]), so that keys revoked, which are kept for good, never
+    /// crowd out the keys to follow.
     #[must_use]
     pub fn is_full(&self) -> bool {
-        self.keys.len() >= Self::MAX_KEYS
+        let followed = (self.keys.iter())
+            .filter(|tracked| !matches!(tracked.state, KeyState::Revoked { .. }))
+            .count();
+        followed >= Self::MAX_KEYS
+    }
+
+    /// Forgets the revocations seen longest ago past [`Rollover::MAX_REVOKED`].
+    fn forget_old_revocations(&mut self) {
+        let mut revoked: Vec<_> = (self.keys.iter().enumerate())
+            .filter_map(|(index, tracked)| match tracked.state {
+                KeyState::Revoked { seen } => Some((seen, index)),
+                _ => None,
+            })
+            .collect();
+        let Some(excess) = revoked.len().checked_sub(Self::MAX_REVOKED) else {
+            return;
+        };
+        revoked.sort_unstable();
+        let mut forgotten: Vec<_> = revoked[..excess].iter().map(|&(_, index)| index).collect();
+        forgotten.sort_unstable();
+        for index in forgotten.into_iter().rev() {
+            self.keys.remove(index);
+        }
     }
 
     /// Each key followed, without its revoke bit, and its state.
