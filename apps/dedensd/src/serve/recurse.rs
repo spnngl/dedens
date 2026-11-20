@@ -195,7 +195,8 @@ enum Outcome {
     Response {
         wire: Rc<[u8]>,
         seen: Marks,
-        rtt: Duration,
+        /// `None` after a move to TCP: see [`Reply::Response`].
+        rtt: Option<Duration>,
     },
     Timeout,
     TcpTimeout,
@@ -284,7 +285,11 @@ fn outcome(answered: Result<Answer, AuthoritativeError>, server: SocketAddr) -> 
     match answered {
         Ok(answer) => Outcome::Response {
             seen: marks(answer.quirks),
-            rtt: answer.response.rtt,
+            rtt: answer
+                .response
+                .moved
+                .is_none()
+                .then_some(answer.response.rtt),
             wire: answer.response.wire.into(),
         },
         Err(AuthoritativeError::Server(ServerError::TimedOut { .. })) => Outcome::Timeout,

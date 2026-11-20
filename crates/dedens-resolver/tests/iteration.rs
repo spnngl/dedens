@@ -102,6 +102,8 @@ fn secs(now: Duration) -> u32 {
 /// How the transport ends an exchange.
 pub(crate) enum Answered {
     Response(Message<'static>),
+    /// A response over TCP, the query moved there from UDP.
+    Moved(Message<'static>),
     Undecodable,
     Timeout,
     ServerError,
@@ -153,7 +155,12 @@ fn reply(answered: &Answered) -> Reply<'_> {
         Answered::Response(message) => Reply::Response {
             message,
             seen: Marks::default(),
-            rtt: RTT,
+            rtt: Some(RTT),
+        },
+        Answered::Moved(message) => Reply::Response {
+            message,
+            seen: Marks::default(),
+            rtt: None,
         },
         Answered::Undecodable => Reply::Undecodable,
         Answered::Timeout => Reply::Timeout,
@@ -1766,6 +1773,8 @@ fn d191_only_a_usable_response_credits_the_server() {
         after(&|_, response| Answered::Response(response)).timeout,
         credited(RTT)
     );
+    // A response over TCP after a move there is a response, whose time is not its UDP time: none credited.
+    assert!(unchanged(&|_, response| Answered::Moved(response)));
     // A local error is not the server's; a response to another question says nothing of it.
     assert!(unchanged(&|_, _| Answered::LocalError));
     assert!(unchanged(&|_, response| {
@@ -1860,7 +1869,7 @@ fn rfc5452_5_a_reply_shared_does_not_judge_the_server_again() {
     let shared = Reply::Response {
         message: &referral,
         seen: Marks::default(),
-        rtt: RTT,
+        rtt: Some(RTT),
     };
     waiter.receive_shared(shared, now);
     assert_eq!(caches.infra.len(), 0);

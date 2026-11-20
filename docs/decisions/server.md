@@ -1489,7 +1489,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     followed: the child has no DS, the referral's proof is the validator's (step 10).
   - Infra cache: a response the scrubber reads as serving the question (all outcomes but `Signatures`, `NoSoa`,
     `Lame` and `Unusable`) credits the server its round trip, the transport's `rtt`: the time since `step` gave the
-    query counts waits, the TCP retry and the EDNS fallback. `Lame` marks the server lame for the zone. `Timeout`
+    query counts waits, the TCP retry and the EDNS fallback. A response after the query moved to TCP (truncated,
+    BADCOOKIE twice, a case mismatch: `Response::moved`) carries no `rtt` (`Reply::Response { rtt: None }`): its
+    time is the connection's and the response's size, not the UDP time `Query::timeout` estimates, so it clears the
+    server's timeouts and merges its marks (`InfraCache::answered`) but leaves its RTO as it was. `Lame` marks the server lame for the zone. `Timeout`
     and `ServerError` back the server off (RTO doubled, skipped after three, D194). REFUSED, SERVFAIL and any other
     unusable response leave it as it was, as Unbound's `THROWAWAY` (`iter_resptype.c`) and BIND's `add_bad`, per
     fetch: the infra cache is keyed by address alone, and a back-off would let three REFUSED for one zone shut a

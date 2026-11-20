@@ -214,7 +214,7 @@ fn recursing(data: &[u8], transport: Transport, out: &mut [u8]) {
             Some(decoded) => Reply::Response {
                 message: &decoded.message,
                 seen: Marks::default(),
-                rtt: Duration::from_millis(20),
+                rtt: Some(Duration::from_millis(20)),
             },
             None => Reply::Undecodable,
         };

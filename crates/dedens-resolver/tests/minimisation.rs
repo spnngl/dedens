@@ -298,7 +298,7 @@ fn d195_a_minimised_question_is_shared_with_the_name_it_asks() {
         let reply = || Reply::Response {
             message: &response,
             seen: Marks::default(),
-            rtt: Duration::from_millis(20),
+            rtt: Some(Duration::from_millis(20)),
         };
         srv.receive(reply(), now);
         a.receive_shared(reply(), now);

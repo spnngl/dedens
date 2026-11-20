@@ -403,8 +403,10 @@ pub enum Reply<'a> {
         seen: Marks,
         /// The transport's round-trip time, from its last query to this response (D190's `Response::rtt`): not
         /// the time since [`Resolution::step`] gave the query, which counts waits for a socket, the TCP retry
-        /// after truncation and the EDNS fallback.
-        rtt: Duration,
+        /// after truncation and the EDNS fallback. `None` when the query moved from UDP to TCP (D190's
+        /// `Response::moved`): that time is the connection's and the response's size, not the server's UDP time
+        /// which [`Query::timeout`] estimates, so it credits none (D191).
+        rtt: Option<Duration>,
     },
     /// A response matched to the query that does not decode (RFC 1035 §4.1): the next server is asked and nothing
     /// is remembered of this one, as Unbound's `process_response` ignores a response it cannot parse.
@@ -1004,7 +1006,10 @@ impl Resolution {
             }
             _ => {
                 crate::metrics::query(Sent::Answer);
-                infra.reply(server, rtt, seen, now_secs);
+                match rtt {
+                    Some(rtt) => infra.reply(server, rtt, seen, now_secs),
+                    None => infra.answered(server, seen, now_secs),
+                }
             }
         }
         let answer = matches!(

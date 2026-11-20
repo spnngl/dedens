@@ -116,7 +116,7 @@ async fn capture(
                 let reply = Reply::Response {
                     message: &message,
                     seen: Marks::default(),
-                    rtt,
+                    rtt: Some(rtt),
                 };
                 resolution.receive(reply, now());
             }
