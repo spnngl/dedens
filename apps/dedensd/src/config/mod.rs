@@ -248,7 +248,9 @@ pub(crate) struct Config {
 }
 
 /// Reads `text`, a configuration file, taking `${VAR}` from `env`. The cache stage of `previous`, the pipeline a
-/// reload replaces, is kept when its settings are unchanged, so its answers stay.
+/// reload replaces, is kept when its settings are unchanged, so its answers stay. `started` is the serving threads
+/// of the running server, fixed at start (D42), `None` at start: what a new validator may cost follows them, not
+/// the `threads` a reload reads (D77).
 ///
 /// # Errors
 ///
@@ -265,11 +267,11 @@ pub(crate) struct Config {
 pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
-    previous: &Pipeline,
+    (previous, started): (&Pipeline, Option<usize>),
     store: &mut Store,
 ) -> anyhow::Result<Config> {
     store.begin();
-    let config = build(parse(text, env)?, previous, store)?;
+    let config = build(parse(text, env)?, (previous, started), store)?;
     store.end();
     Ok(config)
 }
@@ -288,7 +290,7 @@ pub(crate) fn read_without_files(
     // The saved root files are files too.
     file.roots = RootsFile::Off;
     if !file.names_files() {
-        build(file, &Pipeline::default(), &mut Store::default())?;
+        build(file, (&Pipeline::default(), None), &mut Store::default())?;
     }
     Ok(())
 }
@@ -318,7 +320,11 @@ impl File {
 }
 
 /// [`read`] of `file`, the lists it reads taken from `store`, and put there.
-fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<Config> {
+fn build(
+    file: File,
+    (previous, started): (&Pipeline, Option<usize>),
+    store: &mut Store,
+) -> anyhow::Result<Config> {
     ensure!(!file.listen.is_empty(), "`listen` has no address");
     let threads = serving_threads(
         file.threads,
@@ -349,7 +355,8 @@ fn build(file: File, previous: &Pipeline, store: &mut Store) -> anyhow::Result<C
         cookies: file.cookies,
     };
     let mut downloads = Downloads::new(file.downloads, file.roots, file.state_dir)?;
-    let allowance = Allowance::serving(NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN));
+    let serving = started.unwrap_or(threads);
+    let allowance = Allowance::serving(NonZeroUsize::new(serving).unwrap_or(NonZeroUsize::MIN));
     let (mut built, warmed) = stages(
         &file.pipeline,
         file.stages,
@@ -607,13 +614,13 @@ mod tests {
 
     use super::*;
 
-    /// [`super::read`] with a store of its own.
+    /// [`super::read`] with a store of its own, the serving threads the file's.
     pub(super) fn read(
         text: &str,
         env: impl Fn(&str) -> Option<String>,
         previous: &Pipeline,
     ) -> anyhow::Result<Config> {
-        super::read(text, env, previous, &mut Store::default())
+        super::read(text, env, (previous, None), &mut Store::default())
     }
 
     pub(super) fn env(name: &str) -> Option<String> {

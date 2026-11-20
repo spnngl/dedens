@@ -680,6 +680,31 @@ mod tests {
         );
     }
 
+    /// D77: a validator a reload makes is allowed what the threads serving since the start may spend, not what the
+    /// `threads` read again says: those take a restart.
+    #[test]
+    fn a_reload_allows_the_threads_of_the_start() {
+        let started = read(&format!("threads: 1\n{MINIMAL}"), env, &Pipeline::default())
+            .unwrap()
+            .pipeline;
+        let text = format!("threads: 1\n{MINIMAL}    dnssec: validate\n");
+        let serving = NonZeroUsize::new(8).expect("threads");
+        let reloaded = crate::config::read(
+            &text,
+            env,
+            (&started, Some(serving.get())),
+            &mut crate::lists::Store::default(),
+        )
+        .unwrap();
+        let Some(Stage::Forward(forward)) = reloaded.pipeline.stages().first() else {
+            unreachable!("a forward stage");
+        };
+        assert_eq!(
+            forward.validation().expect("validating").allowance(),
+            Allowance::serving(serving)
+        );
+    }
+
     /// D86: the keys a validator cached stay valid across a reload while its trust anchors and negative anchors
     /// stay; another set starts a new cache.
     #[test]

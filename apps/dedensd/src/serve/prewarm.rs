@@ -307,7 +307,7 @@ mod tests {
         let text = format!(
             "listen: ['127.0.0.1:0']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n{cache}    prewarm:\n      entries: [{entries}]\n      types: [A]\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n"
         );
-        read(&text, |_| None, previous, &mut Store::default())
+        read(&text, |_| None, (previous, None), &mut Store::default())
             .expect("a configuration")
             .pipeline
     }

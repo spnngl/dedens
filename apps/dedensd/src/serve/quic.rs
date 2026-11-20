@@ -361,9 +361,13 @@ mod tests {
             "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{}']\n    timeout_ms: 1000\n    tries: 1\n",
             silent.local_addr().expect("its address")
         );
-        let config =
-            crate::config::read(&text, |_| None, &Pipeline::default(), &mut Store::default())
-                .expect("read");
+        let config = crate::config::read(
+            &text,
+            |_| None,
+            (&Pipeline::default(), None),
+            &mut Store::default(),
+        )
+        .expect("read");
         let current = Arc::new(Current::new(config.pipeline));
         let thread = Rc::new(Thread::new(current, UPSTREAM_QUERIES, Trust::default()));
         let ca = certificates();
