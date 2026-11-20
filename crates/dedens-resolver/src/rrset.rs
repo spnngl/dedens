@@ -129,17 +129,18 @@ impl Rrset {
         &self.rrsigs
     }
 
-    /// Whether its signatures all count fewer labels than the owner name, a leading `*` not counted: the `RRset`
-    /// is a wildcard expansion (RFC 4035 §5.3.4), whose proof that no closer name exists is in another `RRset`.
-    /// One signature, junk or another key's, does not make a set of the name itself one.
+    /// Whether a signature counts fewer labels than the owner name, a leading `*` not counted: the `RRset` is a
+    /// wildcard expansion (RFC 4035 §5.3.4), whose proof that no closer name exists is in another `RRset`, as
+    /// Unbound's `val_rrset_wildcard` tells. A junk signature makes a set of the name itself one, which costs a
+    /// fetch; a junk signature counting every label beside the wildcard's must not make an expansion none, which
+    /// would serve it without its proof.
     #[must_use]
     pub fn expanded(&self) -> bool {
         let starred = self.owner.labels().next() == Some(b"*".as_slice());
         let counted = self.owner.label_count() - usize::from(starred);
-        !self.rrsigs.is_empty()
-            && (self.rrsigs.iter()).all(|rdata| {
-                matches!(rdata.data(), RData::Rrsig(rrsig) if usize::from(rrsig.labels) < counted)
-            })
+        (self.rrsigs.iter()).any(|rdata| {
+            matches!(rdata.data(), RData::Rrsig(rrsig) if usize::from(rrsig.labels) < counted)
+        })
     }
 }
 
