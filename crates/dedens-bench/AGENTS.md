@@ -25,5 +25,20 @@ whatever `threads` says, which the `serve_` benches of `benches/dnssec.rs` did u
   (D107): every container runs with `seccomp=unconfined`, and a dedensd not on `io_uring` fails the run. The first
   session of step 02 measured `poll` for it unawares.
 
+The `recurse` modes (D201) differ from the others:
+
+- No forwarding: three Knot processes in one container serve a root, a TLD and a signed zone with a wildcard on
+  127.0.0.2-4, port 53, so the host's `net.ipv4.ip_unprivileged_port_start` must be 53 or less (the run says so
+  and stops; restore it after). The names come from `compare.py`, not TelltaleDNS (`recurse-unique.txt`'s hash in
+  `corpora.sha256`); a corpus of names under other zones would find no authority.
+- The servers start from `compare/recurse-root.hints`. dedensd's `root_hints` and its commented
+  `query_local_addresses` line are in `compare/dedensd-recurse.yaml`: the resolver refuses private addresses
+  unless that line is on, and the authorities are loopback ones.
+- Only servers with a `recursion` template in `SERVERS` run them: CoreDNS does not recurse, and TelltaleDNS's
+  `recursive://` upstream has its 13 root addresses built in (`telltale-recursor`, no setting), so it cannot start
+  from a root of ours.
+- A DNSSEC run signs the three zones fresh (`keymgr` in the Knot image), DS records and all, and the validators'
+  anchor is the root's key-signing key.
+
 The allocator experiment (D152) is not in the tree: check out the tag `alloc-experiment-2026-11-06` for `dnsperf/alloc.sh`,
 `dnsperf/alloc-vps/` and the `alloc-*` features, and `alloc-security-2026-11-06` for `alloc-probe/`; each has its AGENTS.md.

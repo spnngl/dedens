@@ -172,7 +172,8 @@ class Engine:
         lines = out.split("\n")
         field = {k: int(v) for k, v in (ln.split() for ln in lines if len(ln.split()) == 2)}
         peak = next((int(ln) for ln in reversed(lines) if ln.strip().isdigit()), 0)
-        return {"cpu_us": field["usage_usec"], "anon": field["anon"], "peak": peak}
+        return {"cpu_us": field["usage_usec"], "user_us": field["user_usec"], "system_us": field["system_usec"],
+                "anon": field["anon"], "peak": peak}
 
 
 def render(template, values, tags):
@@ -462,17 +463,33 @@ class Bench:
     def check(self, session, name):
         """Every query of the check pass answered with the mode's rcode; the sample equal to Knot's answers."""
         label, server, template = session
+        asked = self.authority_questions()
         r = self.dnsperf(self.work / "corpora/check.txt", rate=CHECK_RATE, once=True)
+        asked = {a: {t: n - asked[a].get(t, 0) for t, n in types.items()}
+                 for a, types in self.authority_questions().items()}
         ok = r["lost"] == 0 and r["rcodes"] == {self.rcode: r["sent"]} and r["sent"] == CHECK_QUERIES
         sample = self.sample(PORT if self.spec["transport"] != "dot" else TLS_PORT, self.spec["transport"])
         wrong = {q: a for q, a in sample.items() if a != self.reference[q]}
         self.result["checks"].append({"label": label, "server": server, "template": template, "rcodes": r["rcodes"],
-                                      "lost": r["lost"], "sample_wrong": {q: str(a) for q, a in wrong.items()}})
+                                      "lost": r["lost"], "sample_wrong": {q: str(a) for q, a in wrong.items()},
+                                      "authority_questions_per_query": {
+                                          a: {t: n / r["sent"] for t, n in types.items() if n}
+                                          for a, types in asked.items()}})
         if not ok or wrong:
             logs = self.engine.logs(name)[-2000:]
             raise Fail(f"{label} {template} answers wrong: rcodes {r['rcodes']}, {r['lost']} lost of "
                        f"{r['sent']}, expected {self.rcode} for all {CHECK_QUERIES}; sample differs from Knot's on "
                        f"{sorted(wrong)[:5]}\n{logs}")
+
+    def authority_questions(self):
+        """The questions each authority of the mini Internet has answered so far, by type (Knot's `mod-stats`); none
+        for the modes with one upstream."""
+        out = {}
+        for name, zone, _ in AUTHORITIES if self.spec.get("recursive") else []:
+            text = self.engine("exec", self.knot, "knotc", "-c", f"/w/conf/knot-{name}.conf", "zone-stats", zone,
+                               check=False)
+            out[name] = {m[1]: int(m[2]) for m in re.finditer(r"mod-stats\.query-type\[(\w+)\]: (\d+)", text)}
+        return out
 
     def sample(self, port, transport, upstream=False, host="127.0.0.1"):
         """`dedens` asking the first SAMPLE questions of the check file: question -> (rcode, answers, AD). With
@@ -506,8 +523,13 @@ class Bench:
         wall = time.monotonic() - t0
         after = {k: self.engine.cgroup(c) for k, c in roles.items()}
         cpu = {k: after[k]["cpu_us"] - before[k]["cpu_us"] for k in roles}
+        user = after["server"]["user_us"] - before["server"]["user_us"]
+        system = after["server"]["system_us"] - before["server"]["system_us"]
         r |= {"label": label, "server": server, "template": template, "kind": kind, "rate": rate,
               "server_cpu_us_per_query": cpu["server"] / max(r["completed"], 1),
+              "server_user_us_per_query": user / max(r["completed"], 1),
+              "server_system_us_per_query": system / max(r["completed"], 1),
+              "server_busy": cpu["server"] / (wall * 1e6 * self.count["server"]),
               "loader_busy": cpu["loader"] / (wall * 1e6 * self.count["loader"]),
               "knot_busy": cpu["knot"] / (wall * 1e6 * self.count["knot"]),
               "loaded_mib": after["server"]["anon"] / 2**20, "peak_mib": after["server"]["peak"] / 2**20}
