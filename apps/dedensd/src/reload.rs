@@ -150,16 +150,17 @@ impl Ticks {
         self.retry = RETRY;
     }
 
-    /// What follows a reload that `served` or not, asked by `read`: whether the thread goes back to the top of its
-    /// loop. A failed one of the anchors followed (D200) is pending, tried again on the next tick as a list's is;
-    /// the lists are read again by a SIGHUP's, and a file that does not load waits for its next SIGHUP.
-    const fn reloaded(&mut self, served: bool, read: Read) -> bool {
+    /// What follows a reload that `served` or not, `asked`: whether the thread goes back to the top of its loop. A
+    /// failed one after the anchors followed (D200) changed is pending, a SIGHUP's too, tried again on the next tick
+    /// as a list's is: the state is saved, so no later answer would ask for it; a SIGHUP's that changed nothing waits
+    /// for the next SIGHUP.
+    const fn reloaded(&mut self, served: bool, asked: Reload) -> bool {
         if served {
             self.served();
-        } else if matches!(read, Read::Last) {
+        } else if asked.anchors_changed {
             self.pending = true;
         }
-        !served || matches!(read, Read::File)
+        !served || matches!(asked.read, Read::File)
     }
 
     /// Whether the thread fetches and reloads on this tick, `nothing_to_fetch` when no list or root file is
@@ -294,18 +295,18 @@ pub(crate) fn control(
                     };
                     let followed = (current.probe(), downloads.followed.as_ref());
                     let (dir, now) = (&downloads.state_dir, unix_seconds());
-                    let Some(read) = woken(wake, wakes.try_iter(), followed, dir, &mut store, now)
+                    let Some(asked) = woken(wake, wakes.try_iter(), followed, dir, &mut store, now)
                     else {
                         continue;
                     };
-                    let new = reload(&file, read, &mut text, &current, &fixed, &mut store);
+                    let new = reload(&file, asked.read, &mut text, &current, &fixed, &mut store);
                     let served = new.is_some();
                     if let Some(new) = new {
                         downloads = new;
                         refresh = Refresh::default();
                     }
                     // Served, built from the lists on disk, the pending reload included.
-                    if ticks.reloaded(served, read) {
+                    if ticks.reloaded(served, asked) {
                         break;
                     }
                 }
@@ -329,8 +330,9 @@ fn follow(probe: &Probe, following: &mut bool, follows: bool) {
 
 /// The reload `wake` asks for, `None` for none, the wakes `queued` after it taken too: an answer of the root's keys
 /// reloads when the anchors trusted changed (D200); a SIGHUP reloads the file, and those queued with it ask for the
-/// same (D104), an answer among them followed all the same. `followed` is the probe and the anchors seeding the
-/// rollover, kept in `state_dir`, `None` when no stage follows one; `now` the time in Unix seconds.
+/// same (D104), an answer among them followed all the same, whether it changed the anchors told in the reload.
+/// `followed` is the probe and the anchors seeding the rollover, kept in `state_dir`, `None` when no stage follows
+/// one; `now` the time in Unix seconds.
 fn woken(
     wake: Wake,
     queued: impl Iterator<Item = Wake>,
@@ -338,18 +340,25 @@ fn woken(
     state_dir: &Path,
     store: &mut Store,
     now: u64,
-) -> Option<Read> {
+) -> Option<Reload> {
     match wake {
         Wake::RootKeys(answer) => {
-            root_keys(&answer, followed, state_dir, store, now).then_some(Read::Last)
+            root_keys(&answer, followed, state_dir, store, now).then_some(Reload {
+                read: Read::Last,
+                anchors_changed: true,
+            })
         }
         Wake::Hangup => {
+            let mut anchors_changed = false;
             for wake in queued {
                 if let Wake::RootKeys(answer) = wake {
-                    root_keys(&answer, followed, state_dir, store, now);
+                    anchors_changed |= root_keys(&answer, followed, state_dir, store, now);
                 }
             }
-            Some(Read::File)
+            Some(Reload {
+                read: Read::File,
+                anchors_changed,
+            })
         }
     }
 }
@@ -375,6 +384,15 @@ fn root_keys(
         observed.map_or(rollover::RETRY, |observed| observed.wait),
     );
     observed.is_some_and(|observed| observed.changed)
+}
+
+/// A reload asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Reload {
+    read: Read,
+    /// The anchors followed (D200) changed, in the answer that asked for it or in one queued with a SIGHUP: the state
+    /// is saved, and a reload that fails must be tried again.
+    anchors_changed: bool,
 }
 
 /// Which configuration a reload builds.
@@ -466,7 +484,7 @@ mod tests {
     use std::fs;
     use std::time::Duration;
 
-    use super::{RETRY, Read, Ticks, follow, guarded, woken};
+    use super::{RETRY, Read, Reload, Ticks, follow, guarded, woken};
     use crate::config::unix_seconds;
     use crate::download::Fetched;
     use crate::lists::Store;
@@ -527,9 +545,18 @@ mod tests {
 
         let queued = [keys("20170816120412"), Wake::Hangup].into_iter();
         let hangup = woken(Wake::Hangup, queued, followed, dir, &mut store, AUGUST_2017);
-        assert_eq!(hangup, Some(Read::File));
+        assert_eq!(hangup, Some(file(true)), "KSK-2017 followed in the queue");
         let state = fs::read_to_string(dir.join(STATE)).unwrap();
         assert!(!state.contains("addpend"), "{state}");
+        let quiet = woken(
+            Wake::Hangup,
+            [].into_iter(),
+            followed,
+            dir,
+            &mut store,
+            AUGUST_2017,
+        );
+        assert_eq!(quiet, Some(file(false)), "nothing queued, nothing changed");
 
         fs::remove_file(dir.join(STATE)).unwrap();
         let mut store = Store::default();
@@ -549,7 +576,23 @@ mod tests {
             &mut store,
             AUGUST_2017,
         );
-        assert_eq!(trusted, Some(Read::Last));
+        assert_eq!(trusted, Some(last()));
+    }
+
+    /// A reload of the file asked, `anchors_changed` or not.
+    const fn file(anchors_changed: bool) -> Reload {
+        Reload {
+            read: Read::File,
+            anchors_changed,
+        }
+    }
+
+    /// The reload an answer that changed the anchors asks.
+    const fn last() -> Reload {
+        Reload {
+            read: Read::Last,
+            anchors_changed: true,
+        }
     }
 
     /// D64: a panic in a reload or a download is logged, and the reload thread goes on.
@@ -590,8 +633,9 @@ mod tests {
     }
 
     /// D104, D200: a reload of the anchors followed that failed after the state was saved is tried again on the
-    /// next tick, though nothing is downloaded and the next answer finds the state unchanged; a SIGHUP's failed
-    /// reload is not, and a served one clears the retry.
+    /// next tick, though nothing is downloaded and the next answer finds the state unchanged, a SIGHUP's too when
+    /// an answer queued with it changed the anchors; a SIGHUP's failed reload that changed none is not, and a served
+    /// one clears the retry.
     #[test]
     fn a_failed_reload_of_the_anchors_followed_is_retried() {
         let refresh = Duration::from_hours(24);
@@ -600,14 +644,11 @@ mod tests {
         assert!(ticks.fetches(false));
 
         assert!(
-            !ticks.reloaded(true, Read::Last),
+            !ticks.reloaded(true, last()),
             "served: the thread waits for a wake"
         );
         assert!(!ticks.fetches(true));
-        assert!(
-            ticks.reloaded(false, Read::Last),
-            "failed: the top of the loop"
-        );
+        assert!(ticks.reloaded(false, last()), "failed: the top of the loop");
         assert!(ticks.fetches(true), "pending: the tick retries");
         assert_eq!(ticks.wait(Fetched::default(), refresh, || None), RETRY);
         assert!(ticks.fetches(true));
@@ -615,17 +656,24 @@ mod tests {
         assert_eq!(wait, refresh);
         assert!(!ticks.fetches(true), "served");
 
-        assert!(ticks.reloaded(false, Read::File));
+        assert!(ticks.reloaded(false, file(false)));
         assert!(
             !ticks.fetches(true),
             "a SIGHUP's file that does not load is not retried"
         );
         assert!(
-            ticks.reloaded(true, Read::File),
+            ticks.reloaded(true, file(false)),
             "a SIGHUP's reload served ends the loop"
         );
-        assert!(ticks.reloaded(false, Read::Last));
-        assert!(!ticks.reloaded(true, Read::Last));
+        assert!(ticks.reloaded(false, file(true)));
+        assert!(
+            ticks.fetches(true),
+            "a SIGHUP's reload that failed after the anchors changed is retried"
+        );
+        assert!(ticks.reloaded(true, file(true)));
+        assert!(!ticks.fetches(true), "served clears it");
+        assert!(ticks.reloaded(false, last()));
+        assert!(!ticks.reloaded(true, last()));
         assert!(!ticks.fetches(true), "served clears it");
     }
 
