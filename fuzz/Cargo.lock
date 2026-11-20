@@ -783,6 +783,7 @@ dependencies = [
  "dedens-roots",
  "dedens-scenario",
  "dedens-server",
+ "dedens-testkit",
  "dedensd",
  "hickory-proto",
  "http",
@@ -897,6 +898,16 @@ dependencies = [
  "subtle",
  "thiserror",
  "zeroize",
+]
+
+[[package]]
+name = "dedens-testkit"
+version = "0.1.0"
+dependencies = [
+ "data-encoding",
+ "dedens-proto",
+ "serde",
+ "serde-saphyr",
 ]
 
 [[package]]

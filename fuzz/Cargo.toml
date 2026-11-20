@@ -15,8 +15,8 @@ cargo-fuzz = true
 opt-level = 3
 
 # One target per parser of outside data. Each file in `fuzz_targets/` is a one-line shim over the matching
-# function of `src/`, which `cargo test --lib` also drives on stable with the captured responses in
-# `testdata/proto/`, `testdata/dnssec/` and `testdata/odoh/` as seeds (`just fuzz-smoke`), with those of `seeds/`.
+# function of `src/`, which `cargo test --lib` also drives on stable with the seeds of the justfile's `fuzz_seeds`
+# (`just fuzz-smoke`).
 
 [dependencies]
 # The parsers of the two binaries, through their libraries (D181), with every transport they read.
@@ -44,6 +44,10 @@ http = "1.5.0"
 libfuzzer-sys = "0.4"
 # The randomness of `odoh` and `dnscrypt`; the same version as the workspace's (D78).
 rand_core = "0.10.1"
+
+[dev-dependencies]
+# The responses of the captured resolutions, seeds of the smoke test (D188).
+dedens-testkit = { path = "../crates/dedens-testkit", features = ["recursion"] }
 
 [[bin]]
 name = "decode_message"
