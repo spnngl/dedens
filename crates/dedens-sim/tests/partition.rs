@@ -197,7 +197,8 @@ fn with_every_upstream_cut_off_a_cached_name_is_answered_stale_and_another_is_no
         let mut world = world(seed, &short_lived());
         world.fault(SECOND / 2, Fault::Partition(Node::Resolver, UP0));
         world.fault(SECOND / 2, Fault::Partition(Node::Resolver, UP1));
-        world.client(async move |stub| {
+        world.client(async move |mut stub| {
+            stub.rules.floor = short_lived().min_ttl;
             let fresh = answered(
                 stub.ask(question("example.com", RecordType::A), Carrier::Udp)
                     .await?,
@@ -290,7 +291,8 @@ fn the_first_upstream_is_asked_again_when_its_link_is_repaired() {
         let heal = world.pick(Duration::from_millis(3200), Duration::from_millis(3700));
         world.fault(heal, Fault::Repair(Node::Resolver, UP0));
         let upstreams = world.upstreams.clone();
-        world.client(async move |stub| {
+        world.client(async move |mut stub| {
+            stub.rules.floor = short_lived().min_ttl;
             let begun = Instant::now();
             // Answered by the second server, after the first one's timeouts.
             stub.expect(question("example.com", RecordType::A), Carrier::Udp)
@@ -525,6 +527,7 @@ fn whatever_links_the_seed_cuts_queries_end_well_and_the_healed_network_answers(
                 })
                 .collect();
             world.client(async move |mut stub| {
+                stub.rules.floor = 1;
                 let begun = Instant::now();
                 stub.options.timeout = SECOND;
                 stub.options.tries = NonZeroU8::MIN;
