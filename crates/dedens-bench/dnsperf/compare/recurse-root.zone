@@ -1,0 +1,10 @@
+; The root of the mini Internet of the `recurse` modes (compare.sh): one TLD, delegated with glue, signed for
+; `recurse-dnssec` (its DS comes from the TLD's key, which compare.py generates first). Rendered by compare.py.
+$ORIGIN .
+$TTL 3600
+@               SOA   a.root. hostmaster.root. 1 3600 900 604800 3600
+@               NS    a.root.
+a.root.         A     127.0.0.2
+bench.          NS    ns.nic.bench.
+ns.nic.bench.   A     127.0.0.3
+#@dnssec bench.          DS    @DS@

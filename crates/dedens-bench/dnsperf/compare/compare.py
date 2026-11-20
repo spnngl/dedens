@@ -23,6 +23,7 @@ import os
 import pathlib
 import platform
 import re
+import shutil
 import socket
 import statistics
 import struct
@@ -33,6 +34,10 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 PORT, TLS_PORT = 5301, 8531
 KNOT = ("127.0.0.1", 5300)
+# The mini Internet of the `recurse` modes (D201): one Knot authority per zone, each on its own loopback address and
+# port 53, leaf first so that a zone's DS is known when its parent is written; the root server is the root hints'.
+AUTHORITIES = [("sld", "recurse.bench.", "127.0.0.4"), ("tld", "bench.", "127.0.0.3"), ("root", ".", "127.0.0.2")]
+UNIQUE_NAMES = 1_000_000  # the `recurse` corpus: each name once, `u{i:06x}.recurse.bench A`
 BLOCKLIST_NAMES = 1_000_000
 CHECK_QUERIES = 1000  # the check pass: the corpus's first lines, at CHECK_RATE
 CHECK_RATE = 2000
@@ -57,20 +62,27 @@ MODES = {
     "miss": {"corpus": "miss-heavy", "transport": "udp", "cached": False},
     "dnssec": {"corpus": "miss-heavy", "transport": "udp", "cached": False, "tags": {"dnssec"}},
     "blocked": {"corpus": "blocked", "transport": "udp", "cached": True, "tags": {"blocked"}, "rcode": "NXDOMAIN"},
+    # recursive: the servers resolve from the root hints of the mini Internet (D201), not forward to one upstream.
+    "recurse": {"corpus": "recurse-unique", "transport": "udp", "cached": False, "recursive": True},
+    "recurse-dnssec": {"corpus": "recurse-unique", "transport": "udp", "cached": False, "recursive": True,
+                       "tags": {"dnssec"}},
     "crosscheck": {"corpus": None, "transport": "udp", "cached": False},
 }
 
-# A server's configuration template per configuration, its command line in the container, and the modes it has
-# no way to serve: its row stays empty (the plan's choice: not emulated).
+# A server's configuration template per configuration (`recursion`: those of the recursive modes, which a server
+# without them does not serve), its command line in the container, and the modes it has no way to serve: its row
+# stays empty (the plan's choice: not emulated).
 SERVERS = {
     "dedensd": {
         "configs": {"lean": "dedensd.yaml", "shipped": "dedensd.yaml"},
+        "recursion": {"lean": "dedensd-recurse.yaml", "shipped": "dedensd-recurse.yaml"},
         "command": ["/w/bin/dedensd", "--config", "{conf}"],
     },
     # dedensd with an 8 MiB cache, Unbound's order of size (4 MiB of messages, 4 of RRsets) against its default
     # 64 MiB (D116): what the memory columns owe to the cache. `file+tag`: the file rendered with that tag too.
     "dedensd-8mib": {
         "configs": {"lean": "dedensd.yaml+cache8mib", "shipped": "dedensd.yaml+cache8mib"},
+        "recursion": {"lean": "dedensd-recurse.yaml+cache8mib", "shipped": "dedensd-recurse.yaml+cache8mib"},
         "command": ["/w/bin/dedensd", "--config", "{conf}"],
     },
     "telltale": {
@@ -79,6 +91,7 @@ SERVERS = {
     },
     "unbound": {
         "configs": {"lean": "unbound.conf", "shipped": "unbound.conf"},
+        "recursion": {"lean": "unbound-recurse.conf", "shipped": "unbound-recurse.conf"},
         "command": ["unbound", "-d", "-c", "{conf}"],
     },
     "coredns": {
@@ -88,6 +101,7 @@ SERVERS = {
     },
     "broken": {
         "configs": {"lean": "broken.Corefile", "shipped": "broken.Corefile"},
+        "recursion": {"lean": "broken.Corefile", "shipped": "broken.Corefile"},
         "command": ["coredns", "-conf", "{conf}"],
     },
 }
@@ -176,11 +190,22 @@ def render(template, values, tags):
 
 def corpora(work, mode, telltale_src):
     """Writes the mode's corpus (and the 1M-name list) into <work>, checked against corpora.sha256."""
+    expected = dict(ln.split()[::-1] for ln in (HERE / "corpora.sha256").read_text().splitlines()
+                    if ln.strip() and not ln.startswith("#"))
+    if MODES[mode].get("recursive"):  # ours: the names of the mini Internet's zone, no TelltaleDNS's corpus fits it
+        (work / "corpora").mkdir(exist_ok=True)
+        path = work / "corpora/recurse-unique.txt"
+        data = "".join(f"u{i:06x}.recurse.bench A\n" for i in range(UNIQUE_NAMES)).encode()
+        path.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        if expected.get(path.name) != digest:
+            raise SystemExit(f"{path.name}: sha256 {digest}, corpora.sha256 says {expected.get(path.name)}")
+        lines = data.decode().splitlines()
+        (work / "corpora/check.txt").write_text("\n".join(lines[:CHECK_QUERIES]) + "\n")
+        return path, {path.name: digest}
     spec = importlib.util.spec_from_file_location("corpus", pathlib.Path(telltale_src) / "bench/corpus.py")
     corpus = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(corpus)
-    expected = dict(ln.split()[::-1] for ln in (HERE / "corpora.sha256").read_text().splitlines()
-                    if ln.strip() and not ln.startswith("#"))
     lists = work / "lists"
     hashes = {}
     if mode == "blocked":
@@ -288,6 +313,10 @@ class Bench:
         self.count = {role: count_cpus(c) for role, c in cpus.items()}
         if min(self.count.values()) < 1 or n < cores + 2:
             raise SystemExit(f"{n} cores: not enough for {cores} server cores, a loader core and a Knot core")
+        low = pathlib.Path("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+        if self.spec.get("recursive") and int(low.read_text()) > 53:
+            raise SystemExit("the authorities listen on port 53: `sudo sysctl net.ipv4.ip_unprivileged_port_start=53`, "
+                             "back to its value after the run")
         self.engine = Engine(os.environ.get("DEDENS_CONTAINER", "docker"), work, os.environ["DEDENS_IMAGE"], cpus)
         self.rcode = self.spec.get("rcode", "NOERROR")
         self.tags = set(self.spec.get("tags", set()))
@@ -316,32 +345,69 @@ class Bench:
                         "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1",
                         "-keyout", "/w/key.pem", "-out", "/w/cert.pem")
         (w / "key.pem").chmod(0o600)
-        (w / "root.zone").write_text((HERE / "root.zone").read_text())
-        knot = render("knot.conf", {"KNOT_THREADS": str(self.count["knot"])}, self.tags)
-        (w / "conf/knot.conf").write_text(knot)
-        self.knot = self.engine.start("knot", ["-c", "/w/conf/knot.conf"], os.environ["DEDENS_KNOT_IMAGE"], "knotd")
-        self.loader = self.engine.start("loader", ["sleep", "infinity"])
-        dig = ["exec", self.loader, "dig", "@127.0.0.1", "-p", str(KNOT[1]), "+noall", "+answer"]
-        for _ in range(100):
-            if "198.18.0.1" in self.engine(*dig, "x.", check=False):
-                break
-            time.sleep(0.1)
+        if self.spec.get("recursive"):
+            self.mini_internet()
+            self.auth, root = ("127.0.0.4", 53), ("127.0.0.2", 53)
+            shutil.copy(HERE / "recurse-root.hints", w / "root.hints")
         else:
-            raise SystemExit("Knot does not answer: " + self.engine.logs(self.knot))
+            (w / "root.zone").write_text((HERE / "root.zone").read_text())
+            knot = render("knot.conf", {"KNOT_THREADS": str(self.count["knot"])}, self.tags)
+            (w / "conf/knot.conf").write_text(knot)
+            self.knot = self.engine.start("knot", ["-c", "/w/conf/knot.conf"], os.environ["DEDENS_KNOT_IMAGE"],
+                                          "knotd")
+            self.auth = root = KNOT
+        self.loader = self.engine.start("loader", ["sleep", "infinity"])
+
+        def dig(at, *question):
+            return self.engine("exec", self.loader, "dig", f"@{at[0]}", "-p", str(at[1]), "+noall", "+answer",
+                               "+dnssec", *question, check=False)
+
+        # Knot answers: the wildcard for the one upstream; each zone, signed for `dnssec`, for the mini Internet.
+        probes = ([(at, zone, "SOA", "RRSIG" if "dnssec" in self.tags else "SOA")
+                   for _, zone, host in AUTHORITIES for at in [(host, 53)]] if self.spec.get("recursive")
+                  else [(KNOT, "x.", "A", "198.18.0.1")])
+        for at, zone, rtype, expected in probes:
+            for _ in range(100):
+                if expected in dig(at, zone, rtype):
+                    break
+                time.sleep(0.1)
+            else:
+                raise SystemExit(f"Knot does not answer {zone} at {at[0]}: " + self.engine.logs(self.knot))
         # The key-signing key of the signed root: the trust anchor of every validator.
-        anchors = [ln for ln in self.engine(*dig, ".", "DNSKEY").splitlines() if re.search(r"\sDNSKEY\s+257 3 ", ln)]
+        anchors = [ln for ln in dig(root, ".", "DNSKEY").splitlines() if re.search(r"\sDNSKEY\s+257 3 ", ln)]
         if "dnssec" in self.tags and not anchors:
             raise SystemExit("Knot serves no key-signing key: " + self.engine.logs(self.knot))
         (w / "anchors.zone").write_text("".join(ln + "\n" for ln in anchors))
         upstream = self.spec.get("upstream", "udp")
         values = {"DNSSEC": "validate" if "dnssec" in self.tags else "off", "CORES": str(self.count["server"]),
                   "TCP_UPSTREAM": "yes" if upstream == "tcp" else "no", "UPSTREAM_PROTO": upstream}
-        for server in set(self.servers):
-            for template in set(SERVERS[server]["configs"].values()):
+        for server in {s for s in self.servers if serves(s, self.mode)}:
+            for template in {config_of(server, c, self.mode) for c in self.configs}:
                 source, *extra = template.split("+")
                 text = render(source, values, self.tags | set(extra))
                 (w / "conf" / template).write_text(text)
                 self.result["configs"][template] = hashlib.sha256(text.encode()).hexdigest()
+
+    def mini_internet(self):
+        """The root, the TLD and the zone of the corpus (D201), each served by its own Knot process on its own address
+        in one container; for `dnssec` signed, each zone's DS in its parent, from keys made before the parent is
+        written (the zone files are written leaf first for it)."""
+        w, image, ds = self.work, os.environ["DEDENS_KNOT_IMAGE"], None
+        for name, zone, addr in AUTHORITIES:
+            (w / "knot" / name).mkdir()
+            values = {"NAME": name, "ZONE": zone, "ADDR": addr, "KNOT_THREADS": str(self.count["knot"])}
+            (w / f"conf/knot-{name}.conf").write_text(render("recurse-knot.conf", values, self.tags))
+            (w / "knot" / name / "zone").write_text(render(f"recurse-{name}.zone", {"DS": ds}, self.tags))
+            if "dnssec" in self.tags:
+                keymgr = f"keymgr -c /w/conf/knot-{name}.conf {zone}"
+                out = self.engine("run", "--rm", "-v", f"{w}:/w", *self.engine.user, "--entrypoint", "sh", image,
+                                  "-c", f"{keymgr} generate ksk=yes >&2 && {keymgr} generate >&2 && {keymgr} ds")
+                found = re.search(r"\sDS (\d+ 13 2 [0-9a-f]+)", out)
+                if not found:
+                    raise SystemExit(f"keymgr gives no SHA-256 DS for {zone}: {out}")
+                ds = found[1]
+        command = " & ".join(f"knotd -c /w/conf/knot-{name}.conf" for name, *_ in AUTHORITIES) + " & wait"
+        self.knot = self.engine.start("knot", ["-c", command], image, "sh")
 
     # One server: start, check, measure.
 
@@ -355,7 +421,7 @@ class Bench:
         if self.mode == "blocked":
             names = (self.work / "lists/blocklist.txt").read_text().split("\n", 1000)[:1000]
         else:
-            names = [f"c{i}.cold-start.net" for i in range(1000)]
+            names = [f"c{i}.cold-start.{'recurse.bench' if self.spec.get('recursive') else 'net'}" for i in range(1000)]
         try:
             answered = first_answer(names, self.rcode)
         except Fail as e:
@@ -408,11 +474,11 @@ class Bench:
                        f"{r['sent']}, expected {self.rcode} for all {CHECK_QUERIES}; sample differs from Knot's on "
                        f"{sorted(wrong)[:5]}\n{logs}")
 
-    def sample(self, port, transport, upstream=False):
+    def sample(self, port, transport, upstream=False, host="127.0.0.1"):
         """`dedens` asking the first SAMPLE questions of the check file: question -> (rcode, answers, AD). With
         DNSSEC, asked with DO and AD set (TelltaleDNS sets AD for DO only), signatures left out of the answers."""
         questions = list(dict.fromkeys((self.work / "corpora/check.txt").read_text().splitlines()))[:SAMPLE]
-        cmd = ["/w/bin/dedens", "@127.0.0.1", "-p", str(port), "--json"]
+        cmd = ["/w/bin/dedens", f"@{host}", "-p", str(port), "--json"]
         cmd += {"udp": [], "tcp": ["--tcp"], "dot": ["--tls", "--tls-insecure"]}[transport]
         if "dnssec" in self.tags and not upstream:
             cmd += ["--dnssec", "--adflag"]
@@ -466,7 +532,7 @@ class Bench:
         self.setup()
         if self.mode == "crosscheck":
             return self.crosscheck()
-        ref = self.sample(KNOT[1], "udp", upstream=True)
+        ref = self.sample(self.auth[1], "udp", upstream=True, host=self.auth[0])
         if self.mode == "blocked":
             ref = {q: ("NXDOMAIN", frozenset(), False) for q in ref}
         elif "dnssec" in self.tags:
@@ -529,13 +595,25 @@ def sessions_of(servers, configs, mode):
     """(label, server, template) to measure: a configuration file shared by two configurations measured once."""
     out = []
     for label, server in zip(labels(servers), servers):
-        if mode in SERVERS[server].get("lacks", ()):
+        if not serves(server, mode):
             continue
         for config in configs:
-            session = (label, server, SERVERS[server]["configs"][config])
+            session = (label, server, config_of(server, config, mode))
             if session not in out:
                 out.append(session)
     return out
+
+
+def serves(server, mode):
+    """Whether the server has a way to serve the mode: a recursive one needs a recursion template."""
+    if MODES[mode].get("recursive"):
+        return "recursion" in SERVERS[server]
+    return mode not in SERVERS[server].get("lacks", ())
+
+
+def config_of(server, config, mode):
+    """The template of the server's `config` (lean, shipped) for the mode: a recursive mode has its own."""
+    return SERVERS[server]["recursion" if MODES[mode].get("recursive") else "configs"][config]
 
 
 def count_cpus(spec):
@@ -568,7 +646,10 @@ def table(result):
                      "at half its own: avg / p99 / p99.9 ms | MiB idle / loaded | start ms |")
         lines.append("|---|---|---|---|---|---|---|")
         for label, server in zip(labels(servers), servers):
-            template = SERVERS[server]["configs"][config]
+            if not serves(server, result["mode"]):
+                lines.append(f"| {label} | | | | | | |")
+                continue
+            template = config_of(server, config, result["mode"])
             mine = [r for r in runs if r["label"] == label and r["template"] == template]
             st = [s for s in starts if s["label"] == label and s["template"] == template]
             if not mine:

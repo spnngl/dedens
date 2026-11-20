@@ -5,3 +5,5 @@ a37b6310ecd5bb644b00e6bd5ed4e893a2428807b3f2831755db508237e4fe12  blocklist.txt
 fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f  cache-hot.txt
 68766cd575bce6cc7db488adf96c16d4a338760d9e351627354613ab59082881  miss-heavy.txt
 175849826dfed50733b1e58d1e37c75e5672ddc9bde86d6ddd3cdee8d429dfde  blocked.txt
+# The `recurse` modes' (D201): compare.py's own, `u{i:06x}.recurse.bench A` for i below a million.
+d9524ac9368522859d28f91912547cc6bc98cde675d7ed72710a9dd29c68732c  recurse-unique.txt
