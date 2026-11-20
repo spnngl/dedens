@@ -32,7 +32,8 @@ pub enum DecodeErrorKind {
     /// or to labels running into the bytes that point to them (RFC 1035 §4.1.4).
     #[error("compression pointer does not point to a prior name")]
     BadPointer,
-    /// A label type reserved by RFC 6891 §5 (`0b01` or `0b10` in the two high bits).
+    /// A label type reserved by RFC 1035 §4.1.4 (`0b01` or `0b10` in the two high bits); RFC 6891 §5 deprecates
+    /// the extended label types of `0b01`.
     #[error("reserved label type")]
     ReservedLabelType,
     /// RDATA is shorter or longer than its fields.
