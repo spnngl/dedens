@@ -355,8 +355,12 @@ impl RData<'static> {
         while let Some(token) = f.next_opt()? {
             encoding::decode_hex(token.raw, &mut data)
                 .ok_or(token.error(TextErrorKind::Invalid("hex RDATA")))?;
+            // Stops at the excess: what follows is not read, or an endless hex would be, to its end.
+            if data.len() > declared {
+                return Err(marker.error(TextErrorKind::GenericTooLong { declared }));
+            }
         }
-        if data.len() != declared {
+        if data.len() < declared {
             return Err(marker.error(TextErrorKind::GenericLength {
                 declared,
                 actual: data.len(),
