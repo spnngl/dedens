@@ -53,7 +53,7 @@ use crate::udp::unspecified;
 const REFRESH: std::time::Duration = std::time::Duration::from_hours(1);
 
 /// The size of the query for the certificates: it covers the rollover set, two classical certificates and two PQ ones,
-/// about 3 KB (draft "Certificate Retrieval"), so that a resolver may answer them all over UDP.
+/// about 3 KB (draft "Certificate Retrieval Amplification"), so that a resolver may answer them all over UDP.
 const CERTIFICATE_QUERY_LEN: usize = 3072;
 
 /// The smallest packet of a UDP query at first (draft "Padding For Client Queries Over UDP": `<min-query-len>`, 256).
@@ -171,7 +171,7 @@ struct State {
 }
 
 /// A resumption ticket and what the client checks before using it: the certificate it was issued under, by the client
-/// magic and the end of validity the resolver binds the ticket to (draft "Resumption Tickets"; a serial may stay the
+/// magic and the end of validity the resolver binds the ticket to (draft "Stateless Resumption"; a serial may stay the
 /// same when a provider rotates its keys), and when it expires on the clock of the exchanges.
 #[derive(Debug)]
 struct Ticket {
@@ -282,11 +282,11 @@ impl Resolver {
     }
 
     /// Asks the resolver for its certificates: a TXT query for the provider name, in the clear, padded to cover the
-    /// rollover set (draft "Certificate Retrieval"), over UDP, then over TCP when UDP gets no answer or the answer is
-    /// truncated (a resolver cuts a response that would be longer than the query, PQ certificates left out), whatever
-    /// the transport of the queries: a public resolver may serve the certificates over UDP alone (Quad9 and
-    /// `CleanBrowsing` answer none over TCP, November 2026), and nothing private is in them (draft "Certificates").
-    /// Through relays the query goes to one of them, UDP then TCP.
+    /// rollover set (draft "Certificate Retrieval Amplification"), over UDP, then over TCP when UDP gets no answer or
+    /// the answer is truncated (a resolver cuts a response that would be longer than the query, PQ certificates left
+    /// out), whatever the transport of the queries: a public resolver may serve the certificates over UDP alone (Quad9
+    /// and `CleanBrowsing` answer none over TCP, November 2026), and nothing private is in them (draft
+    /// "Certificates"). Through relays the query goes to one of them, UDP then TCP.
     async fn fetch<N: Io>(
         &self,
         client: &Client<N>,

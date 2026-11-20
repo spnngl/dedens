@@ -75,7 +75,7 @@ pub struct DnsCryptOptions {
     /// when offered, any other used otherwise. Default: off.
     pub pq: bool,
     /// With a PQ certificate, whether a query is resumed with the ticket of the last response, with no
-    /// encapsulation (draft "Resumption Tickets"). A ticket links the queries it resumes to each other: off, each
+    /// encapsulation (draft "Stateless Resumption"). A ticket links the queries it resumes to each other: off, each
     /// query has an encapsulation of its own. Default: off.
     pub resume: bool,
 }

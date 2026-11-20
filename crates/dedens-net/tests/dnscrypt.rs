@@ -1205,8 +1205,8 @@ async fn a_silent_relay_is_an_error_and_no_query_goes_direct() {
     assert!(script.seen.is_empty());
 }
 
-/// D101, "Certificate Retrieval": the query for the certificates is padded to cover the rollover set; over UDP the
-/// PQ certificate is preferred to a classical one of a higher serial, and the query goes with an X-Wing
+/// D101, "Certificate Retrieval Amplification": the query for the certificates is padded to cover the rollover set;
+/// over UDP the PQ certificate is preferred to a classical one of a higher serial, and the query goes with an X-Wing
 /// ciphertext, a new one each time, no ticket used unless asked for.
 #[compio::test]
 async fn a_pq_certificate_is_preferred_and_each_query_has_a_new_ciphertext() {
@@ -1270,7 +1270,7 @@ async fn pq_required_is_not_downgraded() {
     assert_eq!(response.dnscrypt.map(|info| info.es_version), Some(2));
 }
 
-/// D101, "Resumption Tickets": with `dnscrypt.resume`, the response to the first query brings a ticket, the next
+/// D101, "Stateless Resumption": with `dnscrypt.resume`, the response to the first query brings a ticket, the next
 /// queries are resumed with it, with no ciphertext, and a resolver that drops the ticket gets a full query again.
 #[compio::test]
 async fn resumed_queries_use_the_ticket_and_a_dropped_ticket_falls_back() {
@@ -1471,9 +1471,9 @@ async fn a_ticket_is_used_until_its_lifetime_has_run_on_the_exchanges_clock() {
     assert_eq!(kinds, [false, true, true, false, true]);
 }
 
-/// D101, "Resumption Tickets": the ticket is bound to the certificate by its client magic and the end of its validity,
-/// not by its serial (S2 of the review): the certificates are asked for again after an hour, and one of another magic
-/// ends the ticket, one of another serial and the same magic and validity keeps it.
+/// D101, "Stateless Resumption": the ticket is bound to the certificate by its client magic and the end of its
+/// validity, not by its serial (S2 of the review): the certificates are asked for again after an hour, and one of
+/// another magic ends the ticket, one of another serial and the same magic and validity keeps it.
 #[compio::test]
 async fn a_ticket_follows_the_client_magic_and_validity_of_its_certificate() {
     for (magic, resumed) in [(1, true), (9, false)] {
