@@ -13,7 +13,7 @@ use dedens_proto::{Name, Question, Rcode, Record, RecordType, Ttl};
 use super::chain::{Cut, Settled, parent, sig_failure};
 use super::section::{Chain, Section, is_denial, synthesized};
 use super::verdict::{Delegation, Failure, InsecureReason, Unusable, Verdict};
-use super::{Mode, Need, Validation};
+use super::{Judged, Mode, Need, Validation};
 use crate::crypto;
 use crate::denial::{self, Fact, Proof, Unproven};
 use crate::rrsig::{Key, RrSet};
@@ -372,23 +372,24 @@ impl Validation {
         })
     }
 
-    /// Records `verdict` as the own of `set`, unless it has one.
+    /// Records `verdict` as the own of `set`, unless its data has one.
     fn record(&mut self, set: &RrSet<'static>, verdict: Verdict) {
-        let known = (self.sets.iter())
-            .any(|(owner, rtype, _)| owner == set.owner() && *rtype == set.rtype());
-        if !known {
-            self.sets.push((set.owner().clone(), set.rtype(), verdict));
-        }
+        Judged::record(&mut self.sets, set, verdict);
     }
 
     /// Records the own verdict of each NSEC, NSEC3 and SOA `RRset` of the authority section that is a proof of
-    /// `zone`: the zone's when its keys are not secure, else that of the set's signatures once checked.
+    /// `zone` and in it: the zone's when its keys are not secure, else that of the set's signatures once checked.
+    /// A set owned outside the zone (outside the unusable zone a name beneath it is in) is not the zone's to
+    /// judge, whatever its signer.
     fn record_denials(&mut self, zone: &Located, evidences: &Evidences) {
         let parsed = Arc::clone(&self.parsed);
         let authority = &parsed.authority;
         let keys = secure_keys(zone);
+        let apex = self.apex_of(&zone.apex);
         let proofs = (authority.sets.iter().enumerate()).filter(|(_, set)| {
-            is_denial(set.rtype()) && evidences.owns(&zone.apex, set, authority)
+            is_denial(set.rtype())
+                && set.owner().is_within(&apex)
+                && evidences.owns(&zone.apex, set, authority)
         });
         for (index, set) in proofs {
             let own = match &keys {

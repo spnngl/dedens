@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Class, Flags, Message, Name, Question, RecordType, Ttl};
+use dedens_proto::{Class, Flags, Message, Name, Question, RecordType, Ttl, WireRdata};
 
 use self::cache::KeyCache;
 use self::chain::Zone;
@@ -20,9 +20,9 @@ use self::response::Parsed;
 use self::verdict::Unusable;
 pub use self::verdict::{Delegation, InsecureReason, MAX_CHASES, Verdict};
 use crate::anchor::TrustAnchors;
-use crate::crypto::{Budget, Verifications};
+use crate::crypto::{Budget, Nsec3Blocks, Verifications};
 use crate::denial::MaxIterations;
-use crate::rrsig::Memo;
+use crate::rrsig::{Memo, RrSet, canonical_rdatas};
 
 /// What one validation may do before it gives up, so that no response makes the validator loop or work for
 /// long (RFC 9276 §3.2, CVE-2023-50387).
@@ -118,7 +118,22 @@ impl Validator {
     /// zone and it is bogus, or insecure below an insecure zone; use [`Validator::start_referral`] for a referral.
     #[must_use]
     pub fn start(&self, question: &Question<'_>, response: &Message<'_>, now: u64) -> Validation {
-        self.begin(question, response, now, Entry::Final)
+        self.begin(question, response, now, Entry::Final, Cost::default())
+    }
+
+    /// [`Validator::start`] again for the same query, whose earlier validations cost `spent`: a caller that asks
+    /// again after a bogus verdict (D197). The questions and the budget left are what `spent` left of
+    /// [`Limits::questions`] and [`Limits::budget`], and [`Validation::cost`] counts `spent`, as Unbound's
+    /// `val_restart` keeps its counts of the attempts: asking again does not renew what a query may cost.
+    #[must_use]
+    pub fn restart(
+        &self,
+        question: &Question<'_>,
+        response: &Message<'_>,
+        now: u64,
+        spent: Cost,
+    ) -> Validation {
+        self.begin(question, response, now, Entry::Final, spent)
     }
 
     /// Starts validating `response`, a referral to a delegation on the path to `question`'s name (the child is
@@ -142,7 +157,13 @@ impl Validator {
             .referral()
             .filter(|child| !child.is_root() && question.name.is_within(child))
             .map(|child| child.clone().into_owned());
-        self.begin(question, response, now, Entry::Referral(child))
+        self.begin(
+            question,
+            response,
+            now,
+            Entry::Referral(child),
+            Cost::default(),
+        )
     }
 
     fn begin(
@@ -151,7 +172,23 @@ impl Validator {
         response: &Message<'_>,
         now: u64,
         entry: Entry,
+        spent: Cost,
     ) -> Validation {
+        let limit = &self.config.limits.budget;
+        let budget = Budget::new(
+            Verifications(
+                limit
+                    .verifications_left()
+                    .0
+                    .saturating_sub(spent.verifications),
+            ),
+            Nsec3Blocks(
+                limit
+                    .nsec3_blocks_left()
+                    .0
+                    .saturating_sub(spent.nsec3_blocks),
+            ),
+        );
         let question = question.clone().into_owned();
         let response = Arc::new(response.clone().into_owned());
         // Signatures count seconds modulo 2^32 (RFC 4034 §3.1.5).
@@ -169,13 +206,15 @@ impl Validator {
             now: u32::from_be_bytes([a, b, c, d]),
             at: now,
             answers: HashMap::new(),
-            asked: 0,
+            asked: spent.questions,
             pending: None,
-            budget: self.config.limits.budget.clone(),
+            budget,
+            gave_up: false,
             zones: HashMap::new(),
             absent: HashMap::new(),
             checked: HashMap::new(),
             sets: Vec::new(),
+            keys: Vec::new(),
             done: None,
         };
         if !answers_question(&validation.response, &validation.question) {
@@ -284,9 +323,13 @@ pub struct Validation {
     at: u64,
     /// The responses given, by question; `None` for a question that got none.
     answers: HashMap<(Name<'static>, RecordType), Option<Arc<Message<'static>>>>,
+    /// The questions asked, those of the validations it restarts ([`Validator::restart`]) included.
     asked: usize,
     pending: Option<Question<'static>>,
     budget: Budget,
+    /// Whether a check gave up on an `RRset` whose signatures failed too often ([`SigError::TooManyFailures`],
+    /// D73): the response is built to waste work, and asking again would waste as much.
+    gave_up: bool,
     /// What the walk found of each name that is, or sits below, an apex: written by `settle` only (and
     /// copied from the key cache by `zone_of`), read by `zone_of` only. The limit on depth is checked before it
     /// is read, and its outcome never written.
@@ -298,10 +341,39 @@ pub struct Validation {
     /// set in it and the zone whose keys checked it: the walk reads them as well as the verdict, and no
     /// signature is verified twice (D92).
     checked: HashMap<(usize, Name<'static>), Result<Ttl, Unusable>>,
-    /// The own verdict of each `RRset` of the response judged by itself, by owner and type: see
-    /// [`Validation::verdict_of`].
-    sets: Vec<(Name<'static>, RecordType, Verdict)>,
+    /// The own verdict of each `RRset` of the response judged by itself: see [`Validation::verdict_of`].
+    sets: Vec<Judged>,
+    /// The own verdict of each DS and DNSKEY `RRset` the walk checked: see [`Validation::verdict_of`].
+    keys: Vec<Judged>,
     done: Option<Verdict>,
+}
+
+/// The own verdict of an `RRset`, kept by its data: owner, type and RDATA in canonical form.
+#[derive(Debug)]
+struct Judged {
+    owner: Name<'static>,
+    rtype: RecordType,
+    rdatas: Vec<Vec<u8>>,
+    verdict: Verdict,
+}
+
+impl Judged {
+    /// Adds `verdict` to `judged` as the own of `set`, unless the same data has one.
+    fn record(judged: &mut Vec<Self>, set: &RrSet<'_>, verdict: Verdict) {
+        let rdatas = set.canonical_rdatas();
+        if !(judged.iter()).any(|known| known.is(set.owner(), set.rtype(), &rdatas)) {
+            judged.push(Self {
+                owner: set.owner().clone().into_owned(),
+                rtype: set.rtype(),
+                rdatas,
+                verdict,
+            });
+        }
+    }
+
+    fn is(&self, owner: &Name<'_>, rtype: RecordType, rdatas: &[Vec<u8>]) -> bool {
+        self.owner == *owner && self.rtype == rtype && self.rdatas == rdatas
+    }
 }
 
 impl Validation {
@@ -311,7 +383,7 @@ impl Validation {
             .insert((name, rtype), Some(Arc::clone(&self.response)));
     }
 
-    /// What the validation has cost so far.
+    /// What the validation has cost so far, with what those it restarts cost ([`Validator::restart`]).
     #[must_use]
     pub fn cost(&self) -> Cost {
         let start = &self.config.limits.budget;
@@ -355,18 +427,46 @@ impl Validation {
         }
     }
 
-    /// The verdict on the `RRset` of `owner` and `rtype` of the response by itself, once the validation is done:
-    /// its signatures against the keys of the zone it is in, a wildcard expansion's proof included (RFC 4035
-    /// §5.3); for an NSEC, NSEC3 or SOA `RRset` of the authority section, its signatures alone. That is what a
-    /// cache records of the set, as Unbound's `rrset_update_sec_status` does: the response's verdict is the worst of
-    /// its parts and of its proof of denial, and its parts may be of other zones. `None` for a set not judged by
-    /// itself: a CNAME a DNAME synthesized, a set after a bogus one, any set of a response not judged set by set
-    /// (an RRSIG answer, a referral, another rcode).
+    /// Whether asking the query again could do better than a bogus verdict, as Unbound's `val_can_restart`: the
+    /// budget and the questions are not spent, which a restart would carry on with ([`Validator::restart`]), and
+    /// no check gave up on an `RRset` whose signatures failed too often (D73), which only wastes work.
     #[must_use]
-    pub fn verdict_of(&self, owner: &Name<'_>, rtype: RecordType) -> Option<&Verdict> {
-        (self.sets.iter())
-            .find(|(name, set_type, _)| name == owner && *set_type == rtype)
-            .map(|(_, _, verdict)| verdict)
+    pub fn can_restart(&self) -> bool {
+        !self.gave_up
+            && self.budget.verifications_left().0 > 0
+            && self.asked < self.config.limits.questions
+    }
+
+    /// The verdict on the `RRset` of `owner`, `rtype` and `rdatas` (in any order) by itself, once the validation is
+    /// done. For a set of the response: its signatures against the keys of the zone it is in, a wildcard
+    /// expansion's proof included (RFC 4035 §5.3); for an NSEC, NSEC3 or SOA `RRset` of the authority section, its
+    /// signatures alone. For a DS or DNSKEY `RRset` the walk checked: as it judged the set, against the parent's
+    /// keys or the DS records. That is what a cache records of the set, as Unbound's `rrset_update_sec_status`
+    /// does: the response's verdict is the worst of its parts and of its proof of denial, and its parts may be of
+    /// other zones. `None` for other data and for a set not judged by itself: a CNAME a DNAME synthesized, a set
+    /// after a bogus one, any set of a response not judged set by set (an RRSIG answer, a referral, another
+    /// rcode).
+    #[must_use]
+    pub fn verdict_of(
+        &self,
+        owner: &Name<'_>,
+        rtype: RecordType,
+        rdatas: &[WireRdata<'_>],
+    ) -> Option<&Verdict> {
+        let rdatas = canonical_rdatas(rtype, rdatas);
+        let mut found =
+            (self.sets.iter().chain(&self.keys)).filter(|judged| judged.is(owner, rtype, &rdatas));
+        let first = found.next();
+        // The response's sets come first: a DNSKEY or DS answer the walk checked as well has the verdict of its
+        // own question, and the walk's for its zone; the data, judged twice, is never judged apart.
+        debug_assert!(
+            (self.sets.iter())
+                .filter(|judged| judged.is(owner, rtype, &rdatas))
+                .count()
+                <= 1,
+            "{owner} {rtype} judged twice"
+        );
+        first.map(|judged| &judged.verdict)
     }
 
     fn finish(&mut self, verdict: Verdict) -> Next {

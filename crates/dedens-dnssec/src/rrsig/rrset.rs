@@ -92,15 +92,18 @@ impl<'a> RrSet<'a> {
     /// The RDATA in canonical form and order, duplicates dropped (RFC 4034 §6.2 item 3, §6.3; RFC 6840 §5.1).
     #[must_use]
     pub fn canonical_rdatas(&self) -> Vec<Vec<u8>> {
-        let mut rdatas: Vec<Vec<u8>> = self
-            .rdatas
-            .iter()
-            .map(|rdata| canonical::rdata(self.rtype, &rdata.wire()))
-            .collect();
-        rdatas.sort_unstable();
-        rdatas.dedup();
-        rdatas
+        canonical_rdatas(self.rtype, &self.rdatas)
     }
+}
+
+/// `rdatas` of type `rtype` in canonical form and order, duplicates dropped: see [`RrSet::canonical_rdatas`].
+pub(crate) fn canonical_rdatas(rtype: RecordType, rdatas: &[WireRdata<'_>]) -> Vec<Vec<u8>> {
+    let mut rdatas: Vec<Vec<u8>> = (rdatas.iter())
+        .map(|rdata| canonical::rdata(rtype, &rdata.wire()))
+        .collect();
+    rdatas.sort_unstable();
+    rdatas.dedup();
+    rdatas
 }
 
 /// An RRSIG record to check an `RRset` with: where it was published, its TTL and its fields.

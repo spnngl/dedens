@@ -109,6 +109,11 @@ fn cached(caches: &Caches, rrset: &Ranked, id: &str) -> Option<Checked> {
     Some(held.checked)
 }
 
+/// The time of `capture`, in seconds of the Unix epoch.
+fn captured_at(capture: &recursion::Resolution) -> u32 {
+    u32::try_from(capture.captured_at).expect("a time within u32")
+}
+
 /// Whether `message` answers `name` and `rtype`.
 fn answers(message: &Message<'_>, name: &str, rtype: RecordType) -> bool {
     (message.questions.first()).is_some_and(|q| is(&q.name, name) && q.qtype == rtype)
@@ -287,6 +292,134 @@ fn d197_a_bogus_answer_is_asked_again_of_another_server() {
         ..Limits::default()
     });
     assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?} {sent:?}");
+}
+
+#[test]
+fn d197_the_validations_of_the_retries_share_one_budget() {
+    // Changed: the servers of sidn.nl answer its A with another address each time, under the captured signature,
+    // which fails to verify. Each attempt checks it once more, the keys from the cache; the cost the resolution
+    // tells is that of every attempt, and an attempt the budget has no verification left for is not made
+    // (Unbound keeps `num_validation_attempts` across `val_restart`).
+    let capture = recursion::Resolution::read("signed-nl");
+    let resolve = |verifications: u32| {
+        let forged = std::sync::atomic::AtomicU8::new(0);
+        let forge = |zone: &Name<'_>, message: &mut Message<'static>| {
+            if is(zone, "sidn.nl.") && answers(message, "sidn.nl.", RecordType::A) {
+                let last = forged.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                for record in &mut message.answer {
+                    if record.rdata.rtype() == RecordType::A {
+                        let forged = RData::A(std::net::Ipv4Addr::new(192, 0, 2, last));
+                        *record =
+                            Record::new(record.name.clone(), record.class, record.ttl, &forged);
+                    }
+                }
+            }
+        };
+        let limits = dedens_dnssec::Limits {
+            budget: Budget::new(Verifications(verifications), Budget::DEFAULT_NSEC3_BLOCKS),
+            ..dedens_dnssec::Limits::default()
+        };
+        let checking = (Limits::default(), validator(limits));
+        let (resolution, resolved, sent) = check(&capture, &caches(false), checking, &forge);
+        assert!(
+            matches!(resolved, Resolved::Failed(Failure::Bogus(_))),
+            "{resolved:?}"
+        );
+        let asked = (sent.iter()).filter(|(zone, name, rtype)| {
+            is(zone, "sidn.nl.") && is(name, "sidn.nl.") && *rtype == RecordType::A
+        });
+        let cost = resolution.validation_cost().expect("a validation");
+        (asked.count(), cost.questions, cost.verifications)
+    };
+    // The five questions and six signatures of `d197_the_validation_tells_its_cost`, then the A again of the
+    // other captured server; the addresses of sidn.nl's servers the capture did not ask refuse it.
+    assert_eq!(resolve(128), (7, 5, 7));
+    // No verification left for the A again: not asked again.
+    assert_eq!(resolve(6), (1, 5, 6));
+}
+
+#[test]
+fn d197_a_bogus_key_set_is_asked_again_of_another_server() {
+    // Changed: the first server of icann.org asked its DNSKEY strips the signatures of its answer. The DNSKEY set
+    // is bogus, held so for no longer than the bogus TTL rather than its own (Unbound's `chain_blacklist`); asked
+    // again of the other server, it is secure, and so is the answer. The garbling server is asked nothing more.
+    let capture = recursion::Resolution::read("cname-signed");
+    let authorities = recursion::Authorities::new([&capture]);
+    let garbling = std::sync::Mutex::new(None);
+    let servers = std::sync::Mutex::new(Vec::new());
+    let server = |query: &dedens_resolver::Query| {
+        let mut response = captured(&authorities, query);
+        let keys = answers(&response, "icann.org.", RecordType::DNSKEY);
+        servers
+            .lock()
+            .expect("a lock")
+            .push((query.server.ip(), keys));
+        if answers(&response, "icann.org.", RecordType::DNSKEY) {
+            let mut garbling = garbling.lock().expect("a lock");
+            if *garbling.get_or_insert(query.server.ip()) == query.server.ip() {
+                (response.answer).retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+            }
+        }
+        Answered::Response(response)
+    };
+    let caches = caches(false);
+    let validator = validator(dedens_dnssec::Limits::default());
+    let mut resolution =
+        start(&capture, &caches, Limits::default()).validated(validator, at(&capture).as_secs());
+    steer(&caches, &capture);
+    let (resolved, sent) = run(&mut resolution, &server, at(&capture));
+    assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?} {sent:?}");
+    let asked = (sent.iter())
+        .filter(|(_, name, rtype)| is(name, "icann.org.") && *rtype == RecordType::DNSKEY);
+    assert_eq!(asked.count(), 2, "{sent:?}");
+    let held = (caches.rrsets.get(
+        &name("icann.org."),
+        RecordType::DNSKEY,
+        Class::IN,
+        captured_at(&capture),
+    ))
+    .expect("the keys cached");
+    assert_eq!(held.checked, Checked::Secure);
+    let servers = servers.lock().expect("a lock");
+    let garbled = servers
+        .iter()
+        .position(|(_, keys)| *keys)
+        .expect("a DNSKEY asked");
+    let shunned = servers[garbled + 1..]
+        .iter()
+        .all(|(ip, _)| *ip != servers[garbled].0);
+    assert!(shunned, "{servers:?}");
+}
+
+#[test]
+fn d197_a_bogus_key_set_is_held_for_the_bogus_ttl() {
+    // Changed: every server of icann.org strips the signatures of its DNSKEY. The set is bogus, cached so until
+    // the bogus TTL runs out, not for its own TTL.
+    let capture = recursion::Resolution::read("cname-signed");
+    let strip = |zone: &Name<'_>, message: &mut Message<'static>| {
+        if is(zone, "icann.org.") && answers(message, "icann.org.", RecordType::DNSKEY) {
+            (message.answer).retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+        }
+    };
+    let caches = caches(false);
+    let checking = (
+        Limits::default(),
+        validator(dedens_dnssec::Limits::default()),
+    );
+    let (_, resolved, _) = check(&capture, &caches, checking, &strip);
+    assert!(
+        matches!(resolved, Resolved::Failed(Failure::Bogus(_))),
+        "{resolved:?}"
+    );
+    let keys = |now| {
+        caches
+            .rrsets
+            .get(&name("icann.org."), RecordType::DNSKEY, Class::IN, now)
+    };
+    let held = keys(captured_at(&capture)).expect("the keys cached");
+    assert!(matches!(held.checked, Checked::Bogus(_)), "{held:?}");
+    let bogus_ttl = dedens_cache::Config::default().bogus_ttl;
+    assert!(keys(captured_at(&capture) + bogus_ttl + 1).is_none());
 }
 
 #[test]
@@ -495,7 +628,7 @@ fn d75_a_dnskey_set_of_one_tag_is_checked_within_the_budget() {
         }
         message.answer.extend(colliding);
     };
-    let (resolution, resolved, _) = check(
+    let (resolution, resolved, sent) = check(
         &capture,
         &caches,
         (Limits::default(), validator(limits)),
@@ -507,6 +640,11 @@ fn d75_a_dnskey_set_of_one_tag_is_checked_within_the_budget() {
     );
     let cost = resolution.validation_cost().expect("a validation");
     assert!(cost.verifications <= budget, "{cost:?}");
+    // A check given up on its failures is not made again of other servers (Unbound's `val_restart` does not
+    // follow a bogus `KeyTrap` verdict either): the keys are asked once.
+    let keys = (sent.iter())
+        .filter(|(_, name, rtype)| is(name, "sidn.nl.") && *rtype == RecordType::DNSKEY);
+    assert_eq!(keys.count(), 1, "{sent:?}");
 }
 
 #[test]
@@ -569,7 +707,8 @@ fn rfc4035_5_unsigned_glue_is_not_the_answer() {
 #[test]
 fn rfc4035_5_an_unvalidated_cached_answer_is_validated() {
     // A resolution without the validator caches the answer unchecked: a validated one checks it, stripped of its
-    // signatures, and does not take it for secure.
+    // signatures, finds it bogus with no server to blame, and asks again, the cache passed over, as Unbound's
+    // `val_blacklist` of an unknown origin (D197). The servers answer with the signatures this time.
     let capture = recursion::Resolution::read("signed-nl");
     let caches = caches(false);
     let strip = |zone: &Name<'_>, message: &mut Message<'static>| {
@@ -590,11 +729,11 @@ fn rfc4035_5_an_unvalidated_cached_answer_is_validated() {
         Limits::default(),
         validator(dedens_dnssec::Limits::default()),
     );
-    let (_, resolved, _) = check(&capture, &caches, checking, &|_, _| {});
-    assert!(
-        matches!(resolved, Resolved::Failed(Failure::Bogus(_))),
-        "{resolved:?}"
-    );
+    let (_, resolved, sent) = check(&capture, &caches, checking, &|_, _| {});
+    assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?}");
+    let asked =
+        (sent.iter()).filter(|(_, name, rtype)| is(name, "sidn.nl.") && *rtype == RecordType::A);
+    assert_eq!(asked.count(), 1, "{sent:?}");
 }
 
 /// The `DS sidn.nl` question of `nodata-signed` asked from the root, whose servers answer it with sidn.nl's own

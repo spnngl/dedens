@@ -326,6 +326,12 @@ impl Resolved {
         }
     }
 
+    /// Every `RRset` given.
+    fn rrsets(&self) -> impl Iterator<Item = &Ranked> {
+        let (chain, one, denials) = self.parts();
+        chain.iter().chain(one).chain(denials)
+    }
+
     /// Every `RRset` given, mutable.
     fn rrsets_mut(&mut self) -> impl Iterator<Item = &mut Ranked> {
         let (chain, rest, denials): (&mut [Ranked], Option<&mut Ranked>, &mut [Ranked]) = match self
@@ -439,17 +445,28 @@ pub struct Resolution {
     found: HashMap<Question<'static>, Vec<IpAddr>>,
     /// What the validation cost, once over.
     spent: Option<Cost>,
-    /// The servers whose responses answered the client's question, its CNAMEs included, since it was last asked,
-    /// with the zone each was asked as a server of.
-    answered_by: Vec<(IpAddr, Name<'static>)>,
-    /// The servers no question is asked of: those that gave a bogus answer.
-    shunned: Vec<IpAddr>,
+    /// The servers whose responses answered the client's question, its CNAMEs included, and the validator's
+    /// questions, since it was last asked.
+    answered_by: Vec<Answerer>,
+    /// The servers that gave a bogus answer, with the zone they gave it as a server of: no question is asked of
+    /// them as servers of that zone (D197).
+    shunned: Vec<(IpAddr, Name<'static>)>,
     /// The client's question asked again after a bogus verdict, at most [`RETRIES`].
     retries: usize,
     /// The extended error of the first bogus verdict, which stands unless a retry does better.
     bogus: Option<InfoCode>,
     /// The query awaiting its reply, or the outcome; `None` while working out the next query.
     settled: Option<Settled>,
+}
+
+/// A server that answered the client's question or one of the validator's, which a bogus verdict may blame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Answerer {
+    server: IpAddr,
+    /// The zone it was asked as a server of.
+    zone: Name<'static>,
+    /// The validator's question it answered; `None` for the client's question, its CNAMEs included.
+    proving: Option<Question<'static>>,
 }
 
 /// The times the client's question is asked again after a bogus verdict, the servers that answered it shunned:
@@ -471,6 +488,9 @@ struct Checking {
     question: Question<'static>,
     outcome: Resolved,
     validation: Box<Validation>,
+    /// The `RRsets` of the answers to the validator's questions: the DS and DNSKEY `RRsets` of the chain, whose own
+    /// verdicts the cache records as it does the answer's (D197).
+    fetched: Vec<Ranked>,
 }
 
 /// The client's question (or the validator's), and the sub-resolutions it waits on, the last one active.
@@ -773,9 +793,14 @@ impl Delegation {
         }
     }
 
-    /// Takes `servers` out of those to ask, now and once looked up.
-    fn shun(&mut self, servers: &[IpAddr]) {
-        self.known.extend(servers);
+    /// Takes the servers `shunned` as servers of this zone out of those to ask, now and once looked up: a server
+    /// shunned in a zone still serves the others (D197).
+    fn shun(&mut self, shunned: &[(IpAddr, Name<'static>)]) {
+        let servers: Vec<IpAddr> = (shunned.iter())
+            .filter(|(_, zone)| *zone == self.zone)
+            .map(|&(server, _)| server)
+            .collect();
+        self.known.extend(&servers);
         self.untried
             .retain(|server| !servers.contains(&server.ip()));
         self.timed_out
@@ -975,9 +1000,12 @@ impl Resolution {
                 | Outcome::NxDomain { .. }
                 | Outcome::YxDomain { .. }
         );
-        let source = (server.ip(), query.zone.clone());
+        let source = Answerer {
+            server: server.ip(),
+            zone: query.zone.clone(),
+            proving: self.checking.is_some().then(|| query.question.clone()),
+        };
         if answer
-            && self.checking.is_none()
             && query.question == self.tasks.client.asked
             && !self.answered_by.contains(&source)
         {
@@ -1157,8 +1185,11 @@ impl Resolution {
         let caches = Arc::clone(&self.caches);
         let rrsets = &caches.rrsets;
         let validating = self.validator.is_some();
-        // Asked again after a bogus answer: what was judged bogus is asked of the servers left.
-        let retrying = self.retries > 0 && self.checking.is_none();
+        // Asked again after a bogus answer: what was judged bogus, the client's question or the validator's, is
+        // asked of the servers left, as Unbound's `val_blacklist` takes the bogus data out of the cache. The checks
+        // before wrote the verdict of every set they judged back to the cache, those it held unchecked included,
+        // which had no server to shun (D197).
+        let retrying = self.retries > 0 && matches!(self.tasks.current().purpose, Purpose::Answer);
         let usable = |held: &Ranked| {
             answers(held)
                 && !(validating
@@ -1569,6 +1600,7 @@ impl Resolution {
             let response = (!matches!(outcome, Resolved::Failed(_)))
                 .then(|| outcome.message(&self.tasks.client.question, true));
             checking.validation.answer(response.as_ref());
+            checking.fetched.extend(outcome.rrsets().cloned());
             return self.check(now);
         }
         let mut outcome = match (outcome, self.bogus, self.limit) {
@@ -1590,11 +1622,17 @@ impl Resolution {
                 Checked::Unchecked => {
                     let question = self.tasks.client.question.clone();
                     let response = outcome.message(&question, true);
-                    let validation = Box::new(validator.start(&question, &response, *unix));
+                    // Asked again after a bogus verdict, the validation carries on with what the ones before it
+                    // left of its budget, as Unbound's `val_restart` keeps its counts (D197).
+                    let validation = Box::new(match self.spent {
+                        Some(spent) => validator.restart(&question, &response, *unix, spent),
+                        None => validator.start(&question, &response, *unix),
+                    });
                     self.checking = Some(Checking {
                         question,
                         outcome,
                         validation,
+                        fetched: Vec::new(),
                     });
                     return self.check(now);
                 }
@@ -1621,22 +1659,28 @@ impl Resolution {
                     question,
                     outcome,
                     validation,
+                    fetched,
                 }) = self.checking.take()
                 else {
                     return;
                 };
+                // The cost of the validations before it included (`Validator::restart`).
                 self.spent = Some(validation.cost());
-                let (chain, data, denials) = outcome.parts();
-                let bogus: Vec<Name<'static>> = (chain.iter().chain(data).chain(denials))
-                    .filter(|ranked| {
-                        let own = validation.verdict_of(ranked.rrset.owner(), ranked.rrset.rtype());
-                        matches!(own, Some(Verdict::Bogus { .. }))
-                    })
-                    .map(|ranked| ranked.rrset.owner().clone())
-                    .collect();
+                let answer = bogus(&validation, outcome.rrsets());
+                // The keys and their DS: the rest of what the validator's questions fetched, CNAMEs or denials,
+                // proves nothing of the chain.
+                let keys = |ranked: &&Ranked| {
+                    matches!(ranked.rrset.rtype(), RecordType::DS | RecordType::DNSKEY)
+                };
+                let proofs = bogus(&validation, fetched.iter().filter(keys));
+                self.record(fetched.iter(), &validation, now);
                 let outcome = match self.judged(outcome, verdict, &validation, now) {
+                    Resolved::Failed(Failure::Bogus(code)) if validation.can_restart() => {
+                        return self.retry(question, code, &answer, &proofs);
+                    }
                     Resolved::Failed(Failure::Bogus(code)) => {
-                        return self.retry(question, code, &bogus);
+                        debug!(%code, "bogus, not asked again: the validation cannot restart");
+                        Resolved::Failed(Failure::Bogus(*self.bogus.get_or_insert(code)))
                     }
                     Resolved::Failed(_) if let Some(code) = self.bogus => {
                         Resolved::Failed(Failure::Bogus(code))
@@ -1650,55 +1694,83 @@ impl Resolution {
     }
 
     /// Asks `question` again after a bogus answer, `code`, the servers that answered it shunned, as Unbound's
-    /// `val_blacklist`: at most [`RETRIES`] times, the queries within [`Limits::validation`]. A spoofed or garbled
-    /// response from one server does not make the answer bogus while another serves it right. The servers shunned
-    /// are those of the zone each `RRset` judged bogus by itself came from (`bogus`, their owners), or all that
-    /// answered when none was (a denial missing). Without a server to shun, or out of retries, the answer is bogus
-    /// with the first code.
-    fn retry(&mut self, question: Question<'static>, code: InfoCode, bogus: &[Name<'static>]) {
+    /// `val_blacklist`: at most [`RETRIES`] times, the queries within [`Limits::validation`], the validation within
+    /// what the ones before it left (`Validator::restart`). A spoofed or garbled response from one server does not
+    /// make the answer bogus while another serves it right. The servers shunned are those that answered the
+    /// validator's question for each DS or DNSKEY `RRset` it judged bogus (`proofs`, Unbound's `chain_blacklist`),
+    /// what is below a bogus key set being bogus through it; when none was, those of the zone each `RRset` of the
+    /// answer judged bogus by itself came from (`answer`, their owners), or all that answered when none was either
+    /// (a denial missing). A bogus `RRset` the cache gave has no server to shun: it is asked again all the same,
+    /// the cache passed over (Unbound's `val_blacklist` of an origin it does not know). Without a server to shun
+    /// nor such a set, or out of retries, the answer is bogus with the first code.
+    fn retry(
+        &mut self,
+        question: Question<'static>,
+        code: InfoCode,
+        answer: &[Set],
+        proofs: &[Set],
+    ) {
         let code = *self.bogus.get_or_insert(code);
         let answered_by = std::mem::take(&mut self.answered_by);
-        let source = |owner: &Name<'_>| {
-            let zones = answered_by.iter().map(|(_, zone)| zone);
-            zones
-                .filter(|zone| owner.is_within(zone))
+        let source = |(owner, _): &Set| {
+            (answered_by.iter())
+                .filter(|answerer| answerer.proving.is_none() && owner.is_within(&answerer.zone))
+                .map(|answerer| &answerer.zone)
                 .max_by_key(|zone| zone.label_count())
         };
-        let blamed: Vec<IpAddr> = (answered_by.iter())
-            .filter(|(_, zone)| {
-                bogus.is_empty() || bogus.iter().any(|owner| source(owner) == Some(zone))
-            })
-            .map(|&(server, _)| server)
+        let proved = |answerer: &Answerer, (owner, rtype): &Set| {
+            (answerer.proving.as_ref())
+                .is_some_and(|asked| asked.name == *owner && asked.qtype == *rtype)
+        };
+        let blames = |answerer: &&Answerer| match (&answerer.proving, proofs, answer) {
+            (Some(_), _, _) => proofs.iter().any(|set| proved(answerer, set)),
+            (None, [], []) => true,
+            (None, [], answer) => answer.iter().any(|set| source(set) == Some(&answerer.zone)),
+            (None, _, _) => false,
+        };
+        let blamed: Vec<(IpAddr, Name<'static>)> = (answered_by.iter())
+            .filter(blames)
+            .map(|answerer| (answerer.server, answerer.zone.clone()))
             .collect();
-        if self.retries >= RETRIES || blamed.is_empty() {
-            debug!(%code, "bogus, not asked again");
+        let cached = match (proofs, answer) {
+            ([], []) => !(answered_by.iter()).any(|answerer| answerer.proving.is_none()),
+            ([], answer) => answer.iter().any(|set| source(set).is_none()),
+            (proofs, _) => (proofs.iter())
+                .any(|set| !(answered_by.iter()).any(|answerer| proved(answerer, set))),
+        };
+        if self.retries >= RETRIES || (blamed.is_empty() && !cached) {
+            debug!(%code, ?answer, ?proofs, "bogus, not asked again");
             self.settled = Some(Settled::Done(Resolved::Failed(Failure::Bogus(code))));
             return;
         }
         self.retries += 1;
-        debug!(%code, servers = ?blamed, retry = self.retries, "bogus, asked again of other servers");
+        debug!(
+            %code,
+            ?answer,
+            ?proofs,
+            servers = ?blamed,
+            cached,
+            retry = self.retries,
+            "bogus, asked again of other servers"
+        );
         self.shunned.extend(blamed);
         self.tasks.client = Task::new(question, Purpose::Answer, self.minimisation);
         self.tasks.lookups.clear();
     }
 
-    /// `outcome` as `verdict` makes it. The cache records each `RRset`'s own verdict (`Validation::verdict_of`,
-    /// Unbound's `rrset_update_sec_status`), not the outcome's, whose parts may be of other zones: a secure one lives
-    /// no longer than its signatures (RFC 4035 §5.3.3), an insecure one than D93's cap, a bogus one than
-    /// `Config::bogus_ttl` (RFC 4035 §4.7); a set with no verdict of its own stays as it is. The outcome served
-    /// takes the verdict.
-    fn judged(
+    /// Records in the cache the own verdict of each of `sets` (`Validation::verdict_of`, Unbound's
+    /// `rrset_update_sec_status`): a secure one lives no longer than its signatures (RFC 4035 §5.3.3), an insecure
+    /// one than D93's cap, a bogus one than `Config::bogus_ttl` (RFC 4035 §4.7); a set with no verdict of its own
+    /// stays as it is.
+    fn record<'r>(
         &self,
-        mut outcome: Resolved,
-        verdict: Verdict,
+        sets: impl Iterator<Item = &'r Ranked>,
         validation: &Validation,
         now: u32,
-    ) -> Resolved {
-        debug!(?verdict, "validated");
+    ) {
         let rrsets = &self.caches.rrsets;
-        for ranked in outcome.rrsets_mut() {
-            let own = validation.verdict_of(ranked.rrset.owner(), ranked.rrset.rtype());
-            let Some((checked, cap)) = own.and_then(recorded) else {
+        for ranked in sets {
+            let Some((checked, cap)) = own(validation, ranked).and_then(recorded) else {
                 continue;
             };
             // The time left, not the TTL received: the set may have come from the cache, or stayed in it while the
@@ -1710,6 +1782,20 @@ impl Resolution {
                 debug!(%owner, %rtype, %error, "verdict not cached");
             }
         }
+    }
+
+    /// `outcome` as `verdict` makes it. The cache records each `RRset`'s own verdict ([`Resolution::record`]), not
+    /// the outcome's, whose parts may be of other zones. The outcome served takes the verdict.
+    fn judged(
+        &self,
+        mut outcome: Resolved,
+        verdict: Verdict,
+        validation: &Validation,
+        now: u32,
+    ) -> Resolved {
+        debug!(?verdict, "validated");
+        let rrsets = &self.caches.rrsets;
+        self.record(outcome.rrsets(), validation, now);
         let Some((checked, cap)) = recorded(&verdict) else {
             let code = match verdict {
                 Verdict::Indeterminate { ede } => ede.code,
@@ -1858,6 +1944,22 @@ const PORT: u16 = 53;
 /// The caches' clock: seconds, saturating.
 fn secs(now: Duration) -> u32 {
     u32::try_from(now.as_secs()).unwrap_or(u32::MAX)
+}
+
+/// An `RRset` by its owner and type.
+type Set = (Name<'static>, RecordType);
+
+/// Of `sets`, those `validation` judged bogus by themselves.
+fn bogus<'r>(validation: &Validation, sets: impl Iterator<Item = &'r Ranked>) -> Vec<Set> {
+    sets.filter(|ranked| matches!(own(validation, ranked), Some(Verdict::Bogus { .. })))
+        .map(|ranked| (ranked.rrset.owner().clone(), ranked.rrset.rtype()))
+        .collect()
+}
+
+/// The own verdict `validation` gave the `RRset` of `ranked`, if it judged it by itself.
+fn own<'v>(validation: &'v Validation, ranked: &Ranked) -> Option<&'v Verdict> {
+    let rrset = &ranked.rrset;
+    validation.verdict_of(rrset.owner(), rrset.rtype(), rrset.rdatas())
 }
 
 /// What the cache records of `verdict`, and the cap on the TTL of a secure `RRset` (RFC 4035 §5.3.3): `None` for
