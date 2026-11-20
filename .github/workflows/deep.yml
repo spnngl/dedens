@@ -104,6 +104,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # Legs past their `needs` queue behind every job already waiting: unbounded, they held the account's 20 runners
+      # and ci.yml's `gate` waited behind them (.github/AGENTS.md).
+      max-parallel: 3
       matrix:
         test: ${{ fromJSON(needs.scenarios.outputs.list) }}
     steps:
@@ -167,6 +170,8 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # As `sim`'s.
+      max-parallel: 3
       matrix:
         package: ${{ fromJSON(needs.packages.outputs.list) }}
     steps:

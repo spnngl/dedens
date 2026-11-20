@@ -27,8 +27,8 @@ env:
   CARGO_MUTANTS_VERSION: "27.1.0"
 
 jobs:
-  # Counts the diff's mutants, without building, and splits them in shards of about 40, up to 8 (the account runs 20
-  # jobs at once, ci.yml needs about 8). Each shard reads this job's diff, so all agree on the list.
+  # Counts the diff's mutants, without building, and splits them in shards of about 40, up to 8, 4 running at once
+  # (.github/AGENTS.md). Each shard reads this job's diff, so all agree on the list.
   plan:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -103,6 +103,8 @@ jobs:
     if: needs.plan.outputs.count != '0'
     strategy:
       fail-fast: false
+      # Each shard holds its runner for up to 350 min (.github/AGENTS.md).
+      max-parallel: 4
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ubuntu-26.04
