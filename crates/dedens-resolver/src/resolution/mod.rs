@@ -1671,11 +1671,13 @@ impl Resolution {
                 let proofs = bogus(&validation, fetched.iter());
                 self.record(fetched.iter(), &validation, now);
                 let outcome = match self.judged(outcome, verdict, &validation, now) {
-                    Resolved::Failed(Failure::Bogus(code)) if validation.can_restart() => {
-                        return self.retry(question, code, &answer, &proofs);
+                    Resolved::Failed(Failure::Bogus(code))
+                        if validation.can_restart()
+                            && self.retry(question, code, &answer, &proofs) =>
+                    {
+                        return;
                     }
                     Resolved::Failed(Failure::Bogus(code)) => {
-                        debug!(%code, "bogus, not asked again: the validation cannot restart");
                         Resolved::Failed(Failure::Bogus(*self.bogus.get_or_insert(code)))
                     }
                     Resolved::Failed(_) if let Some(code) = self.bogus => {
@@ -1697,37 +1699,38 @@ impl Resolution {
     /// bogus by itself (`proofs`, Unbound's `chain_blacklist`), what is below a bogus key set being bogus through
     /// it; when there is none, those whose responses gave an `RRset` of the answer judged bogus by itself
     /// (`answer`), or all that answered the client's question when there is none either (a denial missing). A
-    /// bogus `RRset` the cache gave has no server to shun: it is asked again all the same, the cache passed over
-    /// (Unbound's `val_blacklist` of an origin it does not know). Without a server to shun nor such a set, or out
-    /// of retries, the answer is bogus with the first code.
+    /// bogus `RRset` the cache gave unjudged has no server to shun: it is asked again all the same, the cache
+    /// passed over (Unbound's `val_blacklist` of an origin it does not know). One the cache held bogus is its
+    /// settled verdict until it expires (RFC 4035 §4.7), not asked again, as Unbound's bad key cached leaves no
+    /// restart. Without a server to shun nor a set to fetch again, or out of retries, the answer is bogus with the
+    /// first code. Whether it is asked again.
     fn retry(
         &mut self,
         question: Question<'static>,
         code: InfoCode,
-        answer: &[Set],
-        proofs: &[Set],
-    ) {
+        answer: &[Bogus],
+        proofs: &[Bogus],
+    ) -> bool {
         let code = *self.bogus.get_or_insert(code);
         let answered_by = std::mem::take(&mut self.answered_by);
         let bogus = if proofs.is_empty() { answer } else { proofs };
         let gave = |answerer: &&Answerer| match bogus {
             [] => !answerer.proving,
-            bogus => bogus.iter().any(|set| answerer.gave.contains(set)),
+            bogus => bogus.iter().any(|(set, _)| answerer.gave.contains(set)),
         };
         let blamed: Vec<(IpAddr, Name<'static>)> = (answered_by.iter())
             .filter(gave)
             .map(|answerer| (answerer.server, answerer.zone.clone()))
             .collect();
-        // A bogus set no server gave came from the cache, which holds it bogus now: asked again, it is fetched.
-        let cached = (bogus.iter()).any(|set| {
-            !answered_by
-                .iter()
-                .any(|answerer| answerer.gave.contains(set))
+        // A bogus set no server gave came from the cache: fetched unjudged, it is fetched again, the cache passed
+        // over; held bogus, it stays so.
+        let cached = (bogus.iter()).any(|(set, held)| {
+            *held == Checked::Unchecked
+                && !(answered_by.iter()).any(|answerer| answerer.gave.contains(set))
         });
         if self.retries >= RETRIES || (blamed.is_empty() && !cached) {
             debug!(%code, ?answer, ?proofs, "bogus, not asked again");
-            self.settled = Some(Settled::Done(Resolved::Failed(Failure::Bogus(code))));
-            return;
+            return false;
         }
         self.retries += 1;
         debug!(
@@ -1739,9 +1742,15 @@ impl Resolution {
             retry = self.retries,
             "bogus, asked again of other servers"
         );
-        self.shunned.extend(blamed);
+        // A server answers several questions of a resolution: shunned once.
+        for shunned in blamed {
+            if !self.shunned.contains(&shunned) {
+                self.shunned.push(shunned);
+            }
+        }
         self.tasks.client = Task::new(question, Purpose::Answer, self.minimisation);
         self.tasks.lookups.clear();
+        true
     }
 
     /// Records in the cache the own verdict of each of `sets` (`Validation::verdict_of`, Unbound's
@@ -1936,10 +1945,17 @@ fn secs(now: Duration) -> u32 {
 /// An `RRset` by its owner and type.
 type Set = (Name<'static>, RecordType);
 
+/// An `RRset` judged bogus by itself, with the verdict it came with: [`Checked::Unchecked`] when it came unjudged,
+/// from a server or the cache, else the cache's.
+type Bogus = (Set, Checked);
+
 /// Of `sets`, those `validation` judged bogus by themselves.
-fn bogus<'r>(validation: &Validation, sets: impl Iterator<Item = &'r Ranked>) -> Vec<Set> {
+fn bogus<'r>(validation: &Validation, sets: impl Iterator<Item = &'r Ranked>) -> Vec<Bogus> {
     sets.filter(|ranked| matches!(own(validation, ranked), Some(Verdict::Bogus { .. })))
-        .map(|ranked| (ranked.rrset.owner().clone(), ranked.rrset.rtype()))
+        .map(|ranked| {
+            let set = (ranked.rrset.owner().clone(), ranked.rrset.rtype());
+            (set, ranked.checked)
+        })
         .collect()
 }
 
