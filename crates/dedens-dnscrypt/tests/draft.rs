@@ -165,7 +165,15 @@ fn client_query_decrypts_to_the_dns_query() {
     );
     let (plaintext, _) = resolver.decrypt_query(&packet).expect("a query");
     assert_eq!(plaintext, hex(&draft.dns_query));
-    assert_eq!(hex(&draft.query_plaintext).len(), 256);
+    assert_eq!(hex(&draft.query_plaintext), padded(&draft.dns_query, 256));
+}
+
+/// The DNS message `hex` padded as the draft pads (0x80, then NUL bytes) to `len` bytes.
+fn padded(message: &str, len: usize) -> Vec<u8> {
+    let mut padded = hex(message);
+    padded.push(0x80);
+    padded.resize(len, 0);
+    padded
 }
 
 /// Appendix 2, "Server Response (UDP)": the client reads the response of the vector.
@@ -177,7 +185,10 @@ fn server_response_decrypts_to_the_dns_response() {
         .decrypt_response(&hex(&draft.response_packet))
         .expect("the response");
     assert_eq!(plaintext, hex(&draft.dns_response));
-    assert_eq!(hex(&draft.response_plaintext).len(), 64);
+    assert_eq!(
+        hex(&draft.response_plaintext),
+        padded(&draft.dns_response, 64)
+    );
 }
 
 /// The context of the resolver for the query of the vector.
