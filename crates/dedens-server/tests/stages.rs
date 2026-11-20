@@ -1074,6 +1074,62 @@ mod plugin {
         }
         assert_eq!(reviews.load(Ordering::Relaxed), 2);
     }
+
+    /// A response a validating stage delivers and a plugin refuses, there unvalidated as the client set CD, is stored
+    /// with its verdict, unmarked, and refused again by the hit (D118): a repeat does not go upstream.
+    #[test]
+    fn a_delivered_response_refused_is_stored_and_refused_on_a_hit() {
+        let (gate, reviews) = Gate::new("www.icann.org.cdn.cloudflare.net");
+        let validator = Validator::new(TrustAnchors::root(), Limits::default());
+        let validating = Validating::new(validator, Arc::new(crate::util::captured_at));
+        let pipeline = Pipeline::new(vec![
+            Stage::Plugin(Box::new(gate)),
+            Stage::Cache(cache()),
+            Stage::Forward(
+                Forward::new(servers())
+                    .expect("servers")
+                    .validating(validating),
+            ),
+        ]);
+        let query = crate::util::client_query("www.icann.org.", RecordType::A, Flags::CD, true);
+        let captures = dedens_testkit::dnssec::Captures::new();
+        let first = crate::util::run_captured(&pipeline, &query, 0, &captures);
+        assert_eq!(first.asked.len(), 1);
+        assert_blocked(&first.reply.expect("a reply"));
+        let second = crate::util::run_captured(&pipeline, &query, 0, &captures);
+        assert_eq!(second.asked, [], "refused by the hit");
+        assert_blocked(&second.reply.expect("a reply"));
+        assert_eq!(reviews.load(Ordering::Relaxed), 2);
+    }
+
+    /// A response a validating stage delivers and no plugin refuses is stored with this pipeline's mark: the hit
+    /// does not review it again (D118).
+    #[test]
+    fn a_delivered_response_kept_is_reviewed_once() {
+        let (gate, reviews) = Gate::new("blocked.example");
+        let validator = Validator::new(TrustAnchors::root(), Limits::default());
+        let validating = Validating::new(validator, Arc::new(crate::util::captured_at));
+        let pipeline = Pipeline::new(vec![
+            Stage::Plugin(Box::new(gate)),
+            Stage::Cache(cache()),
+            Stage::Forward(
+                Forward::new(servers())
+                    .expect("servers")
+                    .validating(validating),
+            ),
+        ]);
+        let query = crate::util::client_query("www.icann.org.", RecordType::A, Flags::CD, true);
+        let captures = dedens_testkit::dnssec::Captures::new();
+        let first = crate::util::run_captured(&pipeline, &query, 0, &captures);
+        assert_eq!(first.asked.len(), 1);
+        let second = crate::util::run_captured(&pipeline, &query, 0, &captures);
+        assert_eq!(second.asked, [], "a hit");
+        assert_eq!(
+            decode(&second.reply.expect("a reply")).rcode(),
+            Rcode::NOERROR
+        );
+        assert_eq!(reviews.load(Ordering::Relaxed), 1);
+    }
 }
 
 mod recursion_desired {
