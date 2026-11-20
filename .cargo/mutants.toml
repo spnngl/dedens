@@ -210,6 +210,9 @@ exclude_re = [
   # A DS whose signature verifies as a wildcard expansion: a DS at a wildcard is meaningless (RFC 4592 §4.6), no
   # capture has one, and test data is real.
   'validator/chain\.rs:\d+:\d+: replace match guard verified\.wildcard\.is_none\(\) with true in Validation::cut_in$',
+  # Warnings only, of dedensd's RFC 5011 state (D200): the root keys followed disagree with the downloaded anchors,
+  # trusted either way; a state already gone is not warned of as not removed.
+  'rollover\.rs:\d+:\d+: (delete ! in Kept::anchors|replace != with == in remove)$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never

@@ -1,7 +1,7 @@
 //! A query resolved from the root by the recurse stage (D195): each query of its resolution sent to an
 //! authoritative server with the thread's transport (D190), shared with the resolutions of the thread asking the
 //! same server the same question at the same time (RFC 5452 §5), and the priming of the root's servers alongside
-//! when due (RFC 8109 §3).
+//! when due (RFC 8109 §3), as are the root's keys (RFC 5011 §2.3, D200).
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ use futures_util::future::join;
 
 use super::Thread;
 use super::upstream::copy_out;
+use crate::config::unix_seconds;
 
 const SENT: &str = "dedensd_recurse_errors_total";
 const SHED: &str = "dedensd_recurse_shed_total";
@@ -86,7 +87,7 @@ impl<N: Io> Recursion<N> {
 
 /// Asks the authoritative servers for `resolving`, from `pipeline`, and hands `deliver` the reply, copied out of
 /// the thread's buffer; primes the root's servers alongside when due, which the reply does not wait for: until
-/// then, the resolution starts from the hints (D191).
+/// then, the resolution starts from the hints (D191); and asks the root's keys when due (D200).
 pub(super) async fn resolve<N: Io>(
     thread: &Thread<N>,
     pipeline: &Pipeline,
@@ -103,6 +104,23 @@ pub(super) async fn resolve<N: Io>(
             }
         }
     };
+    // The root's keys, when due, for the thread reloading to follow its trust anchors by (RFC 5011 §2.3, D200).
+    let keys = async {
+        let probe = thread.current.probe();
+        if probe.take(unix_seconds()) {
+            let mut answer = Vec::new();
+            if let Some(mut keys) = pipeline.root_keys() {
+                drive(thread, &mut keys).await;
+                match keys.resolved() {
+                    Some(resolved @ Resolved::Answer { .. }) => {
+                        answer = resolved.message(keys.question(), true).answer;
+                    }
+                    resolved => tracing::debug!(?resolved, "the root's keys not resolved"),
+                }
+            }
+            probe.answered(answer);
+        }
+    };
     let reply = async {
         drive(thread, &mut resolving).await;
         gauges(resolving.caches());
@@ -117,7 +135,7 @@ pub(super) async fn resolve<N: Io>(
             deliver(reply).await;
         }
     };
-    join(priming, reply).await;
+    join(join(priming, keys), reply).await;
 }
 
 /// The thread's clock, finer than [`Thread::now`]'s seconds: the resolution times its servers with it.

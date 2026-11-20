@@ -79,8 +79,8 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D69 [scope](scope.md) (amended by D71, D74, D75, D76, D78, D79, D80, D97): DNSSEC before the recursive resolver: a validating stub and forwarder
 - D70 [wire format](wire-format.md) (amended by D159): typed DNSSEC RDATA: DS, DNSKEY, RRSIG, NSEC, NSEC3 and kin
 - D71 [scope](scope.md) (amended by D73, D106): DNSSEC crypto on `ring`; which algorithms validate
-- D72 [scope](scope.md) (amended by D127): trust anchors per zone, negative ones, the root's bundled
-- D73 [scope](scope.md): `rrsig` authenticates one RRset with one DNSKEY RRset
+- D72 [scope](scope.md) (amended by D127, D200): trust anchors per zone, negative ones, the root's bundled
+- D73 [scope](scope.md) (amended by D200): `rrsig` authenticates one RRset with one DNSKEY RRset
 - D74 [scope](scope.md) (amended by D106): denial of existence: set logic over verified NSEC and NSEC3
 - D75 [scope](scope.md) (amended by D86, D106, D176): sans-IO `Validator`, driven by the caller, within limits
 - D76 [scope](scope.md) (amended by D86): `dedens +validate` is a validating stub resolver
@@ -133,8 +133,8 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D124 [server](server.md): the cache keeps a response between `min_ttl` and `max_ttl`
 - D125 [wire format](wire-format.md): every typed RDATA fits 65535 bytes by construction
 - D126 [scope](scope.md) (amended by D127, D128): `dedens-roots`: root hints and TLD list bundled, fresh copies read into the same types; TLD DS are hints
-- D127 [scope](scope.md) (amended by D128): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
-- D128 [server](server.md): the `tlds` stage answers special-use TLDs per their RFCs, absent ones NXDOMAIN without DO while the list is under 30 days; dedensd refreshes TLD list and root anchors, kept verified in `state_dir`
+- D127 [scope](scope.md) (amended by D128, D200): root-anchors.xml checked by its CMS signature against ICANN's bundled CA (`fetch-anchors`)
+- D128 [server](server.md) (amended by D200): the `tlds` stage answers special-use TLDs per their RFCs, absent ones NXDOMAIN without DO while the list is under 30 days; dedensd refreshes TLD list and root anchors, kept verified in `state_dir`
 - D129 [CLI](cli.md) (amended by D130): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D130 [CLI](cli.md): `+rdap NAME` asks the TLD's server from IANA's bootstrap file, walking up parents; no PSL; HTTPS only
 - D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`
@@ -196,8 +196,9 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D192 [server](server.md): the recursive resolver scrubs each response to what the zone asked may say, Unbound's rules, bounds and ranks, its deviations; forwarded data never in its cache
 - D193 [server](server.md): the resolver's `RRset` cache: RFC 2181 ranks, Unbound's replacement rules, the response cache's TTLs and store
 - D194 [server](server.md): the resolver's infra cache: RFC 6298 times per server, lameness per zone, a random server within 400 ms
-- D195 [server](server.md) (amended by D197, D201): the recurse stage: sans-IO steps the driver sends, RFC 8109 priming beside the hints, RFC 6303 local zones, queries shared per thread (past 100 waiters shed), D117 per query, limits capped
+- D195 [server](server.md) (amended by D197, D200, D201): the recurse stage: sans-IO steps the driver sends, RFC 8109 priming beside the hints, RFC 6303 local zones, queries shared per thread (past 100 waiters shed), D117 per query, limits capped
 - D196 [simulation tests](simulation-tests.md): recursion in the simulator: every capture of the `recursion` family (not D197's validation captures) resolved from the root by `dedensd` under loss, broken servers, a lame zone, a restart; a query moved to TCP waits 3 s at least; a server timed out asked again
 - D197 [server](server.md): DNSSEC validation in the recursive resolver: the validator's questions iterated by the resolution under `limits.validation`, each RRset's own verdict in the `RRset` cache, AD or SERVFAIL with EDE, the allowance; a bogus answer asked again, the servers that gave a bogus set shunned in their zone (5 times, one budget); YXDOMAIN judged; wildcard expansions not from the cache; a DS denied by the child asked of the parent; a TCP timeout no back-off
 - D198 [server](server.md): QNAME minimisation, relaxed by default (strict, none): one label below each zone, type A; Unbound's 10 questions per name, 4 one label at a time, 3 timeouts; the full name after NXDOMAIN, REFUSED, SERVFAIL
+- D200 [server](server.md): RFC 5011 root key rollover followed from the resolver's own `. DNSKEY` queries, seeded by the signed download, which it wins over; state `root-5011` in `state_dir`; 30-day hold-downs, 366 days missing, queries every 12 h to 15 d
 - D201 [performance and safety](performance-and-safety.md): the recursive resolver against Unbound: a mini Internet of three Knot authorities (root, TLD, signed zone), unique names, `root_hints`; TelltaleDNS and CoreDNS not measured

@@ -30,4 +30,6 @@ belongs in `crates/dedens-server` and its sans-IO tests.
   to read goes in `names_files` (`src/config/`), or `fuzz/`'s `read_config` opens the paths its inputs name.
 - A root file (D128) is read through `roots::open`: a regular file, itself no link (`O_NOFOLLOW`), of a capped length. The anchors kept
   in `state_dir` are what the validators trust without a signature: written only from a pair `TrustAnchors::verified`
-  accepted, and a reload that cannot read them keeps those `Held` in the `Store`.
+  accepted, and a reload that cannot read them keeps those `Held` in the `Store`. The RFC 5011 state (`rollover.rs`,
+  D200) is read through it too, written only by `Rollover` from answers it verified, and held in the `Store`
+  across reloads: only the thread reloading touches it.

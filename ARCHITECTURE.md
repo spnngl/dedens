@@ -9,7 +9,7 @@
 | `crates/dedens-resolver` | Recursive resolver: the iteration (D191), a response scrubbed to what the zone asked may say, into ranked `RRsets` (D192); the `RRset` cache (D193), the infra cache of authoritative servers (D194); the answer validated by `dedens-dnssec`, its questions iterated (D197) | none (sans-IO), time and randomness passed in |
 | `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself, the recurse stage and the zones it serves locally (D195) | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
-| `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`) | none (sans-IO), time passed in |
+| `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`); the root's key rollover by RFC 5011 (D200) | none (sans-IO), time passed in |
 | `crates/dedens-roots` | IANA's root hints and TLD list (D126): bundled, and read from a fresh copy | none (sans-IO) |
 | `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69, D78): configurations, message encryption | none (sans-IO) |
 | `crates/dedens-dnscrypt` | DNSCrypt (draft-denis-dprive-dnscrypt), experimental (D97, D101): certificates, query and response encryption for both classical systems and the X-Wing one (PQDNSCrypt, with resumption tickets) | none (sans-IO), time and randomness passed in |
