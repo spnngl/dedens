@@ -4,6 +4,7 @@
 mod algorithms;
 mod anchor;
 mod denial;
+mod rfc5011;
 mod rrsig;
 #[cfg(feature = "fetch-anchors")]
 mod signed_anchors;

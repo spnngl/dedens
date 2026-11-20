@@ -26,6 +26,42 @@ fn vouched(bucket: &[&Ds<'_>], key: &Key<'_>) -> bool {
         })
 }
 
+/// The DS records of `ds` that count: of a supported digest type and algorithm (RFC 6840 §5.2), and of SHA-1 only
+/// when no other counts (RFC 4509 §3, D73), whatever key either names.
+///
+/// # Errors
+///
+/// [`SigError::UnsupportedDigest`] or [`SigError::UnsupportedAlgorithm`] for the first record that does not
+/// count, when none does; [`SigError::NoKeyForDs`] when there is none.
+pub(crate) fn counted<'a>(ds: impl IntoIterator<Item = Ds<'a>>) -> Result<Vec<Ds<'a>>, SigError> {
+    let mut unsupported = None;
+    let mut counted = Vec::new();
+    for record in ds {
+        if !crypto::supported_digest(record.digest_type()) {
+            unsupported.get_or_insert(SigError::UnsupportedDigest {
+                digest: record.digest_type(),
+            });
+        } else if !crypto::supported(record.algorithm()) {
+            unsupported.get_or_insert(SigError::UnsupportedAlgorithm {
+                algorithm: record.algorithm(),
+            });
+        } else {
+            counted.push(record);
+        }
+    }
+    if counted.is_empty() {
+        return Err(unsupported.unwrap_or(SigError::NoKeyForDs));
+    }
+    // Every supported digest but SHA-1 is stronger than it: one that counts drops each SHA-1 DS of the `RRset`.
+    if counted
+        .iter()
+        .any(|ds| ds.digest_type() != DigestType::SHA1)
+    {
+        counted.retain(|ds| ds.digest_type() != DigestType::SHA1);
+    }
+    Ok(counted)
+}
+
 /// Authenticates `dnskeys`, the DNSKEY `RRset` of a zone, from its DS `RRset` `ds`, itself authenticated by the
 /// parent: the DNSKEYs a supported DS record digests must sign it (`sigs` hold its RRSIGs). On success every key
 /// of the `RRset` is trusted (RFC 4035 §5.2).
@@ -49,34 +85,10 @@ pub fn trusted_keys(
     now: u32,
     budget: &mut Budget,
 ) -> Result<Verified, SigError> {
-    let mut unsupported = None;
-    let mut counted = Vec::new();
-    for rdata in ds.rdatas() {
-        let RData::Ds(record) = rdata.data() else {
-            continue;
-        };
-        if !crypto::supported_digest(record.digest_type()) {
-            unsupported.get_or_insert(SigError::UnsupportedDigest {
-                digest: record.digest_type(),
-            });
-        } else if !crypto::supported(record.algorithm()) {
-            unsupported.get_or_insert(SigError::UnsupportedAlgorithm {
-                algorithm: record.algorithm(),
-            });
-        } else {
-            counted.push(record);
-        }
-    }
-    if counted.is_empty() {
-        return Err(unsupported.unwrap_or(SigError::NoKeyForDs));
-    }
-    // Every supported digest but SHA-1 is stronger than it: one that counts drops each SHA-1 DS of the `RRset`.
-    if counted
-        .iter()
-        .any(|ds| ds.digest_type() != DigestType::SHA1)
-    {
-        counted.retain(|ds| ds.digest_type() != DigestType::SHA1);
-    }
+    let counted = counted(ds.rdatas().iter().filter_map(|rdata| match rdata.data() {
+        RData::Ds(record) => Some(record),
+        _ => None,
+    }))?;
     let mut by_key: HashMap<(u16, SecAlgorithm), Vec<&Ds<'_>>> = HashMap::new();
     for record in &counted {
         by_key

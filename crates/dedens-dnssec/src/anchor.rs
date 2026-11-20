@@ -1,5 +1,6 @@
 //! Trust anchors (RFC 4035 §4.4, RFC 7646, D72); [`TrustAnchors`] says what they are.
 
+mod rollover;
 #[cfg(feature = "fetch-anchors")]
 mod root;
 #[cfg(feature = "fetch-anchors")]
@@ -12,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEntry, ZoneReader};
+pub use rollover::{KeyState, Rollover, RolloverError, RolloverStateError};
 #[cfg(feature = "fetch-anchors")]
 pub use root::{RootAnchors, RootAnchorsError, RootKey};
 #[cfg(feature = "fetch-anchors")]
@@ -150,7 +152,8 @@ pub enum AnchorError {
 /// trusted through the DNSKEY that matches it (RFC 4035 §4.4), which is the validator's check, not this type's.
 /// The root's anchors are bundled ([`TrustAnchors::root`], RFC 9718), or read from IANA's signed
 /// `root-anchors.xml` with the `fetch-anchors` feature (`TrustAnchors::verified`, D127); a user's come from zone
-/// text ([`TrustAnchors::read`]). Anchors do not change while running: RFC 5011 is left out (D72).
+/// text ([`TrustAnchors::read`]). Anchors do not change while running; a resolver follows the root's through a
+/// rollover with a [`Rollover`] (RFC 5011, D200) and makes new ones from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustAnchors {
     zones: HashMap<Name<'static>, Anchor>,

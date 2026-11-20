@@ -1,0 +1,10 @@
+# The words of the state text of a root key rollover (D200).
+"dedens rfc5011 1\x0a"
+"valid "
+"addpend "
+"missing "
+"revoked "
+"end\x0a"
+"257 3 8 "
+"385 3 8 "
+"\x0a"

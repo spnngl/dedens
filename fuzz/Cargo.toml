@@ -302,6 +302,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "parse_5011_state"
+path = "fuzz_targets/parse_5011_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "parse_command_line"
 path = "fuzz_targets/parse_command_line.rs"
 test = false

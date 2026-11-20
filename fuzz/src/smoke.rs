@@ -64,6 +64,11 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         "icannbundle.pem".into(),
         include_bytes!("../../crates/dedens-dnssec/src/icannbundle.pem").to_vec(),
     ));
+    // The state of a root key rollover followed by RFC 5011, as `Rollover` writes it (D200).
+    seeds.push((
+        "root-5011.state".into(),
+        include_bytes!("../seeds/root-5011.state").to_vec(),
+    ));
     seeds.sort();
     seeds
 }

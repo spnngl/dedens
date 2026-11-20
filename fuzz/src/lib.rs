@@ -33,7 +33,8 @@ pub use dnscrypt::{
     dnscrypt_tamper_response, dnscrypt_ticket, dnscrypt_unpad, parse_dnscrypt_certificate,
 };
 pub use dnssec::{
-    denial, dnssec_crypto, parse_root_anchors, parse_trust_anchors, rrsig_verify, validate,
+    denial, dnssec_crypto, parse_5011_state, parse_root_anchors, parse_trust_anchors, rrsig_verify,
+    validate,
 };
 pub use net::{
     parse_dns_stamp, parse_doh_template, parse_resolv_conf, read_doh_response, server_request,
@@ -101,6 +102,7 @@ targets! {
     validate,
     parse_trust_anchors,
     parse_root_anchors,
+    parse_5011_state,
     parse_coap,
     coap_doc,
     parse_link_format,
