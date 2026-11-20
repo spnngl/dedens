@@ -1280,8 +1280,9 @@ fn d191_an_address_given_twice_is_asked_once() {
 }
 
 /// An address of each range a resolution does not ask by default (D191): loopback, "this network", private,
-/// shared, link-local, IETF protocol assignments, multicast, reserved, broadcast, and IPv4-mapped ones.
-const LOCAL: [IpAddr; 20] = [
+/// shared, link-local, IETF protocol assignments, benchmarking, multicast, reserved, broadcast, site-local, every
+/// IPv4-mapped one (a public one too), IPv4-compatible ones, and a NAT64 or 6to4 one embedding a non-global IPv4.
+const LOCAL: [IpAddr; 30] = [
     IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)),
     IpAddr::V4(Ipv4Addr::new(0, 1, 2, 3)),
     IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -1293,6 +1294,8 @@ const LOCAL: [IpAddr; 20] = [
     IpAddr::V4(Ipv4Addr::new(224, 0, 0, 251)),
     IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1)),
     IpAddr::V4(Ipv4Addr::BROADCAST),
+    IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1)),
+    IpAddr::V4(Ipv4Addr::new(198, 19, 255, 1)),
     IpAddr::V6(Ipv6Addr::LOCALHOST),
     IpAddr::V6(Ipv6Addr::UNSPECIFIED),
     IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
@@ -1302,6 +1305,14 @@ const LOCAL: [IpAddr; 20] = [
     IpAddr::V6(Ipv4Addr::new(192, 168, 0, 1).to_ipv6_mapped()),
     IpAddr::V6(Ipv4Addr::new(100, 64, 0, 1).to_ipv6_mapped()),
     IpAddr::V6(Ipv4Addr::new(224, 0, 0, 1).to_ipv6_mapped()),
+    IpAddr::V6(Ipv4Addr::new(192, 0, 2, 1).to_ipv6_mapped()),
+    IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0xc000, 0x201)),
+    IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 1)),
+    IpAddr::V6(Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0x7f00, 1)),
+    IpAddr::V6(Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0xa00, 1)),
+    IpAddr::V6(Ipv6Addr::new(0x64, 0xff9b, 1, 0, 0, 0, 0xc000, 0x201)),
+    IpAddr::V6(Ipv6Addr::new(0x2002, 0x7f00, 1, 0, 0, 0, 0, 1)),
+    IpAddr::V6(Ipv6Addr::new(0x2002, 0xa00, 1, 0, 0, 0, 0, 1)),
 ];
 
 /// `unsigned`, com's referral to google.com giving its servers the addresses of [`LOCAL`] as glue, which fail:
@@ -1370,15 +1381,22 @@ fn d191_a_server_at_a_local_address_is_asked_when_set() {
 
 #[test]
 fn d191_an_address_just_outside_the_local_ranges_is_asked() {
-    // The neighbours of the ranges' edges: 172.32/12's first, 100.128/10's, 192.0.1.0, fbff::, fec0::.
+    // The neighbours of the ranges' edges: 172.32/12's first, 100.128/10's, 192.0.1.0, 198.17/16's last and
+    // 198.20/16's first, fbff::, ::1:0:0 above the IPv4-compatible, 64:ff9b:2:: past the local-use NAT64; and the
+    // NAT64 and 6to4 addresses embedding a global IPv4 (192.0.2.1).
     let outside = [
+        IpAddr::V4(Ipv4Addr::new(198, 17, 255, 1)),
+        IpAddr::V4(Ipv4Addr::new(198, 20, 0, 1)),
+        IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 1, 0, 1)),
+        IpAddr::V6(Ipv6Addr::new(0x64, 0xff9b, 2, 0, 0, 0, 0, 1)),
+        IpAddr::V6(Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0xc000, 0x201)),
+        IpAddr::V6(Ipv6Addr::new(0x2002, 0xc000, 0x201, 0, 0, 0, 0, 1)),
         IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1)),
         IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1)),
         IpAddr::V4(Ipv4Addr::new(100, 63, 255, 1)),
         IpAddr::V4(Ipv4Addr::new(192, 0, 1, 1)),
         IpAddr::V4(Ipv4Addr::new(223, 255, 255, 1)),
         IpAddr::V6(Ipv6Addr::new(0xfbff, 0, 0, 0, 0, 0, 0, 1)),
-        IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 1)),
     ];
     let capture = recursion::Resolution::read("unsigned");
     let google = name("google.com.");

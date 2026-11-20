@@ -16,11 +16,11 @@ use dedens_resolver::{
 };
 use dedens_testkit::recursion;
 
-use crate::seeded::Seeded;
 use crate::iteration::{
     Answered, Change, Sent, at, caches, captured, configured, is, name, resolvable, run, served,
     start, steer, to,
 };
+use crate::seeded::Seeded;
 
 /// The captures whose answer is signed from the root down.
 const SIGNED: &[&str] = &[
@@ -1080,7 +1080,12 @@ fn d193_a_secure_nsec_of_an_authority_section_answers_no_question() {
     let (_, resolved, _) = check(&capture, &caches, defaults, &|_, _| {});
     assert!(matches!(resolved, Resolved::NoData { .. }), "{resolved:?}");
     let held = (caches.rrsets)
-        .get(&capture.name, RecordType::NSEC, Class::IN, captured_at(&capture))
+        .get(
+            &capture.name,
+            RecordType::NSEC,
+            Class::IN,
+            captured_at(&capture),
+        )
         .expect("the NSEC of the denial is kept");
     assert_eq!(
         (held.rank, held.checked),
