@@ -159,7 +159,8 @@ pub struct Header {
     /// Kind of query.
     pub opcode: Opcode,
     /// The low four bits of the response code, 0 to 15; `Message::rcode` adds the upper eight from EDNS, and
-    /// `Message::set_rcode` splits a full one.
+    /// `Message::set_rcode` splits a full one. A code above 15 set here is refused on encoding
+    /// ([`EncodeError::RcodeOutOfRange`]), and `Message::rcode` reads it whole.
     pub rcode: Rcode,
 }
 

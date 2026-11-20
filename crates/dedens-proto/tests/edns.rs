@@ -129,7 +129,12 @@ fn s6_1_3_a_rejected_opt_record_keeps_its_ttl_field() {
 #[test]
 fn s6_1_3_the_header_rcode_holds_four_bits() {
     let mut message = Message::default();
-    message.header.rcode = Rcode(16);
+    message.header.rcode = Rcode::BADCOOKIE;
+    assert_eq!(
+        message.rcode(),
+        Rcode::BADCOOKIE,
+        "read as set, not cut to its low bits"
+    );
     assert_eq!(message.to_vec(), Err(EncodeError::RcodeOutOfRange));
     message.header.rcode = Rcode(0);
     message.header.opcode = Opcode(16);
