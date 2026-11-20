@@ -1,7 +1,8 @@
-//! What the server says of itself: its `tracing` events on stderr, as JSON or text (D30), and the start's
+//! What the server says of itself: its `tracing` events on stderr, as JSON or text (D30), errors with their causes, and the start's
 //! "serving" event with the driver its threads run on, warning of `poll` on Linux (D107), and of CoAP (RFC 9953 §6).
 
-use std::io;
+use std::error::Error;
+use std::{fmt, io};
 
 use clap::ValueEnum;
 use compio::driver::DriverType;
@@ -14,6 +15,22 @@ use crate::serve::Services;
 pub(crate) enum LogFormat {
     Json,
     Text,
+}
+
+/// An error and its causes, `top: cause: cause`, as the log shows it: an error's own text often names only where it
+/// failed ("UDP", "QUIC"), its causes say what failed.
+pub(crate) struct Causes<'a>(pub(crate) &'a dyn Error);
+
+impl fmt::Display for Causes<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)?;
+        let mut cause = self.0.source();
+        while let Some(error) = cause {
+            write!(f, ": {error}")?;
+            cause = error.source();
+        }
+        Ok(())
+    }
 }
 
 /// Prints `tracing` events on stderr, in `format`: info, debug with `-v`, trace with `-vv` (D30).

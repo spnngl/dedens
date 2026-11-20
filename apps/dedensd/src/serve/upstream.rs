@@ -3,8 +3,6 @@
 
 #![deny(clippy::disallowed_methods)]
 
-use std::error::Error;
-use std::fmt;
 use std::net::SocketAddr;
 use std::pin::pin;
 use std::sync::Arc;
@@ -20,6 +18,7 @@ use dedens_server::{Parked, Pipeline, Resolving, Step, Upstream, Via};
 
 use super::{Thread, pause, recurse};
 use crate::flights::{Entered, Flights, Key, Lead};
+use crate::log::Causes;
 
 /// Upstream queries that failed with responses dropped for the case of their question alone (D184).
 const CASE_MISMATCHES: &str = "dedensd_upstream_case_mismatches_total";
@@ -421,22 +420,6 @@ pub(super) fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
         Some(wire.to_vec())
     } else {
         frame(wire)
-    }
-}
-
-/// An error and its causes, `top: cause: cause`, as the log shows it: a [`ClientError`]'s own text names only the
-/// transport ("Oblivious `DoH`", "UDP"), its causes say what failed.
-struct Causes<'a>(&'a ClientError);
-
-impl fmt::Display for Causes<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)?;
-        let mut cause = self.0.source();
-        while let Some(error) = cause {
-            write!(f, ": {error}")?;
-            cause = error.source();
-        }
-        Ok(())
     }
 }
 
