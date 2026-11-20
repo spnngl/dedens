@@ -174,13 +174,22 @@ fn rfc6298_5_5_most_timeout() {
     let [a, ..] = roots()[..] else {
         panic!("13 roots")
     };
-    let mut now = 0;
-    for _ in 0..20 {
-        let sent = select(&cache, &[a], now).map_or(InfraCache::MAX_TIMEOUT, |c| c.timeout);
-        cache.timeout(a, sent, now);
-        now += 200;
+    let last = backed_off(&cache, a, InfraCache::SERVER_TTL);
+    assert_eq!(timeout(&cache, a, last + 120), InfraCache::MAX_TIMEOUT);
+}
+
+/// Times `server` out at each of its probe times from 0 until `until`, its timeout doubling up to the most: the
+/// time of the last timeout.
+fn backed_off(cache: &InfraCache, server: SocketAddr, until: u32) -> u32 {
+    let (mut now, mut last) = (0, 0);
+    while now < until {
+        let sent = timeout(cache, server, now);
+        cache.timeout(server, sent, now);
+        last = now;
+        // Its probe time is its timeout doubled from now, rounded up.
+        now += u32::try_from(2 * sent.as_secs()).expect("at most 240 s") + 2;
     }
-    assert_eq!(timeout(&cache, a, now), InfraCache::MAX_TIMEOUT);
+    last
 }
 
 #[test]
@@ -329,16 +338,45 @@ fn skipped_server_stays_skipped_past_expiry() {
     let [a, ..] = roots()[..] else {
         panic!("13 roots")
     };
-    let mut now = 0;
-    for _ in 0..12 {
-        let sent = select(&cache, &[a], now).map_or(InfraCache::MAX_TIMEOUT, |c| c.timeout);
-        cache.timeout(a, sent, now);
-        now += 130;
-    }
-    // Last timeout at 1430, past the first entry's 900 s: skipped for 120 s from it.
-    let last = now - 130;
+    // Backed off to the most before the first entry's 900 s, the last timeout after: skipped for 120 s from it.
+    let last = backed_off(&cache, a, InfraCache::SERVER_TTL + 300);
+    assert!(last > InfraCache::SERVER_TTL, "{last}");
     assert_eq!(select(&cache, &[a], last + 119), None);
     assert_eq!(timeout(&cache, a, last + 120), InfraCache::MAX_TIMEOUT);
+}
+
+#[test]
+fn d194_a_server_backed_off_less_than_the_most_is_heard_anew_past_expiry() {
+    // a timed out three times: 3.008 s, out of the band of b's 60 ms, never drawn while its entry lives. Past it,
+    // heard anew and drawn again, as Unbound's `infra_host`.
+    let cache = cache();
+    let [a, b, ..] = roots()[..] else {
+        panic!("13 roots")
+    };
+    cache.reply(b, 20 * MS, Marks::default(), 0);
+    for _ in 0..InfraCache::TIMEOUT_LIMIT {
+        cache.timeout(a, timeout(&cache, a, 0), 0);
+    }
+    let last = InfraCache::SERVER_TTL - 1;
+    assert_eq!(spread(&cache, &[a, b], &root(), last)[0], 0);
+    assert_eq!(
+        timeout(&cache, a, InfraCache::SERVER_TTL),
+        InfraCache::UNKNOWN_TIMEOUT
+    );
+}
+
+#[test]
+fn rfc6298_5_5_a_timeout_on_an_entry_made_anew_doubles_from_its_timeout() {
+    // a's 900 ms, sent just before its entry expires: the entry made anew backs off from it, not from 376 ms.
+    let cache = cache();
+    let [a, ..] = roots()[..] else {
+        panic!("13 roots")
+    };
+    cache.reply(a, 300 * MS, Marks::default(), 0);
+    let sent = timeout(&cache, a, InfraCache::SERVER_TTL - 1);
+    assert_eq!(sent, 900 * MS);
+    cache.timeout(a, sent, InfraCache::SERVER_TTL);
+    assert_eq!(timeout(&cache, a, InfraCache::SERVER_TTL), sent * 2);
 }
 
 #[test]
