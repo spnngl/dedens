@@ -387,11 +387,25 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Caching the expanded `X-Wing` key (D101): `x-wing` 0.1.1 keeps only the seed, so each decapsulation derives the ML-KEM key
   again, about half of the 101 µs. Default: as is, D101 rejecting a combiner of our own; raise it with the crate's
   maintainers, or take a cached form when a decapsulation's cost is what limits a deployment.
-- Dropping a ticket on a network change in a long-lived `dedensd` forwarder (D101; the draft's "Resumption Tickets" says
+- Dropping a ticket on a network change in a long-lived `dedensd` forwarder (D101; the draft's "Resumption Considerations" says
   clients SHOULD, `dnscrypt-proxy` keeps a network epoch): `dedens` is one process with a fresh socket per query and a
   ticket that lives 600 seconds at most, so a ticket never outlives a network; the forwarder of `dedensd` (D100, D99) keeps
   its upstream's ticket across changes of its own route, which links its queries to one client for that time (they are
   one forwarder's anyway). Default: as is; an epoch that drops the tickets when the route or the source address changes.
+- The resume secret of a renewed ticket (D101): a ticket issued on a resumed response derives its `resume-secret` from
+  the resumed key (`TicketKeys::issue` with that context), so one stolen TK opens every ticket of the renewal chain
+  after it, across rotations, where "Resumption Considerations" bounds the loss to the TK's tickets. The draft
+  ("Issuing a Ticket") derives it from the `<shared-key>` of a query that carries a ciphertext and lets a resolver
+  renew, without saying from what. Default: issue tickets on full queries only, so a chain starts over at each KEM.
+- A malformed `PQDR` control field (D101): the client refuses the whole authenticated response
+  (`ResponseError::Control`), where "PQ Query and Response Format" has the client remove the control block and forward
+  the DNS response. Default: keep the response and drop the ticket.
+- The floor of a resumed UDP query (D101): `QueryPadding::udp` takes the classical 68 bytes of overhead off its 256,
+  so a resumed query (168 bytes of head) is padded past 256 bytes; the draft's vector (424 bytes) does the same. Default:
+  as is, the vector rules; ask the draft's author.
+- A DNSCrypt query whose plaintext is no DNS message (D99): the draft's "Resolver Responses Over UDP" says such a
+  query MUST be ignored; `dedensd` hands the plaintext to the pipeline, which answers FORMERR to a header it cannot
+  read. Default: drop it in `apps/dedensd/src/serve/dnscrypt.rs` when the header does not parse or has QR set.
 - An Anonymized DNSCrypt relay in `dedensd` (the draft's "Forwarding and Validation"): an open relay forwards
   for anyone, so it needs an address and port policy and abuse limits. Default: after the client side.
 - A `rewrite` plugin (renaming query names, exact or by suffix, as `CoreDNS`'s `rewrite name`, names in the
