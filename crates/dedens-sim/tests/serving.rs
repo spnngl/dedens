@@ -554,7 +554,7 @@ fn a_faulty_run_replays_in_two_processes() {
 }
 
 /// `dedensd` answering `DNSCrypt` on simulated time (D99, D101, D182; draft-denis-dprive-dnscrypt-11 "Key Management",
-/// "Resumption Tickets"): the short-term keys rotate every 12 hours and a certificate lives 24, a client holding the
+/// "Stateless Resumption"): the short-term keys rotate every 12 hours and a certificate lives 24, a client holding the
 /// old one is still answered when its key has been replaced, and a query sealed under a key past its certificate is
 /// dropped, in silence; a resumption ticket is good for ten minutes, across a rotation too.
 #[cfg(feature = "dnscrypt")]
@@ -637,7 +637,7 @@ mod dnscrypt {
     }
 
     /// As [`certificates`], from a query padded to 3 KB, as a client's is: the PQ certificate comes with the others
-    /// (D101, draft "Certificate Retrieval").
+    /// (D101, draft "Certificate Retrieval Amplification").
     async fn certificates_padded(
         socket: &UdpSocket,
         resolver: SocketAddr,

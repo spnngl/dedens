@@ -455,7 +455,7 @@ fn resumed_is_read(packet: &[u8]) -> bool {
         .is_ok()
 }
 
-/// Arbitrary bytes as a resumed query (draft "Resumption Tickets"), alone and after the `PQResume` magic: refused,
+/// Arbitrary bytes as a resumed query (draft "Stateless Resumption"), alone and after the `PQResume` magic: refused,
 /// never a panic, the fuzzer holding no ticket key. The client's own resumed query is read, and with one bit of it
 /// changed, in the ticket or out of it, is not.
 ///

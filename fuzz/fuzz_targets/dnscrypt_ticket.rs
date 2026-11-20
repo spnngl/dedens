@@ -1,4 +1,4 @@
-//! A resumed query of arbitrary bytes (draft "Resumption Tickets") is refused, the fuzzer holding no ticket key; the
+//! A resumed query of arbitrary bytes (draft "Stateless Resumption") is refused, the fuzzer holding no ticket key; the
 //! client's own is read, and not with one bit changed.
 
 #![no_main]
