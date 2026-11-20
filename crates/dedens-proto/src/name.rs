@@ -715,7 +715,8 @@ impl<'b> PartialEq<Name<'b>> for Name<'_> {
     fn eq(&self, other: &Name<'b>) -> bool {
         if let (Some(a), Some(b)) = (self.flat(), other.flat()) {
             // Length bytes are at most 63, below `A`, so lowercasing the whole wire form only touches letters.
-            return a.eq_ignore_ascii_case(b);
+            // Equal names nearly always have the same case: comparing the bytes first is faster.
+            return a == b || a.eq_ignore_ascii_case(b);
         }
         if self.wire_len() != other.wire_len() {
             return false;
