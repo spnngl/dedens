@@ -184,7 +184,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D180 [performance and safety](performance-and-safety.md): Verus proves the reading of a name, its decompression, and that one NSEC link covers a name, for every input; on each pull request
 - D181 [performance and safety](performance-and-safety.md) (amended by D182): the binaries' parsers fuzzed through a library target of each app
 - D182 [simulation tests](simulation-tests.md): `dedensd`'s UDP and TCP serving loop behind the `Io` seam, run on turmoil
-- D183 [performance and safety](performance-and-safety.md): `dedensd` against TelltaleDNS, Unbound and CoreDNS: one harness, one neutral upstream, fairness rules, void runs
+- D183 [performance and safety](performance-and-safety.md) (amended by D201): `dedensd` against TelltaleDNS, Unbound and CoreDNS: one harness, one neutral upstream, fairness rules, void runs
 - D184 [server](server.md): `dedensd` asks plain servers over UDP with `0x20`, the response's question given back the client's case
 - D185 [transports](transports.md): `dedensd` asks Oblivious DoH targets through a forward stage's `odoh_proxy`; configurations as D79, per thread
 - D186 [server](server.md): a validating query past the global allowance waits for it on its thread, FIFO, 512 a thread, 1.8 s
@@ -196,7 +196,8 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D192 [server](server.md): the recursive resolver scrubs each response to what the zone asked may say, Unbound's rules, bounds and ranks, its deviations; forwarded data never in its cache
 - D193 [server](server.md): the resolver's `RRset` cache: RFC 2181 ranks, Unbound's replacement rules, the response cache's TTLs and store
 - D194 [server](server.md): the resolver's infra cache: RFC 6298 times per server, lameness per zone, a random server within 400 ms
-- D195 [server](server.md) (amended by D197): the recurse stage: sans-IO steps the driver sends, RFC 8109 priming beside the hints, RFC 6303 local zones, queries shared per thread (past 100 waiters shed), D117 per query, limits capped
+- D195 [server](server.md) (amended by D197, D201): the recurse stage: sans-IO steps the driver sends, RFC 8109 priming beside the hints, RFC 6303 local zones, queries shared per thread (past 100 waiters shed), D117 per query, limits capped
 - D196 [simulation tests](simulation-tests.md): recursion in the simulator: every capture of the `recursion` family (not D197's validation captures) resolved from the root by `dedensd` under loss, broken servers, a lame zone, a restart; a query moved to TCP waits 3 s at least; a server timed out asked again
 - D197 [server](server.md): DNSSEC validation in the recursive resolver: the validator's questions iterated by the resolution under `limits.validation`, each RRset's own verdict in the `RRset` cache, AD or SERVFAIL with EDE, the allowance; a bogus answer asked again, the servers that gave a bogus set shunned in their zone (5 times, one budget); YXDOMAIN judged; wildcard expansions not from the cache; a DS denied by the child asked of the parent; a TCP timeout no back-off
 - D198 [server](server.md): QNAME minimisation, relaxed by default (strict, none): one label below each zone, type A; Unbound's 10 questions per name, 4 one label at a time, 3 timeouts; the full name after NXDOMAIN, REFUSED, SERVFAIL
+- D201 [performance and safety](performance-and-safety.md): the recursive resolver against Unbound: a mini Internet of three Knot authorities (root, TLD, signed zone), unique names, `root_hints`; TelltaleDNS and CoreDNS not measured

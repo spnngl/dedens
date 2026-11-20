@@ -293,7 +293,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   and ODoH: a crate of half a binary); a library of the parser modules alone (the same reach, each item it holds
   made `pub` for the binary); a `fuzz` feature gating the two entries (a feature `just hack` builds in every
   combination, for two functions).
-- D183 (builds on D14, D138) `dedensd` is measured against TelltaleDNS, Unbound and CoreDNS by one harness,
+- D183 (builds on D14, D138; amended by D201) `dedensd` is measured against TelltaleDNS, Unbound and CoreDNS by one harness,
   `just bench-compare <mode> [cores]` (`crates/dedens-bench/dnsperf/compare.sh`, its measuring half `compare.py`),
   on Linux, its numbers in `docs/benchmarks.md` ("Against TelltaleDNS, Unbound and CoreDNS") with each run's JSON
   in `docs/comparison/results/`. Fairness rules:
@@ -319,7 +319,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     compared at one common rate (half the slowest median), and at half each server's own. An A/A run (each server
     twice) gives the spread under which a difference is noise.
   Rejected: TelltaleDNS's `bench/run.sh` (one target, its own corpora and a fixed rate; kept as `crosscheck`);
-  public resolvers or recursion as upstream (the Internet's latency and its changes measured, not the servers);
+  public resolvers or the Internet as upstream (its latency and its changes measured, not the servers; D201's
+  recursive modes resolve from a root of Knot authorities of their own);
   one tuned configuration each (who tunes decides the outcome); a single run per server (±30% between sessions,
   `crates/dedens-bench/AGENTS.md`).
 - D187 (builds on D6, D141, D144) The pinned nightly is nightly-2026-11-17, with RAPx 0.7.75 (0.7.71, the one
@@ -359,3 +360,34 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   stays dig's, D40); the `.bin` files and `capture.yaml` of `testdata/dnssec/` (a resolution is an ordered list of
   exchanges, each needing its server and zone); a server per capture listening on loopback (the resolver's tests
   drive its I/O themselves; a socket front over `Authorities` can come with them).
+- D201 (amends D183, D195; builds on D192, D197, D198) The recursive resolver is measured against Unbound by
+  `just bench-compare recurse` and `recurse-dnssec` (`compare.sh`, `compare.py`, the files `compare/recurse-*`), on a
+  mini Internet of our own, not the Internet (D183's rejection stands: its latency and its changes would be measured,
+  not the servers):
+  - Three Knot DNS processes in one container, each serving one zone on its own loopback address, port 53, so that
+    none knows another's zone and a resolver finds a zone only by being referred: the root `.` on 127.0.0.2, `bench.`
+    on 127.0.0.3 (`ns.nic.bench.` glued in the root's zone), `recurse.bench.` on 127.0.0.4 (`ns.recurse.bench.`
+    glued in the TLD's), a wildcard `*` A and AAAA in the last. A miss of a cold cache walks root, TLD and zone as a
+    name under a TLD does; the next ones ask the zone's server alone, one question each. `recurse-dnssec` signs the
+    three (ECDSA P-256, NSEC3 without iterations, as D183), DS records in the parents from keys made first by `keymgr`,
+    so every answer is a wildcard expansion with its NSEC3 proof, validated from the root's key-signing key.
+  - The queries: a million unique names `u{i:06x}.recurse.bench A`, made by `compare.py` (its hash in
+    `compare/corpora.sha256`), each server started cold and given each name once: no cache hit. TelltaleDNS's
+    corpora hold names under public TLDs, which no zone of ours could answer.
+  - The servers resolve from a root hints file naming `a.root.` (127.0.0.2): `root_hints` in `dedensd`'s `recurse`
+    stage (new: a `named.root`-style file in place of the bundled root and TLD hints, D195), `root-hints` in
+    Unbound. `dedensd` lets the resolver ask loopback authorities (`query_local_addresses`, one line of
+    `compare/dedensd-recurse.yaml`); Unbound has `do-not-query-localhost: no`. The sysctl
+    `net.ipv4.ip_unprivileged_port_start` must be 53 or less, which the run checks. The rest is D183's: same
+    versions, a share of the machine each, lean and shipped configurations (one file each here), right answers first
+    (the sample equal to the zone's Knot's, AD set for `recurse-dnssec`), void runs, a common rate, A/A.
+  - Not measured: TelltaleDNS (its `recursive://` upstream has the 13 root addresses built in, no setting to point it
+    at ours) and CoreDNS (no recursion).
+  - Also recorded: the questions each authority answers per client question over the check pass (Knot's `mod-stats`),
+    and the server's CPU split in user and system time.
+  - Criterion: `benches/resolution.rs` (one resolution step with the delegations cached, and from empty caches, on
+    the capture `signed-com`); the scrubbing of a referral is `benches/scrub.rs` (D192).
+  Rejected: real TLD names (the 1000 parents of TelltaleDNS's miss-heavy corpus under eight TLDs would need as many
+  zones); one Knot with the three zones at one address, which answers from the closest zone whatever the server asked, so no referral is ever walked; the
+  real root servers' addresses on loopback aliases (root rights, and `dedensd`'s bundled TLD hints would send it
+  below the root); patching TelltaleDNS to read hints (a fork measured, not its tag).
