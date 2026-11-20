@@ -2,7 +2,7 @@
 //!
 //! `hit` serves real responses on one thread; `hit_hot` has every thread ask one name (one shard lock), and
 //! `hit_spread` spreads them over many names, as real traffic does. `insert` is the cost of storing a response
-//! already decoded, as a forwarder has it; `insert_evicting_hot` is one that must evict from a full shard whose
+//! already decoded, as a forwarder has it, as a new entry; `insert_evicting_hot` is one that must evict from a full shard whose
 //! entries all have the most hits (D116); `insert_under_hits` one that waits behind threads hitting its shard
 //! (D137).
 //!
@@ -100,19 +100,34 @@ fn hit_truncated(bencher: Bencher<'_, '_>) {
     });
 }
 
+/// Entries in the cache `insert` stores into: some 16 a shard, so that the shards' tables are made.
+const HELD: usize = 1000;
+
+/// A store of `case` as a new entry, into a cache made outside the timing that holds [`HELD`] others: not one
+/// replacing the same entry, nor the first of a shard.
 #[divan::bench(args = CASES)]
 fn insert(bencher: Bencher<'_, '_>, case: &str) {
     let response = captured(case);
     let decoded = Message::decode(&response).expect("decodes");
     let query = query(case, 7).to_vec().expect("a query fits");
     let query = Query::read(&query).expect("a valid query");
-    let cache = cache();
-    // A response the cache refuses would time the refusal.
-    assert!(
-        cache.insert(&query, &decoded, 0, 0).is_ok(),
-        "{case}: cacheable"
-    );
-    bencher.bench_local(|| cache.insert(&query, black_box(&decoded), 0, 0).is_ok());
+    let held: Vec<_> = (0..HELD)
+        .map(|i| synthetic(&format!("host{i}.example.com")))
+        .collect();
+    let holding = || {
+        let cache = cache();
+        for (query, response) in &held {
+            assert!(insert_at_0(&cache, query, response), "cacheable");
+        }
+        cache
+    };
+    bencher.with_inputs(holding).bench_local_refs(|cache| {
+        // A response the cache refuses would time the refusal.
+        assert!(
+            cache.insert(&query, black_box(&decoded), 0, 0).is_ok(),
+            "{case}: cacheable"
+        );
+    });
 }
 
 fn synthetic(name: &str) -> (Vec<u8>, Vec<u8>) {

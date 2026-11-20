@@ -1324,6 +1324,31 @@ adds a look at its thread's line, `Parking::waiting`, a `RefCell` borrow).
 A query given up costs 90 ns more, the upstream question built and boxed before it waits, then dropped: nothing next to
 the second it waits. A parked query holds its boxed `Upstream` and one of the thread's 1024 upstream places (D47).
 
+## Benches that time what they name (2026-11-20)
+
+Three benches timed something other than their name. `benches/cache.rs` `insert` replaced the entry it had stored
+before the timing: it now stores a new one into a cache, made outside the timing, that holds 1 000 others (some 16 a
+shard, the tables made). `benches/dnssec.rs` `validate_cold` built its `Validator` in the timing: it is now an
+input. The `serve_*` benches asserted a reply, which a shed query gets too: each run now reads the reply's header,
+NOERROR and AD for `serve_cold` and `serve_warm`, SERVFAIL for the sheds, which are checked once beforehand to carry
+EDE 14, Not Ready (D186). Apple M5, the build before (`2d2a152c`) and after alternated, three rounds for `insert`,
+two for the others; medians, fastest samples in brackets, one thread:
+
+| Bench | before | after |
+|---|---|---|
+| `insert` a / mx / txt_large, medians | 284-575 / 721-1 492 / 855-1 845 ns | 375-555 / 989-1 286 / 1 257-1 614 ns |
+| `insert` a / mx / txt_large, fastest | 242-492 / 700-1 459 / 824-1 823 ns | 303-324 / 845-907 / 1 030-1 113 ns |
+| `validate_cold` | 159.1, 186.1 µs (112.1, 105.4) | 111.1, 107.2 µs (109.7, 104.5) |
+| `serve_cold` / `serve_warm` | 170.6, 298 / 3.87, 3.62 µs | 137.7, 112.6 / 3.58, 3.37 µs |
+| `serve_shed` / `serve_shed_share` | 250, 250 / 333, 167 ns | 237, 229 / 147, 138 ns |
+
+- `insert`: a new entry costs what the replacement did, within the machine's swings (the build before was bimodal,
+  0.7 or 1.5 µs for mx); the table grows in about one store of two of txt_large (divan's `grow` 1.5 against 1).
+- `validate_cold`: the validator's making did not show; the medians' swing was the machine's, the fastest samples
+  are equal.
+- The header read is a few bytes: the serve rows do not move beyond their noise. The sheds' medians before are of
+  one iteration a sample, at the timer's precision.
+
 ## Profiles (D138)
 
 Where the time goes, from samples; no result to compare. 2026-11-03, `dedensd` and the benches at 4db3114 plus this change.
