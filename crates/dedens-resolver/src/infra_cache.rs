@@ -157,9 +157,16 @@ impl InfraCache {
     /// Learns that `server` answered, after a time that says nothing of its round trip over the transport its
     /// timeout is for, at `now`: the response came over TCP after the query moved there from UDP (D191, D196), whose
     /// connection setup and size are not the server's UDP time. It showed `seen`, its timeouts in a row are
-    /// cleared, and its round-trip time stays as it was.
+    /// cleared, and its round-trip time stays as it was, unless `seen` marks it to be asked over TCP from now on:
+    /// the time over UDP is not the one to wait nor the estimate to smooth its TCP times into, so it is unknown
+    /// again, and the first answer over TCP ([`InfraCache::reply`]) measures it anew (D196).
     pub fn answered(&self, server: SocketAddr, seen: Marks, now: u32) {
         self.server(server, now, |held, _| {
+            if seen.tcp && !held.marks.tcp {
+                held.rtt = Rtt::Unknown {
+                    rto: millis(Self::UNKNOWN_TIMEOUT),
+                };
+            }
             held.timeouts = 0;
             held.marks = held.marks.merged(seen);
         });

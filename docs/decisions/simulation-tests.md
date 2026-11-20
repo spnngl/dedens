@@ -247,7 +247,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `TCP_TIMEOUT` (3 s, Unbound's `tcp-auth-query-timeout`, `serviced_tcp_initiate`) after the move when that is
     later than its deadline, which the infra cache measured over UDP: two round trips more (connect, query) than an
     RTO near the RTT timed out every TC answer (`microsoft.com. TXT`). A query over TCP from the start keeps its
-    deadline, its RTO measured over TCP; the recurse stage bounds the whole by the resolution's end.
+    deadline, its RTO measured over TCP: a server marked for TCP (BADCOOKIE) has its UDP estimate dropped as the mark is
+    set (`InfraCache::answered`), its timeout the unknown server's until the first answer over TCP, and a timeout of a
+    query over TCP from the start backs it off; the recurse stage bounds the whole by the resolution's end.
   - Found by the scenarios, amending D191: a server timed out is asked again (RFC 1035 §7.2, Unbound's
     `outbound-msg-retry`), its timeout backed off, until the infra cache skips it (D194), each send counting
     against `Limits::servers`: after the servers not tried and a name's AAAA whose A was looked up, before a name
