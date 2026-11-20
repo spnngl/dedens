@@ -1,6 +1,6 @@
 //! The recurse stage (D195) on the captured resolutions of `testdata/recursion/` (D188), each server answering as
 //! captured through `Authorities`, the harness acting as the transport: RFC 1034 §5.3.3 (each capture resolved
-//! through the pipeline, the cache stage answering it again), RFC 8109 §3 (priming), RFC 6303 §3 and §4, RFC 8375 §4,
+//! through the pipeline, the cache stage answering it again), RFC 8109 §3 (priming), RFC 5011 §2.3 (the root's keys), RFC 6303 §3 and §4, RFC 8375 §4,
 //! RFC 9462 §6.4 and RFC 6761 §6.3, §6.4 (the zones served locally), RFC 5452 §5 (a resolution on shared replies),
 //! D117 (the client's network pays each query), and validation (D197): RFC 4035 §5 (AD on a secure answer, SERVFAIL
 //! with the extended error of RFC 8914 §4 on a bogus one), §3.2.2 (none for a query with CD, which gets the data
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Config};
-use dedens_dnssec::{TrustAnchors, Validator};
+use dedens_dnssec::{Rollover, TrustAnchors, Validator};
 use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Rcode, RecordType, Transport};
@@ -388,6 +388,34 @@ fn rfc5452_5_a_resolution_on_shared_replies_resolves_and_judges_no_server() {
     };
     assert_eq!(decode(&out[..len]).header.rcode, Rcode::NOERROR);
     assert_eq!(caches.infra.len(), known);
+}
+
+#[test]
+fn rfc5011_2_3_the_root_keys_asked_for_the_server_follow_its_anchors() {
+    let capture = recursion::Resolution::read("signed-com");
+    let caches = caches(Config::default());
+    steer(&caches, &capture);
+    let pipeline = pipeline(Config::default(), unminimised(caches));
+    let authorities = Authorities::new([&capture]);
+    let now = at(&capture);
+    let mut keys = pipeline.root_keys().expect("a recurse stage");
+    assert!(!keys.is_priming());
+    assert_eq!(keys.question().name, Name::root());
+    assert_eq!(keys.question().qtype, RecordType::DNSKEY);
+    assert!(drive(&mut keys, &authorities, now) > 0);
+    let mut out = vec![0; 512];
+    assert!(matches!(
+        pipeline.resolved(&keys, now, &mut out),
+        Step::Drop
+    ));
+    let resolved = keys.resolved().expect("resolved");
+    assert!(matches!(resolved, Resolved::Answer { .. }));
+    // The DNSKEY RRset with its signatures, as the root's anchors are followed from (D200).
+    let answer = resolved.message(keys.question(), true).answer;
+    let (rollover, _) = Rollover::seed(&TrustAnchors::root(), &answer, u64::from(now))
+        .expect("signed by a key of the root's anchors");
+    assert!(rollover.agrees(&TrustAnchors::root()));
+    assert!(Pipeline::new(Vec::new()).root_keys().is_none());
 }
 
 #[test]
