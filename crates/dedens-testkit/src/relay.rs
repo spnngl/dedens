@@ -16,6 +16,9 @@ const PREFIX_LEN: usize = 28;
 /// The magic of the prefix: eight `0xff` and two NULs.
 const MAGIC: [u8; 10] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0];
 
+/// The UDP ports tried before one is found free over TCP too.
+const BINDS: usize = 64;
+
 /// How long the relay waits for the resolver.
 const WAIT: Duration = Duration::from_secs(2);
 
@@ -41,9 +44,11 @@ fn pass(packet: &[u8]) -> Option<Vec<u8>> {
     );
     let socket = UdpSocket::bind("127.0.0.1:0").ok()?;
     socket.set_read_timeout(Some(WAIT)).ok()?;
-    socket.send_to(inner, target).ok()?;
+    // Connected: a datagram from another address is no response.
+    socket.connect(target).ok()?;
+    socket.send(inner).ok()?;
     let mut buf = vec![0; usize::from(u16::MAX)];
-    let (len, _) = socket.recv_from(&mut buf).ok()?;
+    let len = socket.recv(&mut buf).ok()?;
     (len <= inner.len()).then(|| buf[..len].to_vec())
 }
 
@@ -77,16 +82,16 @@ impl Relay {
     ///
     /// # Panics
     ///
-    /// When no socket can be bound.
+    /// When no socket can be bound, or no port of [`BINDS`] tried is free over TCP too.
     #[must_use]
     pub fn start() -> Self {
-        let (udp, tcp) = loop {
-            let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
-            let addr = udp.local_addr().expect("an address");
-            if let Ok(tcp) = TcpListener::bind(addr) {
-                break (udp, tcp);
-            }
-        };
+        let (udp, tcp) = (0..BINDS)
+            .find_map(|_| {
+                let udp = UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
+                let addr = udp.local_addr().expect("an address");
+                TcpListener::bind(addr).ok().map(|tcp| (udp, tcp))
+            })
+            .expect("a port free over UDP and TCP");
         let addr = udp.local_addr().expect("an address");
         let seen = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
         let counted = Arc::clone(&seen);
@@ -153,5 +158,35 @@ mod tests {
             .expect("the second packet passed");
         assert_eq!(&buf[..len], &inner);
         assert_eq!(relay.seen(), (2, 0));
+    }
+
+    /// A datagram to the relay's socket from another address than the resolver's is no response: the relay waits
+    /// for the resolver's.
+    #[test]
+    fn a_reply_from_another_address_is_not_passed() {
+        let resolver = UdpSocket::bind("127.0.0.1:0").expect("a socket");
+        let SocketAddr::V4(at) = resolver.local_addr().expect("an address") else {
+            unreachable!("bound on IPv4");
+        };
+        let prefix = [
+            &MAGIC[..],
+            &at.ip().to_ipv6_mapped().octets(),
+            &at.port().to_be_bytes(),
+        ]
+        .concat();
+        let relay = Relay::start();
+        let client = UdpSocket::bind("127.0.0.1:0").expect("a socket");
+        client.set_read_timeout(Some(WAIT)).expect("a timeout");
+        client
+            .send_to(&[&prefix[..], &[0x5a; 32]].concat(), relay.addr)
+            .expect("sent");
+        resolver.set_read_timeout(Some(WAIT)).expect("a timeout");
+        let mut buf = [0; 64];
+        let (_, from) = resolver.recv_from(&mut buf).expect("the packet passed");
+        let other = UdpSocket::bind("127.0.0.1:0").expect("a socket");
+        other.send_to(&[1; 16], from).expect("sent");
+        resolver.send_to(&[2; 16], from).expect("sent");
+        let (len, _) = client.recv_from(&mut buf).expect("a reply");
+        assert_eq!(&buf[..len], &[2; 16]);
     }
 }

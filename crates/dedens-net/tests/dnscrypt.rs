@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use compio::BufResult;
-use compio::net::{TcpListener, UdpSocket};
+use compio::net::UdpSocket;
 use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, ClientMagic, LowOrderKey, PublicKey, QUERY_OVERHEAD,
     RESPONSE_MAGIC, RESUME_MAGIC, ResolverKey, ResolverPublicKey, SecretKey, SessionError,
@@ -27,7 +27,7 @@ use dedens_net::stamp::{DnsCrypt, Endpoint, Properties};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Rcode, Record, RecordType, Transport, Ttl};
 
-use crate::util::loopback::Peer;
+use crate::util::loopback::{Peer, one_port};
 use crate::util::{cookie_of, query, response, wire};
 
 /// The provider name of the resolvers of these tests.
@@ -319,13 +319,7 @@ impl Resolver {
         served: Vec<Certificate>,
         udp: bool,
     ) -> Self {
-        let (socket, listener) = loop {
-            let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
-            let addr = socket.local_addr().expect("an address");
-            if let Ok(listener) = TcpListener::bind(addr).await {
-                break (socket, listener);
-            }
-        };
+        let (socket, listener) = one_port().await;
         let addr = socket.local_addr().expect("an address");
         let stamp = DnsCrypt {
             properties: Properties::default(),
@@ -752,13 +746,7 @@ impl LoopbackRelay {
     }
 
     async fn with(mute: bool, udp: bool) -> Self {
-        let (socket, listener) = loop {
-            let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
-            let addr = socket.local_addr().expect("an address");
-            if let Ok(listener) = TcpListener::bind(addr).await {
-                break (socket, listener);
-            }
-        };
+        let (socket, listener) = one_port().await;
         let addr = socket.local_addr().expect("an address");
         let seen = Rc::new(RefCell::new(Vec::new()));
         let log = Rc::clone(&seen);
@@ -829,11 +817,13 @@ impl LoopbackRelay {
         let target = SocketAddr::new(std::net::Ipv6Addr::from(ip).to_canonical(), port);
         let inner = &packet[28..];
         let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
-        let BufResult(sent, _) = socket.send_to(inner.to_vec(), target).await;
+        // Connected: a datagram from another address is no reply.
+        socket.connect(target).await.expect("connected");
+        let BufResult(sent, _) = socket.send(inner.to_vec()).await;
         sent.expect("sent");
         let received = compio::time::timeout(
             Duration::from_millis(250),
-            socket.recv_from(Vec::with_capacity(65535)),
+            socket.recv(Vec::with_capacity(65535)),
         )
         .await;
         let reply = match received {
@@ -864,6 +854,29 @@ fn prefix_for(addr: SocketAddr) -> Vec<u8> {
     }
     prefix.extend(addr.port().to_be_bytes());
     prefix
+}
+
+/// The test relay passes the resolver's reply alone: a datagram to its socket from another address is no reply.
+#[compio::test]
+async fn the_relay_passes_no_reply_from_another_address() {
+    let resolver = UdpSocket::bind("127.0.0.1:0").await.expect("a socket");
+    let relay = LoopbackRelay::start(false).await;
+    let client = UdpSocket::bind("127.0.0.1:0").await.expect("a socket");
+    let packet = [
+        prefix_for(resolver.local_addr().expect("an address")),
+        vec![0x5a; 32],
+    ]
+    .concat();
+    let at = relay.stamp.address.socket_addr();
+    client.send_to(packet, at).await.0.expect("sent");
+    let BufResult(received, _) = resolver.recv_from(Vec::with_capacity(64)).await;
+    let (_, from) = received.expect("the packet passed");
+    let other = UdpSocket::bind("127.0.0.1:0").await.expect("a socket");
+    other.send_to(vec![1; 16], from).await.0.expect("sent");
+    resolver.send_to(vec![2; 16], from).await.0.expect("sent");
+    let BufResult(received, reply) = client.recv_from(Vec::with_capacity(64)).await;
+    received.expect("a reply");
+    assert_eq!(reply, [2; 16]);
 }
 
 /// "Anonymized `DNSCrypt`": the certificates' query and a sealed query over UDP both go to the relay, prefixed with

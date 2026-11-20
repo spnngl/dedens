@@ -101,19 +101,31 @@ pub(crate) async fn udp_responder(
     serve_udp(socket, respond)
 }
 
+/// A UDP socket and a TCP listener on one loopback port.
+///
+/// # Panics
+///
+/// When none of the first 64 ports free for UDP is free for TCP too.
+pub(crate) async fn one_port() -> (UdpSocket, TcpListener) {
+    // The port free for UDP may be taken for TCP: then try another.
+    let mut bound = None;
+    for _ in 0..64 {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
+        let addr = socket.local_addr().expect("an address");
+        if let Ok(listener) = TcpListener::bind(addr).await {
+            bound = Some((socket, listener));
+            break;
+        }
+    }
+    bound.expect("a port free for UDP and TCP")
+}
+
 /// UDP and TCP servers on one port: `udp` answers as for [`udp_responder`], `tcp` each query of each connection.
 pub(crate) async fn responders(
     udp: impl Fn(&[u8]) -> Option<Vec<u8>> + 'static,
     tcp: fn(&[u8]) -> Vec<u8>,
 ) -> SocketAddr {
-    // The port free for UDP may be taken for TCP: then try another.
-    let (socket, listener) = loop {
-        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("a UDP socket");
-        let addr = socket.local_addr().expect("an address");
-        if let Ok(listener) = TcpListener::bind(addr).await {
-            break (socket, listener);
-        }
-    };
+    let (socket, listener) = one_port().await;
     compio::runtime::spawn(async move {
         loop {
             let mut peer = Peer::accept(&listener).await;
