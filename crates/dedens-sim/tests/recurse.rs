@@ -4,7 +4,7 @@
 //! past which one more is shed (D195).
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -63,7 +63,7 @@ fn pipeline(capture: &Resolution) -> Pipeline {
 /// Marks lame, for each zone `capture` asked, every address it shows but the first server it asked there: the
 /// resolver then draws the server whose responses the capture followed, the others being no host of the run.
 fn steer(caches: &Caches, capture: &Resolution) {
-    let mut known: HashSet<IpAddr> = (caches.roots.servers().iter())
+    let mut known: BTreeSet<IpAddr> = (caches.roots.servers().iter())
         .flat_map(dedens_roots::Server::addresses)
         .collect();
     for exchange in &capture.exchanges {

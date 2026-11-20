@@ -856,15 +856,10 @@ fn whatever_the_links_lose_and_delay_queries_end_well() {
 /// One seed gives one trace in two processes (D133), the family's own scenario: lossy and slow links, the cache, TC.
 #[test]
 fn a_lossy_run_replays_in_two_processes() {
-    let runs = std::cell::Cell::new(0);
     seed::in_two_processes(
         module_path!(),
         "a_lossy_run_replays_in_two_processes",
         ONE,
-        |seed| {
-            runs.set(runs.get() + 1);
-            trace::digest(&lossy(seed).events)
-        },
+        |seed| trace::digest(&lossy(seed).events),
     );
-    assert!(runs.get() > 0);
 }

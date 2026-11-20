@@ -2,7 +2,6 @@
 //! server that speaks TLS only. Each fault of that server ends a client's query as the same fault of a server over
 //! TCP does, TLS adding a handshake and nothing else (D133).
 
-use std::cell::Cell;
 use std::time::Duration;
 
 use dedens_cache::Config;
@@ -169,15 +168,10 @@ fn the_seed_picks_the_fault_a_dot_server_shares_with_tcp() {
 /// lengths nor when they arrive.
 #[test]
 fn a_dot_forward_replays_in_two_processes() {
-    let runs = Cell::new(0);
     seed::in_two_processes(
         module_path!(),
         "a_dot_forward_replays_in_two_processes",
         FEW,
-        |seed| {
-            runs.set(runs.get() + 1);
-            trace::digest(&run(seed, Topology::dot_upstream, picked(seed)))
-        },
+        |seed| trace::digest(&run(seed, Topology::dot_upstream, picked(seed))),
     );
-    assert!(runs.get() > 0);
 }

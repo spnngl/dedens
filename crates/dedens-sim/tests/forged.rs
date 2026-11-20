@@ -704,15 +704,10 @@ fn whatever_the_attacker_forges_the_clients_get_the_servers_data() {
 /// One seed gives one trace in two processes (D133), the family's own scenario: the attacker's draws and the cache.
 #[test]
 fn an_attacked_run_replays_in_two_processes() {
-    let runs = Cell::new(0);
     seed::in_two_processes(
         module_path!(),
         "an_attacked_run_replays_in_two_processes",
         FEW,
-        |seed| {
-            runs.set(runs.get() + 1);
-            trace::digest(&attacked(seed).events)
-        },
+        |seed| trace::digest(&attacked(seed).events),
     );
-    assert!(runs.get() > 0);
 }

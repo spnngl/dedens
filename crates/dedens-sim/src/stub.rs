@@ -197,7 +197,7 @@ impl Stub {
 
     /// [`Stub::ask`] with a query of the scenario's own making (a cookie, EDNS options, flags) to `server`, which
     /// need not be the resolver: a port nobody listens on, say. The client sets its ID; the stub's EDNS size and DO
-    /// are not applied.
+    /// are not applied, and the response is judged by the DO bit of `query`, not by [`Rules::dnssec`].
     ///
     /// # Errors
     ///
@@ -212,7 +212,14 @@ impl Stub {
         server: SocketAddr,
         carrier: Carrier,
     ) -> Result<Outcome, CheckError> {
-        self.ask_by(&self.rules, query, server, carrier).await
+        let rules = Rules {
+            dnssec: query
+                .edns
+                .as_ref()
+                .is_some_and(|edns| edns.flags.contains(EdnsFlags::DO)),
+            ..self.rules.clone()
+        };
+        self.ask_by(&rules, query, server, carrier).await
     }
 
     /// [`Stub::ask_query`] under `rules`.

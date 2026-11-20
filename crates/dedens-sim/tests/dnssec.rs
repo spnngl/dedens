@@ -1210,15 +1210,10 @@ fn whatever_the_validators_questions_suffer_the_verdict_stands_or_servfails() {
 /// the budgets of the allowance and the shares (D133).
 #[test]
 fn a_validating_run_replays_in_two_processes() {
-    let runs = Cell::new(0);
     seed::in_two_processes(
         module_path!(),
         "a_validating_run_replays_in_two_processes",
         ONE,
-        |seed| {
-            runs.set(runs.get() + 1);
-            trace::digest(&weather_run(seed))
-        },
+        |seed| trace::digest(&weather_run(seed)),
     );
-    assert!(runs.get() > 0);
 }

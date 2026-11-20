@@ -12,7 +12,7 @@ use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_net::client::ClientError;
 use dedens_net::exchange::Failure;
 use dedens_net::tcp::TcpError;
-use dedens_proto::edns::EdnsOption;
+use dedens_proto::edns::{EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
 use dedens_server::Validating;
 use dedens_sim::attacker::{Attacker, Injection, Reaction};
@@ -933,6 +933,42 @@ fn a_truncated_response_over_tcp_is_refused_by_the_stub() {
             let query = Message::query(0, question("google.com", RecordType::TXT));
             let got = stub.ask_query(query, server, Carrier::Tcp).await;
             assert!(matches!(got, Err(CheckError::Unexpected { .. })), "{got:?}");
+            Ok(())
+        });
+        world.run().expect("the run passes its checks");
+    });
+}
+
+/// A query of the scenario's making is judged by the DO bit it carries, not by the stub's rules (RFC 4035 §3.2.1):
+/// with DO the signatures come and must be accepted, without it they do not and must not be awaited.
+#[test]
+fn a_query_of_the_scenarios_making_is_judged_by_its_own_do_bit() {
+    seed::each(FEW, |seed| {
+        let dir = dedens_testkit::path("dnssec");
+        let mut world = Topology::new()
+            .upstream(Answers::new().directory(&dir))
+            .build(seed);
+        let server = world.upstreams[0];
+        world.client(async move |mut stub| {
+            for dnssec in [false, true] {
+                stub.rules.dnssec = !dnssec;
+                let mut query = Message::query(0, question("cloudflare.com", RecordType::A));
+                if let Some(edns) = query.edns.as_mut()
+                    && dnssec
+                {
+                    edns.flags = EdnsFlags::DO;
+                }
+                let got = stub.ask_query(query, server, Carrier::Udp).await?;
+                let Outcome::Answered(answer) = got else {
+                    panic!("DO {dnssec}: {got:?}");
+                };
+                let signed = answer
+                    .message
+                    .answer
+                    .iter()
+                    .any(|record| record.rtype() == RecordType::RRSIG);
+                assert_eq!(signed, dnssec);
+            }
             Ok(())
         });
         world.run().expect("the run passes its checks");

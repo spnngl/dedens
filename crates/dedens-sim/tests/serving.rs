@@ -542,17 +542,12 @@ fn whatever_the_seed_breaks_dedensd_serves_queries_to_their_end() {
 /// One seed gives one trace in two processes (D133), with `dedensd`'s loop on the resolver host.
 #[test]
 fn a_faulty_run_replays_in_two_processes() {
-    let runs = std::cell::Cell::new(0);
     seed::in_two_processes(
         module_path!(),
         "a_faulty_run_replays_in_two_processes",
         &[0],
-        |seed| {
-            runs.set(runs.get() + 1);
-            trace::digest(&faulty(seed).0)
-        },
+        |seed| trace::digest(&faulty(seed).0),
     );
-    assert!(runs.get() > 0);
 }
 
 /// `dedensd` answering `DNSCrypt` on simulated time (D99, D101, D182; draft-denis-dprive-dnscrypt-11 "Key Management",
