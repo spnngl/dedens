@@ -1347,10 +1347,13 @@ impl Resolution {
         kept
     }
 
-    /// The active task's chain, taken, followed by `chain`, within [`Limits::restarts`]: `None` when the
-    /// resolution ends there.
+    /// The active task's chain, taken, followed by `chain`, within [`Limits::restarts`], one per CNAME: a DNAME
+    /// comes with the CNAME synthesized from it, one hop. `None` when the resolution ends there.
     fn hops(&mut self, mut chain: Vec<Ranked>) -> Option<Vec<Ranked>> {
-        self.restarts = self.restarts.saturating_add(chain.len());
+        let cnames = (chain.iter())
+            .filter(|held| held.rrset.rtype() == RecordType::CNAME)
+            .count();
+        self.restarts = self.restarts.saturating_add(cnames);
         if self.restarts > self.limits.restarts {
             self.end(Limit::Restarts);
             return None;

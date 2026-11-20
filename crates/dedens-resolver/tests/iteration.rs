@@ -648,6 +648,37 @@ fn d191_restarts_bound() {
 }
 
 #[test]
+fn d191_restarts_bound_counts_a_dname_and_its_cname_once() {
+    // www.dname.dns.netmeister.org goes through a DNAME, the CNAME synthesized from it, then CNAMEs: one hop per
+    // CNAME, the DNAME's included.
+    let (outcome, _) = limited("dname", Limits::default());
+    let Resolved::Answer { chain, .. } = outcome else {
+        panic!("{outcome:?}")
+    };
+    let cnames = (chain.iter())
+        .filter(|held| held.rrset.rtype() == RecordType::CNAME)
+        .count();
+    assert!(
+        chain
+            .iter()
+            .any(|held| held.rrset.rtype() == RecordType::DNAME),
+        "{chain:?}"
+    );
+    let restarts = |restarts| {
+        let limits = Limits {
+            restarts,
+            ..Limits::default()
+        };
+        limited("dname", limits).0
+    };
+    assert!(matches!(restarts(cnames), Resolved::Answer { .. }));
+    assert_eq!(
+        restarts(cnames - 1),
+        Resolved::Failed(Failure::Limit(Limit::Restarts))
+    );
+}
+
+#[test]
 fn d191_restarts_default_bound_counts_the_cnames_of_a_response() {
     // microsoft.com answers www.microsoft.com with a chain of `hops` CNAMEs within it, then the address, and each
     // name of the chain with the rest of it: the scrubber keeps 11 hops of a response, the next is asked again.

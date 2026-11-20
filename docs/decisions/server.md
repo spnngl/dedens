@@ -1494,7 +1494,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Limits (`Limits`, each a field with its number, a test in `tests/iteration.rs` reaching its default):
     `queries` 32 per client question, its sub-resolutions included, Unbound's `max-sent-count` (BIND 50): the cap
     of what a client costs; `restarts` 11, Unbound's and BIND's `max-query-restarts`, every CNAME hop counted, from
-    the cache or a response; `referrals` 30, below Unbound's `MAX_REFERRAL_COUNT` 130 and above hickory's 24: the
+    the cache or a response, a DNAME and the CNAME synthesized from it one hop, as the scrubber's `MAX_CHAIN`; `referrals` 30, below Unbound's `MAX_REFERRAL_COUNT` 130 and above hickory's 24: the
     captures' deepest follows 4; `depth` 4 sub-resolutions waiting on one another, Unbound's `target-fetch-policy`
     (BIND `max-recursion-depth` 7); `servers` 13 addresses asked and NS names used per delegation, BIND's
     `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 address lookups per delegation, A and AAAA each counted, after Unbound's
