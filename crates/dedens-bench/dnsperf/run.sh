@@ -40,13 +40,15 @@ build() { # build <name>: /<name> into /<name>.bin, each in its own target direc
     (cd "/$1" && CARGO_TARGET_DIR="/target/$1" cargo build -q --release -p dedensd)
     cp "/target/$1/release/dedensd" "/$1.bin"
 }
+# The tree first: the one measured is the tree as the run starts, and a tree that does not build stops it before the
+# base's build.
 rm -rf /base /tree
+mkdir /tree && tar -C /src --exclude=./target -cf - . | tar -C /tree -xf -
+build tree
 if [[ -z $perf ]]; then
     git clone -q /src /base && git -C /base checkout -q "$base"
     build base
 fi
-mkdir /tree && tar -C /src --exclude=./target -cf - . | tar -C /tree -xf -
-build tree
 cat >/perf.yaml <<'EOF'
 listen: ['127.0.0.1:5399']
 pipeline: [cache, up]
@@ -105,7 +107,9 @@ if [[ $mode == forward* ]]; then
 fi
 printf 'example.com A\nexample.org A\nwww.example.com AAAA\niana.org MX\n' >/queries.txt
 for round in $(seq "$rounds"); do
-    for bin in "${bins[@]}"; do
+    order=("${bins[@]}")
+    ((round % 2)) || order=("${bins[1]}" "${bins[0]}") # the order reversed every other round
+    for bin in "${order[@]}"; do
         serve "$bin" "$config"
         sleep 1
         # Each query of the list once, so the cache holds them: a SERVFAIL here would have dnsperf time failures.
