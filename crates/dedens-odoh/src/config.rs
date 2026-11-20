@@ -95,7 +95,7 @@ impl ConfigContents {
 }
 
 /// `ObliviousDoHConfigs` (RFC 9230 §5): the configs a target publishes, in decreasing order of preference,
-/// reduced to those this crate can use, and never empty when read.
+/// reduced to those this crate can use, and never empty: `new` takes a first config, and `parse` refuses a list with none.
 ///
 /// ```text
 /// struct {
@@ -119,9 +119,12 @@ pub struct Configs {
 }
 
 impl Configs {
-    /// A list of configs, most preferred first.
+    /// A list of configs, `first` the most preferred, then `rest`: a list is never empty.
     #[must_use]
-    pub const fn new(configs: Vec<ConfigContents>) -> Self {
+    pub fn new(first: ConfigContents, rest: Vec<ConfigContents>) -> Self {
+        let mut configs = Vec::with_capacity(1 + rest.len());
+        configs.push(first);
+        configs.extend(rest);
         Self { configs }
     }
 
@@ -160,8 +163,7 @@ impl Configs {
     ///
     /// # Errors
     ///
-    /// [`WireError::EmptyField`] for no config, [`WireError::FieldTooLong`] when they exceed 65535 bytes
-    /// once written.
+    /// [`WireError::FieldTooLong`] when the configs exceed 65535 bytes once written.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut list = Vec::new();
         for contents in &self.configs {
@@ -174,7 +176,7 @@ impl Configs {
         Ok(out)
     }
 
-    /// The usable configs, most preferred first.
+    /// The usable configs, most preferred first: at least one.
     #[must_use]
     pub fn configs(&self) -> &[ConfigContents] {
         &self.configs

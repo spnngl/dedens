@@ -168,6 +168,20 @@ fn a_list_without_a_usable_config_is_refused() {
     );
 }
 
+/// A list of configs is built from a first config and the rest: it is never empty, so it always encodes, and the
+/// first is the most preferred (§5).
+#[test]
+fn a_built_list_has_its_first_config_first() {
+    let first = TargetKey::derive(&[1; 32]).config().clone();
+    let second = TargetKey::derive(&[2; 32]).config().clone();
+    let alone = Configs::new(first.clone(), Vec::new());
+    assert_eq!(alone.configs(), std::slice::from_ref(&first));
+    assert!(alone.encode().is_ok());
+    let two = Configs::new(first.clone(), vec![second.clone()]);
+    assert_eq!(two.configs(), [first, second]);
+    assert_eq!(Configs::parse(&two.encode().expect("encodes")), Ok(two));
+}
+
 /// A config of ours with a key of the wrong length, an empty key and bytes after its fields: malformed
 /// each, and skipped as long as the list is well framed.
 fn malformed_configs() -> Vec<Vec<u8>> {
