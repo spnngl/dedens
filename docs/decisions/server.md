@@ -890,7 +890,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     given a /48, and a holder of one would otherwise have 256 buckets of work; D113 limits answers, which a
     holder of many /56 does not gain from the same way.
   - The key has a proven bit: a connection or a valid Server Cookie (D113) cannot be spoofed, so those queries
-    have a bucket of their own and a flood from spoofed UDP sources of a network does not shed them.
+    have a bucket of their own and a flood from spoofed UDP sources of a network does not shed them. DoC, CoAP
+    over UDP, is no connection: its source is unproven without a valid cookie.
   - Validation (S3). `Pipeline::query` passes the source (address, proven bit) and its `now` (the cache's clock,
     D43, monotonic; the validator keeps reading the wall clock for signatures) to `Validating::admit`, which takes
     one unit of the network's share, then one of the global allowance; if the second refuses, the query keeps the
