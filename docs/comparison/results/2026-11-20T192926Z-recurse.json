@@ -1,0 +1,712 @@
+{
+ "mode": "recurse",
+ "time": "2026-11-20T19:29:26Z",
+ "versions": {
+  "telltale": "0.6.0",
+  "unbound": "1.26.2",
+  "coredns": "1.15.0",
+  "knot": "3.6.2"
+ },
+ "host": {
+  "kernel": "6.12.0-264.16.1.el10_3.x86_64",
+  "cpu": "Intel Core Processor (Haswell, no TSX)",
+  "cores": 6
+ },
+ "engine": "podman version 6.1.1",
+ "pinning": "taskset",
+ "servers": [
+  "dedensd-8mib",
+  "unbound"
+ ],
+ "config_names": [
+  "lean",
+  "shipped"
+ ],
+ "cpus": {
+  "server": "0-2",
+  "knot": "5",
+  "loader": "3-4"
+ },
+ "rounds": 3,
+ "duration_s": 10,
+ "outstanding": 500,
+ "configs": {
+  "dedensd-recurse.yaml+cache8mib": "7b46e2ca0211876e9b8c17b6c25ef6714f263f6911ddb084769821874de15608",
+  "unbound-recurse.conf": "379cf120f4f77507854be06dd48413f84273d2224acb21fcc7e63ba8f5cdfadb"
+ },
+ "corpora": {
+  "recurse-unique.txt": "d9524ac9368522859d28f91912547cc6bc98cde675d7ed72710a9dd29c68732c"
+ },
+ "starts": [
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 8.494969,
+   "idle_mib": 9.16796875,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 8.584149,
+   "idle_mib": 9.12890625,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 10.249316,
+   "idle_mib": 9.16796875,
+   "driver": "io_uring"
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 18.760927,
+   "idle_mib": 5.0390625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 21.002425,
+   "idle_mib": 5.07421875
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 19.434392,
+   "idle_mib": 5.0625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 21.122934,
+   "idle_mib": 5.03515625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 24.982383,
+   "idle_mib": 5.0625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 14.807291,
+   "idle_mib": 5.07421875
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 10.003715,
+   "idle_mib": 9.1640625,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 8.850209,
+   "idle_mib": 9.15234375,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 7.927537,
+   "idle_mib": 9.1015625,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 8.690408,
+   "idle_mib": 9.078125,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 8.08307,
+   "idle_mib": 9.12890625,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 8.025356,
+   "idle_mib": 9.1484375,
+   "driver": "io_uring"
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 19.951216,
+   "idle_mib": 5.03515625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 15.626642,
+   "idle_mib": 5.05078125
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 15.666969,
+   "idle_mib": 5.02734375
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 9.284948,
+   "idle_mib": 9.15625,
+   "driver": "io_uring"
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "start_ms": 8.068555,
+   "idle_mib": 9.08203125,
+   "driver": "io_uring"
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 15.213293,
+   "idle_mib": 5.03515625
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "start_ms": 20.348697,
+   "idle_mib": 5.0703125
+  }
+ ],
+ "checks": [
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {},
+   "authority_questions_per_query": {
+    "sld": {
+     "A": 1.0
+    },
+    "tld": {},
+    "root": {}
+   }
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {},
+   "authority_questions_per_query": {
+    "sld": {
+     "A": 1.0
+    },
+    "tld": {},
+    "root": {}
+   }
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {},
+   "authority_questions_per_query": {
+    "sld": {
+     "A": 1.0
+    },
+    "tld": {},
+    "root": {}
+   }
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {},
+   "authority_questions_per_query": {
+    "sld": {
+     "A": 1.0
+    },
+    "tld": {},
+    "root": {}
+   }
+  },
+  {
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {},
+   "authority_questions_per_query": {
+    "sld": {
+     "A": 1.0
+    },
+    "tld": {},
+    "root": {}
+   }
+  },
+  {
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "rcodes": {
+    "NOERROR": 1000
+   },
+   "lost": 0,
+   "sample_wrong": {},
+   "authority_questions_per_query": {
+    "sld": {
+     "A": 1.0
+    },
+    "tld": {},
+    "root": {}
+   }
+  }
+ ],
+ "runs": [
+  {
+   "sent": 240063,
+   "completed": 240063,
+   "lost": 0,
+   "qps": 23967.642589,
+   "seconds": 10.016129,
+   "avg_ms": 20.656000000000002,
+   "rcodes": {
+    "NOERROR": 239486,
+    "SERVFAIL": 577
+   },
+   "p99_ms": 90.11099999999999,
+   "p99.9_ms": 208.895,
+   "version": "2.14.0",
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 84.4161449286229,
+   "server_user_us_per_query": 48.830602800098305,
+   "server_system_us_per_query": 35.585542128524594,
+   "server_busy": 0.6649942352510493,
+   "loader_busy": 0.14942622711997158,
+   "knot_busy": 0.2639729281731205,
+   "loaded_mib": 33.46484375,
+   "peak_mib": 51.78515625,
+   "void": []
+  },
+  {
+   "sent": 119830,
+   "completed": 119830,
+   "lost": 0,
+   "qps": 11982.810672,
+   "seconds": 10.000158,
+   "avg_ms": 0.971,
+   "rcodes": {
+    "NOERROR": 119830
+   },
+   "p99_ms": 13.311,
+   "p99.9_ms": 24.575,
+   "version": "2.14.0",
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "kind": "half",
+   "rate": 11983.8212945,
+   "server_cpu_us_per_query": 125.05511140782775,
+   "server_user_us_per_query": 59.98738212467663,
+   "server_system_us_per_query": 65.06772928315112,
+   "server_busy": 0.49026400329946324,
+   "loader_busy": 0.8988971015047552,
+   "knot_busy": 0.23181853217982942,
+   "loaded_mib": 30.625,
+   "peak_mib": 35.9375,
+   "void": []
+  },
+  {
+   "sent": 235836,
+   "completed": 234690,
+   "lost": 1146,
+   "qps": 23433.706495,
+   "seconds": 10.015061,
+   "avg_ms": 11.719,
+   "rcodes": {
+    "NOERROR": 234690
+   },
+   "p99_ms": 37.887,
+   "p99.9_ms": 49.151,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 73.30955302739784,
+   "server_user_us_per_query": 32.755528569602454,
+   "server_system_us_per_query": 40.55402445779539,
+   "server_busy": 0.5058722929322268,
+   "loader_busy": 0.3305592605850556,
+   "knot_busy": 0.278738589278445,
+   "loaded_mib": 24.203125,
+   "peak_mib": 29.6640625,
+   "void": []
+  },
+  {
+   "sent": 117160,
+   "completed": 117160,
+   "lost": 0,
+   "qps": 11715.875812,
+   "seconds": 10.000106,
+   "avg_ms": 0.6769999999999999,
+   "rcodes": {
+    "NOERROR": 117160
+   },
+   "p99_ms": 12.031,
+   "p99.9_ms": 26.110999999999997,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "kind": "half",
+   "rate": 11716.8532475,
+   "server_cpu_us_per_query": 89.73109423011266,
+   "server_user_us_per_query": 35.517770570160465,
+   "server_system_us_per_query": 54.2133236599522,
+   "server_busy": 0.3447920719307461,
+   "loader_busy": 0.9116507238859265,
+   "knot_busy": 0.22959947488024682,
+   "loaded_mib": 17.71484375,
+   "peak_mib": 20.3515625,
+   "void": []
+  },
+  {
+   "sent": 292998,
+   "completed": 292144,
+   "lost": 854,
+   "qps": 29179.944322,
+   "seconds": 10.011808,
+   "avg_ms": 11.721,
+   "rcodes": {
+    "NOERROR": 292144
+   },
+   "p99_ms": 33.791000000000004,
+   "p99.9_ms": 49.151,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 63.916099594720414,
+   "server_user_us_per_query": 28.642029273235117,
+   "server_system_us_per_query": 35.2740703214853,
+   "server_busy": 0.5143387118146986,
+   "loader_busy": 0.3929565491702632,
+   "knot_busy": 0.2799643852564763,
+   "loaded_mib": 26.921875,
+   "peak_mib": 33.37109375,
+   "void": []
+  },
+  {
+   "sent": 145692,
+   "completed": 145565,
+   "lost": 127,
+   "qps": 14556.441774,
+   "seconds": 10.00004,
+   "avg_ms": 2.161,
+   "rcodes": {
+    "NOERROR": 145565
+   },
+   "p99_ms": 29.183,
+   "p99.9_ms": 44.031,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "kind": "half",
+   "rate": 14589.972161,
+   "server_cpu_us_per_query": 83.13321196716244,
+   "server_user_us_per_query": 34.15291450554735,
+   "server_system_us_per_query": 48.980304331398344,
+   "server_busy": 0.39647007640037657,
+   "loader_busy": 0.8818079618926163,
+   "knot_busy": 0.2552997267581809,
+   "loaded_mib": 22.73046875,
+   "peak_mib": 26.19140625,
+   "void": []
+  },
+  {
+   "sent": 279099,
+   "completed": 279099,
+   "lost": 0,
+   "qps": 27836.148126,
+   "seconds": 10.026495,
+   "avg_ms": 17.797,
+   "rcodes": {
+    "NOERROR": 279061,
+    "SERVFAIL": 38
+   },
+   "p99_ms": 62.463,
+   "p99.9_ms": 147.455,
+   "version": "2.14.0",
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 75.03703345407902,
+   "server_user_us_per_query": 43.37474157915292,
+   "server_system_us_per_query": 31.6622918749261,
+   "server_busy": 0.6842923378485342,
+   "loader_busy": 0.18960814123438688,
+   "knot_busy": 0.270527148242895,
+   "loaded_mib": 36.86328125,
+   "peak_mib": 53.875,
+   "void": []
+  },
+  {
+   "sent": 139007,
+   "completed": 139007,
+   "lost": 0,
+   "qps": 13900.483152,
+   "seconds": 10.000156,
+   "avg_ms": 3.885,
+   "rcodes": {
+    "NOERROR": 136207,
+    "SERVFAIL": 2800
+   },
+   "p99_ms": 54.271,
+   "p99.9_ms": 204.799,
+   "version": "2.14.0",
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "kind": "half",
+   "rate": 13918.074063,
+   "server_cpu_us_per_query": 110.5415338795888,
+   "server_user_us_per_query": 55.05359442330242,
+   "server_system_us_per_query": 55.48793945628638,
+   "server_busy": 0.5047115052964952,
+   "loader_busy": 0.8881268958802995,
+   "knot_busy": 0.2308779066196226,
+   "loaded_mib": 37.33203125,
+   "peak_mib": 42.7890625,
+   "void": [
+    "rcodes"
+   ]
+  },
+  {
+   "sent": 245099,
+   "completed": 245099,
+   "lost": 0,
+   "qps": 24461.466297,
+   "seconds": 10.0198,
+   "avg_ms": 20.262,
+   "rcodes": {
+    "NOERROR": 244919,
+    "SERVFAIL": 180
+   },
+   "p99_ms": 77.82300000000001,
+   "p99.9_ms": 147.455,
+   "version": "2.14.0",
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 80.55479214521479,
+   "server_user_us_per_query": 45.489018723046605,
+   "server_system_us_per_query": 35.065769342184176,
+   "server_busy": 0.6448491753156853,
+   "loader_busy": 0.1736115863751683,
+   "knot_busy": 0.26101494753673116,
+   "loaded_mib": 33.8203125,
+   "peak_mib": 55.03515625,
+   "void": []
+  },
+  {
+   "sent": 122300,
+   "completed": 122300,
+   "lost": 0,
+   "qps": 12227.385785,
+   "seconds": 10.002138,
+   "avg_ms": 2.213,
+   "rcodes": {
+    "NOERROR": 122300
+   },
+   "p99_ms": 30.719,
+   "p99.9_ms": 63.487,
+   "version": "2.14.0",
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "kind": "half",
+   "rate": 12230.7331485,
+   "server_cpu_us_per_query": 132.77817661488143,
+   "server_user_us_per_query": 66.55825838103026,
+   "server_system_us_per_query": 66.21991823385119,
+   "server_busy": 0.5310939335441137,
+   "loader_busy": 0.8778242612567623,
+   "knot_busy": 0.24441566138342732,
+   "loaded_mib": 35.921875,
+   "peak_mib": 39.79296875,
+   "void": []
+  },
+  {
+   "sent": 231804,
+   "completed": 230732,
+   "lost": 1072,
+   "qps": 23049.249525,
+   "seconds": 10.010391,
+   "avg_ms": 12.818,
+   "rcodes": {
+    "NOERROR": 230732
+   },
+   "p99_ms": 43.007,
+   "p99.9_ms": 56.319,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "kind": "sat",
+   "rate": null,
+   "server_cpu_us_per_query": 70.57718911984468,
+   "server_user_us_per_query": 31.707873203543507,
+   "server_system_us_per_query": 38.86932025033372,
+   "server_busy": 0.48510604822819636,
+   "loader_busy": 0.3347191802810407,
+   "knot_busy": 0.2749580191006202,
+   "loaded_mib": 29.08984375,
+   "peak_mib": 34.546875,
+   "void": []
+  },
+  {
+   "sent": 115240,
+   "completed": 115240,
+   "lost": 0,
+   "qps": 11522.371889,
+   "seconds": 10.001413,
+   "avg_ms": 1.204,
+   "rcodes": {
+    "NOERROR": 115240
+   },
+   "p99_ms": 19.967,
+   "p99.9_ms": 38.911,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "kind": "half",
+   "rate": 11524.6247625,
+   "server_cpu_us_per_query": 87.83687955570983,
+   "server_user_us_per_query": 36.17788962165915,
+   "server_system_us_per_query": 51.6589986115932,
+   "server_busy": 0.3313195267094632,
+   "loader_busy": 0.6302593770484444,
+   "knot_busy": 0.22584039447107157,
+   "loaded_mib": 19.0546875,
+   "peak_mib": 22.3671875,
+   "void": []
+  },
+  {
+   "sent": 117160,
+   "completed": 117160,
+   "lost": 0,
+   "qps": 11705.702494,
+   "seconds": 10.008797,
+   "avg_ms": 1.7730000000000001,
+   "rcodes": {
+    "NOERROR": 117160
+   },
+   "p99_ms": 36.863,
+   "p99.9_ms": 49.151,
+   "version": "2.14.0",
+   "label": "dedensd-8mib",
+   "server": "dedensd-8mib",
+   "template": "dedensd-recurse.yaml+cache8mib",
+   "kind": "common",
+   "rate": 11716.8532475,
+   "server_cpu_us_per_query": 129.81240184363264,
+   "server_user_us_per_query": 63.083825537726185,
+   "server_system_us_per_query": 66.72857630590646,
+   "server_busy": 0.49790843780528804,
+   "loader_busy": 0.9015261846831043,
+   "knot_busy": 0.23229376554118164,
+   "loaded_mib": 29.14453125,
+   "peak_mib": 36.68359375,
+   "void": []
+  },
+  {
+   "sent": 116827,
+   "completed": 116368,
+   "lost": 459,
+   "qps": 11630.555555,
+   "seconds": 10.005369,
+   "avg_ms": 4.8069999999999995,
+   "rcodes": {
+    "NOERROR": 116368
+   },
+   "p99_ms": 39.934999999999995,
+   "p99.9_ms": 60.415000000000006,
+   "version": "2.14.0",
+   "label": "unbound",
+   "server": "unbound",
+   "template": "unbound-recurse.conf",
+   "kind": "common",
+   "rate": 11716.8532475,
+   "server_cpu_us_per_query": 82.32331912553279,
+   "server_user_us_per_query": 33.05929465145057,
+   "server_system_us_per_query": 49.26403306750997,
+   "server_busy": 0.26443760947227835,
+   "loader_busy": 0.9120387950837342,
+   "knot_busy": 0.18113440737710568,
+   "loaded_mib": 19.79296875,
+   "peak_mib": 23.08203125,
+   "void": []
+  }
+ ],
+ "common_rate": 11716.8532475
+}

@@ -380,7 +380,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `compare/dedensd-recurse.yaml`); Unbound has `do-not-query-localhost: no`. The sysctl
     `net.ipv4.ip_unprivileged_port_start` must be 53 or less, which the run checks. The rest is D183's: same
     versions, a share of the machine each, lean and shipped configurations (one file each here), right answers first
-    (the sample equal to the zone's Knot's, AD set for `recurse-dnssec`), void runs, a common rate, A/A.
+    (the sample equal to the zone's Knot's, AD set for `recurse-dnssec`), void runs, a common rate, A/A. `dedensd-8mib`
+    (caches at Unbound's sizes) is a server of these modes too, as in D183.
   - Not measured: TelltaleDNS (its `recursive://` upstream has the 13 root addresses built in, no setting to point it
     at ours) and CoreDNS (no recursion).
   - Also recorded: the questions each authority answers per client question over the check pass (Knot's `mod-stats`),

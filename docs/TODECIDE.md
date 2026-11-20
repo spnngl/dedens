@@ -310,6 +310,19 @@ Open questions, each with its proposed default. Once answered, record the outcom
   failing to resolve, may reach its fifth lookup before the AAAA of the one that resolves, and fail on a silent
   IPv4 server (the simulation steers around it, D196). Unbound fetches a name's A and AAAA together and allows 16
   per delegation (`MAX_DP_TARGET_COUNT`). Default: count names, not lookups, and keep 5.
+- The CPU of a miss (D201): `recurse` costs `dedensd` 124 µs a query at the common rate against Unbound's 88 (+41%;
+  3 cores +45%; noise 10%), 25 µs of it more user CPU, while kqps is equal (1.08 at 1 core, 1.19 at 3, loader-bound)
+  and `recurse-dnssec` is ahead (1.74, 1.37). `docs/benchmarks.md` "Where the gap is" has the profile: the
+  allocator 16% of the user samples, copies 8%, the cache gauges 6.4%. `serve::recurse::gauges` sets four gauges
+  after each resolution, and `Store::len` and `used` lock every shard of two caches for each: four sweeps a miss.
+  Default: set the gauges on a timer or when the stage's metrics are read, then profile again; the allocations of a
+  step (60 warm, `benches/resolution.rs`) and of a decoded response after it.
+- A bench of TelltaleDNS's recursion (D201): its `recursive://` upstream has the 13 root addresses built in
+  (`telltale-recursor`), so no root of ours. Default: not measured; measured when it takes root hints, or by a
+  patched build (a fork, not its tag).
+- Equal caches in `recurse` (D201): `dedensd`'s default RRset cache is 128 MiB, Unbound's 4 MiB (message cache 4
+  MiB too), so a million unique names fill one and not the other (118 and 17 MiB loaded at 3 cores); `dedensd-8mib`
+  runs both small, as shipped is the default. Default: report both, as D183 reports `dedensd-8mib`.
 
 ## Later
 
