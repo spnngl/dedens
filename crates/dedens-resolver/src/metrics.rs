@@ -38,6 +38,7 @@ pub(crate) enum Sent {
     Undecodable,
     Timeout,
     TcpTimeout,
+    Unreachable,
     ServerError,
     LocalError,
 }
@@ -57,7 +58,7 @@ pub(crate) fn query(sent: Sent) {
         Sent::Undecodable => "undecodable",
         Sent::Timeout => "timeout",
         Sent::TcpTimeout => "tcp_timeout",
-        Sent::ServerError => "server_error",
+        Sent::Unreachable | Sent::ServerError => "server_error",
         Sent::LocalError => "local_error",
     };
     metrics::counter!(QUERIES, "outcome" => outcome).increment(1);

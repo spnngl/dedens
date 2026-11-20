@@ -1840,7 +1840,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     send the query again (`just sim` showed it). Past its end it takes a timeout, judging no server. The sender, or
     a waiter sending after its sender was cancelled, waits `Query::timeout` from then, within its resolution's end.
     A timeout cut short by the sender's own end, over UDP or TCP (a query moved to TCP may have its `TCP_TIMEOUT`
-    fall on that end), is not the server's: it is not shared, the waiters sending again
+    fall on that end), or one that came after an ICMP error (`ServerError::Unreachable` with a send made, which
+    waited for the deadline as a timeout: `Outcome::Unreachable`, `Reply::Unreachable`; no route, `sends` 0, comes at
+    once and stays a `ServerError`), is not the server's: it is not shared, the waiters sending again
     with their own time, and `Resolution` judges no server for a timeout that comes as the resolution's time runs
     out.
   - Client budget (D117): each query a resolution sends costs its client network one unit of the stage's

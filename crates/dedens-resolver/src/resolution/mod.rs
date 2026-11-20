@@ -418,6 +418,10 @@ pub enum Reply<'a> {
     /// [`Reply::Timeout`] for the delegation, but the server's time over UDP, which [`Query::timeout`] estimates,
     /// is not backed off, as Unbound's `serviced_tcp_callback`.
     TcpTimeout,
+    /// No response before the deadline, but an ICMP error seen meanwhile (D190's `ServerError::Unreachable` after
+    /// queries sent): a [`Reply::ServerError`] that, like a [`Reply::Timeout`], may have been cut short by the
+    /// resolution's end, which judges no server (D195).
+    Unreachable,
     /// The server could not be reached, or would not talk: ICMP unreachable, TCP refused or reset, responses
     /// dropped for their cookie only (D190's `ServerError` but `TimedOut`, which is [`Reply::Timeout`]). It is backed
     /// off as after a timeout, and makes a delegation that fails [`Failure::Network`], EDE 23 (Network Error).
@@ -939,7 +943,7 @@ impl Resolution {
         if judge {
             crate::metrics::query(sent);
             let judged = match sent {
-                Sent::Timeout => !self.remaining(now).is_zero(),
+                Sent::Timeout | Sent::Unreachable => !self.remaining(now).is_zero(),
                 Sent::ServerError => true,
                 _ => false,
             };
@@ -988,6 +992,7 @@ impl Resolution {
                 self.timed_out(&query.question);
                 return self.unanswered(&query, Sent::TcpTimeout, now, judge);
             }
+            Reply::Unreachable => return self.unanswered(&query, Sent::Unreachable, now, judge),
             Reply::ServerError => return self.unanswered(&query, Sent::ServerError, now, judge),
             Reply::LocalError => return self.unanswered(&query, Sent::LocalError, now, judge),
         };
