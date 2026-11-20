@@ -4,11 +4,13 @@
 //! `state_dir` ([`STATE`]), written whole (D104), and reloads once the anchors it trusts change. The state read at
 //! start serves before the anchors of D128, downloaded or bundled, which are warned of when they disagree; with no
 //! state those anchors serve and seed a new state at the next answer. A state that does not read is set aside as
-//! [`BAD`], warned of, and those anchors serve the same way. A revoked key is never trusted again (RFC 5011 §2.1):
+//! [`BAD`], warned of, and those anchors serve the same way; one the system fails to read stays where it is, and nothing is
+//! seeded or written until it reads. A revoked key is never trusted again (RFC 5011 §2.1):
 //! the state keeps it, alone when every key trusted was revoked, and it is taken out of the anchors of D128 that
 //! serve then, or seed a new state; a state whose keys sign the root's no more, where those anchors do, is replaced
 //! by them, its revoked keys kept.
 
+use std::io;
 use std::path::Path;
 use std::sync::{OnceLock, mpsc};
 
@@ -153,9 +155,20 @@ pub(crate) struct Kept {
 /// What [`Kept`] read.
 #[derive(Debug, Default)]
 enum State {
+    /// Not read yet, or not readable (no fault of the file's content): the next use reads it again.
     #[default]
     Unread,
     Read(Option<Rollover>),
+}
+
+/// What the file of the state held.
+enum Stored {
+    /// No file.
+    Absent,
+    Found(Rollover),
+    /// Not read for a cause that is no fault of its content (EACCES, EIO, a lack of memory or descriptors): it may
+    /// hold a good state with its tombstones, so it is left where it is.
+    Unreadable,
 }
 
 /// What an answer changed.
@@ -168,12 +181,22 @@ pub(crate) struct Observed {
 }
 
 impl Kept {
-    /// The rollover kept in `state_dir`, read the first time; `None` when there is none, or it does not read,
-    /// which is warned of and set aside: the anchors of D128 seed a new one.
-    fn rollover(&mut self, state_dir: &Path) -> Option<&mut Rollover> {
+    /// Reads the rollover kept in `state_dir` unless it is read; whether it is. Not when the file cannot be read
+    /// for no fault of its content, which is warned of: it stays where it is, and the next call reads it again.
+    fn load(&mut self, state_dir: &Path) -> bool {
         if matches!(self.state, State::Unread) {
-            self.state = State::Read(read(state_dir));
+            self.state = match read(state_dir) {
+                Stored::Absent => State::Read(None),
+                Stored::Found(rollover) => State::Read(Some(rollover)),
+                Stored::Unreadable => return false,
+            };
         }
+        true
+    }
+
+    /// The rollover kept, once [`Kept::load`]ed; `None` when there is none, or it did not read, which was warned of
+    /// and set aside: the anchors of D128 seed a new one.
+    fn rollover(&mut self) -> Option<&mut Rollover> {
         match &mut self.state {
             State::Read(rollover) => rollover.as_mut(),
             State::Unread => None,
@@ -191,7 +214,10 @@ impl Kept {
     /// The root anchors the validators trust, `seed` those of D128: the rollover's, warned of when they disagree
     /// with `seed`; when it holds revoked keys only, `seed` less those; else `seed`.
     pub(crate) fn anchors(&mut self, state_dir: &Path, seed: &TrustAnchors) -> TrustAnchors {
-        let Some(rollover) = self.rollover(state_dir) else {
+        if !self.load(state_dir) {
+            return seed.clone();
+        }
+        let Some(rollover) = self.rollover() else {
             return seed.clone();
         };
         let Some(anchors) = rollover.anchors() else {
@@ -226,9 +252,20 @@ impl Kept {
         state_dir: &Path,
         now: u64,
     ) -> Observed {
-        let before = (self.rollover(state_dir))
-            .map(|rollover| (rollover.to_string(), served(rollover, seed)));
-        let followed = match self.rollover(state_dir) {
+        // A state that cannot be read is neither seeded over nor written: its tombstones would be lost.
+        if !self.load(state_dir) {
+            metrics::counter!(PROBES, "outcome" => "failed").increment(1);
+            tracing::warn!(
+                "the root's keys not followed, the state cannot be read: asked again in an hour"
+            );
+            return Observed {
+                wait: RETRY,
+                changed: false,
+            };
+        }
+        let before =
+            (self.rollover()).map(|rollover| (rollover.to_string(), served(rollover, seed)));
+        let followed = match self.rollover() {
             // A state that missed a whole rollover, offline past it, is replaced by the download that did not, its
             // revoked keys kept.
             Some(rollover) => rollover.observe(records, now).or_else(|error| {
@@ -258,7 +295,7 @@ impl Kept {
             }
         };
         // A revocation counts even when no trusted key signs the rest (RFC 5011 §2.1).
-        let Some(rollover) = self.rollover(state_dir) else {
+        let Some(rollover) = self.rollover() else {
             return Observed {
                 wait,
                 changed: false,
@@ -302,22 +339,52 @@ fn served(rollover: &Rollover, seed: &TrustAnchors) -> TrustAnchors {
         .unwrap_or_else(|| rollover.without_revoked(seed))
 }
 
-/// The rollover kept in `state_dir`; `None` when there is no file, not when it cannot be read: a file that does not
-/// read, whatever the cause, is set aside as [`BAD`] and warned of, not left for the next state to overwrite with its
-/// revoked keys forgotten.
-fn read(state_dir: &Path) -> Option<Rollover> {
+/// Why the file of the state did not read.
+enum Fault {
+    /// What is in the file is at fault: a text that is not a state, too long, not UTF-8, or no regular file. It is
+    /// the same at the next read.
+    Content(anyhow::Error),
+    /// The system is at fault (EACCES, EIO, a lack of memory or descriptors): the file may be a good state.
+    System(io::Error),
+}
+
+impl Fault {
+    /// `error` of opening or reading the file: its content when `roots::open` and `roots::read_capped` refuse it
+    /// (`InvalidData`, a symbolic link), the system else.
+    fn of(error: io::Error) -> Self {
+        // `O_NOFOLLOW` refuses a symbolic link with ELOOP, which `io::ErrorKind` names only on nightly.
+        #[cfg(unix)]
+        let link = error.raw_os_error() == Some(nix::errno::Errno::ELOOP as i32);
+        #[cfg(not(unix))]
+        let link = false;
+        if link || error.kind() == io::ErrorKind::InvalidData {
+            Self::Content(error.into())
+        } else {
+            Self::System(error)
+        }
+    }
+}
+
+/// The rollover kept in `state_dir`. A file whose content does not read is set aside as [`BAD`] and warned of, not
+/// left for the next state to overwrite with its revoked keys forgotten; one the system fails to read is left where
+/// it is ([`Stored::Unreadable`]).
+fn read(state_dir: &Path) -> Stored {
     let path = state_dir.join(STATE);
     let max = u64::try_from(Rollover::MAX_LEN).unwrap_or(u64::MAX);
-    let read = open(&path).map_err(anyhow::Error::from).and_then(|opened| {
-        let Some((file, _)) = opened else {
+    let read = || -> Result<Option<Rollover>, Fault> {
+        let Some((file, _)) = open(&path).map_err(Fault::of)? else {
             return Ok(None);
         };
-        let text = String::from_utf8(read_capped(file, max)?)?;
-        Ok(Some(Rollover::read(&text)?))
-    });
-    match read {
-        Ok(rollover) => rollover,
-        Err(error) => {
+        let bytes = read_capped(file, max).map_err(Fault::of)?;
+        let text = String::from_utf8(bytes).map_err(|error| Fault::Content(error.into()))?;
+        Rollover::read(&text)
+            .map(Some)
+            .map_err(|error| Fault::Content(error.into()))
+    };
+    match read() {
+        Ok(None) => Stored::Absent,
+        Ok(Some(rollover)) => Stored::Found(rollover),
+        Err(Fault::Content(error)) => {
             let bad = state_dir.join(BAD);
             let set_aside = std::fs::rename(&path, &bad);
             tracing::warn!(
@@ -327,7 +394,16 @@ fn read(state_dir: &Path) -> Option<Rollover> {
                 set_aside = ?set_aside,
                 "the state of the root keys followed does not read: trusting the downloaded or bundled anchors"
             );
-            None
+            Stored::Absent
+        }
+        Err(Fault::System(error)) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "the state of the root keys followed cannot be read: left where it is, the downloaded or bundled \
+                 anchors serve, asked again at the next use"
+            );
+            Stored::Unreadable
         }
     }
 }
@@ -505,6 +581,48 @@ pub(crate) mod tests {
         assert!(!dir.join(BAD).exists());
     }
 
+    /// D200, RFC 5011 §2.1: a state that cannot be read, for a cause that is no fault of its content (here, a
+    /// mode of 0 on a file a run as root left), is not set aside: the tombstones in it are not lost to a seed. The
+    /// downloaded anchors serve; an answer fails, to be asked again in an hour, without seeding or writing; the
+    /// next use reads the file again.
+    #[test]
+    fn a_state_that_cannot_be_read_is_kept_not_seeded_over() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if nix::unistd::geteuid().is_root() {
+            // Root reads any file.
+            return;
+        }
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        let path = dir.join(STATE);
+        let whole = format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010());
+        fs::write(&path, &whole).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut kept = Kept::default();
+        assert_eq!(kept.anchors(dir, &seed), seed);
+        let answer = snapshot("20170716113230");
+        let failed = kept.observe(&answer, &seed, dir, JULY_2017);
+        assert_eq!(
+            failed,
+            Observed {
+                wait: RETRY,
+                changed: false
+            }
+        );
+        assert!(path.exists() && !dir.join(BAD).exists());
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1, "nothing written");
+
+        // Readable again: the next answer follows the state that was kept, not a seed.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), whole);
+        let followed = kept.observe(&answer, &seed, dir, JULY_2017);
+        assert_eq!(followed.wait, 86_400);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\naddpend "), "{text}");
+    }
+
     /// Whether `anchors` trust KSK-2010, by its DS or as a DNSKEY.
     fn trusts_2010(anchors: &TrustAnchors) -> bool {
         let text = anchors.to_string();
@@ -584,7 +702,7 @@ pub(crate) mod tests {
     #[test]
     fn a_state_too_long_to_be_read_again_is_not_saved() {
         // KSK-2010 and two filler keys (invented bytes: only their length matters) that bring the text to the limit
-        // once KSK-2010 is revoked ("revoked <time>" is longer than "valid"). The first filler'"'"'s length moves it by
+        // once KSK-2010 is revoked ("revoked <time>" is longer than "valid"). The first filler's length moves it by
         // 4, the algorithm numbers of the two by a digit each: a text of any length is reached.
         let march = snapshot("20190305003355");
         let whole = |filler: usize, algorithms: (u8, u8)| {

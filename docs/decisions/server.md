@@ -2091,9 +2091,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     first load. Its anchors win over D128's, downloaded or bundled, with a warn! when they disagree (once at each change
     of either, debug! at the reloads between): the state was proven from the zone, key by key, since a seed the
     download gave. No state (no file: only NotFound),
-    or one that does not read (warn!; any error, a corrupt text or EIO): D128's anchors serve and seed a new
-    state from the next answer; an unreadable file is first renamed `root-5011.bad`, for the operator, since the
-    new state would overwrite its tombstones. A state whose keys are all revoked is kept, serving D128's anchors
+    or one whose content does not read (warn!; a corrupt text, not UTF-8, too long, no regular file or a symbolic
+    link): D128's anchors serve and seed a new state from the next answer; the file is first renamed
+    `root-5011.bad`, for the operator, since the new state would overwrite its tombstones. A file the system fails
+    to read (EACCES, EIO, no memory: it may be a good state) stays where it is, with a warn!: D128's anchors serve,
+    a probe fails with `RETRY`, nothing is seeded or written, and the next use reads the file again. A state whose keys are all revoked is kept, serving D128's anchors
     less the tombstones (warn!), also when D128's anchors predate the revocation: a validator never trusts
     nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of which
     signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
