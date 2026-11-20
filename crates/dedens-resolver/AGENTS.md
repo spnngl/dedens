@@ -26,8 +26,8 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 - A value's `Cost` counts the bytes asked for every allocation it owns (`Rrset::cost`: the `Arc`, the owner name,
   the RDATA slices, each RDATA); `tests/memory.rs` checks it against the allocator's count. The allocator's rounding
   and headers are not counted: up to 1.5 times more on glue (D193). A new owned field means a new term.
-- `insert` trusts its rank: the input is scrubbed (step 05), in bailiwick. Only answer non-authoritative and
-  above, or secure data, may answer a client (RFC 2181 §5.4.1); `get` returns every rank.
+- `insert` trusts its rank: the input is scrubbed (step 05), in bailiwick. Only an answer section's data (answer
+  non-authoritative or authoritative), or secure data, may answer a client (RFC 2181 §5.4.1); `get` returns every rank.
 - Replacement follows Unbound's `need_to_update_rrset` but for three choices of D193: verdicts on the same data,
   an NS `RRset` bounded whatever its trust, and an address over glue pinned whatever its TTL and across a verdict
   (`Cached::pins`). A change there goes to D193 and `tests/rrset_cache.rs`.
