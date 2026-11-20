@@ -14,8 +14,10 @@ use std::time::Duration;
 use anyhow::{Context, ensure};
 use dedens_dnssec::TrustAnchors;
 use dedens_proto::Name;
-use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, Minimisation, RrsetCache};
-use dedens_roots::{RootHints, Tlds};
+use dedens_resolver::{
+    Caches, DEFAULT_CAPACITY, InfraCache, Limits, Minimisation, RrsetCache, askable,
+};
+use dedens_roots::{RootHints, Server, Tlds};
 use dedens_server::{Allowance, Budgets, DEFAULT_SHARE, Pipeline, Recurse, Stage, Validating};
 use serde::Deserialize;
 
@@ -137,8 +139,9 @@ struct LocalZonesFile {
 ///
 /// # Errors
 ///
-/// A limit above [`MAX`]'s; a `root_hints` file that does not read or holds no root server; a zone in `local_zones.resolve` that is not a name, not served locally or listed twice; a
-/// `client_share` [`Budgets::new`] refuses; caches [`RrsetCache::new`] or [`InfraCache::new`] refuses; validation
+/// A limit above [`MAX`]'s; a `root_hints` file that does not read, holds no root server, or none at an address
+/// asked (D191: every query would fail, unless `query_local_addresses` is set); a zone in `local_zones.resolve`
+/// that is not a name, not served locally or listed twice; a `client_share` [`Budgets::new`] refuses; caches [`RrsetCache::new`] or [`InfraCache::new`] refuses; validation
 /// settings [`Validation::validating`] refuses.
 pub(super) fn recurse(
     name: &str,
@@ -189,6 +192,15 @@ pub(super) fn recurse(
             })?;
             let roots = RootHints::read(&text)
                 .with_context(|| format!("stage `{name}`: `root_hints`: {}", path.display()))?;
+            ensure!(
+                file.query_local_addresses
+                    || (roots.servers().iter())
+                        .flat_map(Server::addresses)
+                        .any(|address| askable(address, false)),
+                "stage `{name}`: `root_hints`: {} holds no address that is asked (loopback, private and the other \
+                 special-purpose ranges are not unless `query_local_addresses` is set)",
+                path.display()
+            );
             (roots, None)
         }
         None => (RootHints::bundled().clone(), Some(Tlds::bundled().clone())),
@@ -427,7 +439,10 @@ mod tests {
             ". 3600000 IN NS a.root.\na.root. 3600000 IN A 127.0.0.2\n",
         )
         .unwrap();
-        let text = format!("{RECURSIVE}    root_hints: {}\n", path.display());
+        let text = format!(
+            "{RECURSIVE}    root_hints: {}\n    query_local_addresses: true\n",
+            path.display()
+        );
         let bundled = read(RECURSIVE, env, &Pipeline::default()).expect("valid");
         let private = read(&text, env, &bundled.pipeline).expect("valid");
         let caches = caches(&private.pipeline);
@@ -457,6 +472,30 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let message = error(&text);
         assert!(message.contains("cannot read"), "{message}");
+    }
+
+    /// D191: root hints none of whose addresses is asked would answer every question SERVFAIL, silently: refused at
+    /// load unless `query_local_addresses` is on, or another address is asked.
+    #[test]
+    fn d191_root_hints_at_addresses_not_asked_are_refused() {
+        let path = std::env::temp_dir().join(format!("dedensd-local-{}", std::process::id()));
+        let local = ". 3600000 IN NS a.root.\na.root. 3600000 IN A 127.0.0.2\n";
+        std::fs::write(&path, local).unwrap();
+        let text = format!("{RECURSIVE}    root_hints: {}\n", path.display());
+        let message = error(&text);
+        assert!(message.contains("`root_hints`"), "{message}");
+        assert!(message.contains("`query_local_addresses`"), "{message}");
+        read(
+            &format!("{text}    query_local_addresses: true\n"),
+            env,
+            &Pipeline::default(),
+        )
+        .expect("asked when set");
+        // One server at an address asked is enough.
+        let mixed = format!("{local}. 3600000 IN NS b.root.\nb.root. 3600000 IN A 192.0.2.1\n");
+        std::fs::write(&path, mixed).unwrap();
+        read(&text, env, &Pipeline::default()).expect("one address asked");
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

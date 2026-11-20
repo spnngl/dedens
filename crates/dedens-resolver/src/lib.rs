@@ -36,7 +36,7 @@ pub use infra_cache::{Choice, Edns, InfraCache, Marks};
 pub use rank::Rank;
 pub use resolution::{
     Caches, Failure, Limit, Limits, Minimisation, Next, Query, Reply, Resolution, Resolved,
-    Unsupported,
+    Unsupported, askable,
 };
 pub use rrset::Rrset;
 pub use rrset_cache::{DEFAULT_CAPACITY, Inserted, NotCached, Ranked, RrsetCache};

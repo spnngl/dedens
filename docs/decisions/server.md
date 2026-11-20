@@ -1526,7 +1526,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     goes beyond Unbound's `do-not-query-localhost` (on by default: loopback and "this network" only; its
     `private-address` hides private addresses from answers, not from queries) on purpose: `dedensd` is a public
     resolver, and no stub zones exist yet (a stub zone is how Unbound reaches an internal server). Cost: an internal
-    server reached through a public delegation, or authorities on a test's own host, need the switch.
+    server reached through a public delegation, or authorities on a test's own host, need the switch. Config load
+    refuses `root_hints` none of whose addresses is asked unless the switch is on: every query would fail, and
+    SERVFAIL would be the only sign.
   - Limits (`Limits`, each a field with its number, a test in `tests/iteration.rs` reaching its default):
     `queries` 32 per client question, its sub-resolutions included, Unbound's `max-sent-count` (BIND 50): the cap
     of what a client costs; `restarts` 11, Unbound's and BIND's `max-query-restarts`, every CNAME hop counted, from
