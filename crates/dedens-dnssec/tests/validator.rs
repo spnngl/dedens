@@ -1008,6 +1008,14 @@ fn a_restart_carries_on_with_what_the_validations_before_it_left() {
         "{verdict:?}"
     );
     assert!(!last.can_restart());
+    // NSEC3 hashing spent: a restart that proves a denial would find no hashing left.
+    let mut hashed_all = Cost::default();
+    hashed_all.nsec3_blocks = limits.budget.nsec3_blocks_left().0;
+    let (_, last) = finish(
+        &script,
+        validator.restart(&question, &response, now, hashed_all),
+    );
+    assert!(!last.can_restart());
     let mut asked_all = Cost::default();
     asked_all.questions = limits.questions;
     let (verdict, last) = finish(

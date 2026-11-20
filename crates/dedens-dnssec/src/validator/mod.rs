@@ -428,12 +428,14 @@ impl Validation {
     }
 
     /// Whether asking the query again could do better than a bogus verdict, as Unbound's `val_can_restart`: the
-    /// budget and the questions are not spent, which a restart would carry on with ([`Validator::restart`]), and
+    /// budget (signature verifications and NSEC3 blocks) and the questions are not spent, which a restart would
+    /// carry on with ([`Validator::restart`]), and
     /// no check gave up on an `RRset` whose signatures failed too often (D73), which only wastes work.
     #[must_use]
     pub fn can_restart(&self) -> bool {
         !self.gave_up
             && self.budget.verifications_left().0 > 0
+            && self.budget.nsec3_blocks_left().0 > 0
             && self.asked < self.config.limits.questions
     }
 

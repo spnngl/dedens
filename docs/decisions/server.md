@@ -1949,7 +1949,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     while another serves it right. The validations of the retries share one D75 budget, as Unbound keeps
     `num_validation_attempts` across `val_restart` (`Validator::restart`, the cost told cumulative), and its
     questions: a deep chain, whose walks ask more, gets fewer retries. None follows one that gave up on KeyTrap's
-    failed signatures or spent the budget or the questions (`Validation::can_restart`). Out of servers, retries,
+    failed signatures or spent the budget (signature verifications, NSEC3 hash blocks, as Unbound's `val_hash_attempts`) or
+    the questions (`Validation::can_restart`). Out of servers, retries,
     budget or a bound, the answer is bogus with the first code. D86's key cache never holds a bogus key set: the
     `RRset` cache holds it, for the bogus TTL.
   - YXDOMAIN is judged as an answer: bogus unless the chain ends in a DNAME whose substitution makes a name longer
