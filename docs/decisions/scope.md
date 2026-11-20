@@ -256,7 +256,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   anchor restarts validation (RFC 7646 §1.1's example); at the same depth the NTA wins, as the operator added
   it to override. An NTA has no end time, though RFC 7646 §2.1 asks implementations to allow one: it lasts as
   long as the value does, and the caller drops it by building the anchors anew; [`TODECIDE.md`](../TODECIDE.md)
-  holds the rest. Anchors are fixed while running; the recursive resolver follows the root'"'"'s through a rollover (RFC 5011, D200).
+  holds the rest. Anchors are fixed while running; the recursive resolver follows the root's through a rollover (RFC 5011, D200).
 - D127 (amends D72, D126; amended by D128, D200) `root-anchors.xml` is read in Rust and checked by its `.p7s` (RFC 9718 §3.2), as `dedensd`
   is to fetch it at start and on refresh: there HTTPS from the same site is no longer the only check, the
   signature is checked against ICANN's CA bundled in the binary, `crates/dedens-dnssec/src/icannbundle.pem`.
