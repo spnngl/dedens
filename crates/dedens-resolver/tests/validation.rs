@@ -295,6 +295,36 @@ fn d197_a_bogus_answer_is_asked_again_of_another_server() {
 }
 
 #[test]
+fn d197_a_bogus_answer_is_asked_again_five_times_at_most() {
+    // Changed: every root server gives what 170.247.170.2 gave in `priming`, the root's NS without their
+    // signatures: each answer is bogus, and each server that gave one shunned. Twenty-six addresses could be
+    // asked; the answer is asked 5 times again (Unbound's `VAL_MAX_RESTART_COUNT`), then bogus.
+    let capture = recursion::Resolution::read("priming");
+    let authorities = recursion::Authorities::new([&capture]);
+    let first: std::net::IpAddr = "170.247.170.2".parse().expect("an address");
+    let server = |query: &dedens_resolver::Query| {
+        let wire = (Message::query(0, query.question.clone()).to_vec()).expect("a query encodes");
+        let mut response =
+            dedens_testkit::message(&authorities.answer(first, recursion::Transport::Udp, &wire));
+        if query.question.qtype == RecordType::NS {
+            (response.answer).retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+        }
+        Answered::Response(response)
+    };
+    let caches = caches(false);
+    let validator = validator(dedens_dnssec::Limits::default());
+    let mut resolution =
+        start(&capture, &caches, Limits::default()).validated(validator, at(&capture).as_secs());
+    let (resolved, sent) = run(&mut resolution, &server, at(&capture));
+    assert!(
+        matches!(resolved, Resolved::Failed(Failure::Bogus(_))),
+        "{resolved:?}"
+    );
+    let asked = (sent.iter()).filter(|(_, name, rtype)| is(name, ".") && *rtype == RecordType::NS);
+    assert_eq!(asked.count(), 6, "{sent:?}");
+}
+
+#[test]
 fn d197_the_validations_of_the_retries_share_one_budget() {
     // Changed: the servers of sidn.nl answer its A with another address each time, under the captured signature,
     // which fails to verify. Each attempt checks it once more, the keys from the cache; the cost the resolution
@@ -443,6 +473,66 @@ fn d197_a_server_is_shunned_in_the_zone_it_gave_a_bogus_set_for() {
     let keys =
         (sent.iter()).filter(|(_, name, rtype)| is(name, "com.") && *rtype == RecordType::DNSKEY);
     assert_eq!(keys.count(), 2, "{sent:?}");
+}
+
+#[test]
+fn d197_a_bogus_answer_blames_the_servers_that_answered_not_those_that_referred() {
+    // Changed: 176.97.158.144 drops the NSEC proofs from its NXDOMAIN, a bogus answer with no bogus set to blame
+    // on one server, so every server that answered is blamed; sidn.nl's servers give the NXDOMAIN captured of
+    // 176.97.158.144 to each question of the name, the validator's DS among them; sidn.nl's DS lives 0 s, so it
+    // is asked again of nl after the retry. nl's server referred, it did not answer: it is not shunned, and the
+    // DS is asked of it again rather than of the nl servers the steering left REFUSED.
+    let capture = recursion::Resolution::read("nxdomain-signed");
+    let authorities = recursion::Authorities::new([&capture]);
+    let garbling: std::net::IpAddr = "176.97.158.144".parse().expect("an address");
+    let asked = name("dedens-nxdomain.sidn.nl.");
+    let error = {
+        let query = Message::query(0, Question::new(asked.clone(), RecordType::A));
+        let wire = query.to_vec().expect("a query encodes");
+        dedens_testkit::message(&authorities.answer(garbling, recursion::Transport::Udp, &wire))
+    };
+    let proof = |r: &Record<'_>| {
+        matches!(r.rtype(), RecordType::NSEC)
+            || matches!(r.data(), RData::Rrsig(rrsig) if rrsig.type_covered == RecordType::NSEC)
+    };
+    let server = |query: &dedens_resolver::Query| {
+        let ip = query.server.ip();
+        let mut response = captured(&authorities, query);
+        if is(&query.zone, "sidn.nl.") && query.question.name == asked {
+            response = error.clone();
+            response.questions = vec![query.question.clone()];
+            if ip == garbling && query.question.qtype == RecordType::A {
+                (response.authority).retain(|r| !proof(r));
+            }
+        }
+        if answers(&response, "sidn.nl.", RecordType::DS) {
+            for record in &mut response.answer {
+                record.ttl = dedens_proto::Ttl::from_wire(0);
+            }
+        }
+        Answered::Response(response)
+    };
+    let caches = configured(
+        false,
+        dedens_cache::Config {
+            min_ttl: 0,
+            ..dedens_cache::Config::default()
+        },
+    );
+    let validator = validator(dedens_dnssec::Limits::default());
+    let mut resolution =
+        start(&capture, &caches, Limits::default()).validated(validator, at(&capture).as_secs());
+    steer(&caches, &capture);
+    let (resolved, sent) = run(&mut resolution, &server, at(&capture));
+    assert!(
+        matches!(resolved, Resolved::NxDomain { .. }),
+        "{resolved:?}"
+    );
+    assert_eq!(resolved.checked(), Checked::Secure, "{resolved:?}");
+    let ds = (sent.iter()).filter(|(zone, name, rtype)| {
+        is(zone, "nl.") && is(name, "sidn.nl.") && *rtype == RecordType::DS
+    });
+    assert_eq!(ds.count(), 2, "{sent:?}");
 }
 
 #[test]
