@@ -2330,10 +2330,10 @@ The setup is D201's: no forwarder, three Knot authorities (a root, `bench.`, and
 wildcard) on 127.0.0.2 to 4, each server resolving from a hints file naming the root, a million unique names, each
 asked once of a cold server (every query a miss that asks the zone's server one question; Knot's `mod-stats` counts
 1.00 `A` there and none at the root or the TLD for either server). `dedensd` is `main` at `953b9ca4`
-with `root_hints` (D201), the harness is `3c2a7bf6`'s. The `fixes/resolver` PR that refuses private addresses by
-default had not merged: the authorities are loopback ones and this `main`'s resolver asks them. When it
-lands, the line `query_local_addresses: true` of `dnsperf/compare/dedensd-recurse.yaml` is uncommented and these
-numbers rerun. Host and pinning as the section above, except Linux 6.12.0-264.16.1.el10_3 and podman 6.1.1,
+with `root_hints` (D201), the harness is `3c2a7bf6`'s. The `fixes/resolver` change that refuses private addresses by
+default had not merged: the authorities are loopback ones and this `main`'s resolver asks them. With it, the line
+`query_local_addresses: true` of `dnsperf/compare/dedensd-recurse.yaml` is on; these numbers are of the resolver
+before it and not rerun since. Host and pinning as the section above, except Linux 6.12.0-264.16.1.el10_3 and podman 6.1.1,
 `net.ipv4.ip_unprivileged_port_start` 53 for the runs and 1024 after, Knot's three processes on core 5. JSON in
 [`comparison/results/`](comparison/results/): `2026-11-20T185637Z` (1 core), `190109Z` (3), the `recurse-dnssec` files
 `190457Z` and `190901Z`, the A/A `191306Z`, and the 8 MiB variant `192456Z`, `192926Z`.

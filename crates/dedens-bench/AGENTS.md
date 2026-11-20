@@ -31,9 +31,9 @@ The `recurse` modes (D201) differ from the others:
   127.0.0.2-4, port 53, so the host's `net.ipv4.ip_unprivileged_port_start` must be 53 or less (the run says so
   and stops; restore it after). The names come from `compare.py`, not TelltaleDNS (`recurse-unique.txt`'s hash in
   `corpora.sha256`); a corpus of names under other zones would find no authority.
-- The servers start from `compare/recurse-root.hints`. dedensd's `root_hints` and its commented
-  `query_local_addresses` line are in `compare/dedensd-recurse.yaml`: the resolver refuses private addresses
-  unless that line is on, and the authorities are loopback ones.
+- The servers start from `compare/recurse-root.hints`. dedensd's `root_hints` and its `query_local_addresses: true`
+  line are in `compare/dedensd-recurse.yaml`: the resolver refuses private addresses unless that line is on, and the
+  authorities are loopback ones (Unbound's `do-not-query-localhost: no` in `unbound-recurse.conf` is the same).
 - Only servers with a `recursion` template in `SERVERS` run them: CoreDNS does not recurse, and TelltaleDNS's
   `recursive://` upstream has its 13 root addresses built in (`telltale-recursor`, no setting), so it cannot start
   from a root of ours.

@@ -99,7 +99,7 @@ fn reply<'a>(message: &'a Message<'a>) -> Reply<'a> {
     Reply::Response {
         message,
         seen: Marks::default(),
-        rtt: Duration::from_millis(20),
+        rtt: Some(Duration::from_millis(20)),
     }
 }
 
