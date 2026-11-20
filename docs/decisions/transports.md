@@ -576,9 +576,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     prefers XChaCha20) and then the highest serial.
   - Packets: a query is the client magic, the client key, the half-nonce, the tag and the ciphertext (68 bytes of
     overhead), a response the resolver magic, the nonce of both halves, the tag and the ciphertext (48). The resolver
-    nonce is never all zero (drawn again), and a client reads the response only after the magic, the half it sent
-    and that nonce, then the tag, the padding, the DNS message, its QR flag, its ID and its question (each failure has its own
-    error, `ResponseError`). Packets are at most 4096 bytes, a response under 4096.
+    nonce is never all zero (drawn again, 8 times at most, then `EncryptResponseError::ZeroNonce`), and a client reads
+    the response only after the magic, the half it sent and that nonce, then the tag, the padding, the DNS message, its
+    QR flag, its ID and its question (each failure has its own error, `ResponseError`). Packets are at most 4096 bytes,
+    a response under 4096.
   - Padding (ISO/IEC 7816-4: 0x80, then zeros): a UDP query is padded to a multiple of 64 and to 256 bytes at least
     (`QueryPadding::udp`); a TCP query by 1 to 256 bytes drawn from the randomness, a multiple of 64 in all (`tcp`); the
     caller may give any length (`to`, raised to leave room for the 0x80, and cut at the longest plaintext a packet

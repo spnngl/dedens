@@ -195,4 +195,7 @@ pub enum EncryptResponseError {
     /// The control field of a PQ response is longer than its two-byte length can say.
     #[error("control field of {0} bytes does not fit its 16-bit length")]
     ControlTooLong(usize),
+    /// The randomness gave only NUL bytes for the resolver half of the nonce, which is never all NUL, every time.
+    #[error("the randomness gave an all-NUL resolver nonce every time")]
+    ZeroNonce,
 }

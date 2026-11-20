@@ -355,7 +355,7 @@ impl ResponseContext {
     /// # Errors
     ///
     /// [`EncryptResponseError`] when `response` has to be truncated and is no DNS message, or when the packet has
-    /// no room for even the header and the question, or when the control field is longer than 65535 bytes.
+    /// no room for even the header and the question, or when the control field is longer than 65535 bytes, or when `rng` gives only NUL bytes for the nonce.
     pub fn encrypt_response(
         &self,
         response: &[u8],
@@ -441,10 +441,7 @@ impl ResponseContext {
             RESPONSE_OVERHEAD + preferred.min(plaintext_budget),
         );
 
-        let mut resolver_nonce = [0; NONCE_HALF_LEN];
-        while resolver_nonce.iter().all(|&byte| byte == 0) {
-            rng.fill_bytes(&mut resolver_nonce);
-        }
+        let resolver_nonce = resolver_nonce(rng)?;
         let mut nonce = [0; NONCE_LEN];
         nonce
             .iter_mut()
@@ -458,6 +455,23 @@ impl ResponseContext {
             .for_each(|(to, from)| *to = *from);
         Ok(packet)
     }
+}
+
+/// How many times the resolver half of a nonce is drawn before the randomness is given up on: an all-NUL draw has
+/// a chance of 2^-96, so a second draw is already a broken randomness.
+const NONCE_DRAWS: usize = 8;
+
+/// The resolver half of a response nonce, never all NUL: a draw of NUL bytes is drawn again, [`NONCE_DRAWS`] times
+/// at most.
+fn resolver_nonce(rng: &mut impl CryptoRng) -> Result<[u8; NONCE_HALF_LEN], EncryptResponseError> {
+    let mut nonce = [0; NONCE_HALF_LEN];
+    for _ in 0..NONCE_DRAWS {
+        rng.fill_bytes(&mut nonce);
+        if nonce.iter().any(|&byte| byte != 0) {
+            return Ok(nonce);
+        }
+    }
+    Err(EncryptResponseError::ZeroNonce)
 }
 
 /// The bytes a response packet is allocated with, so that it is never grown: the header, then the control field,
