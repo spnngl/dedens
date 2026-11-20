@@ -1528,7 +1528,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (BIND `max-recursion-depth` 7); `servers` 13 addresses asked and NS names used per delegation, BIND's
     `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 address lookups per delegation, A and AAAA each counted, after Unbound's
     `MAX_TARGET_NX` 5 (NXNSAttack, CVE-2020-12662), which counts NXDOMAIN lookups per client question, and its
-    `MAX_DP_TARGET_COUNT` 16 per delegation (BIND counts them within its 13); `time` 4.5 s, a stub's 5 s (glibc
+    `MAX_DP_TARGET_COUNT` 16 per delegation (BIND counts them within its 13); `MAX_ADDRESSES` 100 addresses known per
+    delegation, glue, lookups and cache together, Unbound's `delegpt_max_addr` (the scrubber keeps 100 glue
+    records already): an answer of thousands costs the draw no more; `time` 4.5 s, a stub's 5 s (glibc
     `RES_TIMEOUT`) less the SERVFAIL's way back. `queries`, `restarts`, `referrals` and `time` end the resolution;
     `servers`, `targets` and `depth` end the branch, the delegation asked trying its other servers, and are
     reported if the question fails.

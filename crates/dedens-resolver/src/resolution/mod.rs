@@ -802,10 +802,14 @@ impl Delegation {
         delegation
     }
 
-    /// Adds the addresses not known yet that may be asked ([`askable`]): every address of glue, a lookup, the cache
-    /// or the hints comes through here.
+    /// Adds the addresses not known yet that may be asked ([`askable`]), up to [`MAX_ADDRESSES`] known: every
+    /// address of glue, a lookup, the cache or the hints comes through here.
     fn add(&mut self, addresses: impl IntoIterator<Item = IpAddr>) {
         for address in addresses {
+            if self.known.len() >= MAX_ADDRESSES {
+                debug!(zone = %self.zone, "delegation at its address bound, the rest not taken");
+                break;
+            }
             if !askable(address, self.local) {
                 debug!(zone = %self.zone, %address, "local address not asked");
             } else if self.known.insert(address) {
@@ -828,6 +832,11 @@ impl Delegation {
             .retain(|server| !servers.contains(&server.ip()));
     }
 }
+
+/// The most addresses a delegation takes, whatever a lookup's answer or the cache holds, so that drawing among them
+/// stays cheap: 100, Unbound's `delegpt_max_addr` (`iter_delegpt.c`), as many as the glue kept from a referral
+/// (`scrub::MAX_GLUE`).
+const MAX_ADDRESSES: usize = 100;
 
 /// What a delegation does next.
 enum Ask {
