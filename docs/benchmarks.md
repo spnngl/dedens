@@ -522,6 +522,19 @@ sample in brackets; allocations a call.
   | second read | 0.59-0.69 s | 0.2-3.1 ms |
   | RSS, one read | 77 MB | 79 MB |
   | RSS, both held | 136-143 MB | 79 MB |
+- A name's key copied once (`Name::copy_wire`), not through a second 255-byte buffer zeroed for each lookup (audit
+  4), 2026-11-20. The bench binaries of `aa48a04` and after, run alternately 3 times, `--bench lookup query_labels
+  --sample-count 1000`; the range over the runs of the fastest sample, ns:
+
+  | Measure, labels | before | after |
+  |---|---|---|
+  | `lookup` 1 / 3 / 10 / 127 | 8.8-9.0 / 37.9-40.5 / 54.8-57.1 / 203-226 | 6.7-7.0 / 35.2-36.2 / 52.8-53.2 / 205-224 |
+  | `lookup_blocked` 10 / 123 | 87.0-90.9 / 252-255 | 88.3-94.2 / 239-245 |
+  | `lookup_empty` 1 / 3 / 10 / 127 | 7.1-7.3 / 8.4-8.8 / 7.7-8.2 / 15.4-15.6 | 5.1-5.2 / 6.4-6.9 / 6.4-6.6 / 14.3-14.5 |
+  | `query_labels` 1 / 3 / 10 / 127 | 79-81 / 104-109 / 126-130 / 422-456 | 82-85 / 107-111 / 127-133 / 417-443 |
+
+  About 2 ns a lookup, within the noise of a whole query. Rejected: writing the key label by label, which zeroes
+  nothing but costs about 1 ns a label (`lookup_empty` 127: 15 → 165 ns, `lookup` 127: 215 → 343 ns).
 
 ## DoH core (D82)
 
