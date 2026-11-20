@@ -399,35 +399,44 @@ impl ResponseContext {
                 control = wanted;
             }
         }
+        // The plaintext is written, padded and sealed after the room for the header, in a packet allocated once:
+        // the padding is 4 blocks at most.
+        let most = 2 + control.len() + response.len() + 4 * padding::BLOCK;
+        let mut packet = Vec::with_capacity(RESPONSE_OVERHEAD + most.min(plaintext_budget));
+        packet.resize(RESPONSE_OVERHEAD, 0);
         // `<control-len> <control>` goes before the response, in a PQ response only.
-        let mut plaintext = Vec::new();
         if self.is_pq() {
             let len = u16::try_from(control.len())
                 .map_err(|_| EncryptResponseError::ControlTooLong(control.len()))?;
-            plaintext.extend_from_slice(&len.to_be_bytes());
-            plaintext.extend_from_slice(&control);
+            packet.extend_from_slice(&len.to_be_bytes());
+            packet.extend_from_slice(&control);
         }
-        let response_budget = plaintext_budget.saturating_sub(plaintext.len());
+        let response_budget = plaintext_budget.saturating_sub(packet.len() - RESPONSE_OVERHEAD);
         if response.len() < response_budget {
-            plaintext.extend_from_slice(response);
+            packet.extend_from_slice(response);
         } else {
             let decoded = Message::decode(response)?;
-            let mut buf = vec![0; response_budget.saturating_sub(1)];
-            let encoded = decoded.message.encode_truncated(&mut buf)?;
-            buf.truncate(encoded.len);
+            let start = packet.len();
+            packet.resize(start + response_budget.saturating_sub(1), 0);
+            let (_, room) = packet.split_at_mut(start);
+            let encoded = decoded.message.encode_truncated(room)?;
             // `encode_truncated` leaves TC clear when only additional records were left out; the draft
             // wants it set whenever anything is.
             let [tc_byte, _] = Flags::TC.bits().to_be_bytes();
             if encoded.dropped > 0
-                && let Some(flags) = buf.get_mut(2)
+                && let Some(flags) = room.get_mut(2)
             {
                 *flags |= tc_byte;
             }
-            plaintext.extend_from_slice(&buf);
+            packet.truncate(start + encoded.len);
         }
+        let plaintext_len = packet.len() - RESPONSE_OVERHEAD;
         let extra_blocks = padding::response_extra_blocks(&self.shared, &self.client_nonce);
-        let preferred = plaintext.len() + padding::to_block(plaintext.len(), extra_blocks);
-        padding::pad(&mut plaintext, preferred.min(plaintext_budget));
+        let preferred = plaintext_len + padding::to_block(plaintext_len, extra_blocks);
+        padding::pad(
+            &mut packet,
+            RESPONSE_OVERHEAD + preferred.min(plaintext_budget),
+        );
 
         let mut resolver_nonce = [0; NONCE_HALF_LEN];
         while resolver_nonce.iter().all(|&byte| byte == 0) {
@@ -438,13 +447,12 @@ impl ResponseContext {
             .iter_mut()
             .zip(self.client_nonce.iter().chain(&resolver_nonce))
             .for_each(|(to, from)| *to = *from);
-        let tag = secretbox::seal(&self.shared, &nonce, &mut plaintext);
-
-        let mut packet = Vec::with_capacity(RESPONSE_OVERHEAD + plaintext.len());
-        packet.extend_from_slice(&RESPONSE_MAGIC);
-        packet.extend_from_slice(&nonce);
-        packet.extend_from_slice(&tag);
-        packet.extend_from_slice(&plaintext);
+        let (header, plaintext) = packet.split_at_mut(RESPONSE_OVERHEAD);
+        let tag = secretbox::seal(&self.shared, &nonce, plaintext);
+        header
+            .iter_mut()
+            .zip(RESPONSE_MAGIC.iter().chain(&nonce).chain(&tag))
+            .for_each(|(to, from)| *to = *from);
         Ok(packet)
     }
 }

@@ -945,6 +945,15 @@ differ by the stream cipher alone, and on equal plaintexts the gap is small and 
 costs 0.1-0.2 µs more on 128 and 192 bytes (15-40%, cause not investigated) and 10-20% less on 1216. One run of three
 had `decrypt_query_with` for XChaCha20 at 1.27 µs, a disturbed machine.
 
+The packets were once built from copies: a query sealed in its own buffer, then copied after a head built in a
+third, a response sealed in a buffer grown from empty and copied into the packet, a decrypted response copied out of
+its plaintext. Each is now padded and sealed in the packet it goes out in, and the response handed back in its
+plaintext buffer: 6 allocations to 4 to encrypt a query, 2 and a reallocation to 1 to encrypt a response, 5 to 4 to
+decrypt one (the rest is `Message::decode`). The time is the cipher's: fastest of five interleaved runs of the old
+and the new binary, 300 samples each, on a loaded machine (2026-11-20), 2-7% less on 72 to 161 bytes and 1-2% on
+1187 (encrypt a query, XChaCha20 0.61 to 0.57 µs and XSalsa20 0.52 to 0.49; encrypt a response `mx` 0.67 to 0.63
+and 0.58 to 0.54; decrypt a response `a` 0.65 to 0.62 and 0.48 to 0.46).
+
 ## PQDNSCrypt (D101)
 
 `benches/dnscrypt.rs`, the `pq_*` benches, one call each on the captured response `a` (72 bytes), with fixed bytes for the
