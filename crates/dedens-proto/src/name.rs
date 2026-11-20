@@ -107,6 +107,20 @@ impl<'a> Name<'a> {
         unpack(msg, start, buf)
     }
 
+    /// The uncompressed wire form copied to the front of `buf`, for a caller that changes it: a name stored
+    /// uncompressed is copied once, with no second buffer to zero as [`Name::to_wire`] needs.
+    pub fn copy_wire<'b>(&self, buf: &'b mut [u8; MAX_NAME_LEN]) -> &'b mut [u8] {
+        let wire = &mut buf[..self.wire_len()];
+        match &self.0 {
+            Repr::Slice(flat) => wire.copy_from_slice(flat),
+            Repr::Owned(flat) => wire.copy_from_slice(flat),
+            Repr::Packed { msg, start, .. } => {
+                wire.copy_from_slice(unpack(msg, usize::from(*start), &mut [0; MAX_NAME_LEN]));
+            }
+        }
+        wire
+    }
+
     /// The uncompressed wire form when it is stored as is.
     pub(crate) fn flat(&self) -> Option<&[u8]> {
         match &self.0 {
@@ -939,6 +953,21 @@ mod tests {
             [1, b'a', 2, b'b', b'c', 0]
         );
         assert_eq!(Name::root().to_wire(&mut buf), [0]);
+    }
+
+    /// A copy of the wire form is that form, whichever way the name is stored.
+    #[test]
+    fn the_copied_wire_form_is_the_wire_form() {
+        // 12: "a" root; 15: "B" + pointer to 12.
+        let msg = [&[0; 12][..], &[1, b'a', 0, 1, b'B', 0xC0, 12]].concat();
+        let mut r = Reader::new(&msg);
+        r.bytes(15).unwrap();
+        let packed = Name::decode(&mut r).unwrap();
+        for stored in [packed, name(&[b"a", b"bc"]), Name::root()] {
+            let mut buf = [0xff; MAX_NAME_LEN];
+            let expected = stored.to_wire(&mut [0; MAX_NAME_LEN]).to_vec();
+            assert_eq!(stored.copy_wire(&mut buf), expected);
+        }
     }
 
     #[test]

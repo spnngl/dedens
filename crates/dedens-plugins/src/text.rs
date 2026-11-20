@@ -78,11 +78,32 @@ impl<'b> Key<'b> {
 
 /// The [`Key`] of `name`, written to `buf`.
 pub(crate) fn key<'b>(name: &Name<'_>, buf: &'b mut [u8; MAX_NAME_LEN]) -> Key<'b> {
-    let mut wire = [0; MAX_NAME_LEN];
-    let wire = name.to_wire(&mut wire);
-    let key = &mut buf[..wire.len()];
-    key.copy_from_slice(wire);
+    let key = name.copy_wire(buf);
     // Length bytes stay below 64, under `A`.
     key.make_ascii_lowercase();
     Key(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use dedens_proto::{MAX_NAME_LEN, Message, Name};
+    use dedens_testkit::captured;
+
+    use super::key;
+
+    fn key_of(name: &Name<'_>) -> Vec<u8> {
+        key(name, &mut [0; MAX_NAME_LEN]).as_bytes().to_vec()
+    }
+
+    /// A key is the name's wire form in lowercase, a compressed one followed to its end.
+    #[test]
+    fn a_key_is_the_lowercase_wire_form() {
+        let wire = captured("a");
+        let decoded = Message::decode(&wire).expect("a message");
+        let owner = &decoded.message.answer[0].name;
+        assert_eq!(key_of(owner), b"\x07example\x03com\x00");
+        let mixed: Name<'_> = "WwW.ExAmple.COM.".parse().expect("a name");
+        assert_eq!(key_of(&mixed), b"\x03www\x07example\x03com\x00");
+        assert_eq!(key_of(&Name::root()), b"\x00");
+    }
 }
