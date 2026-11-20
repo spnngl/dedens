@@ -379,7 +379,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `WildcardAnswer`, `Absent`, `InsecureDelegation`) with the TTL of the
   proof, the least of the records used (RFC 9077 §3), or an `Unproven` reason: the caller picks the verdict, as for
   `Budget` (D71). A DS question's `NoData` is the parent's: an NSEC or NSEC3 with SOA is the child's and proves
-  nothing of the delegation (`FromChildApex`, RFC 4035 §5.2, RFC 6840 §4.4), and NS without DS and SOA, or an
+  nothing of the delegation (`FromChildApex`, RFC 4035 §5.2, RFC 6840 §4.4), but at the root, which has no parent
+  (Unbound's `val_nsec.c`), and NS without DS and SOA, or an
   opt-out span, is `InsecureDelegation`, which is also the proof of a referral to an unsigned child (RFC 5155
   §8.9). Per RFC 6840 §4.1 an NSEC or NSEC3 at a delegation proves no name below it nor a type at its owner but
   DS, and one with DNAME proves no name below its owner. The CNAME bit counts in every no data (§4.3). NSEC3

@@ -209,13 +209,14 @@ impl<'r> Evidence<'r> {
     }
 }
 
-/// What the types at a name the records match say about a question of `qtype`.
-fn at_name(types: &TypeBitmap<'_>, qtype: RecordType) -> Result<Fact, Unproven> {
+/// What the types at `qname`, which the records match, say about a question of `qtype`. The root has no parent:
+/// its own apex record proves it has no DS, as Unbound reads it (`val_nsec.c`).
+fn at_name(types: &TypeBitmap<'_>, qname: &Name<'_>, qtype: RecordType) -> Result<Fact, Unproven> {
     let delegation = types.contains(RecordType::NS) && !types.contains(RecordType::SOA);
     if types.contains(RecordType::NXNAME) {
         Ok(Fact::NameError { compact: true })
     } else if qtype == RecordType::DS {
-        if types.contains(RecordType::SOA) {
+        if types.contains(RecordType::SOA) && !qname.is_root() {
             Err(Unproven::FromChildApex)
         } else if types.contains(RecordType::DS) || types.contains(RecordType::CNAME) {
             Err(Unproven::TypePresent)
