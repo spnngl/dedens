@@ -268,7 +268,8 @@ careful sanitizer="" package="":
 # `listeners::tcp_frames` tests.
 # Unconfined seccomp, for io_uring, which the host's `kernel.io_uring_disabled` must allow. A linked worktree's `.git`
 # points outside the mount, so the repository tests need a clone.
-# Volumes, dedens-musl-registry and dedens-musl-<arch>, keep the registry and the build between runs.
+# Volumes, dedens-musl-registry and dedens-musl-<arch>, keep the registry and the build between runs;
+# DEDENS_MUSL_REGISTRY and DEDENS_MUSL_TARGET, when set, name host directories instead (CI caches them).
 # DEDENS_PRIVILEGES_REQUIRED, when set, passes in: a root test that would skip fails.
 musl target *cmd="test --workspace --all-features":
     #!/usr/bin/env bash
@@ -279,7 +280,8 @@ musl target *cmd="test --workspace --all-features":
     fi
     channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
     {{ container }} run --rm --security-opt seccomp=unconfined --security-opt label=disable -v "$(pwd):/src:ro" -w /src \
-        -v dedens-musl-registry:/usr/local/cargo/registry -v "dedens-musl-{{ arch() }}:/target" \
+        -v "${DEDENS_MUSL_REGISTRY:-dedens-musl-registry}:/usr/local/cargo/registry" \
+        -v "${DEDENS_MUSL_TARGET:-dedens-musl-{{ arch() }}}:/target" \
         -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_TARGET={{ target }} -e "RUSTUP_TOOLCHAIN=$channel" -e DEDENS_PRIVILEGES_REQUIRED "rust:$channel-alpine" \
         sh -c 'apk add --quiet --no-cache git lld procps-ng && git config --global --add safe.directory /src && exec cargo "$@"' cargo {{ cmd }}
 
