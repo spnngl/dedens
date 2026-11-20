@@ -193,6 +193,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - `hosts`: lines in the `/etc/hosts` format, inline then from a file; A, AAAA and the PTR of each address to
     its first name, TTL 3600 unless set (as `CoreDNS`); ANY gets one RRset of the name, A then AAAA then PTR
     (RFC 8482 §4.1); a listed name asked another type has no data (RFC 2308 §2.2) unless `fallthrough` passes it on; addresses with a zone (`fe80::1%lo0`) are left out.
+    The no data has AA and no SOA, as `tlds`' (D128): the stage holds names, not a zone, so a SOA would be invented,
+    and an answer has no authority section to carry it; RFC 2308 §3's SOA binds a server authoritative for a zone.
+    The cost (§5): no cache downstream keeps it, so each repeat is a lookup in memory here (and an edit shows at once).
+    Rejected (audit 4): a SOA made per name, or one for the root (it would claim a zone's authority for local data).
   - `blocklist`: names, one a line or in the `/etc/hosts` format of published lists, blocking themselves and
     their subdomains; `action` NXDOMAIN (default), NODATA, REFUSED or the unspecified address, each with EDE 15
     Blocked (RFC 8914 §4.16), AA clear. Of hosts lines only those of `0.0.0.0`, `::`, `127.0.0.1`, `::1` count,
