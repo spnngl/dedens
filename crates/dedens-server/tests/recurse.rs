@@ -649,6 +649,18 @@ fn d195_the_stage_hands_its_client_share() {
     );
 }
 
+/// The stage hands its local-address switch, for a reload to carry it, off by default (D191).
+#[test]
+fn d191_the_stage_hands_its_local_address_switch() {
+    let caches = caches(Config::default());
+    assert!(!unminimised(Arc::clone(&caches)).local_addresses());
+    assert!(
+        unminimised(caches)
+            .asking_local_addresses(true)
+            .local_addresses()
+    );
+}
+
 /// A resolution shed for the waiters on its query (`Resolving::shed`) gives its unit back: nothing was sent.
 #[test]
 fn d195_a_resolution_shed_gets_servfail_not_ready_and_pays_nothing() {
