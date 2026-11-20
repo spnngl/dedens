@@ -177,7 +177,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D144 (builds on D16) The tests under cargo-careful, outside the gate: `just careful address` runs the workspace's
   tests on a standard library rebuilt with its debug assertions and UB checks, under AddressSanitizer, in
   `deep.yml` on each pull request, informational: a `careful` job per package (`just careful address <package>`),
-  2 h each, as the whole workspace in one job outlasted 60 min (dedens-net's `tcp.rs` walks all 65 536 IDs). Our code has no `unsafe` (D15), so Miri has
+  20 min each, as the whole workspace in one job outlasted 60 min (dedens-net's `tcp.rs` walks all 65 536 IDs);
+  the slowest, dedens-sim, took 7 min in each of 15 runs (2026-11-20), where 2 h let a hung test hold a runner. Our code has no `unsafe` (D15), so Miri has
   nothing of ours to check, and it runs neither io_uring's system calls nor ring's assembly; the `unsafe` is in
   the dependencies (compio's io_uring driver, rustls and ring, quinn-proto, flume), and careful reaches it through
   the real tests. Leak checks are off: a leak is no memory error. The sanitizer is Linux-only: cargo-careful's
