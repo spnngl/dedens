@@ -4,7 +4,7 @@ Shared workflows come from `spnngl/.github` at `@main`; third-party actions are 
 `# vX` comment, and tool versions carry a `# renovate:` comment. The shared Renovate regex reads only
 `KEY: "version"` lines, so `taiki-e/install-action` takes `tool@${{ env.TOOL_VERSION }}` from a job `env`.
 Every job running steps has a `timeout-minutes`; every workflow a `concurrency` group cancelling only pull request
-runs. `actionlint` and `zizmor` lint these files. The ruleset requires `ci.yml`'s `gate`, `betterleaks` and
+runs, but `fuzz-lock.yml`, which cancels on its Renovate branches too. `actionlint` and `zizmor` lint these files. The ruleset requires `ci.yml`'s `gate`, `betterleaks` and
 `conventional-commits`: no other workflow blocks a merge. Each opens with a comment saying what it runs and when; a
 new one does too.
 
