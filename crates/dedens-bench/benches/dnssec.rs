@@ -10,9 +10,10 @@ use std::sync::{Arc, LazyLock};
 use dedens_dnssec::crypto::{Budget, ds_digest, key_tag, nsec3_hash, verify};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
 use dedens_dnssec::{Limits, Next, TrustAnchors, Validator, Verdict};
-use dedens_proto::edns::{Edns, EdnsFlags};
+use dedens_proto::edns::{Edns, EdnsFlags, EdnsOption, InfoCode};
 use dedens_proto::{
-    DigestType, Message, Name, Nsec3HashAlgorithm, Record, RecordType, SecAlgorithm, Transport,
+    DigestType, Flags, Header, Message, Name, Nsec3HashAlgorithm, Rcode, Record, RecordType,
+    SecAlgorithm, Transport,
 };
 use dedens_server::{
     Allowance, Budget as Share, Budgets, DEFAULT_SHARE, Forward, MAX_BUDGET, Pipeline, Stage, Step,
@@ -453,10 +454,12 @@ static WARM: LazyLock<Validator> = LazyLock::new(|| {
 #[divan::bench(threads = [1, 2, 4, 8])]
 fn validate_cold(bencher: divan::Bencher<'_, '_>) {
     let response = response("alg8_a");
-    bencher.bench(|| {
-        let validator = Validator::new(TrustAnchors::root(), Limits::default());
-        validate(&validator, black_box(&response))
-    });
+    bencher
+        .with_inputs(|| Validator::new(TrustAnchors::root(), Limits::default()))
+        .bench_refs(|validator| {
+            let verdict = validate(validator, black_box(&response));
+            assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+        });
 }
 
 /// The same under a validator whose key cache has the chain: no question, one signature check for the answer.
@@ -464,7 +467,10 @@ fn validate_cold(bencher: divan::Bencher<'_, '_>) {
 fn validate_warm(bencher: divan::Bencher<'_, '_>) {
     let response = response("alg8_a");
     let validator = &*WARM;
-    bencher.bench(|| validate(validator, black_box(&response)));
+    bencher.bench(|| {
+        let verdict = validate(validator, black_box(&response));
+        assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+    });
 }
 
 /// The shape of the comparison's `dnssec` mode (D183) in one validation: a name a wildcard answers, in a zone whose
@@ -568,6 +574,41 @@ fn serve(pipeline: &Pipeline, query: &[u8], out: &mut [u8]) -> Step {
     }
 }
 
+/// The header of the reply [`serve`] gave: read in the timing, a few bytes, so that each run tells a validated answer
+/// from a shed query.
+fn reply(step: Step, out: &[u8]) -> Header {
+    match step {
+        Step::Reply(len) => Header::peek(&out[..len]).expect("a reply has a header"),
+        other => unreachable!("expected a reply, got {other:?}"),
+    }
+}
+
+/// Whether `header` is that of a validated answer: NOERROR and AD (RFC 4035 §3.2.3).
+fn validated(header: Header) -> bool {
+    header.rcode == Rcode::NOERROR && header.flags.contains(Flags::AD)
+}
+
+/// Whether `pipeline` sheds `query` as one past its wait (D186), SERVFAIL with EDE 14, Not Ready, and not as a
+/// bogus answer: the whole reply read once, outside the timing.
+fn sheds(pipeline: &Pipeline, query: &[u8]) -> bool {
+    let mut out = vec![0; 1232];
+    let Step::Reply(len) = serve(pipeline, query, &mut out) else {
+        return false;
+    };
+    let reply = Message::decode(&out[..len])
+        .expect("a reply decodes")
+        .message;
+    let ede = reply
+        .edns
+        .iter()
+        .flat_map(|edns| &edns.options)
+        .find_map(|option| match option {
+            EdnsOption::Ede(ede) => Some(ede.code),
+            _ => None,
+        });
+    reply.rcode() == Rcode::SERVFAIL && ede == Some(InfoCode::NOT_READY)
+}
+
 /// An allowance no bench spends.
 const ENDLESS: Allowance = Allowance {
     per_second: u32::MAX,
@@ -597,10 +638,8 @@ fn serve_cold(bencher: divan::Bencher<'_, '_>) {
             (pipeline, vec![0; 1232])
         })
         .bench_refs(|(pipeline, out)| {
-            assert!(matches!(
-                serve(pipeline, black_box(&query), out),
-                Step::Reply(_)
-            ));
+            let step = serve(pipeline, black_box(&query), out);
+            assert!(validated(reply(step, out)));
         });
 }
 
@@ -613,10 +652,8 @@ fn serve_warm(bencher: divan::Bencher<'_, '_>) {
         LazyLock::new(|| validating_pipeline(WARM.clone(), ENDLESS, ENDLESS_SHARE));
     let query = client_query();
     bencher.with_inputs(|| vec![0; 1232]).bench_refs(|out| {
-        assert!(matches!(
-            serve(&PIPELINE, black_box(&query), out),
-            Step::Reply(_)
-        ));
+        let step = serve(&PIPELINE, black_box(&query), out);
+        assert!(validated(reply(step, out)));
     });
 }
 
@@ -632,11 +669,10 @@ fn serve_shed(bencher: divan::Bencher<'_, '_>) {
         validating_pipeline(WARM.clone(), spent, ENDLESS_SHARE)
     });
     let query = client_query();
+    assert!(sheds(&PIPELINE, &query));
     bencher.with_inputs(|| vec![0; 1232]).bench_refs(|out| {
-        assert!(matches!(
-            serve(&PIPELINE, black_box(&query), out),
-            Step::Reply(_)
-        ));
+        let step = serve(&PIPELINE, black_box(&query), out);
+        assert_eq!(reply(step, out).rcode, Rcode::SERVFAIL);
     });
 }
 
@@ -652,10 +688,9 @@ fn serve_shed_share(bencher: divan::Bencher<'_, '_>) {
         validating_pipeline(WARM.clone(), ENDLESS, spent)
     });
     let query = client_query();
+    assert!(sheds(&PIPELINE, &query));
     bencher.with_inputs(|| vec![0; 1232]).bench_refs(|out| {
-        assert!(matches!(
-            serve(&PIPELINE, black_box(&query), out),
-            Step::Reply(_)
-        ));
+        let step = serve(&PIPELINE, black_box(&query), out);
+        assert_eq!(reply(step, out).rcode, Rcode::SERVFAIL);
     });
 }
