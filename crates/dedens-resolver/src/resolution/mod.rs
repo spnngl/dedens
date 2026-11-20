@@ -11,7 +11,7 @@
 //! the same way, by the same resolution and within its bounds, and its verdict is recorded on the cached `RRsets`.
 
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::slice;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2128,31 +2128,53 @@ fn closest(
 }
 
 /// Whether a server at `address` may be asked: any if `local` ([`Limits::query_local_addresses`]), else one at an
-/// address outside the RFC 6890 special-purpose ranges a zone could aim the resolver at its own host, its network
-/// or many hosts with: loopback (127/8, `::1`), "this network" (0/8, `::`), private (10/8, 172.16/12, 192.168/16,
-/// `fc00::/7`), shared (100.64/10), link-local (169.254/16, `fe80::/10`), IETF protocol assignments (192.0.0/24),
-/// multicast (224/4, `ff00::/8`), reserved (240/4) and broadcast (255.255.255.255), each IPv4-mapped too (D191).
+/// address outside the special-purpose ranges a zone could aim the resolver at its own host, its network or many
+/// hosts with (D191): [`special_v4`], and of IPv6 the unspecified address and loopback, the ranges
+/// `fc00::/7`, `fe80::/10`, the deprecated site-local `fec0::/10` and multicast `ff00::/8`, every IPv4-mapped
+/// address (`::ffff:0:0/96`, as Unbound's `do-not-query-localhost`) and IPv4-compatible one (`::/96`), the
+/// local-use NAT64 prefix (`64:ff9b:1::/48`, RFC 8215), and a NAT64 (`64:ff9b::/96`, RFC 6052) or 6to4
+/// (`2002::/16`, RFC 3056) address embedding an IPv4 address that is [`special_v4`].
 fn askable(address: IpAddr, local: bool) -> bool {
     local
-        || match address.to_canonical() {
-            IpAddr::V4(v4) => {
-                let [first, second, third, _] = v4.octets();
-                !(v4.is_loopback()
-                    || first == 0
-                    || v4.is_private()
-                    || (first == 100 && second & 0xc0 == 64)
-                    || v4.is_link_local()
-                    || (first, second, third) == (192, 0, 0)
-                    || first >= 224)
-            }
-            IpAddr::V6(v6) => {
-                !(v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_unique_local()
-                    || v6.is_unicast_link_local()
-                    || v6.is_multicast())
-            }
+        || !match address {
+            IpAddr::V4(v4) => special_v4(v4),
+            IpAddr::V6(v6) => special_v6(v6),
         }
+}
+
+/// Whether `v4` is in a special-purpose range of RFC 6890 no server is asked at: loopback (127/8), "this network"
+/// (0/8), private (10/8, 172.16/12, 192.168/16), shared (100.64/10), link-local (169.254/16), IETF protocol
+/// assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4), reserved (240/4) and broadcast.
+fn special_v4(v4: Ipv4Addr) -> bool {
+    let [first, second, third, _] = v4.octets();
+    v4.is_loopback()
+        || first == 0
+        || v4.is_private()
+        || (first == 100 && second & 0xc0 == 64)
+        || v4.is_link_local()
+        || (first, second, third) == (192, 0, 0)
+        || (first == 198 && second & 0xfe == 18)
+        || first >= 224
+}
+
+/// Whether `v6` is an address no server is asked at, as [`askable`] lists.
+fn special_v6(v6: Ipv6Addr) -> bool {
+    let segments = v6.segments();
+    // The IPv4 address embedded in the segments `high` and `low`.
+    let embedded =
+        |high: u16, low: u16| special_v4(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
+    v6.is_loopback()
+        || v6.is_unspecified()
+        || v6.is_unique_local()
+        || v6.is_unicast_link_local()
+        || segments
+            .first()
+            .is_some_and(|&first| first & 0xffc0 == 0xfec0)
+        || v6.is_multicast()
+        || matches!(segments, [0, 0, 0, 0, 0, 0 | 0xffff, ..])
+        || matches!(segments, [0x64, 0xff9b, 1, ..])
+        || matches!(segments, [0x64, 0xff9b, 0, 0, 0, 0, high, low] if embedded(high, low))
+        || matches!(segments, [0x2002, high, low, ..] if embedded(high, low))
 }
 
 /// The `RRsets` of `records`, as `kept` holds them, grouped by the scrubber with its ranks (D192), in the order their

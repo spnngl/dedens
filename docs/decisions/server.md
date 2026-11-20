@@ -1512,8 +1512,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Addresses: an address at a special-purpose range of RFC 6890 is not asked unless `Limits::query_local_addresses`
     (`dedensd`'s `recurse` switch of the same name, default false): loopback (127/8, `::1`), "this network" (0/8,
     `::`), private (10/8, 172.16/12, 192.168/16, fc00::/7), shared (100.64/10), link-local (169.254/16, fe80::/10),
-    IETF protocol assignments (192.0.0/24), multicast (224/4, ff00::/8), reserved (240/4) and broadcast, each
-    IPv4-mapped too. A zone's glue, a name's addresses or a delegation cached could otherwise aim the resolver at
+    IETF protocol assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4, ff00::/8), reserved
+    (240/4), broadcast, and of IPv6 also: every IPv4-mapped address (`::ffff:0:0/96`, a public IPv4 too, as
+    Unbound's `do-not-query-localhost`: the same host would take two infra entries, and a `V6ONLY` socket cannot
+    reach it), the deprecated site-local `fec0::/10`, the IPv4-compatible `::/96`, the local-use NAT64
+    `64:ff9b:1::/48` (RFC 8215, not globally reachable, the embedded IPv4's place depends on the prefix length of
+    RFC 6052 §2.2), and a well-known NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`) address embedding one of the
+    IPv4 ranges above (RFC 6052 §3.1 has a NAT64 gateway refuse them, but a zone can still aim the resolver at
+    one that does not). A NAT64 or 6to4 address embedding a global IPv4 is asked. A zone's glue, a name's
+    addresses or a delegation cached could otherwise aim the resolver at
     its own host, its network or many hosts (SSRF, amplification). Every address enters through `Delegation::add`,
     which drops those; a cached delegation with no address left to ask is skipped for the TLD's or root hints. This
     goes beyond Unbound's `do-not-query-localhost` (on by default: loopback and "this network" only; its
