@@ -152,6 +152,10 @@ pub(crate) struct Kept {
     /// The anchors served and those of D128 the last warning was about, until they agree again: the same pair is
     /// not warned of at each reload.
     told: Option<(TrustAnchors, TrustAnchors)>,
+    /// Whether the last [`Kept::anchors`] served the seed as it is, the state not readable then: that is what the
+    /// validators hold, not what the state serves once it reads again (RFC 5011 §2.1: a revoked key the seed
+    /// lists is trusted until they are loaded again).
+    unfiltered: bool,
 }
 
 /// What [`Kept`] read.
@@ -216,7 +220,8 @@ impl Kept {
     /// The root anchors the validators trust, `seed` those of D128: the rollover's, warned of when they disagree
     /// with `seed`; when it holds revoked keys only, `seed` less those; else `seed`.
     pub(crate) fn anchors(&mut self, state_dir: &Path, seed: &TrustAnchors) -> TrustAnchors {
-        if !self.load(state_dir) {
+        self.unfiltered = !self.load(state_dir);
+        if self.unfiltered {
             return seed.clone();
         }
         let Some(rollover) = self.rollover() else {
@@ -266,8 +271,16 @@ impl Kept {
             };
         }
         let was_full = self.rollover().is_some_and(|rollover| rollover.is_full());
-        let before =
-            (self.rollover()).map(|rollover| (rollover.to_string(), served(rollover, seed)));
+        // The validators hold the seed as it is when the state could not be read at their last load.
+        let unfiltered = std::mem::take(&mut self.unfiltered);
+        let before = (self.rollover()).map(|rollover| {
+            let held = if unfiltered {
+                seed.clone()
+            } else {
+                served(rollover, seed)
+            };
+            (rollover.to_string(), held)
+        });
         let followed = match self.rollover() {
             // A state that missed a whole rollover, offline past it, is replaced by the download that did not, its
             // revoked keys kept.
@@ -669,6 +682,42 @@ pub(crate) mod tests {
     fn trusts_2010(anchors: &TrustAnchors) -> bool {
         let text = anchors.to_string();
         text.contains("19036") || text.contains("AwEAAagAIKlVZrpC6Ia7")
+    }
+
+    /// D200, RFC 5011 §2.1: the validators loaded while the state could not be read were served the downloaded
+    /// anchors, whatever revoked keys they list; the first answer after it reads again reloads them, though it moves
+    /// nothing, so that a revoked key is not trusted until the next SIGHUP.
+    #[test]
+    fn a_state_readable_again_replaces_the_seed_served_meanwhile() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if nix::unistd::geteuid().is_root() {
+            // Root reads any file.
+            return;
+        }
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        let path = dir.join(STATE);
+        let march = snapshot("20190305003355");
+        fs::write(
+            &path,
+            format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010()),
+        )
+        .unwrap();
+        Kept::default().observe(&march, &seed, dir, MARCH_2019);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\nrevoked "), "{text}");
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut kept = Kept::default();
+        assert!(trusts_2010(&kept.anchors(dir, &seed)), "the seed, as is");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let observed = kept.observe(&march, &seed, dir, MARCH_2019 + 60 * 60);
+        assert!(observed.changed);
+        assert!(!trusts_2010(&kept.anchors(dir, &seed)));
+        // The seed served no more, an answer that moves nothing reloads nothing.
+        let again = kept.observe(&march, &seed, dir, MARCH_2019 + 2 * 60 * 60);
+        assert!(!again.changed);
     }
 
     /// D200: a disagreement of the anchors followed with those of D128 is warned of once, at each change of
