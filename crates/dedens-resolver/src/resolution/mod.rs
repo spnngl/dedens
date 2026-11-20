@@ -86,11 +86,6 @@ pub struct Limits {
     /// Time from start to answer: 4.5 s, a stub's 5 s timer (glibc's `RES_TIMEOUT`) less the time for the
     /// SERVFAIL to reach it before it asks again.
     pub time: Duration,
-    /// Whether a server at a special-purpose address is asked: loopback, private, link-local, multicast and the
-    /// rest `askable` lists. False: a zone would aim the resolver at its own host, its network, or many hosts at
-    /// once, as Unbound's `do-not-query-localhost` (on by default) keeps it off loopback and "this network"; true
-    /// for authorities on a test's own host or network (D191).
-    pub query_local_addresses: bool,
 }
 
 impl Default for Limits {
@@ -104,7 +99,6 @@ impl Default for Limits {
             targets: 5,
             validation: 32,
             time: Duration::from_millis(4500),
-            query_local_addresses: false,
         }
     }
 }
@@ -435,6 +429,8 @@ pub enum Reply<'a> {
 pub struct Resolution {
     caches: Arc<Caches>,
     limits: Limits,
+    /// Whether a server at a special-purpose address is asked ([`Resolution::asking_local_addresses`]).
+    local: bool,
     minimisation: Minimisation,
     /// When it started, for [`Limits::time`].
     started: Duration,
@@ -773,7 +769,7 @@ struct Delegation {
     /// Address lookups started.
     looked_up: usize,
     heard: Heard,
-    /// Whether its servers at local addresses are asked ([`Limits::query_local_addresses`]).
+    /// Whether its servers at local addresses are asked ([`Resolution::asking_local_addresses`]).
     local: bool,
 }
 
@@ -868,6 +864,7 @@ impl Resolution {
         Ok(Self {
             caches,
             limits,
+            local: false,
             minimisation,
             started: now,
             started_secs: secs(now),
@@ -890,6 +887,18 @@ impl Resolution {
             found: HashMap::new(),
             settled: None,
         })
+    }
+
+    /// Has it ask servers at special-purpose addresses too, if `ask`: loopback, private, link-local, multicast
+    /// and the rest [`askable`] lists. Off by default: a zone would aim the resolver at its own host, its network,
+    /// or many hosts at once, as Unbound's `do-not-query-localhost` (on by default) keeps it off loopback and
+    /// "this network"; on for authorities on a test's own host or network (D191). It is the resolution's, not
+    /// [`Limits`]' or the caches': a count bounds what a client costs, and a reload that changes the switch keeps
+    /// the caches.
+    #[must_use]
+    pub const fn asking_local_addresses(mut self, ask: bool) -> Self {
+        self.local = ask;
+        self
     }
 
     /// Has the answer validated by `validator` at `unix`, the time in seconds since the Unix epoch that signatures
@@ -1258,7 +1267,7 @@ impl Resolution {
             return self.restart(vec![cname], target);
         }
         let parent = qtype == RecordType::DS;
-        let delegation = closest(&caches, name, parent, &self.limits, now);
+        let delegation = closest(&caches, name, parent, (&self.limits, self.local), now);
         if let Some(task) = self.tasks.looping(&delegation.zone) {
             return self.abandon(&task);
         }
@@ -1456,8 +1465,7 @@ impl Resolution {
             }
             known.extend(at);
         }
-        let local = self.limits.query_local_addresses;
-        Delegation::new(zone, Source::Parent, known, missing, local)
+        Delegation::new(zone, Source::Parent, known, missing, self.local)
     }
 
     /// Records what the server asked did, for the failure of its delegation.
@@ -2075,17 +2083,16 @@ fn cached_addresses(rrsets: &RrsetCache, name: &Name<'_>, now: u32) -> Vec<IpAdd
         .collect()
 }
 
-/// The closest delegation above `name` the caches know, strictly above it if `parent` (the root's hints for the root): an NS
-/// `RRset` with an address that may be asked ([`askable`]) for one of its first [`Limits::servers`] servers, else a
-/// TLD's hints, else the root's (RFC 1034 §5.3.3 step 2).
+/// The closest delegation above `name` the caches know, strictly above it if `parent` (the root's hints for the
+/// root): an NS `RRset` with an address that may be asked ([`askable`], `local` for any) for one of its first
+/// [`Limits::servers`] servers, else a TLD's hints, else the root's (RFC 1034 §5.3.3 step 2).
 fn closest(
     caches: &Caches,
     name: &Name<'_>,
     parent: bool,
-    limits: &Limits,
+    (limits, local): (&Limits, bool),
     now: u32,
 ) -> Delegation {
-    let local = limits.query_local_addresses;
     let mut buf = [0; MAX_NAME_LEN];
     let wire = name.to_wire(&mut buf);
     // Each suffix of the name, longest first and the root last, borrowed from its wire form: a label is its
@@ -2127,7 +2134,7 @@ fn closest(
     hinted(Name::root(), caches.roots.servers(), local)
 }
 
-/// Whether a server at `address` may be asked: any if `local` ([`Limits::query_local_addresses`]), else one at an
+/// Whether a server at `address` may be asked: any if `local` ([`Resolution::asking_local_addresses`]), else one at an
 /// address outside the special-purpose ranges a zone could aim the resolver at its own host, its network or many
 /// hosts with (D191): `special_v4`, and of IPv6 the unspecified address and loopback, the ranges
 /// `fc00::/7`, `fe80::/10`, the deprecated site-local `fec0::/10` and multicast `ff00::/8`, every IPv4-mapped

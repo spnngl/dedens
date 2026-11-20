@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,7 +35,7 @@ pub(super) struct RecurseFile {
     #[serde(default)]
     local_zones: LocalZonesFile,
     /// Whether servers at loopback, private and the other special-purpose addresses are asked:
-    /// `Limits::query_local_addresses`.
+    /// `Recurse::asking_local_addresses`.
     #[serde(default)]
     query_local_addresses: bool,
     client_share: Option<BudgetFile>,
@@ -99,8 +99,6 @@ const MAX: Limits = Limits {
     validation: 200,
     // A client gives up well before, and a resolution holds one of the thread's upstream queries (D47) all along.
     time: Duration::from_secs(30),
-    // A switch, not a count: either setting is allowed.
-    query_local_addresses: true,
 };
 
 /// How much of the names asked the servers see (RFC 9156, D198).
@@ -173,36 +171,18 @@ pub(super) fn recurse(
         .unwrap_or_default();
     let cache = &cache;
     let context = || format!("stage `{name}`");
-    let limits = Limits {
-        query_local_addresses: file.query_local_addresses,
-        ..limits(file.limits).with_context(context)?
-    };
+    let limits = limits(file.limits).with_context(context)?;
     let rrset_bytes = file
         .rrset_cache_bytes
         .map_or(DEFAULT_CAPACITY, NonZeroUsize::get);
     let infra_bytes =
         (file.infra_cache_bytes).map_or(InfraCache::DEFAULT_CAPACITY, NonZeroUsize::get);
     let (roots, tlds) = match file.root_hints {
-        Some(path) => {
-            let text = fs::read(&path).with_context(|| {
-                format!(
-                    "stage `{name}`: `root_hints`: cannot read {}",
-                    path.display()
-                )
-            })?;
-            let roots = RootHints::read(&text)
-                .with_context(|| format!("stage `{name}`: `root_hints`: {}", path.display()))?;
-            ensure!(
-                file.query_local_addresses
-                    || (roots.servers().iter())
-                        .flat_map(Server::addresses)
-                        .any(|address| askable(address, false)),
-                "stage `{name}`: `root_hints`: {} holds no address that is asked (loopback, private and the other \
-                 special-purpose ranges are not unless `query_local_addresses` is set)",
-                path.display()
-            );
-            (roots, None)
-        }
+        Some(path) => (
+            read_hints(&path, file.query_local_addresses)
+                .with_context(|| format!("stage `{name}`: `root_hints`"))?,
+            None,
+        ),
         None => (RootHints::bundled().clone(), Some(Tlds::bundled().clone())),
     };
     let kept = previous.stages().iter().find_map(|stage| match stage {
@@ -243,6 +223,7 @@ pub(super) fn recurse(
     };
     let mut stage = Recurse::new(caches)
         .with_limits(limits)
+        .asking_local_addresses(file.query_local_addresses)
         .with_minimisation(file.qname_minimisation.into())
         .with_share(share);
     if let Some(validating) = validating {
@@ -263,6 +244,23 @@ pub(super) fn recurse(
             .with_context(|| format!("stage `{name}`: `local_zones.resolve`"))?;
     }
     Ok(Stage::Recurse(stage))
+}
+
+/// The root hints of the file at `path`, which hold an address that is asked unless `local` (D191): with none every
+/// query would fail, and SERVFAIL would be the only sign.
+fn read_hints(path: &Path, local: bool) -> anyhow::Result<RootHints> {
+    let text = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let roots = RootHints::read(&text).with_context(|| path.display().to_string())?;
+    ensure!(
+        local
+            || (roots.servers().iter())
+                .flat_map(Server::addresses)
+                .any(|address| askable(address, false)),
+        "{} holds no address that is asked (loopback, private and the other special-purpose ranges are not unless \
+         `query_local_addresses` is set)",
+        path.display()
+    );
+    Ok(roots)
 }
 
 /// The limits of `file`, the default's where unset.
@@ -302,7 +300,6 @@ fn limits(file: LimitsFile) -> anyhow::Result<Limits> {
             ("validation", MAX.validation),
         )?,
         time,
-        query_local_addresses: default.query_local_addresses,
     })
 }
 
@@ -506,7 +503,7 @@ mod tests {
             let [_, Stage::Recurse(recurse)] = config.pipeline.stages() else {
                 panic!("a cache stage, then a recurse stage")
             };
-            assert_eq!(recurse.limits().query_local_addresses, set, "{written}");
+            assert_eq!(recurse.local_addresses(), set, "{written}");
         }
     }
 

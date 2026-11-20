@@ -36,6 +36,8 @@ use crate::validate::{Payer, Source, Validating, work};
 pub struct Recurse {
     caches: Arc<Caches>,
     limits: Limits,
+    /// Whether servers at special-purpose addresses are asked ([`Recurse::asking_local_addresses`]).
+    local_addresses: bool,
     minimisation: Minimisation,
     local: LocalZones,
     /// What each client network may spend of the queries sent (D117), none for the rate limit's exempt sources.
@@ -59,6 +61,7 @@ impl Recurse {
         Self {
             caches,
             limits: Limits::default(),
+            local_addresses: false,
             minimisation: Minimisation::default(),
             local: LocalZones::default(),
             share: None,
@@ -94,6 +97,14 @@ impl Recurse {
     #[must_use]
     pub const fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// The same stage asking servers at special-purpose addresses too, if `ask` (D191), which a resolution does
+    /// not by default: [`Resolution::asking_local_addresses`].
+    #[must_use]
+    pub const fn asking_local_addresses(mut self, ask: bool) -> Self {
+        self.local_addresses = ask;
         self
     }
 
@@ -150,6 +161,12 @@ impl Recurse {
         self.limits
     }
 
+    /// Whether it asks servers at special-purpose addresses ([`Recurse::asking_local_addresses`]).
+    #[must_use]
+    pub const fn local_addresses(&self) -> bool {
+        self.local_addresses
+    }
+
     /// How much of the names it asks it shows each server.
     #[must_use]
     pub const fn minimisation(&self) -> Minimisation {
@@ -197,6 +214,7 @@ impl Recurse {
             question,
             caches: Arc::clone(&self.caches),
             limits: self.limits,
+            local_addresses: self.local_addresses,
             minimisation: self.minimisation,
             paid: 0,
             payer,
@@ -226,6 +244,7 @@ impl Recurse {
             question: Question::new(root, RecordType::NS),
             caches: Arc::clone(&self.caches),
             limits: self.limits,
+            local_addresses: self.local_addresses,
             minimisation: self.minimisation,
             paid: 0,
             payer: None,
@@ -260,6 +279,7 @@ pub struct Resolving {
     state: State,
     caches: Arc<Caches>,
     limits: Limits,
+    local_addresses: bool,
     minimisation: Minimisation,
     /// The queries paid for so far.
     paid: usize,
@@ -439,7 +459,7 @@ impl Resolving {
             self.limits,
             self.minimisation,
         ) {
-            Ok(resolution) => resolution,
+            Ok(resolution) => resolution.asking_local_addresses(self.local_addresses),
             Err(unsupported) => return State::Ended(Ended::Unsupported(unsupported)),
         };
         let Some(charging) = &self.validation else {
