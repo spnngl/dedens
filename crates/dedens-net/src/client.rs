@@ -816,7 +816,8 @@ impl<N: Io> Client<N> {
                 Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
                     return lose(exchange, error);
                 }
-                // The route or the socket refuses this datagram itself: sending again does no better.
+                // The route or the socket refuses this datagram itself: sending again does no better, and the pool
+                // leaves the socket (D50).
                 Err(error) => return Err(ClientError::Udp(error)),
             }
             let mut exchange = exchange;
