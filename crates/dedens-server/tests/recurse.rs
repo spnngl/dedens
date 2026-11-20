@@ -985,3 +985,35 @@ fn d197_a_query_the_allowance_refuses_is_counted_shed() {
         [("shed".to_owned(), 1)]
     );
 }
+
+/// D195, D197: a question the stage resolves none of, of a class other than IN or a type such as RRSIG, is refused
+/// or not implemented before its validation starts: it takes nothing of the allowance, and is not shed with it.
+#[test]
+fn d197_a_question_not_resolved_takes_none_of_the_allowance() {
+    let capture = recursion::Resolution::read("signed-nl");
+    let caches = caches(Config::default());
+    let allowance = Allowance {
+        burst: 0,
+        ..Allowance::default()
+    };
+    let pipeline = pipeline(Config::default(), validating(&caches, &capture, allowance));
+    let mut chaos = dedens_proto::Question::new("sidn.nl.".parse().expect("a name"), RecordType::A);
+    chaos.qclass = Class::CH;
+    let mut chaos = Message::query(7, chaos);
+    chaos.header.flags = Flags::RD;
+    let rrsig = client_query("sidn.nl.", RecordType::RRSIG, Flags::NONE, true);
+    for (query, rcode) in [
+        (crate::util::wire(&chaos), Rcode::REFUSED),
+        (rrsig, Rcode::NOTIMP),
+    ] {
+        let (reply, sent) = ask(
+            &pipeline,
+            (&query, CLIENT),
+            &Authorities::default(),
+            at(&capture),
+        );
+        assert_eq!(sent, Some(0), "{rcode}");
+        let reply = decode(reply.as_deref().expect("a reply"));
+        assert_eq!((reply.header.rcode, ede(&reply)), (rcode, None));
+    }
+}
