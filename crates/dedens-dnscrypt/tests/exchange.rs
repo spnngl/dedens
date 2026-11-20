@@ -7,8 +7,8 @@
 use dedens_dnscrypt::{
     Carrier, Certificate, CertificateBody, CertificateError, ClientMagic, ClientNonce,
     ClientSession, EncryptQueryError, EncryptResponseError, EncryptionSystem, QueryContext,
-    QueryPadding, ResolverKey, ResolverPublicKey, ResponseContext, ResponseError, SecretKey,
-    SigningKey, Validity,
+    QueryError, QueryPadding, ResolverKey, ResolverPublicKey, ResponseContext, ResponseError,
+    SecretKey, SigningKey, Validity,
 };
 use dedens_proto::{Flags, Message};
 use dedens_testkit::hex;
@@ -544,17 +544,26 @@ fn truncated_packets() {
     let resolver = resolver(system);
     for len in 0..packet.len() {
         assert!(
-            resolver.decrypt_query(&packet[..len]).is_err(),
+            matches!(
+                resolver.decrypt_query(&packet[..len]),
+                Err(QueryError::Truncated | QueryError::Authentication)
+            ),
             "query prefix {len}"
         );
     }
-    assert!(resolver.decrypt_query(&vec![0; 4097]).is_err());
+    assert_eq!(
+        resolver.decrypt_query(&vec![0; 4097]).err(),
+        Some(QueryError::TooLong)
+    );
     let response = context
         .encrypt_response(&hex(DNS_RESPONSE), Carrier::Tcp, &mut rng())
         .expect("sent");
     for len in 0..response.len() {
         assert!(
-            query_context.decrypt_response(&response[..len]).is_err(),
+            matches!(
+                query_context.decrypt_response(&response[..len]),
+                Err(ResponseError::Truncated | ResponseError::Authentication)
+            ),
             "response prefix {len}"
         );
     }
