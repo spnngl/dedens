@@ -354,10 +354,11 @@ impl Pipeline {
                     Rcode::REFUSED
                 }
                 Some(_) => {
-                    // A connection cannot be spoofed, nor a valid Server Cookie (D113).
+                    // A connection cannot be spoofed, nor a valid Server Cookie; a datagram, UDP or DoC, can (D113).
+                    let datagram = matches!(transport, Transport::Udp | Transport::Coap);
                     let source = Source {
                         address: from,
-                        proven: transport != Transport::Udp || standing == Standing::Valid,
+                        proven: !datagram || standing == Standing::Valid,
                     };
                     return self.run(&query, &client, source, now, out);
                 }

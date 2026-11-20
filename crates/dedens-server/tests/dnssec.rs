@@ -1026,6 +1026,23 @@ mod limits {
         assert!(reply.header.flags.contains(Flags::AD));
     }
 
+    /// D117, D113: `DoC` is unprotected CoAP over UDP, whose source is as spoofable as a UDP one, so a `DoC` client
+    /// shares the unproven share of its network, not the proven one.
+    #[test]
+    fn a_doc_client_is_not_proven() {
+        let validating = sharing(200);
+        assert!(spend_the_share(&validating, None, address("198.51.100.7")));
+        let (questions, reply) = ask_from(
+            &validating,
+            None,
+            (address("198.51.100.8"), Transport::Coap),
+            "nlnetlabs.nl.",
+            START,
+        );
+        assert_eq!(questions, 0, "nothing is asked upstream");
+        assert_eq!(error(&reply), Some(InfoCode::NOT_READY));
+    }
+
     /// D117, RFC 7873 §5.2.5: a valid Server Cookie proves a UDP source as a connection does, so the client has the
     /// proven share of its network, which a flood without cookies does not spend.
     #[test]
