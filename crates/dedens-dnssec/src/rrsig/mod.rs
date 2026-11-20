@@ -11,6 +11,7 @@ mod verify;
 
 pub use error::SigError;
 pub(crate) use memo::Memo;
+pub(crate) use rrset::canonical_rdatas;
 pub use rrset::{Key, RrSet, Signature};
 pub use trust::trusted_keys;
 pub(crate) use verify::verify_any_with;

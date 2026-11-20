@@ -9,6 +9,7 @@ use std::net::Ipv4Addr;
 
 use dedens_dnssec::crypto::{Budget, Nsec3Blocks, Verifications};
 use dedens_dnssec::denial::MaxIterations;
+use dedens_dnssec::rrsig::MAX_FAILED;
 use dedens_dnssec::{
     Cost, Delegation, InsecureReason, Limits, Next, TrustAnchors, Validation, Validator, Verdict,
     covered,
@@ -119,6 +120,20 @@ fn zone_text(message: &Message<'_>, rtype: RecordType) -> String {
 
 fn secure(verdict: &Verdict) -> bool {
     matches!(verdict, Verdict::Secure { .. })
+}
+
+/// The own verdict of the `RRset` of `section` that `record` is part of.
+fn own_of<'v>(
+    validation: &'v Validation,
+    section: &[Record<'_>],
+    record: &Record<'_>,
+) -> Option<&'v Verdict> {
+    let rtype = record.rtype();
+    let rdatas: Vec<WireRdata<'_>> = (section.iter())
+        .filter(|other| other.name == record.name && other.rtype() == rtype)
+        .map(|other| other.rdata.clone())
+        .collect();
+    validation.verdict_of(&record.name, rtype, &rdatas)
 }
 
 fn bogus(verdict: &Verdict, code: InfoCode) -> bool {
@@ -520,7 +535,7 @@ fn each_rrset_of_an_insecure_answer_has_its_own_verdict() {
     let validation = Script::new().validation(&response);
     let question = response.questions.first().expect("a question");
     for record in &response.answer {
-        let own = validation.verdict_of(&record.name, record.rtype());
+        let own = own_of(&validation, &response.answer, record);
         if record.rtype() == RecordType::RRSIG {
             assert_eq!(own, None, "{record}");
         } else if record.name == question.name {
@@ -556,12 +571,10 @@ fn only_the_proofs_of_an_insecure_zone_have_its_verdict() {
     });
     response.authority.push(ns("example.", "ns.example."));
     let validation = Script::new().validation(&response);
-    let soa = validation.verdict_of(&name("google.com."), RecordType::SOA);
+    let [soa, ns] =
+        [0, 1].map(|index| own_of(&validation, &response.authority, &response.authority[index]));
     assert!(matches!(soa, Some(Verdict::Insecure { .. })), "{soa:?}");
-    assert_eq!(
-        validation.verdict_of(&name("example."), RecordType::NS),
-        None
-    );
+    assert_eq!(ns, None);
 }
 
 /// The SOA, NSEC and NSEC3 `RRsets` of a denial have their own verdict too, their signatures': secure, whether the
@@ -583,7 +596,7 @@ fn each_proof_of_a_denial_has_its_own_verdict() {
         );
         let proofs = (response.authority.iter()).filter(|r| r.rtype() != RecordType::RRSIG);
         for record in proofs {
-            let own = validation.verdict_of(&record.name, record.rtype());
+            let own = own_of(&validation, &response.authority, record);
             assert!(own.is_some_and(secure), "{id} {record}: {own:?}");
         }
     }
@@ -598,7 +611,7 @@ fn each_rrset_of_a_bogus_answer_has_its_own_verdict() {
         let record = (response.answer.iter())
             .find(|record| record.rtype() == rtype)
             .expect("a record of the type");
-        validation.verdict_of(&record.name, rtype)
+        own_of(&validation, &response.answer, record)
     };
     let cname = own(RecordType::CNAME);
     assert!(cname.is_some_and(secure), "{cname:?}");
@@ -607,6 +620,70 @@ fn each_rrset_of_a_bogus_answer_has_its_own_verdict() {
         forged.is_some_and(|own| bogus(own, InfoCode::DNSSEC_BOGUS)),
         "{forged:?}"
     );
+}
+
+/// A verdict is the one of the data judged (D197): other data of the same owner and type, as the authority section
+/// of another response may hold, has none, and the order of the records does not matter.
+#[test]
+fn a_verdict_is_of_the_data_judged_not_of_its_owner_and_type() {
+    let response = response("alg8_a");
+    let validation = Script::new().validation(&response);
+    let record = (response.answer.iter())
+        .find(|record| record.rtype() == RecordType::A)
+        .expect("an A record");
+    let own = own_of(&validation, &response.answer, record);
+    assert!(own.is_some_and(secure), "{own:?}");
+    let other = WireRdata::new(&RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+    let mut rdatas = vec![other, record.rdata.clone()];
+    assert_eq!(
+        validation.verdict_of(&record.name, RecordType::A, &rdatas),
+        None
+    );
+    rdatas.truncate(1);
+    assert_eq!(
+        validation.verdict_of(&record.name, RecordType::A, &rdatas),
+        None
+    );
+}
+
+/// A proof of an insecure zone has its verdict only when its owner is in the zone (D197): an SOA of `example.`
+/// whose RRSIG names `google.com.` its signer is no proof of `google.com.`'s to judge. The capture has no authority
+/// section: the SOA and an RRSIG of `alg8_a`, given that signer, are added.
+#[test]
+fn a_proof_owned_outside_its_zone_has_no_verdict_of_the_zone() {
+    let mut response = response("google_com_a");
+    let soa = Soa {
+        mname: name("ns.example."),
+        rname: name("admin.example."),
+        serial: 1,
+        refresh: 900,
+        retry: 900,
+        expire: 1800,
+        minimum: 60,
+    };
+    let soa = Record {
+        name: name("example."),
+        class: Class::IN,
+        ttl: Ttl::from_wire(60),
+        rdata: WireRdata::new(&RData::Soa(soa)),
+    };
+    let signed = dnssec::response("alg8_a");
+    let mut sig = (signed.answer.into_iter())
+        .find(|record| record.rtype() == RecordType::RRSIG)
+        .expect("an RRSIG");
+    let RData::Rrsig(rrsig) = sig.data() else {
+        unreachable!("an RRSIG record")
+    };
+    let mut rrsig = rrsig.into_owned();
+    rrsig.type_covered = RecordType::SOA;
+    rrsig.labels = 1;
+    rrsig.signer = name("google.com.");
+    sig.name = name("example.");
+    sig.rdata = WireRdata::new(&RData::Rrsig(rrsig));
+    response.authority.extend([soa, sig]);
+    let validation = Script::new().validation(&response);
+    let own = own_of(&validation, &response.authority, &response.authority[0]);
+    assert_eq!(own, None);
 }
 
 /// A day, in seconds.
@@ -840,6 +917,157 @@ fn a_validation_reports_what_it_cost() {
     assert!(cost.verifications >= 6, "{cost:?}");
     assert!(cost.verifications <= 128, "{cost:?}");
     assert_eq!(cost.nsec3_blocks, 0);
+}
+
+/// `validation` driven to its verdict with `script` answering.
+fn finish(script: &Script, mut validation: Validation) -> (Verdict, Validation) {
+    loop {
+        match validation.step() {
+            Next::Ask(ask) => validation.answer(script.answer(&ask)),
+            Next::Done(verdict) => return (verdict, validation),
+        }
+    }
+}
+
+/// A validation restarted after a bogus verdict carries on with what the ones before it left, as Unbound's
+/// `val_restart` keeps its counts (D197): its cost counts theirs, and a budget they spent leaves it nothing.
+#[test]
+fn a_restart_carries_on_with_what_the_validations_before_it_left() {
+    let script = Script::new();
+    // No key cache: the restart walks the chain again, as it does after the bogus keys it did not keep.
+    let limits = Limits {
+        key_cache: 0,
+        ..Limits::default()
+    };
+    let validator = Validator::new(TrustAnchors::root(), limits);
+    let response = response("alg8_a");
+    let question = response.questions.first().expect("a question").clone();
+    let now = u64::from(captured_at());
+    let (_, first) = finish(&script, validator.start(&question, &response, now));
+    let spent = first.cost();
+    assert!(first.can_restart());
+    let (verdict, again) = finish(&script, validator.restart(&question, &response, now, spent));
+    assert!(secure(&verdict), "{verdict:?}");
+    let cost = again.cost();
+    assert_eq!(cost.questions, 2 * spent.questions);
+    // The memo of signatures verified (D86) spares some of the work, not all.
+    assert!(
+        cost.verifications > spent.verifications,
+        "{cost:?} {spent:?}"
+    );
+    assert!(again.can_restart());
+    let limits = Limits::default();
+    let mut spent_all = Cost::default();
+    spent_all.verifications = limits.budget.verifications_left().0;
+    let (verdict, last) = finish(
+        &script,
+        validator.restart(&question, &response, now, spent_all),
+    );
+    assert!(
+        matches!(verdict, Verdict::Indeterminate { .. }),
+        "{verdict:?}"
+    );
+    assert!(!last.can_restart());
+    let mut asked_all = Cost::default();
+    asked_all.questions = limits.questions;
+    let (verdict, last) = finish(
+        &script,
+        validator.restart(&question, &response, now, asked_all),
+    );
+    assert!(
+        matches!(verdict, Verdict::Indeterminate { .. }),
+        "{verdict:?}"
+    );
+    assert!(!last.can_restart());
+}
+
+/// A bogus answer may be asked again of another server, unless its check gave up on signatures that failed too
+/// often (D73): KeyTrap by RRSIGs, which a restart would only pay for again (D197). One RRSIG that fails does not.
+#[test]
+fn a_check_that_gave_up_on_failed_signatures_is_not_restarted() {
+    let script = Script::new();
+    let validator = Script::validator();
+    let now = u64::from(captured_at());
+    for (copies, restart) in [(1, true), (MAX_FAILED + 1, false)] {
+        let mut response = response("alg8_a");
+        let sig = (response.answer.iter())
+            .position(|record| is_rrsig_of(record, RecordType::A))
+            .expect("the RRSIG of the A RRset");
+        let sig = response.answer.remove(sig);
+        let RData::Rrsig(rrsig) = sig.data() else {
+            unreachable!("an RRSIG record")
+        };
+        for copy in 1..=copies {
+            let mut rrsig = rrsig.clone().into_owned();
+            rrsig.original_ttl += u32::try_from(copy).expect("a few copies");
+            let mut record = sig.clone();
+            record.rdata = WireRdata::new(&RData::Rrsig(rrsig));
+            response.answer.push(record);
+        }
+        let question = response.questions.first().expect("a question").clone();
+        let (verdict, validation) = finish(&script, validator.start(&question, &response, now));
+        assert!(
+            bogus(&verdict, InfoCode::DNSSEC_BOGUS),
+            "{copies}: {verdict:?}"
+        );
+        assert_eq!(validation.can_restart(), restart, "{copies}");
+    }
+}
+
+/// The walk records the verdict of each DS and DNSKEY `RRset` it checked (D197), for a cache to hold a bogus one
+/// no longer than its bogus TTL: `nl`'s keys are bogus under a signature that fails, the DS that names them stays
+/// secure.
+#[test]
+fn the_walk_records_the_verdict_of_the_keys_it_checked() {
+    let script = Script::new();
+    let validator = Script::validator();
+    let response = response("alg8_a");
+    let question = response.questions.first().expect("a question").clone();
+    let now = u64::from(captured_at());
+    let ds = script
+        .answer(&Question::new(name("nl"), RecordType::DS))
+        .expect("nl DS");
+    let ds_of = |validation: &Validation| {
+        let record = (ds.answer.iter())
+            .find(|record| record.rtype() == RecordType::DS)
+            .expect("a DS record");
+        own_of(validation, &ds.answer, record).cloned()
+    };
+    let keys_of = |validation: &Validation, keys: &Message<'static>| {
+        let record = (keys.answer.iter())
+            .find(|record| record.rtype() == RecordType::DNSKEY)
+            .expect("a DNSKEY record");
+        own_of(validation, &keys.answer, record).cloned()
+    };
+    let (verdict, validation) = finish(&script, validator.start(&question, &response, now));
+    assert!(secure(&verdict), "{verdict:?}");
+    let keys = response_of(&script, "nl", RecordType::DNSKEY);
+    let own = keys_of(&validation, &keys);
+    assert!(own.as_ref().is_some_and(secure), "{own:?}");
+    let bad = bad_signature_of_nl_keys();
+    let mut validation = Script::validator().start(&question, &response, now);
+    let answer = with_nl_keys(&script, &bad);
+    let verdict = loop {
+        match validation.step() {
+            Next::Ask(ask) => validation.answer(answer(&ask)),
+            Next::Done(verdict) => break verdict,
+        }
+    };
+    assert!(matches!(verdict, Verdict::Bogus { .. }), "{verdict:?}");
+    let own = keys_of(&validation, &bad);
+    assert!(
+        own.as_ref()
+            .is_some_and(|own| matches!(own, Verdict::Bogus { .. })),
+        "{own:?}"
+    );
+    let own = ds_of(&validation);
+    assert!(own.as_ref().is_some_and(secure), "{own:?}");
+}
+
+/// The capture `script` answers the question of `name` and `rtype` with.
+fn response_of(script: &Script, name: &str, rtype: RecordType) -> Message<'static> {
+    let question = Question::new(crate::util::name(name), rtype);
+    script.answer(&question).expect("a capture").clone()
 }
 
 /// The verdict on `response` and its cost, with the caller answering none of the questions `unanswered`.

@@ -8,8 +8,8 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType, Ttl, WireRdata};
 
 use super::section::{Section, dname_of, synthesized};
-use super::verdict::{Failure, InsecureReason, Unusable};
-use super::{Need, Validation};
+use super::verdict::{Failure, InsecureReason, Unusable, Verdict};
+use super::{Judged, Need, Validation};
 use crate::denial::Fact;
 use crate::rrsig::{Key, RrSet, SigError, Signature, Verified, trusted_keys, verify_any_with};
 
@@ -191,7 +191,22 @@ impl Validation {
         keys: &[Key<'_>],
     ) -> Result<Verified, SigError> {
         let memo = self.config.memo.as_ref();
-        verify_any_with(rrset, sigs, keys, self.now, &mut self.budget, memo)
+        let verified = verify_any_with(rrset, sigs, keys, self.now, &mut self.budget, memo);
+        self.gave_up |= matches!(verified, Err(SigError::TooManyFailures));
+        verified
+    }
+
+    /// [`trusted_keys`] at the validation's time and on its budget: the DNSKEY `RRset` `keys` the DS records `ds`
+    /// vouch for, recorded with its verdict (see [`Validation::verdict_of`]).
+    fn trust(
+        &mut self,
+        keys: &RrSet<'_>,
+        sigs: &[Signature<'_>],
+        ds: &RrSet<'_>,
+    ) -> Result<Verified, SigError> {
+        let verified = trusted_keys(keys, sigs, ds, self.now, &mut self.budget);
+        self.gave_up |= matches!(verified, Err(SigError::TooManyFailures));
+        verified
     }
 
     fn position(&self, name: &Name<'_>) -> Position {
@@ -267,6 +282,23 @@ impl Validation {
                 Zone::Inside { apex, .. } => at = apex,
                 Zone::Beneath(unusable) => return Ok((at, Settled::Unusable(unusable))),
             }
+        }
+    }
+
+    /// The apex of the zone the walk found `name` in, `name` being one [`Validation::zone_of`] returned: `name`
+    /// itself, but for a name beneath an unusable zone, that zone's apex, as the walk down to `name` found it.
+    /// `name` when the walk does not know it.
+    pub(super) fn apex_of(&self, name: &Name<'static>) -> Name<'static> {
+        let mut at = name.clone();
+        loop {
+            let known =
+                (self.zones.get(&at).cloned()).or_else(|| self.config.cache.get(&at, self.at));
+            at = match (known, parent(&at)) {
+                (Some(Zone::Apex(_)), _) => return at,
+                (Some(Zone::Beneath(_)), Some(parent)) => parent,
+                (Some(Zone::Inside { apex, .. }), _) => apex,
+                _ => return name.clone(),
+            };
         }
     }
 
@@ -354,17 +386,23 @@ impl Validation {
             .find_map(|section| section.find(name, RecordType::DS).map(|ds| (section, ds)));
         if let Some((section, ds)) = found {
             let sigs = section.signatures(ds);
-            return match self.verify(ds, &sigs, &Key::all(keys)) {
-                Ok(verified) if verified.wildcard.is_none() => Cut::Signed {
-                    ds: ds.clone(),
-                    ttl: verified.ttl.min(keys_ttl),
-                },
-                Ok(_) => Cut::Unusable(Unusable::Failed(Failure::bogus(
+            let failure = match self.verify(ds, &sigs, &Key::all(keys)) {
+                Ok(verified) if verified.wildcard.is_none() => {
+                    let ttl = verified.ttl.min(keys_ttl);
+                    Judged::record(&mut self.keys, ds, Verdict::Secure { ttl });
+                    return Cut::Signed {
+                        ds: ds.clone(),
+                        ttl,
+                    };
+                }
+                Ok(_) => Failure::bogus(
                     InfoCode::DNSSEC_BOGUS,
                     format!("{name} DS comes from a wildcard"),
-                ))),
-                Err(error) => Cut::Unusable(Unusable::Failed(sig_failure(&error, ds))),
+                ),
+                Err(error) => sig_failure(&error, ds),
             };
+            Judged::record(&mut self.keys, ds, failure.clone().into());
+            return Cut::Unusable(Unusable::Failed(failure));
         }
         let rewrite = answer
             .find(name, RecordType::CNAME)
@@ -424,15 +462,21 @@ impl Validation {
             return Ok(missing_keys(name));
         };
         let sigs = answer.signatures(keys);
-        Ok(
-            match trusted_keys(keys, &sigs, ds, self.now, &mut self.budget) {
-                Ok(verified) => Settled::Secure {
-                    keys: Arc::new(keys.clone()),
-                    ttl: verified.ttl.min(ds_ttl),
-                },
-                Err(error) => Settled::Unusable(unusable(&error, keys, ds_ttl)),
-            },
-        )
+        let settled = match self.trust(keys, &sigs, ds) {
+            Ok(verified) => secure(keys, verified.ttl.min(ds_ttl)),
+            Err(error) => Settled::Unusable(unusable(&error, keys, ds_ttl)),
+        };
+        Ok(self.judged(keys, settled))
+    }
+
+    /// `settled`, the keys of `keys`, once its verdict is recorded (see [`Validation::verdict_of`]).
+    fn judged(&mut self, keys: &RrSet<'_>, settled: Settled) -> Settled {
+        let verdict = match &settled {
+            Settled::Secure { ttl, .. } => Verdict::Secure { ttl: *ttl },
+            Settled::Unusable(unusable) => unusable.clone().into(),
+        };
+        Judged::record(&mut self.keys, keys, verdict);
+        settled
     }
 
     /// The keys of the zone `name` that holds a trust anchor: the DNSKEY `RRset` signed by a key of the anchor
@@ -461,13 +505,13 @@ impl Validation {
         );
         if let Some(trusted) = trusted {
             match self.verify(keys, &sigs, &Key::all(&trusted)) {
-                Ok(verified) => return Ok(secure(keys, verified.ttl)),
+                Ok(verified) => return Ok(self.judged(keys, secure(keys, verified.ttl))),
                 Err(error) => errors.push(error),
             }
         }
         if let Some(ds) = anchor_set(name, anchor.ds().iter().map(|ds| RData::Ds(ds.clone()))) {
-            match trusted_keys(keys, &sigs, &ds, self.now, &mut self.budget) {
-                Ok(verified) => return Ok(secure(keys, verified.ttl)),
+            match self.trust(keys, &sigs, &ds) {
+                Ok(verified) => return Ok(self.judged(keys, secure(keys, verified.ttl))),
                 Err(error) => errors.push(error),
             }
         }
@@ -476,7 +520,8 @@ impl Validation {
             .find(|error| !error.is_unsupported())
             .or(errors.first())
             .unwrap_or(&SigError::NoKeyForDs);
-        Ok(Settled::Unusable(unusable(error, keys, Ttl::MAX)))
+        let settled = Settled::Unusable(unusable(error, keys, Ttl::MAX));
+        Ok(self.judged(keys, settled))
     }
 }
 
