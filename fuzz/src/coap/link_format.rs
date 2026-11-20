@@ -9,21 +9,14 @@ use dedens_net::coap::{Code, Message, Options, Token, Type, dns};
 /// Both families, and a port that is not the default one.
 const SERVERS: [([u8; 4], u16); 2] = [([192, 0, 2, 1], 5683), ([127, 0, 0, 1], 40000)];
 
-/// A path a client takes from a link is a path as `dedensd` reads one: its segments hold no `/`, `?`, `#` or `%`,
-/// and none is a dot segment, which the resolution removes (RFC 3986 §5.2.4).
+/// A path a client takes from a link holds no dot segment, which the resolution removes (RFC 3986 §5.2.4) and a
+/// Uri-Path never is (RFC 7252 §5.10.1). A segment is bytes: an encoded `/`, `?`, `#` or `%` is one of them once
+/// decoded (RFC 7252 §6.4).
 fn check_path(link: &Link, server: SocketAddr) {
     let Ok(path) = link.path(server) else {
         return;
     };
     for segment in &path {
-        assert!(
-            !segment.contains(&b'/')
-                && !segment.contains(&b'?')
-                && !segment.contains(&b'#')
-                && !segment.contains(&b'%'),
-            "{:?} holds a delimiter",
-            String::from_utf8_lossy(segment)
-        );
         assert!(
             &**segment != b"." && &**segment != b"..",
             "a dot segment is left"

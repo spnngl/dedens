@@ -222,6 +222,11 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             b"</sensors>;ct=40;title=\"Sensor Index\",\n</sensors/temp>;rt=\"temperature-c\";if=\"sensor\",\n</sensors/light>;rt=\"light-lux\";if=\"sensor\",\n<http://www.example.com/sensors/t123>;anchor=\"/sensors/temp\"\n;rel=\"describedby\",\n</t>;anchor=\"/sensors/temp\";rel=\"alternate\""
                 .to_vec(),
         ),
+        // Encoded delimiters a segment holds once decoded (RFC 7252 §6.4): the nightly run's crash of 2026-11-19.
+        (
+            "link with encoded delimiters".into(),
+            b"</;ii<%25>,</a%2Fb%3Fc%23d/e>".to_vec(),
+        ),
         ("link path".into(), b"dns/query".to_vec()),
         ("link path with empty segments".into(), b"/a//b/".to_vec()),
         // DoH: a template, a GET (RFC 8484 §4.1.1) and an aged response around a captured message.
