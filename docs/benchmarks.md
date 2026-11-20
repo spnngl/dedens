@@ -1275,6 +1275,22 @@ once, run in turn 3 times each with `--bench flood over_the_rate --sample-count 
 | `flood` t=8 | 124.7-166.7 | 93.3-166.7 |
 | `over_the_rate` slip 0 / 2 | 40.8-48.8 / 75.4-83.5 | 40.8-41.5 / 74.8-76.7 |
 
+One clock read per query, for the check of its cookie and the one made for its reply (`cookie::Reading`, audit 4),
+2026-11-20: the bench binary of each tree, built once, run in turn 3 times each with
+`--bench cookie baseline --sample-count 1000 --sample-size 2000`; fastest ns, the range over the runs (the medians
+moved with the laptop's load, up to 2x in the third pair):
+
+| Measure | Before | After |
+|---|---|---|
+| `baseline` | 101.0-101.4 | 99.9-102.4 |
+| `client_cookie` | 138.5-143.6 | 144.6-146.0 |
+| `limit_and_client_cookie` | 151.1-157.6 | 156.8-161.0 |
+| `valid_cookie` | 171.2-178.2 | 158.3-163.7 |
+| `over_the_rate_with_client_cookie` slip 0 / 2 | 56.4-57.7 / 111.4-113.9 | 56.7-58.9 / 111.2-115.3 |
+
+A valid cookie, the only query that read the clock twice, saves about 13 ns, a `SystemTime::now`. A Client Cookie
+alone read it once before as after; its 3-5 ns more is the reading carried as an `Option`, near the noise.
+
 Two threads fighting for the line lose a quarter to a third less; one thread does not move (a compare and swap of an
 owned line is cheap), and at 4 and 8 threads, across P and E cores, the spread of the runs hides any change.
 

@@ -464,7 +464,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Counted: `dedensd_rrl_limited_total{action=slip|drop}` (CoAP counts under `drop`) and
     `dedensd_cookies_total{outcome=none|client_only|invalid|valid}`.
   - Cost (`benches/rrl.rs`, `docs/benchmarks.md`): about 11-20 ns on a cache hit for the limit, 50-60 ns more for a
-    cookie; a limited query costs half a hit.
+    cookie; a limited query costs half a hit. A query reads the clock once, when it first needs it, for the check of
+    its cookie and the one made for its reply (`cookie::Reading`; twice for a valid cookie before audit 4, about
+    13 ns).
   - Not done: the limit counts queries, not responses by name; cookies are not required (`require-server-cookie`); a
     Server Cookie is made anew for each reply, not kept until half an hour old (§4.3 SHOULD only).
 - D93 (amends D77; amended by D124) An answer a validating stage proved insecure is cached a day at most, as keys are (D86), not for
