@@ -1326,7 +1326,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     case and the cache keys them so; Unbound lowercases the question alone too (`pkt_dname_tolower`).
     `Pipeline::receive` still checks the question in any case (D111): the case sent is the transport's.
   - A server that does not copy the case: each try times out, then the next server is asked, then SERVFAIL;
-    `random_case: false` in the forward stage (on by default) asks it in the client's case. Per stage, not per
+    the exchange fails with `Failure::CaseMismatch` when the dropped responses were all it got, which
+    `dedensd_upstream_case_mismatches_total` counts (2026-11-20: they were debug-logged alone, the operator blind
+    to a server that folds the case or a forger at work); `random_case: false` in the forward stage (on by default) asks it in the client's case. Per stage, not per
     server: a server is an address and a way (`Via`), and a stage of its own takes one that answers otherwise.
     Rejected: a fallback as Unbound's (`use-caps-for-id`, off by default; on a mismatch it asks every server
     again without `0x20` and takes the answer when all agree, `iq->caps_fallback` in `iterator/iterator.c`, with a

@@ -228,6 +228,15 @@ pub enum Failure {
         /// Queries sent in all.
         sends: u16,
     },
+    /// No response to any of the tries but responses dropped for the case of their question
+    /// ([`CaseMismatch::Drop`]): a forger that guessed the ID, or a server that does not repeat the case (D184).
+    #[error(
+        "no response after {sends} queries, responses in another case than the query's dropped (0x20)"
+    )]
+    CaseMismatch {
+        /// Queries sent in all.
+        sends: u16,
+    },
     /// A query changed by a fallback could not be encoded.
     #[error("cannot encode the query")]
     Encode(#[from] EncodeError),
@@ -279,6 +288,8 @@ pub struct Exchange {
     bad_cookies: u8,
     /// Whether a response was dropped for its cookie.
     forged: bool,
+    /// Whether a response was dropped for the case of its question (D184).
+    folded: bool,
     /// Why the query moved from UDP to TCP.
     moved: Option<Moved>,
 }
@@ -331,6 +342,7 @@ impl Exchange {
             spare_ids: spare_ids.into_iter(),
             bad_cookies: 0,
             forged: false,
+            folded: false,
             moved: None,
         })
     }
@@ -408,6 +420,7 @@ impl Exchange {
             || (repeat == Repeat::Folded && self.options.case_mismatch == CaseMismatch::Drop)
         {
             debug!(server = %self.server, id = response.header().id, "dropped: not the response (QR, ID, opcode or question)");
+            self.folded |= repeat == Repeat::Folded;
             return Progress::Wait(self);
         }
         let Ok(cookie) = self.cookie_of(&response) else {
@@ -492,7 +505,8 @@ impl Exchange {
     }
 
     /// Notes the time: past the deadline, the query is sent again, or the exchange fails once all tries are spent,
-    /// [`Failure::Forged`] when a response was dropped for its cookie. EDNS stays (RFC 8906 §3).
+    /// [`Failure::Forged`] when a response was dropped for its cookie, else [`Failure::CaseMismatch`] when one was for
+    /// its case. EDNS stays (RFC 8906 §3).
     #[must_use]
     pub fn time_out(mut self, now: Instant) -> Progress {
         if now < self.deadline {
@@ -504,6 +518,8 @@ impl Exchange {
             let sends = self.sends;
             return Progress::Done(Err(if self.forged {
                 Failure::Forged { sends }
+            } else if self.folded {
+                Failure::CaseMismatch { sends }
             } else {
                 Failure::TimedOut { sends }
             }));

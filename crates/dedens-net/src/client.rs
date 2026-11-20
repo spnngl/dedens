@@ -139,7 +139,9 @@ impl ClientError {
             Self::Tcp(_)
             | Self::Quic(_)
             | Self::Https(_)
-            | Self::Exchange(Failure::TimedOut { .. } | Failure::Forged { .. }) => {
+            | Self::Exchange(
+                Failure::TimedOut { .. } | Failure::Forged { .. } | Failure::CaseMismatch { .. },
+            ) => {
                 return false;
             }
         };

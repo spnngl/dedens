@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use compio::rustls::pki_types::ServerName;
 use dedens_net::client::{ClientError, Server};
-use dedens_net::exchange::{Options, Response};
+use dedens_net::exchange::{Failure, Options, Response};
 use dedens_net::io::Io;
 use dedens_net::tcp::frame;
 use dedens_proto::{Message, Transport};
@@ -20,6 +20,18 @@ use dedens_server::{Parked, Pipeline, Resolving, Step, Upstream, Via};
 
 use super::{Thread, pause, recurse};
 use crate::flights::{Entered, Flights, Key, Lead};
+
+/// Upstream queries that failed with responses dropped for the case of their question alone (D184).
+const CASE_MISMATCHES: &str = "dedensd_upstream_case_mismatches_total";
+
+/// Describes the metrics of this module.
+pub(super) fn describe() {
+    metrics::describe_counter!(
+        CASE_MISMATCHES,
+        "Upstream queries asked with 0x20 that got no response but ones with their question in another case, \
+         dropped: a forger that guessed the ID, or a server that does not copy the case (D184)."
+    );
+}
 
 /// What a query asks upstream: now, or once the validation allowance admits it (D186), or the authoritative servers
 /// (D195).
@@ -150,7 +162,7 @@ pub(super) async fn answer<N: Io>(
                     pipeline.abandon(&upstream, &mut out)
                 }
                 Fetched::Own(Err(error), _) => {
-                    tracing::debug!(error = %Causes(error), %server, "upstream");
+                    unanswered(error, &server);
                     pipeline.receive(upstream, None, thread.now(), &mut out)
                 }
                 Fetched::Shared(wire) => {
@@ -183,6 +195,15 @@ pub(super) async fn answer<N: Io>(
             return;
         };
         upstream = next;
+    }
+}
+
+/// Notes that `server` gave no response, for a reason not ours (`error`): logged, and counted when a response came
+/// in another case alone (D184).
+fn unanswered(error: &ClientError, server: &dedens_server::Server) {
+    tracing::debug!(error = %Causes(error), %server, "upstream");
+    if let ClientError::Exchange(Failure::CaseMismatch { .. }) = error {
+        metrics::counter!(CASE_MISMATCHES).increment(1);
     }
 }
 
@@ -451,8 +472,9 @@ mod tests {
     use dedens_testkit::dnssec::capture;
     use dedens_testkit::responder::Responder;
     use futures_util::future::{join, join_all};
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
-    use super::{Ask, Causes, ClientError, answer, target};
+    use super::{Ask, CASE_MISMATCHES, Causes, ClientError, answer, describe, target};
     use crate::flights::Key;
     use crate::lists::Store;
     use crate::reload::Current;
@@ -481,10 +503,28 @@ mod tests {
     }
 
     /// D184: a server that sends the question back in a case of its own, here the captured one, is taken for a
-    /// forger and its responses dropped, the query failing once the server's time is up, unless the stage turns
-    /// `0x20` off; the client gets its question back in its own case either way.
+    /// forger and its responses dropped, the query failing once the server's time is up and counted, unless the
+    /// stage turns `0x20` off; the client gets its question back in its own case either way.
     #[test]
     fn a_server_that_changes_the_case_is_dropped_unless_random_case_is_off() {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            describe();
+            changing_the_case();
+        });
+        let counted: Vec<_> = recorder
+            .snapshotter()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == CASE_MISMATCHES)
+            .map(|(_, _, description, value)| (description.is_some(), value))
+            .collect();
+        // Once: with `random_case: false`, the response is taken.
+        assert_eq!(counted, [(true, DebugValue::Counter(1))]);
+    }
+
+    fn changing_the_case() {
         let (mut query, response) = example_com_a();
         // The client's own case, upper, which the captured response does not have.
         let name = Message::decode(&query).expect("decodes").message.questions[0]
