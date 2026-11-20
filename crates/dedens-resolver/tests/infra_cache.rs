@@ -437,3 +437,26 @@ fn documentation(n: u16) -> SocketAddr {
         53,
     )
 }
+
+
+/// A server that answered BADCOOKIE over UDP and TCP is asked over TCP from then on (D190, D196): its timeout over
+/// UDP, which a connection and a query take two round trips beyond, is no longer the one to wait, nor the estimate to
+/// smooth its TCP times into; the first it answers over TCP starts the estimate again.
+#[test]
+fn d196_a_server_marked_tcp_has_its_timeout_measured_over_tcp() {
+    let cache = cache();
+    let server = roots()[0];
+    cache.reply(server, 20 * MS, Marks::default(), 0);
+    assert_eq!(timeout(&cache, server, 0), 60 * MS);
+    let tcp = Marks {
+        tcp: true,
+        ..Marks::default()
+    };
+    cache.answered(server, tcp, 0);
+    assert_eq!(timeout(&cache, server, 0), InfraCache::UNKNOWN_TIMEOUT);
+    cache.reply(server, 100 * MS, tcp, 0);
+    assert_eq!(timeout(&cache, server, 0), 300 * MS);
+    // Marked already, a later answer moved to TCP leaves the estimate.
+    cache.answered(server, tcp, 0);
+    assert_eq!(timeout(&cache, server, 0), 300 * MS);
+}
