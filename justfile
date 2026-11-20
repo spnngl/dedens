@@ -355,9 +355,10 @@ fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdat
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
 # of fuzz/seeds/stamps.txt, one to a file in fuzz/target/seeds/stamps; dedensd's configurations, the image's, the
 # packages', those of fuzz/seeds/dnscrypt.yaml and odoh.yaml and the examples of its config module (example.yaml, example2.yaml), in
-# fuzz/target/seeds/configs (D181); the root's DS records, the root hints, the test copy of the TLD list (D126) and
-# ICANN's CA bundle (D127) in fuzz/target/seeds/roots; the responses of the captured resolutions of testdata/recursion
-# and testdata/recursion/minimised (D188), kept there in base64, one to a file in fuzz/target/seeds/recursion.
+# fuzz/target/seeds/configs (D181); the root's DS records, the root hints, the test copy of the TLD list (D126),
+# ICANN's CA bundle (D127) and the root key rollover state of fuzz/seeds/root-5011.state (D200) in
+# fuzz/target/seeds/roots; the responses of the captured resolutions of testdata/recursion and
+# testdata/recursion/minimised (D188), kept there in base64, one to a file in fuzz/target/seeds/recursion.
 # `seeds()` of fuzz/src/smoke.rs reads the same.
 [private]
 fuzz-seeds:
@@ -366,7 +367,7 @@ fuzz-seeds:
     rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion
     mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion
     cp crates/dedens-dnssec/src/root.ds crates/dedens-roots/src/named.root crates/dedens-roots/tests/data/tlds.json \
-        crates/dedens-dnssec/src/icannbundle.pem fuzz/target/seeds/roots/
+        crates/dedens-dnssec/src/icannbundle.pem fuzz/seeds/root-5011.state fuzz/target/seeds/roots/
     perl -ne 'next if /^#/; my $hex = (split)[2]; open my $out, ">", "fuzz/target/seeds/coap/$." or die; print $out pack "H*", $hex' testdata/coap/*.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/command_lines/$." or die; print $out join "\0", split / /, $_, -1' fuzz/seeds/command_lines.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/stamps/$." or die; print $out $_' fuzz/seeds/stamps.txt
@@ -525,6 +526,26 @@ capture-minimisation *ids:
     cargo run -q -p dedens-resolver --example capture_minimisation -- "$tmp" {{ ids }}
     mkdir -p testdata/recursion/minimised
     cp "$tmp"/*.yaml testdata/recursion/minimised/
+
+# Capture the root's DNSKEY RRset through the KSK-2010 to KSK-2017 rollover (D200) into testdata/dnssec/rollover-*.zone:
+# the DNSKEY and RRSIG DNSKEY lines of the root zone IANA served at each moment, from the Internet Archive's copies
+# of https://www.internic.net/domain/root.zone, one file per snapshot named by its time (UTC), beside the other
+# captures so that the fuzz targets start from them too. The snapshots: KSK-2010 alone, KSK-2017 published
+# (2017-07-11), 30 days on, KSK-2017 signing (2018-10-11), KSK-2010 revoked (2019-01-11), KSK-2010 removed
+# (2019-03-22).
+capture-rollover:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir=testdata/dnssec
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    for at in 20170615085551 20170716113230 20170816120412 20181224040024 20190305003355 20190406221638; do
+        url="http://web.archive.org/web/${at}id_/https://www.internic.net/domain/root.zone"
+        curl -fsSL --retry 3 -o "$tmp/root.txt" "$url"
+        { echo "; $url"; grep -E '^\.\s+[0-9]+\s+IN\s+(DNSKEY|RRSIG\s+DNSKEY)\s' "$tmp/root.txt"; } > "$tmp/rollover-$at.zone"
+    done
+    rm -f "$dir"/rollover-*.zone
+    cp "$tmp"/rollover-*.zone "$dir/"
 
 # Ask every public resolver of docs/providers/providers.yaml over the network, IPv4 and IPv6 (D67).
 providers:

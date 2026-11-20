@@ -13,6 +13,7 @@ pub use error::SigError;
 pub(crate) use memo::Memo;
 pub(crate) use rrset::canonical_rdatas;
 pub use rrset::{Key, RrSet, Signature};
+pub(crate) use trust::counted;
 pub use trust::trusted_keys;
-pub(crate) use verify::verify_any_with;
 pub use verify::{MAX_FAILED, Verified, verify, verify_any};
+pub(crate) use verify::{verify_any_with, verify_revocation};

@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use dedens_dnssec::crypto::{self, Budget};
 use dedens_dnssec::denial::{self, MaxIterations};
 use dedens_dnssec::rrsig::{self, Key, RrSet, Signature};
-use dedens_dnssec::{Limits, Next, RootAnchors, TrustAnchors, Validator, Verdict};
+use dedens_dnssec::{Limits, Next, Rollover, RootAnchors, TrustAnchors, Validator, Verdict};
 use dedens_proto::rdata::RData;
 use dedens_proto::{
     DigestType, Message, Name, Nsec3HashAlgorithm, Question, Record, RecordType, SecAlgorithm, Ttl,
@@ -337,6 +337,32 @@ pub fn parse_root_anchors(data: &[u8]) {
             "a CA bundle changed the anchors"
         );
     }
+}
+
+/// The state of a root key rollover followed by RFC 5011, as `dedensd` keeps it (D200), from outside: a state that
+/// reads trusts a key, agrees with the anchors it makes, and reads back as written. A truncated or corrupted state
+/// file is refused, and `dedensd` starts from the downloaded anchors instead.
+///
+/// # Panics
+///
+/// On a panic of `dedens-dnssec`, or on a state that breaks one of those rules.
+pub fn parse_5011_state(data: &[u8]) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(rollover) = Rollover::read(text) else {
+        return;
+    };
+    let anchors = rollover.anchors().expect("a state that reads trusts a key");
+    assert!(
+        rollover.agrees(&anchors),
+        "a state disagrees with its anchors"
+    );
+    assert_eq!(
+        Rollover::read(&rollover.to_string()).as_ref(),
+        Ok(&rollover),
+        "a state read other than written"
+    );
 }
 
 /// The Unix time of the capture run, "now" for the signatures of the captured seeds.

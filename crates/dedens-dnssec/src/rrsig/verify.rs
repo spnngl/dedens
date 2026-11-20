@@ -43,6 +43,8 @@ struct Attempt<'s, 'k> {
     /// The closest encloser of a wildcard expansion.
     wildcard: Option<Name<'static>>,
     data: Option<Vec<u8>>,
+    /// The check is that of a revocation (RFC 5011 §2.1): the key must be revoked, not the reverse.
+    revoking: bool,
 }
 
 impl<'s, 'k> Attempt<'s, 'k> {
@@ -101,13 +103,14 @@ impl<'s, 'k> Attempt<'s, 'k> {
             owner,
             wildcard,
             data: None,
+            revoking: false,
         })
     }
 
     /// The checks that need the key, then the signature (RFC 4035 §5.3.1 to §5.3.3): the DNSKEY is the signer's,
-    /// of the RRSIG's algorithm and key tag; it is not revoked (RFC 5011 §7) and has the zone key bit; `now` is
-    /// in the window (RFC 1982 arithmetic, no clock skew). Then one verification is spent from `budget`, unless
-    /// `memo` holds it: a check that succeeded before is not done again, nor paid for.
+    /// of the RRSIG's algorithm and key tag; it is not revoked (RFC 5011 §7), but is for a revocation (§2.1), and
+    /// has the zone key bit; `now` is in the window (RFC 1982 arithmetic, no clock skew). Then one verification is
+    /// spent from `budget`, unless `memo` holds it: a check that succeeded before is not done again, nor paid for.
     fn check(
         &mut self,
         rrset: &RrSet<'_>,
@@ -122,8 +125,12 @@ impl<'s, 'k> Attempt<'s, 'k> {
         if !key.matches(self.sig) {
             return Err(SigError::NoKey { key_tag });
         }
-        if key.dnskey.is_revoked() {
-            return Err(SigError::RevokedKey { key_tag });
+        if key.dnskey.is_revoked() != self.revoking {
+            return Err(if self.revoking {
+                SigError::NoKey { key_tag }
+            } else {
+                SigError::RevokedKey { key_tag }
+            });
         }
         if !key.dnskey.is_zone_key() {
             return Err(SigError::NotZoneKey { key_tag });
@@ -261,6 +268,31 @@ pub fn verify_any(
     budget: &mut Budget,
 ) -> Result<Verified, SigError> {
     verify_any_with(rrset, sigs, keys, now, budget, None)
+}
+
+/// Whether `key`, revoked, signs `rrset` with one of `sigs`: the revocation of RFC 5011 §2.1, the one use of a
+/// revoked key, which signs the DNSKEY `RRset` holding it. The checks are those of [`verify`], the key's revoke bit
+/// required rather than refused; at most [`MAX_FAILED`] RRSIGs are tried, within `budget`.
+pub(crate) fn verify_revocation(
+    rrset: &RrSet<'_>,
+    sigs: &[Signature<'_>],
+    key: &Key<'_>,
+    now: u32,
+    budget: &mut Budget,
+) -> bool {
+    let canonical = OnceCell::new();
+    sigs.iter()
+        .filter(|sig| key.matches(sig))
+        .take(MAX_FAILED)
+        .any(|sig| {
+            Attempt::new(rrset, sig).is_ok_and(|mut attempt| {
+                attempt.revoking = true;
+                let canonical = canonical.get_or_init(|| rrset.canonical_rdatas());
+                attempt
+                    .check(rrset, canonical, key, now, budget, None)
+                    .is_ok()
+            })
+        })
 }
 
 /// [`verify_any`], each check looked up in `memo` first and kept there once it succeeds (D86).
