@@ -91,7 +91,8 @@ struct Scan {
     lost: bool,
     /// The indentation of the line where the plain scalar open started.
     plain: Option<usize>,
-    /// A `|` or `>` that may end its line, and the indentation of that line.
+    /// A `|` or `>` where a scalar may start on this line, a block scalar's header (no plain scalar starts with
+    /// one), and the indentation of the line.
     header: Option<usize>,
     /// The indentation of the line ending in `|` or `>`, while the lines are the text of its block scalar.
     block: Option<usize>,
@@ -220,7 +221,7 @@ impl Scan {
                 self.plain = None;
             }
             '\'' | '"' => self.lost = true,
-            '[' | '{' if self.start || self.flow > 0 => {
+            '[' | '{' if self.start => {
                 self.flow += 1;
                 self.start = true;
                 self.closed = false;
@@ -268,7 +269,6 @@ impl Scan {
         self.start = false;
         self.closed = false;
         self.spaced = false;
-        self.header = None;
         if matches!(self.pending, Pending::Indicator) {
             self.pending = Pending::None;
         }
@@ -277,12 +277,10 @@ impl Scan {
         }
     }
 
-    /// Ends the quoted scalar open.
+    /// Ends the quoted scalar open; `start` and `spaced` are false since its opening quote.
     const fn close(&mut self) {
         self.quote = None;
-        self.start = false;
         self.closed = true;
-        self.spaced = false;
     }
 }
 
@@ -509,12 +507,28 @@ mod tests {
             (r"key: '${DOUBLE}'", r#"key: 'say "hi"\'"#),
             // By the quotes it is in, an escaped quote before it too.
             ("{k: 'a''${QUOTE}'}", "{k: 'a''it''s'}"),
+            ("k: 'a b''${QUOTE}'", "k: 'a b''it''s'"),
+            // A `#` after no space, and brackets within a plain scalar outside a flow, are text.
+            ("[a#b, ${TEXT}]", "[a#b, 'a: b #c']"),
+            ("k: a]b[c\n${TEXT}: v", "k: a]b[c\n'a: b #c': v"),
+            ("k: [a]\nj: b\n${TEXT}: v", "k: [a]\nj: b\n'a: b #c': v"),
+            // A value right after the `:` of a quoted key in a flow.
+            (r#"{"a":${TEXT}}"#, r#"{"a":'a: b #c'}"#),
+            // A `#` right after a value is text; a block scalar's text opens no flow.
+            ("[a ${PORT}#b, ${TEXT}]", "[a 5353#b, 'a: b #c']"),
+            ("k: |\n  [a\n${TEXT}: v", "k: |\n  [a\n'a: b #c': v"),
+            // A `|` within a scalar starts no block scalar.
+            ("[a|,\n  ${TEXT}]", "[a|,\n  'a: b #c']"),
+            // After quotes closed, an escaped quote in them too.
+            (r#"k: ["a\"", ${TEXT}]"#, r#"k: ["a\"", 'a: b #c']"#),
             (r#"k: "a\"${DOUBLE}""#, r#"k: "a\"say \"hi\"\\""#),
             ("k: 'a\n  '' ${PORT}'", "k: 'a\n  '' 5353'"),
             // After a tag, alone.
             ("key: !!str ${TEXT}", "key: !!str 'a: b #c'"),
             // Past a plain scalar or a block scalar, at the indentation of its key.
             ("- a\n- ${TEXT}", "- a\n- 'a: b #c'"),
+            // Below a key whose line ends in a comment, the value.
+            ("k: # ${PORT}\n  ${TEXT}", "k: # 5353\n  'a: b #c'"),
             ("k: |\n  t\nj: ${TEXT}", "k: |\n  t\nj: 'a: b #c'"),
             // A default is the template's own text.
             ("key: ${NOPE:-a: b}", "key: a: b"),
@@ -526,6 +540,12 @@ mod tests {
             "key: ${TEXT}x",
             "key: 'x ${TEXT}'",
             "key: ${TEXT}${PORT}",
+            "key: ${PORT}${TEXT}",
+            "key: 1 ${TEXT}",
+            "key: a&b ${TEXT}",
+            "[a:${TEXT}]",
+            r#""a":${TEXT}"#,
+            r#"["a"b:${TEXT}]"#,
             "key: ${QUOTE}'",
             r#"key: "${TEXT}"#,
             "key:${TEXT}",
@@ -544,6 +564,9 @@ mod tests {
             r#"{k: 'a"${TEXT}"b'}"#,
             // A quote within a plain scalar opens nothing, on its line or the next.
             "k: a '${TEXT}'",
+            "[a', ${TEXT}]",
+            // A comment.
+            "[a # , ${TEXT}]",
             "k: a\n  '${TEXT}'",
             "- a\n\n  '${TEXT}'",
             "[a\n '${QUOTE}']",
@@ -552,6 +575,7 @@ mod tests {
             // The text of a block scalar.
             "k: |\n  ${TEXT}",
             "k: |\n  t\n  ${TEXT}",
+            "k: |2-\n  a: ${TEXT}",
             // Text by its indentation, more than the key's, not by the length of the line.
             "  a_long_key: |\n    ${TEXT}",
             "k: >-\n  '${QUOTE}'",
