@@ -46,9 +46,11 @@ impl Expect {
             let Some(expected) = expected else {
                 continue;
             };
-            // Each record meets one expected at most, so a record expected twice must come twice.
+            // Each record meets one expected at most, so a record expected twice must come twice. Those with a TTL
+            // first: one without takes any record of its data, and must not take the one of the TTL.
             let mut met = vec![false; records.len()];
-            for e in expected {
+            let (timed, untimed): (Vec<_>, Vec<_>) = expected.iter().partition(|e| e.ttl);
+            for e in timed.into_iter().chain(untimed) {
                 let found = (0..records.len()).find(|&i| !met[i] && e.matches(&records[i]));
                 match found {
                     Some(i) => met[i] = true,
