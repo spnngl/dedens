@@ -130,8 +130,9 @@ impl Rollover {
     pub const QUERY_CEILING: u64 = 1_296_000;
 
     /// The most keys followed that are not revoked, 32: RFC 5011 §2.4.3 expects a handful, the root's holds four or
-    /// fewer, and the keys missing add up. A new key past it is not followed ([`Rollover::is_full`]), so that the
-    /// text stays within [`Rollover::MAX_LEN`] for keys of any usual size.
+    /// fewer, and the keys missing add up. A new key past it is not followed ([`Rollover::is_full`]), nor one that
+    /// would not fit [`Rollover::MAX_LEN`] with every key revoked, so that the text stays within it; a key a DS
+    /// anchor digests, which signed, is followed all the same.
     pub const MAX_KEYS: usize = 32;
 
     /// The most keys kept revoked, 32, besides [`Rollover::MAX_KEYS`]: a key is revoked once, as the root's roll
@@ -141,13 +142,13 @@ impl Rollover {
 
     /// The longest text [`Rollover::read`] reads, 64 KiB, and a server writes: the text of a key is its base64 and
     /// its state, over a third more than its wire form, so a DNSKEY `RRset` that fits in a message of that size
-    /// may not fit in a text of it. [`Rollover::MAX_KEYS`] keeps it within for keys of any usual size.
+    /// may not fit in a text of it. The keys followed are bounded by it as well as by [`Rollover::MAX_KEYS`].
     pub const MAX_LEN: usize = 64 << 10;
 
     /// The keys `anchors` trusts at the root, followed from `records`, which must hold the root's DNSKEY `RRset`
     /// and its RRSIGs, at `now`, in seconds since 1970: what a resolver starts from without a text of its own
-    /// (D200). A DNSKEY anchor is valid; a key of the `RRset` a DS anchor digests is valid; the `RRset` must be
-    /// signed by one of those; its other keys are new ([`Rollover::observe`]). Returns the wait before the next
+    /// (D200). A DNSKEY anchor is valid, but for one in its revoked form, which is a key revoked; a key of the
+    /// `RRset` a DS anchor digests is valid; the `RRset` must be signed by one of those; its other keys are new ([`Rollover::observe`]). Returns the wait before the next
     /// query, in seconds.
     ///
     /// # Errors
@@ -195,15 +196,25 @@ impl Rollover {
                 (anchor.ds.as_slice(), anchor.dnskeys.as_slice())
             });
         let mut rollover = Self { keys: revoked };
-        for key in dnskeys {
+        // The anchors in their revoked form are keys revoked, first: they are no anchor, and nor is their plain form.
+        for key in dnskeys.iter().filter(|key| key.is_revoked()) {
             let key = unrevoked(key);
-            if !rollover.is_full() && !rollover.keys.iter().any(|tracked| tracked.key == key) {
+            if !rollover.holds(&key) {
                 rollover.keys.push(Tracked {
                     key,
+                    state: KeyState::Revoked { seen: now },
+                });
+            }
+        }
+        for key in dnskeys.iter().filter(|key| !key.is_revoked()) {
+            if !rollover.holds(key) && rollover.has_room(key) {
+                rollover.keys.push(Tracked {
+                    key: key.clone().into_owned(),
                     state: KeyState::Valid,
                 });
             }
         }
+        rollover.forget_old_revocations();
         rollover.sort();
         let wait = rollover.update(ds, records, now)?;
         Ok((rollover, wait))
@@ -236,7 +247,7 @@ impl Rollover {
     /// First, each key trusted (valid or missing) whose revoked form is in the `RRset` and signs it is revoked
     /// (§2.1), whatever else signs it; a new key whose plain form is gone is dropped like any other (§4). Then the `RRset` must be signed by a trusted key; if so, each key is updated: a new key,
     /// a secure entry point of a supported algorithm, waits [`Rollover::ADD_HOLD_DOWN`] (or the TTL when longer)
-    /// and is valid when seen after that, unless [`Rollover::MAX_KEYS`] keys are followed; one gone before is
+    /// and is valid when seen after that, unless the bounds are met ([`Rollover::is_full`]); one gone before is
     /// dropped. A valid key gone is missing, a missing key
     /// back is valid, and a missing key is dropped after [`Rollover::KEEP_MISSING`] when another is valid. A
     /// revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver forget it after
@@ -335,18 +346,19 @@ impl Rollover {
                 && crypto::supported(dnskey.algorithm())
         }) {
             let dnskey = key.dnskey().clone().into_owned();
-            if self.keys.iter().any(|tracked| tracked.key == dnskey) {
+            if self.holds(&dnskey) {
                 continue;
             }
-            if self.is_full() {
-                break;
-            }
+            // A key a DS anchor digests is the one that signed, held whatever the bound: the operator's own anchors
+            // are few, and a state without it would not verify what it was seeded with.
             let state = if digested(&ds, key.dnskey()) {
                 KeyState::Valid
-            } else {
+            } else if self.has_room(&dnskey) {
                 KeyState::AddPend {
                     until: now.saturating_add(hold_down),
                 }
+            } else {
+                continue;
             };
             self.keys.push(Tracked { key: dnskey, state });
         }
@@ -356,9 +368,27 @@ impl Rollover {
         Ok(half.clamp(Self::QUERY_FLOOR, Self::QUERY_CEILING))
     }
 
+    /// Whether `key`, in either form, is a key held, in any state.
+    fn holds(&self, key: &Dnskey<'_>) -> bool {
+        let plain = unrevoked(key);
+        self.keys.iter().any(|tracked| tracked.key == plain)
+    }
+
+    /// Whether a new key `key` may be followed: [`Rollover::is_full`] is not, and the text still fits
+    /// [`Rollover::MAX_LEN`] with it and each key held revoked, the longest a state line grows to (a key revoked
+    /// is kept, and written after its change).
+    fn has_room(&self, key: &Dnskey<'_>) -> bool {
+        // A key's line at the longest: `revoked`, a time of 20 digits, the key, a line feed.
+        let longest =
+            |key: &Dnskey<'_>| "revoked 18446744073709551615 ".len() + key.to_string().len() + 1;
+        let held: usize = self.keys.iter().map(|tracked| longest(&tracked.key)).sum();
+        let lines = HEADER.len() + 1 + END.len() + 1;
+        !self.is_full() && lines + held + longest(key) <= Self::MAX_LEN
+    }
+
     /// Whether [`Rollover::MAX_KEYS`] keys are followed that are not revoked: a new key is not. The keys revoked
     /// have their own bound ([`Rollover::MAX_REVOKED`]), so that keys revoked, which are kept for good, never
-    /// crowd out the keys to follow.
+    /// crowd out the keys to follow. A key a DS anchor digests, which signed, is followed past it.
     #[must_use]
     pub fn is_full(&self) -> bool {
         let followed = (self.keys.iter())

@@ -549,7 +549,8 @@ fn rfc5011_s2_4_3_the_keys_followed_are_bounded() {
     assert!(rollover.is_full());
     assert!(states(&rollover).iter().any(|&(tag, _)| tag == 20326));
 
-    // Seeded by more DNSKEY anchors than the bound: the first ones.
+    // Seeded by more DNSKEY anchors than the bound: the first ones, and KSK-2010 which signs, a DS anchor digests
+    // it, and which a state without it could not be verified with.
     let anchored = by_algorithms(". IN DNSKEY ", 100..200, "");
     let (seeded, _) = Rollover::seed(
         &anchors(&format!("{DS_2010}{anchored}")),
@@ -557,7 +558,139 @@ fn rfc5011_s2_4_3_the_keys_followed_are_bounded() {
         JULY_2017,
     )
     .expect("KSK-2010 by its DS");
-    assert_eq!(seeded.keys().count(), Rollover::MAX_KEYS);
+    assert_eq!(seeded.keys().count(), Rollover::MAX_KEYS + 1);
+    assert!(states(&seeded).contains(&(19036, KeyState::Valid)));
+    assert!(
+        states(&seeded).iter().all(|&(tag, _)| tag != 20326),
+        "new, and no room"
+    );
+}
+
+/// The text stays within [`Rollover::MAX_LEN`] whatever the keys' size, with room for each key to be revoked: keys
+/// of 6000 bytes, which the bound on their number alone lets fill 3 times that.
+#[test]
+fn rfc5011_s2_4_3_the_keys_followed_are_bounded_by_their_text() {
+    let key = "A".repeat(8000);
+    let mut anchored = String::new();
+    for algorithm in 100..120 {
+        writeln!(anchored, ". IN DNSKEY 257 3 {algorithm} {key}").expect("a String");
+    }
+    let (seeded, _) = Rollover::seed(
+        &anchors(&format!("{DS_2010}{anchored}")),
+        &july_2017(),
+        JULY_2017,
+    )
+    .expect("KSK-2010 by its DS");
+    let count = seeded.keys().count();
+    assert!((2..20).contains(&count), "{count} keys");
+    // "revoked 18446744073709551615 " for "valid ": 23 bytes more at the most, per key.
+    assert!(seeded.to_string().len() + 23 * count <= Rollover::MAX_LEN);
+    assert!(states(&seeded).contains(&(19036, KeyState::Valid)));
+}
+
+/// A new key of a verified `RRset` is followed only when it fits with each key held revoked, the longest the text
+/// grows to: a state of keys of 9248 characters, its text just under the bound, follows none; one with room follows
+/// KSK-2017.
+#[test]
+fn rfc5011_s2_4_3_a_new_key_needs_room_for_the_keys_to_be_revoked() {
+    let big = |keys: usize, size: usize| {
+        let mut lines = String::new();
+        for algorithm in (100..).take(keys) {
+            writeln!(lines, "valid 257 3 {algorithm} {}", "A".repeat(size)).expect("a String");
+        }
+        format!(
+            "dedens rfc5011 1\nvalid {}\n{lines}end\n",
+            dnskey(&december_2018(), 19036)
+        )
+    };
+    let tight = big(7, 9248);
+    assert!(Rollover::MAX_LEN - tight.len() < 300, "{}", tight.len());
+    let mut rollover = Rollover::read(&tight).expect("a state under the bound");
+    rollover
+        .observe(&july_2017(), JULY_2017)
+        .expect("KSK-2010 signs");
+    assert!(states(&rollover).iter().all(|&(tag, _)| tag != 20326));
+    assert!(rollover.to_string().len() <= Rollover::MAX_LEN);
+
+    let mut rollover = Rollover::read(&big(3, 9248)).expect("a state under the bound");
+    rollover
+        .observe(&july_2017(), JULY_2017)
+        .expect("KSK-2010 signs");
+    assert!(states(&rollover).iter().any(|&(tag, _)| tag == 20326));
+}
+
+/// The bound of the text is to the byte: a new key is followed when the longest text the state grows to, each key
+/// held revoked, is `MAX_LEN` bytes, and not when it is one more.
+#[test]
+fn rfc5011_s2_4_3_a_new_key_fits_the_bound_to_the_byte() {
+    // A key's line at the longest: "revoked ", a time of 20 digits, " ", the key, a line feed.
+    let longest = |key: &Dnskey<'_>| 30 + key.to_string().len();
+    // The longest text, with its first and last lines ("dedens rfc5011 1", "end").
+    let worst =
+        |rollover: &Rollover| 21 + rollover.keys().map(|(key, _)| longest(key)).sum::<usize>();
+    let new = longest(&dnskey(&july_2017(), 20326));
+    let held = longest(&dnskey(&december_2018(), 19036));
+    // KSK-2010 and six keys with texts of a multiple of 4 characters, `short` of them of an algorithm of 2 digits,
+    // the others of 3: the digits and the texts chosen so that the longest text of the state and the new key is
+    // `total`.
+    let state = |total: usize| {
+        let padding = total - new - held - 21;
+        (0..=4)
+            .find_map(|short| {
+                let algorithms: Vec<u32> = (10..10 + short).chain(100..106 - short).collect();
+                let fixed: usize = algorithms
+                    .iter()
+                    .map(|algorithm| 37 + algorithm.to_string().len())
+                    .sum();
+                let text = padding.checked_sub(fixed).filter(|text| text % 4 == 0)?;
+                let each = text / 24 * 4;
+                let mut state = format!(
+                    "dedens rfc5011 1\nvalid {}\n",
+                    dnskey(&december_2018(), 19036)
+                );
+                for (index, algorithm) in algorithms.iter().enumerate() {
+                    let size = if index == 0 { text - 5 * each } else { each };
+                    writeln!(state, "valid 257 3 {algorithm} {}", "A".repeat(size)).ok()?;
+                }
+                state.push_str("end\n");
+                Some(state)
+            })
+            .expect("digits that make the length")
+    };
+    for (total, follows) in [(Rollover::MAX_LEN, true), (Rollover::MAX_LEN + 1, false)] {
+        let mut rollover = Rollover::read(&state(total)).expect("a state under the bound");
+        assert_eq!(worst(&rollover) + new, total);
+        rollover
+            .observe(&july_2017(), JULY_2017)
+            .expect("KSK-2010 signs");
+        let tags: Vec<u16> = states(&rollover).iter().map(|&(tag, _)| tag).collect();
+        assert_eq!(tags.contains(&20326), follows, "{total}");
+    }
+}
+
+/// RFC 5011 §2.1: a DNSKEY anchor in its revoked form is a key revoked, seeded as one: valid, it would be trusted
+/// to sign what the revoked key signs, and its tombstone is what keeps a download that lists it from trusting it.
+#[test]
+fn rfc5011_s2_1_a_dnskey_anchor_revoked_is_seeded_revoked() {
+    let revoked = dnskey(&march_2019(), 19164);
+    assert_eq!(revoked.flags(), 385);
+    let given = anchors(&format!("{DS_2017}. IN DNSKEY {revoked}\n"));
+    let (seeded, _) =
+        Rollover::seed(&given, &december_2018(), DECEMBER_2018).expect("KSK-2017 by its DS");
+    assert_eq!(
+        states(&seeded),
+        [
+            (
+                19036,
+                KeyState::Revoked {
+                    seen: DECEMBER_2018
+                }
+            ),
+            (20326, KeyState::Valid)
+        ]
+    );
+    assert_eq!(trusted(&seeded), [20326]);
+    assert_eq!(seeded.without_revoked(&given), anchors(DS_2017));
 }
 
 // --- RFC 5011 §4: missing keys ---

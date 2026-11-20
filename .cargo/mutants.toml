@@ -213,6 +213,8 @@ exclude_re = [
   # A warning only, of dedensd's RFC 5011 state (D200): the root keys followed disagree with the downloaded anchors,
   # trusted either way.
   'rollover\.rs:\d+:\d+: delete ! in Kept::anchors$',
+  # A warning only, of the same: the keys followed reach their bound, said once and not at every answer after.
+  'rollover\.rs:\d+:\d+: (replace && with \|\||delete !) in Kept::observe$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never

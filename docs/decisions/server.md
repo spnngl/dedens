@@ -2059,7 +2059,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     verification it needs; `dedens-roots` holds data, no crypto). Per key `KeyState { AddPend { until }, Valid,
     Missing { since }, Revoked { seen } }`; RFC 5011 §4's Start and Removed are a key not held, as Unbound drops
     them (`autr_cleanup_keys`). `Rollover::seed(anchors, records, now)` verifies the `RRset` with the anchors in
-    use, DS or DNSKEY: the keys they name are Valid (Unbound's `key_matches_a_ds`), other SEP keys AddPend.
+    use, DS or DNSKEY: the keys they name are Valid (Unbound's `key_matches_a_ds`; a DNSKEY anchor in its revoked form is a
+    tombstone, not a key), other SEP keys AddPend.
     `observe(records, now)` applies revocations first, a REVOKE key signing the `RRset` itself (§2.1;
     `rrsig::verify_revocation`, the one check a revoked key passes, D73), of a Valid or Missing key only (an
     AddPend key whose plain form is gone is dropped, §4's KeyRem; Unbound's `do_revoked` revokes only VALID or
@@ -2083,8 +2084,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     reaches it); an hour after a failure (§2.3's `retryTime` floor); the default verification budget per answer;
     the state text 64 KiB, which is read and written no longer (a longer one is not saved, warn!); 32 keys
     followed that are not revoked, missing ones included (RFC 5011 §2.4.3 expects a handful), a new key past it
-    not followed, warn!; 32 tombstones besides, the oldest revocation forgotten past them, so that a key signing
-    what it should not cannot fill the state: both together fit 64 KiB for keys of any usual size.
+    not followed, warn! once when it is reached; a new key is also not followed when the text would pass 64 KiB
+    with every key held written revoked, its longest line, so that a state saved is always read again; 32
+    tombstones besides, the oldest revocation forgotten past them, so that a key signing what it should not
+    cannot fill the state. A key a DS anchor digests, which signs the `RRset` a state is seeded from, is followed
+    past the bounds (the operator's anchors are few): a state that held none of the keys it verified with would
+    be seeded with an `RRset` it cannot verify.
   - `dedensd`: a validating `recurse` stage without `trust_anchors` follows the root's keys. The state is
     `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
     file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the
@@ -2093,7 +2098,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     download gave. No state (no file: only NotFound),
     or one whose content does not read (warn!; a corrupt text, not UTF-8, too long, no regular file or a symbolic
     link): D128's anchors serve and seed a new state from the next answer; the file is first renamed
-    `root-5011.bad`, for the operator, since the new state would overwrite its tombstones. A file the system fails
+    `root-5011.bad.<unix seconds>` (`.<n>` more in the same second, flushed to disk: an earlier one is the
+    evidence of what went wrong first, never overwritten, never swept), for the operator, since the new state
+    would overwrite its tombstones. A file the system fails
     to read (EACCES, EIO, no memory: it may be a good state) stays where it is, with a warn!: D128's anchors serve,
     a probe fails with `RETRY`, nothing is seeded or written, and the next use reads the file again. A state whose keys are all revoked is kept, serving D128's anchors
     less the tombstones (warn!), also when D128's anchors predate the revocation: a validator never trusts
@@ -2101,7 +2108,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
     replaced by those, the tombstones kept, with a warn!. Forward stages keep D128's anchors.
   - Operator: the state is the server's to write and the operator's to read, and to reset (a key lost to a mistake,
-    a tombstone to forget): stop `dedensd`, delete `root-5011` (and `root-5011.bad` once read) in `state_dir`,
+    a tombstone to forget): stop `dedensd`, delete `root-5011` (and the `root-5011.bad.*` once read) in `state_dir`,
     start it: D128's anchors seed a new state at the first answer, as a first start does, and the tombstones
     are forgotten: a key the download still lists is trusted again unless the zone publishes it revoked.
   - Queries: `Probe` in `reload::Current` holds the next query's time; the first serving thread past it takes it
