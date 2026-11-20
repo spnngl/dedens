@@ -593,6 +593,34 @@ mod h3_frames {
         });
     }
 
+    /// §5.2: a request in flight when the client sends `GOAWAY` gets its response: the server closes the connection
+    /// once the response went out, not as soon as it is queued (quinn drops what the close finds queued).
+    #[test]
+    fn s5_2_a_client_going_away_still_gets_the_reply_in_flight() {
+        let upstream = Responder::delayed(&["a"], Duration::from_millis(300));
+        let ca = certificates();
+        let server = serving(&ca, &upstream);
+        Runtime::new().expect("a runtime").block_on(async {
+            let (connection, mut driver, mut requests) = h3_connected(server.addr, &ca, None).await;
+            let stream = requests
+                .send_request(post_head(server.addr))
+                .await
+                .expect("a stream");
+            let query = query_for("a", 0);
+            let answer = post_body(stream, &query);
+            let going_away = async {
+                compio::time::sleep(Duration::from_millis(100)).await;
+                driver.shutdown(0).await.expect("GOAWAY sent");
+            };
+            let (answer, ()) = futures_util::join!(answer, going_away);
+            let (status, body) = answer.expect("the request in flight answered");
+            assert_eq!(status, http::StatusCode::OK);
+            assert_eq!(decode(&body).rcode(), Rcode::NOERROR);
+            let code = closed(&connection, Duration::from_secs(5)).await;
+            assert_eq!(code, Some(Ok(Code::H3_NO_ERROR.value())));
+        });
+    }
+
     /// §5.2, D157: a server stopped by SIGTERM closes its connections with `H3_NO_ERROR` before it ends: its clients
     /// open new ones at once instead of waiting for their idle timeout.
     #[cfg(unix)]
