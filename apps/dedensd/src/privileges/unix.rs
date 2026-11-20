@@ -1,6 +1,7 @@
 //! The calls of Unix (D122): `nix`, safe wrappers of libc, so this crate keeps no `unsafe` of its own.
 
-use std::os::unix::fs::DirBuilderExt as _;
+use std::fs::Permissions;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use anyhow::{Context, ensure};
@@ -122,18 +123,29 @@ fn effective(uid: [u32; 3], gid: [u32; 3]) -> anyhow::Result<Ids> {
     })
 }
 
-/// Creates the downloads directory `dir` if it is missing, mode 0755, and gives it to `uid` and `gid`: the user
-/// that serves writes the lists it downloads there (D104). A directory that exists is left as it is, whoever
-/// owns it: a wrong path would hand the user `/etc`. The ownership is set on the path itself (`lchown`), not on
-/// what a swapped link points to.
+/// Creates the downloads directory `dir` if it is missing, and gives it to `uid` and `gid`: the user that serves
+/// writes the lists it downloads there (D104). It and the parents made with it are 0755 whatever the umask: a parent
+/// made 0700 (systemd's `UMask=0077`) would shut the user out of `dir`. A directory that exists is left as it is,
+/// whoever owns it: a wrong path would hand the user `/etc`. The ownership is set on the path itself (`lchown`), not
+/// on what a swapped link points to.
 pub(super) fn prepare(dir: &Path, uid: u32, gid: u32) -> anyhow::Result<()> {
     if let Some(parent) = dir.parent() {
+        let missing: Vec<_> = parent
+            .ancestors()
+            .take_while(|path| !path.as_os_str().is_empty() && !path.exists())
+            .collect();
         std::fs::create_dir_all(parent)
+            .and_then(|()| {
+                missing.iter().try_for_each(|path| {
+                    std::fs::set_permissions(path, Permissions::from_mode(0o755))
+                })
+            })
             .with_context(|| format!("cannot create {}", parent.display()))?;
     }
     match std::fs::DirBuilder::new().mode(0o755).create(dir) {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         made => made
+            .and_then(|()| std::fs::set_permissions(dir, Permissions::from_mode(0o755)))
             .and_then(|()| std::os::unix::fs::lchown(dir, Some(uid), Some(gid)))
             .with_context(|| format!("cannot give {} to uid {uid}", dir.display())),
     }
@@ -348,7 +360,7 @@ mod tests {
     /// D122: a directory that exists is left as it is, one that is missing is made, 0755.
     #[test]
     fn a_missing_downloads_directory_is_made_and_an_existing_one_kept() {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        use std::os::unix::fs::MetadataExt as _;
 
         let root = tempfile::tempdir().unwrap();
         let kept = root.path().join("kept");
@@ -360,11 +372,17 @@ mod tests {
         let me = ids().unwrap();
         let made = root.path().join("deep/made");
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        prepare(&made, me.uid, me.gid).unwrap();
+        // 0755 whatever the umask (systemd's `UMask=0077`): a parent root makes 0700 shuts the user out of `dir`.
+        let umask = |mask| nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(mask));
+        let before = umask(0o077);
+        let prepared = prepare(&made, me.uid, me.gid);
+        umask(before.bits());
+        prepared.unwrap();
         let metadata = std::fs::metadata(&made).unwrap();
         assert!(metadata.is_dir());
-        // The mode is the builder's, whatever the umask lets through.
-        assert_eq!(metadata.mode() & 0o777 & !0o755, 0);
+        assert_eq!(metadata.mode() & 0o7777, 0o755);
+        let parent = std::fs::metadata(root.path().join("deep")).unwrap();
+        assert_eq!(parent.mode() & 0o7777, 0o755);
         assert_eq!((metadata.uid(), metadata.gid()), (me.uid, me.gid));
         // A symlink in its place is not followed.
         let link = root.path().join("link");
