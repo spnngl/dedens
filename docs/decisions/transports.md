@@ -841,8 +841,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     cannot be sealed under is dropped (one too large for a resumed query's packet to fit, which `dnscrypt-proxy` ignores
     too, is never kept). The response says whether the query was resumed (`CertificateInfo::resumed`). A network change is not seen (no socket is kept: `dedens` is one process, and the exchange is
     over a fresh source port): the lifetime bounds a ticket's use. The certificate query is a TXT query padded with
-    EDNS Padding to 3072 bytes (two classical and two PQ certificates, the draft's "Certificate Retrieval"), UDP first,
-    TCP when the answer is truncated or missing; the entropy buffer of the exchange grew from 64 to 96 bytes for the
+    EDNS Padding to 3072 bytes (two classical and two PQ certificates, the draft's §11.3 "Certificate Retrieval
+    Amplification"), UDP first, TCP when the answer is truncated or missing; the entropy buffer of the exchange grew from 64 to 96 bytes for the
     encapsulation's 64.
   - `dedensd` (D99): `systems` takes `pq` (`SystemFile::Pq`); a PQ certificate and its X-Wing key are made at each
     rotation like the others (12 hours, valid 24, backdated an hour). The ticket key is made at each rotation too,

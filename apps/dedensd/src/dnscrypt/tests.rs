@@ -213,8 +213,8 @@ fn systems_of(wire: &[u8]) -> (Vec<EncryptionSystem>, bool) {
     (systems, answer.header.flags.contains(Flags::TC))
 }
 
-/// D101, draft "Certificate Retrieval": a PQ certificate goes over UDP only when the answer is no longer than the
-/// query, else the answer has the classical certificate, with TC set; over TCP it always goes.
+/// D101, draft §11.3 "Certificate Retrieval Amplification": a PQ certificate goes over UDP only when the answer is no
+/// longer than the query, else the answer has the classical certificate, with TC set; over TCP it always goes.
 #[test]
 fn the_pq_certificate_goes_over_udp_only_in_an_answer_no_longer_than_the_query() {
     let service = service(pq());

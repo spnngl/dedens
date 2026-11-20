@@ -436,8 +436,9 @@ impl KeySet {
     /// question in class IN for the provider name, answered with the newest certificate of each system. `None` for
     /// any other message, and when there is no certificate to give.
     ///
-    /// Over UDP the `X-Wing` certificate goes in only when the answer is no longer than the query (draft
-    /// "Certificate Retrieval"; D101): else the answer has the others, with TC set, and the client asks again over TCP.
+    /// Over UDP the `X-Wing` certificate goes in only when the answer is no longer than the query (draft §11.3
+    /// "Certificate Retrieval Amplification"; D101): else the answer has the others, with TC set, and the client asks
+    /// again over TCP.
     pub(crate) fn certificates(
         &self,
         query: &[u8],
