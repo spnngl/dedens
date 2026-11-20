@@ -4,10 +4,10 @@ use hpke::{Deserializable as _, OpModeS, Serializable as _};
 use rand_core::CryptoRng;
 use zeroize::Zeroizing;
 
-use crate::config::ConfigContents;
+use crate::config::{ConfigContents, KEY_ID_LEN};
 use crate::error::ExchangeError;
 use crate::exchange::{NK, QUERY_INFO, RESPONSE_EXPORT, Secrets, aad};
-use crate::message::{Message, MessagePlaintext, MessageType};
+use crate::message::{Message, MessagePlaintext, MessageType, encode_plaintext};
 use crate::suite::{Aead, Kdf, Kem};
 
 /// What the client keeps of a query to read its response; its secrets are wiped when it is dropped.
@@ -37,15 +37,15 @@ pub fn encrypt_query(
     padding: usize,
     rng: &mut impl CryptoRng,
 ) -> Result<(Message, QueryContext), ExchangeError> {
-    let query_plaintext =
-        Zeroizing::new(MessagePlaintext::new(dns_query.to_vec(), padding)?.encode());
+    let query_plaintext = Zeroizing::new(encode_plaintext(dns_query, padding, 0)?);
     let public_key = <Kem as hpke::Kem>::PublicKey::from_bytes(config.public_key())
         .map_err(|_| ExchangeError::Encapsulation)?;
     let (encapsulated, mut context) =
         hpke::setup_sender_with_rng::<Aead, Kdf, Kem>(&OpModeS::Base, &public_key, QUERY_INFO, rng)
             .map_err(|_| ExchangeError::Encapsulation)?;
+    let aad: [u8; 3 + KEY_ID_LEN] = aad(MessageType::Query, config.key_id());
     let sealed = context
-        .seal(&query_plaintext, &aad(MessageType::Query, config.key_id())?)
+        .seal(&query_plaintext, &aad)
         .map_err(|_| ExchangeError::Encrypt)?;
     let mut exporter = Zeroizing::new([0; NK]);
     context

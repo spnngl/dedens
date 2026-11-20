@@ -53,35 +53,43 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A byte string of a `<min..2^16-1>` field. Its length fits the two-byte prefix, checked when it is built, so
-/// writing cannot fail.
+/// A byte string of a `<min..2^16-1>` field, owned or borrowed. Its length fits the two-byte prefix, checked when
+/// it is built, so writing cannot fail.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Field {
+pub(crate) struct Field<B = Vec<u8>> {
     len: u16,
-    bytes: Vec<u8>,
+    bytes: B,
 }
 
-impl Field {
+impl<B: AsRef<[u8]>> Field<B> {
     /// The field `name` of `bytes`, which are at least `min` and at most 65535.
-    pub(crate) fn new(name: &'static str, bytes: Vec<u8>, min: usize) -> Result<Self, WireError> {
-        if bytes.len() < min {
+    pub(crate) fn new(name: &'static str, bytes: B, min: usize) -> Result<Self, WireError> {
+        let len = bytes.as_ref().len();
+        if len < min {
             return Err(WireError::EmptyField(name));
         }
-        let len = u16::try_from(bytes.len()).map_err(|_| WireError::FieldTooLong(name))?;
+        let len = u16::try_from(len).map_err(|_| WireError::FieldTooLong(name))?;
         Ok(Self { len, bytes })
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_ref()
     }
 
-    pub(crate) fn into_vec(self) -> Vec<u8> {
-        self.bytes
+    /// The bytes it writes: the prefix and the string.
+    pub(crate) fn encoded_len(&self) -> usize {
+        2 + usize::from(self.len)
     }
 
     /// Writes the length prefix, then the bytes.
     pub(crate) fn put(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.len.to_be_bytes());
-        out.extend_from_slice(&self.bytes);
+        out.extend_from_slice(self.as_slice());
+    }
+}
+
+impl Field {
+    pub(crate) fn into_vec(self) -> Vec<u8> {
+        self.bytes
     }
 }

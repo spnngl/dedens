@@ -89,7 +89,9 @@ impl Message {
     /// The bytes of the message.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(
+            1 + self.key_id.encoded_len() + self.encrypted_message.encoded_len(),
+        );
         out.push(self.message_type.byte());
         self.key_id.put(&mut out);
         self.encrypted_message.put(&mut out);
@@ -165,11 +167,7 @@ impl MessagePlaintext {
     /// The bytes of the plaintext.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        self.dns_message.put(&mut out);
-        out.extend_from_slice(&self.padding.to_be_bytes());
-        out.resize(out.len() + usize::from(self.padding), 0);
-        out
+        put_plaintext(&self.dns_message, self.padding, 0)
     }
 
     /// The DNS message.
@@ -189,6 +187,33 @@ impl MessagePlaintext {
     pub fn padding(&self) -> usize {
         usize::from(self.padding)
     }
+}
+
+/// The bytes of [`MessagePlaintext::new`]`(dns_message, padding)`, without the copy of `dns_message` it keeps, in a
+/// buffer with room for `spare` bytes more.
+///
+/// # Errors
+///
+/// As [`MessagePlaintext::new`].
+pub(crate) fn encode_plaintext(
+    dns_message: &[u8],
+    padding: usize,
+    spare: usize,
+) -> Result<Vec<u8>, WireError> {
+    let dns_message = Field::new("dns_message", dns_message, 1)?;
+    let padding = u16::try_from(padding).map_err(|_| WireError::FieldTooLong("padding"))?;
+    Ok(put_plaintext(&dns_message, padding, spare))
+}
+
+/// `dns_message<1..2^16-1> padding<0..2^16-1>` in one allocation with room for `spare` bytes more: no
+/// reallocation leaves a copy of a query's plaintext behind, unwiped.
+fn put_plaintext(dns_message: &Field<impl AsRef<[u8]>>, padding: u16, spare: usize) -> Vec<u8> {
+    let padding_len = usize::from(padding);
+    let mut out = Vec::with_capacity(dns_message.encoded_len() + 2 + padding_len + spare);
+    dns_message.put(&mut out);
+    out.extend_from_slice(&padding.to_be_bytes());
+    out.resize(out.len() + padding_len, 0);
+    out
 }
 
 /// The block a query is padded to (RFC 8467 §4.1).

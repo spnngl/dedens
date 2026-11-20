@@ -4,10 +4,10 @@ use hpke::{Deserializable as _, Kem as _, OpModeR, Serializable as _};
 use rand_core::CryptoRng;
 use zeroize::Zeroizing;
 
-use crate::config::{ConfigContents, PUBLIC_KEY_LEN};
+use crate::config::{ConfigContents, KEY_ID_LEN, PUBLIC_KEY_LEN};
 use crate::error::{ExchangeError, WireError};
-use crate::exchange::{NK, QUERY_INFO, RESPONSE_EXPORT, Secrets, aad};
-use crate::message::{Message, MessagePlaintext, MessageType};
+use crate::exchange::{NK, QUERY_INFO, RESPONSE_EXPORT, Secrets, TAG_LEN, aad};
+use crate::message::{Message, MessagePlaintext, MessageType, encode_plaintext};
 use crate::suite::{Aead, Kdf, Kem};
 
 /// The HPKE key pair a target decrypts queries with, and the config that publishes its public half.
@@ -88,8 +88,9 @@ pub fn decrypt_query(
         QUERY_INFO,
     )
     .map_err(|_| ExchangeError::Decapsulation)?;
+    let aad: [u8; 3 + KEY_ID_LEN] = aad(MessageType::Query, key.config.key_id());
     let query_plaintext = context
-        .open(sealed, &aad(MessageType::Query, message.key_id())?)
+        .open(sealed, &aad)
         .map(Zeroizing::new)
         .map_err(|_| ExchangeError::Decrypt)?;
     let mut exporter = Zeroizing::new([0; NK]);
@@ -126,10 +127,10 @@ pub fn encrypt_response(
     padding: usize,
     rng: &mut impl CryptoRng,
 ) -> Result<Message, ExchangeError> {
-    let plaintext = MessagePlaintext::new(dns_response.to_vec(), padding)?.encode();
+    let plaintext = encode_plaintext(dns_response, padding, TAG_LEN)?;
     let mut nonce = [0; NK];
     rng.fill_bytes(&mut nonce);
-    let encrypted = context.secrets.seal(&nonce, &plaintext)?;
+    let encrypted = context.secrets.seal(&nonce, plaintext)?;
     Ok(Message::new(
         MessageType::Response,
         nonce.to_vec(),
