@@ -162,6 +162,18 @@ pub(crate) fn plan(
             bail!("`user` {user} has no entry to take its group from: set `group`")
         }
     };
+    // Root or not: a process already running as the user and a group root is refused too (D122).
+    ensure!(
+        member.uid != 0,
+        "`user` {user} is root: nothing would be dropped"
+    );
+    match group {
+        Some(group) => ensure!(gid != 0, "`group` {group} is root (gid 0)"),
+        None => ensure!(
+            gid != 0,
+            "the group of `user` {user} is root (gid 0): set `group`"
+        ),
+    }
     if !root {
         ensure!(
             member.uid == current.uid && gid == current.gid,
@@ -171,14 +183,6 @@ pub(crate) fn plan(
         );
         return Ok(Plan::Already);
     }
-    ensure!(
-        member.uid != 0,
-        "`user` {user} is root: nothing would be dropped"
-    );
-    ensure!(
-        gid != 0,
-        "the group of `user` {user} is root (gid 0): set `group`"
-    );
     Ok(Plan::Drop { user: member, gid })
 }
 
@@ -469,7 +473,10 @@ mod tests {
         assert!(refused(Some(&identity("dedens", Some("ghost"))), ROOT).contains("no group ghost"));
         assert!(refused(Some(&identity("root", None)), ROOT).contains("is root"));
         assert!(refused(Some(&identity("0", None)), ROOT).contains("is root"));
-        assert!(refused(Some(&identity("dedens", Some("root"))), ROOT).contains("gid 0"));
+        assert_eq!(
+            refused(Some(&identity("dedens", Some("root"))), ROOT),
+            "`group` root is root (gid 0)"
+        );
     }
 
     /// D122: a server not started as root cannot become another user, but is the one asked for already.
@@ -498,6 +505,11 @@ mod tests {
         // The user, with another group: it cannot change it.
         assert!(
             refused(Some(&identity("dedens", Some("ssl"))), dedens).contains("started as root")
+        );
+        // The user and the group running, but the group is root: refused as when started as root.
+        assert_eq!(
+            refused(Some(&identity("990", Some("0"))), Ids { uid: 990, gid: 0 }),
+            "`group` 0 is root (gid 0)"
         );
     }
 
