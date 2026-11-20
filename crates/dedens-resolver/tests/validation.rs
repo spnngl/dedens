@@ -479,6 +479,103 @@ fn d197_a_server_is_shunned_in_the_zone_it_gave_a_bogus_set_for() {
 }
 
 #[test]
+fn d191_the_servers_shunned_are_not_counted_among_a_delegation_s_addresses() {
+    // Changed: nl refers to sidn.nl naming one server without glue, whose A lookup gives 300 addresses living 0 s,
+    // held by the resolution only. The first server asked sidn.nl's A gives a forged answer, bogus, and is shunned;
+    // the others all fail. The attempt after takes 100 of the addresses, Unbound's `delegpt_max_addr`, not
+    // counting the shunned one: 100 asked, 101 with the first attempt's.
+    let capture = recursion::Resolution::read("signed-nl");
+    let unglued = name("ns.example.net.");
+    let mut referral = exchanged(&capture, "nl.", "sidn.nl.", RecordType::A);
+    let ns = (referral.authority.iter())
+        .find(|r| r.rtype() == RecordType::NS)
+        .expect("an NS record")
+        .clone();
+    referral.authority.retain(|r| r.rtype() != RecordType::NS);
+    let data = RData::Ns(unglued.clone());
+    referral
+        .authority
+        .push(Record::new(ns.name.clone(), ns.class, ns.ttl, &data));
+    referral
+        .additional
+        .retain(|r| !matches!(r.rtype(), RecordType::A | RecordType::AAAA));
+    let addresses = exchanged(&capture, "sidn.nl.", "sidn.nl.", RecordType::A);
+    let class = addresses.answer[0].class;
+    let many: Vec<Record<'static>> = (0..300_u32)
+        .map(|i| {
+            let address =
+                std::net::Ipv4Addr::from(u32::from(std::net::Ipv4Addr::new(203, 0, 0, 0)) + i);
+            Record::new(
+                unglued.clone(),
+                class,
+                dedens_proto::Ttl::ZERO,
+                &RData::A(address),
+            )
+        })
+        .collect();
+    let forged = std::sync::atomic::AtomicBool::new(false);
+    let server = |query: &dedens_resolver::Query| {
+        let question = &query.question;
+        let (zone, wanted) = (&query.zone, question.qtype);
+        if question.name == unglued {
+            let mut found = addresses.clone();
+            found.answer = if wanted == RecordType::A {
+                many.clone()
+            } else {
+                Vec::new()
+            };
+            return Answered::Response(to(found, question));
+        }
+        if is(zone, "nl.") && is(&question.name, "sidn.nl.") && wanted == RecordType::A {
+            return Answered::Response(referral.clone());
+        }
+        // A DNSKEY is asked of nl's servers too while sidn.nl's addresses live 0 s: they answer it as sidn.nl's do.
+        let held = (capture.exchanges.iter()).find(|e| {
+            (e.zone == *zone || wanted == RecordType::DNSKEY)
+                && e.name == question.name
+                && e.rtype == wanted
+        });
+        let Some(held) = held else {
+            return Answered::ServerError;
+        };
+        let mut response = dedens_testkit::message(&held.response);
+        if is(zone, "sidn.nl.") && wanted == RecordType::A {
+            if forged.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                return Answered::ServerError;
+            }
+            for record in &mut response.answer {
+                if record.rdata.rtype() == RecordType::A {
+                    let data = RData::A(std::net::Ipv4Addr::new(192, 0, 2, 1));
+                    *record = Record::new(record.name.clone(), record.class, record.ttl, &data);
+                }
+            }
+        }
+        Answered::Response(response)
+    };
+    let caches = configured(
+        false,
+        dedens_cache::Config {
+            min_ttl: 0,
+            ..dedens_cache::Config::default()
+        },
+    );
+    let limits = Limits {
+        servers: 1000,
+        queries: 1000,
+        validation: 1000,
+        ..Limits::default()
+    };
+    let validator = validator(dedens_dnssec::Limits::default());
+    let mut resolution =
+        start(&capture, &caches, limits).validated(validator, at(&capture).as_secs());
+    let (resolved, sent) = run(&mut resolution, &server, at(&capture));
+    let asked = (sent.iter()).filter(|(zone, name, rtype)| {
+        is(zone, "sidn.nl.") && is(name, "sidn.nl.") && *rtype == RecordType::A
+    });
+    assert_eq!(asked.count(), 101, "{resolved:?}");
+}
+
+#[test]
 fn d197_a_bogus_answer_blames_the_servers_that_answered_not_those_that_referred() {
     // Changed: 176.97.158.144 drops the NSEC proofs from its NXDOMAIN, a bogus answer with no bogus set to blame
     // on one server, so every server that answered is blamed; sidn.nl's servers give the NXDOMAIN captured of

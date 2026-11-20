@@ -1504,17 +1504,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Servers: the first `servers` names of a referral's NS `RRset`; each name's addresses are its glue, else those
     cached; `InfraCache::select` draws among those not tried (and those timed out, D196). When none is left, a
     server without an address, drawn at random with the resolution's `rng`, is looked up, A then AAAA, by a
-    sub-resolution on the same stack sharing the limits; its result is memoised by its question for the whole resolution, but for a bound reached (`depth`,
-    `targets`, `servers`, time), which is the place's, not the name's: asked from another it may resolve. A lookup whose closest delegation
-    or referral is a zone an ancestor on the stack is waiting on ends at once, its name given no address (the loop
-    of a zone reachable only through itself costs one query per name), which leaves an address the name's A lookup found. An A lookup ending NXDOMAIN skips the
-    name's AAAA.
+    sub-resolution on the same stack sharing the limits; its result is memoised by its question for the whole
+    resolution, but for a bound reached (`depth`, `targets`, `servers`, time), which is the place's, not the name's:
+    asked from another it may resolve. A lookup whose closest delegation or referral is a zone an ancestor on the
+    stack is waiting on ends at once, its name given no address (the loop of a zone reachable only through itself
+    costs one query per name), which leaves an address the name's A lookup found. An A lookup ending NXDOMAIN skips
+    the name's AAAA.
   - Addresses: an address at a special-purpose range of RFC 6890 is not asked unless
     `Resolution::asking_local_addresses` (`Recurse::asking_local_addresses`, `dedensd`'s `recurse` switch
     `query_local_addresses`, default false; the resolution's, not `Limits`' (counts) or the caches', which a reload
-    keeps while the switch changes): loopback (127/8, `::1`), "this network" (0/8,
-    `::`), private (10/8, 172.16/12, 192.168/16, fc00::/7), shared (100.64/10), link-local (169.254/16, fe80::/10),
-    IETF protocol assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4, ff00::/8), reserved
+    keeps while the switch changes): loopback (127/8, `::1`), "this network" (0/8, `::`), private (10/8,
+    172.16/12, 192.168/16, fc00::/7), shared (100.64/10), link-local (169.254/16, fe80::/10), IETF protocol
+    assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4, ff00::/8), reserved
     (240/4), broadcast, and of IPv6 also: every IPv4-mapped address (`::ffff:0:0/96`, a public IPv4 too, as
     Unbound's `do-not-query-localhost`: the same host would take two infra entries, and a `V6ONLY` socket cannot
     reach it), the deprecated site-local `fec0::/10`, the IPv4-compatible `::/96`, the local-use NAT64
@@ -1522,10 +1523,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     RFC 6052 §2.2), and a well-known NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`) address embedding one of the
     IPv4 ranges above (RFC 6052 §3.1 has a NAT64 gateway refuse them, but a zone can still aim the resolver at
     one that does not). A NAT64 or 6to4 address embedding a global IPv4 is asked. A zone's glue, a name's
-    addresses or a delegation cached could otherwise aim the resolver at
-    its own host, its network or many hosts (SSRF, amplification). Every address enters through `Delegation::add`,
-    which drops those; a cached delegation with no address left to ask is skipped for the TLD's or root hints. This
-    goes beyond Unbound's `do-not-query-localhost` (on by default: loopback and "this network" only; its
+    addresses or a delegation cached could otherwise aim the resolver at its own host, its network or many hosts
+    (SSRF, amplification). Every address enters through `Delegation::add`, which drops those; a cached delegation
+    with no address left to ask is skipped for the TLD's or root hints. This goes beyond Unbound's `do-not-query-localhost` (on by default: loopback and "this network" only; its
     `private-address` hides private addresses from answers, not from queries) on purpose: `dedensd` is a public
     resolver, and no stub zones exist yet (a stub zone is how Unbound reaches an internal server). Cost: an internal
     server reached through a public delegation, or authorities on a test's own host, need the switch. Config load
@@ -1534,14 +1534,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Limits (`Limits`, each a field with its number, a test in `tests/iteration.rs` reaching its default):
     `queries` 32 per client question, its sub-resolutions included, Unbound's `max-sent-count` (BIND 50): the cap
     of what a client costs; `restarts` 11, Unbound's and BIND's `max-query-restarts`, every CNAME hop counted, from
-    the cache or a response, a DNAME and the CNAME synthesized from it one hop, as the scrubber's `MAX_CHAIN`; `referrals` 30, below Unbound's `MAX_REFERRAL_COUNT` 130 and above hickory's 24: the
-    captures' deepest follows 4; `depth` 4 sub-resolutions waiting on one another, Unbound's `target-fetch-policy`
-    (BIND `max-recursion-depth` 7); `servers` 13 addresses asked and NS names used per delegation, BIND's
-    `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 address lookups per delegation, A and AAAA each counted, after Unbound's
-    `MAX_TARGET_NX` 5 (NXNSAttack, CVE-2020-12662), which counts NXDOMAIN lookups per client question, and its
-    `MAX_DP_TARGET_COUNT` 16 per delegation (BIND counts them within its 13); `MAX_ADDRESSES` 100 addresses known per
-    delegation, glue, lookups and cache together, Unbound's `delegpt_max_addr` (the scrubber keeps 100 glue
-    records already): an answer of thousands costs the draw no more; `time` 4.5 s, a stub's 5 s (glibc
+    the cache or a response, a DNAME and the CNAME synthesized from it one hop, as the scrubber's `MAX_CHAIN`;
+    `referrals` 30, below Unbound's `MAX_REFERRAL_COUNT` 130 and above hickory's 24: the captures' deepest follows
+    4; `depth` 4 sub-resolutions waiting on one another, Unbound's `target-fetch-policy` (BIND
+    `max-recursion-depth` 7); `servers` 13 addresses asked and NS names used per delegation, BIND's
+    `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 address lookups per delegation,
+    A and AAAA each counted, after Unbound's `MAX_TARGET_NX` 5 (NXNSAttack, CVE-2020-12662), which counts NXDOMAIN
+    lookups per client question, and its `MAX_DP_TARGET_COUNT` 16 per delegation (BIND counts them within its 13);
+    `MAX_ADDRESSES` 100 addresses known per delegation, not per server name, glue, lookups and cache together,
+    Unbound's `delegpt_max_addr` (the scrubber keeps 100 glue records already), the servers shunned (D197) not
+    counted, so that a bogus answer does not take an address from the retry: an answer of thousands costs the draw
+    no more (one name with 100 addresses fills it, as in Unbound); `time` 4.5 s, a stub's 5 s (glibc
     `RES_TIMEOUT`) less the SERVFAIL's way back. `queries`, `restarts`, `referrals` and `time` end the resolution;
     `servers`, `targets` and `depth` end the branch, the delegation asked trying its other servers, and are
     reported if the question fails.
