@@ -28,7 +28,8 @@
 //! outside printable ASCII as `\DDD`. [`RData::generic`] and [`Record::generic`] write the generic form of
 //! RFC 3597 §5 (`TYPE65280 \# 2 abcd`). Read by `FromStr` on the same types, and zone files by [`ZoneReader`].
 //! Text is bytes (`&[u8]` underneath), since a quoted string may hold any byte; a known type written in the
-//! generic form is read into its typed RDATA (RFC 3597 §5).
+//! generic form is read into its typed RDATA (RFC 3597 §5), unless the bytes are invalid for it: they stay opaque
+//! (D9), or are refused when the type holds names, as are names that would not write back to the same bytes.
 //!
 //! [`RData`]: rdata::RData
 //! [`RData::generic`]: rdata::RData::generic
