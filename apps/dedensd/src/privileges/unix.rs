@@ -154,12 +154,27 @@ pub(super) fn prepare(dir: &Path, uid: u32, gid: u32) -> anyhow::Result<()> {
 /// The capabilities of the process, and an error for a second thread: `NO_NEW_PRIVS` is set by, and inherited
 /// by the threads started after, the one that sets it.
 fn thread_and_caps() -> anyhow::Result<Caps> {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let status = status(std::fs::read_to_string("/proc/self/status"))?;
     ensure!(
         alone(&status),
         "the process has more than one thread: privileges drop before the first one starts"
     );
     Ok(Caps::read(&status))
+}
+
+/// The text of `/proc/self/status`, `read`: on Linux, one that cannot be read is an error, a check that cannot look
+/// must not pass; elsewhere there is no `/proc` (D122 drops on Linux alone), and an empty text.
+fn status(read: std::io::Result<String>) -> anyhow::Result<String> {
+    match read {
+        Err(error)
+            if cfg!(not(target_os = "linux")) && error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(String::new())
+        }
+        read => {
+            read.context("cannot read /proc/self/status, which the checks of the drop read (D122)")
+        }
+    }
 }
 
 /// Sets `PR_SET_NO_NEW_PRIVS` and reads it back, where the OS has it.
@@ -327,6 +342,20 @@ mod tests {
             }
             drop(stop);
         });
+    }
+
+    /// D122: a `/proc/self/status` that cannot be read fails the checks it serves, the threads counted and the
+    /// capabilities, rather than pass them unread; only where there is no `/proc`, outside Linux, is none read.
+    #[test]
+    fn an_unreadable_status_fails_the_checks() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(status(Err(denied)).is_err());
+        let missing = status(Err(std::io::ErrorKind::NotFound.into()));
+        assert_eq!(missing.is_err(), cfg!(target_os = "linux"), "{missing:?}");
+        assert_eq!(
+            status(Ok("Threads:\t1\n".to_owned())).unwrap(),
+            "Threads:\t1\n"
+        );
     }
 
     /// D122: `NO_NEW_PRIVS` is set, as the kernel reads it back; any process may set it on itself.
