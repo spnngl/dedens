@@ -341,18 +341,19 @@ fn a_flipped_bit_in_a_query_is_refused() {
 fn a_flipped_bit_in_a_response_is_refused() {
     let key = target();
     let (_, response) = exchange(&key, b"query", b"response");
+    // The same query as in `exchange`, so the same secrets: the response opens unflipped.
+    let (_, client) = encrypt_query(
+        key.config(),
+        b"query",
+        query_padding(5),
+        &mut Replay::new(&[1; 32]),
+    )
+    .expect("encrypts");
+    assert!(decrypt_response(&client, &response).is_ok());
     let wire = response.encode();
     for index in 0..wire.len() {
         let mut flipped = wire.clone();
         flipped[index] ^= 1;
-        // The same query as in `exchange`, so the same secrets.
-        let (_, client) = encrypt_query(
-            key.config(),
-            b"query",
-            query_padding(5),
-            &mut Replay::new(&[1; 32]),
-        )
-        .expect("encrypts");
         let outcome = Message::parse(&flipped)
             .map_err(ExchangeError::from)
             .and_then(|message| decrypt_response(&client, &message).map(|_| ()));
