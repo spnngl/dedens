@@ -255,11 +255,15 @@ impl RateLimit {
             .expect("the index is masked below the table length");
         let slip = if can_truncate { self.config.slip } else { 0 };
         let mut admission = Admission::Pass;
-        bucket.update(Ordering::Relaxed, Ordering::Relaxed, |word| {
-            let (word, decided) = step(word, now, rate, slip);
-            admission = decided;
-            word
-        });
+        // An `Err` is a word left as it was: a drop that changes nothing writes nothing, so that a flood from one
+        // network does not make the cores fight for its bucket's cache line.
+        bucket
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |word| {
+                let (next, decided) = step(word, now, rate, slip);
+                admission = decided;
+                (next != word).then_some(next)
+            })
+            .ok();
         self.counted.count(admission);
         admission
     }
@@ -348,6 +352,14 @@ mod tests {
             [Pass, Pass, Pass, Drop, Slip, Drop, Slip]
         );
         assert_eq!(run(1, &[5, 5, 5, 5, 5]), [Pass, Pass, Pass, Slip, Slip]);
+    }
+
+    /// A drop within the second of a spent bucket leaves its word as it was: `check` then writes nothing.
+    #[test]
+    fn a_drop_without_slip_changes_nothing() {
+        let spent = (0..3).fold(0, |word, _| step(word, 10, RATE, 0).0);
+        assert_eq!(step(spent, 10, RATE, 0), (spent, Admission::Drop));
+        assert_eq!(step(spent, 9, RATE, 0), (spent, Admission::Drop));
     }
 
     #[test]

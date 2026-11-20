@@ -1239,6 +1239,21 @@ spoofed flood costs the server no allocation with `slip` 0. A slipped reply allo
 D136 (`subtle`'s compare of the hash), `valid_cookie` back to back, same command, 3 runs each, 2026-11-02: before
 176.9-184.7 fastest, 186.8-190.9 median; after 179.7-185.6, 190.3-191.2. Within noise.
 
+A drop that changes nothing writes nothing (`RateLimit::check` by `try_update`, as D117's budgets), 2026-11-20: `flood`,
+`over_the_rate`'s slip 0 on `t=N` threads sharing the pipeline, so one bucket. The bench binary of each tree, built
+once, run in turn 3 times each with `--bench flood over_the_rate --sample-count 300`; median ns, the range over the runs:
+
+| Measure | Before | After |
+|---|---|---|
+| `flood` t=1 | 42.1-57.9 | 41.4-48.4 |
+| `flood` t=2 | 75.8-102.6 | 60.8-72.7 |
+| `flood` t=4 | 103.7-128.6 | 126.0-127.8 |
+| `flood` t=8 | 124.7-166.7 | 93.3-166.7 |
+| `over_the_rate` slip 0 / 2 | 40.8-48.8 / 75.4-83.5 | 40.8-41.5 / 74.8-76.7 |
+
+Two threads fighting for the line lose a quarter to a third less; one thread does not move (a compare and swap of an
+owned line is cheap), and at 4 and 8 threads, across P and E cores, the spread of the runs hides any change.
+
 ## Client budgets (D117)
 
 Machine: Apple M5, macOS 27.2, rustc 1.99.1 (Homebrew), release profile with debuginfo, a laptop in use, load average 4-7

@@ -170,14 +170,31 @@ fn over_the_rate_with_client_cookie(bencher: Bencher<'_, '_>, slip: u8) {
     );
 }
 
-fn exhausted(bencher: Bencher<'_, '_>, slip: u8, cookie: Option<Cookie>) {
+/// A flood from one network over its rate on `threads` threads sharing the pipeline, slip 0: each query is dropped,
+/// and every thread reads the network's one bucket. Each thread has its buffer: `bench_local` would run one thread
+/// whatever `threads`.
+#[divan::bench(threads = [1, 2, 4, 8])]
+fn flood(bencher: Bencher<'_, '_>) {
+    let pipeline = spent(0, None);
+    let query = query(None);
+    bencher.with_inputs(|| vec![0; 1232]).bench_refs(|out| {
+        let step = pipeline.query(black_box(&query), Transport::Udp, source(), 0, out);
+        assert!(matches!(step, Step::Drop));
+    });
+}
+
+/// A pipeline whose limit holds one query a second, slip `slip`, which took it: every query after is over the rate.
+fn spent(slip: u8, cookies: Option<Cookies>) -> Pipeline {
     let rate = Rate {
         prefix: 24,
         per_second: 1,
         burst: 1,
     };
-    let cookies = cookie.is_some().then(cookies);
-    let pipeline = pipeline(Some(limit(rate, slip)), cookies);
+    pipeline(Some(limit(rate, slip)), cookies)
+}
+
+fn exhausted(bencher: Bencher<'_, '_>, slip: u8, cookie: Option<Cookie>) {
+    let pipeline = spent(slip, cookie.is_some().then(cookies));
     let query = query(cookie);
     let mut out = vec![0; 1232];
     // `pipeline` took the bucket's one query, storing the response: every query here is over the rate.
