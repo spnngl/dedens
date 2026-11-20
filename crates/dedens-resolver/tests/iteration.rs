@@ -1881,29 +1881,32 @@ fn rfc5452_5_a_reply_shared_does_not_judge_the_server_again() {
 
 #[test]
 fn d195_a_timeout_cut_short_by_the_resolution_s_end_does_not_judge_the_server() {
-    // With 10 ms left, the query waits 10 ms, not its server's timeout: its silence is not the server's.
+    // With 10 ms left, the query waits 10 ms, not its server's timeout: its silence is not the server's, whether an
+    // ICMP error came meanwhile (`Unreachable`) or not.
     let capture = recursion::Resolution::read("unsigned");
-    let caches = caches(false);
     let limits = Limits::default();
     let mut rng = Seeded(SEED);
-    let mut resolution = start(&capture, &caches, limits);
-    let now = at(&capture) + limits.time.saturating_sub(Duration::from_millis(10));
-    let Next::Send(query) = resolution.step(now, &mut rng) else {
-        panic!("a query")
-    };
-    assert_eq!(query.timeout, query.left);
-    let timeout = query.timeout;
-    resolution.receive(Reply::Timeout, now + timeout);
-    assert_eq!(caches.infra.len(), 0);
-    // With time left, the same timeout is the server's.
-    let mut resolution = start(&capture, &caches, limits);
-    let Next::Send(query) = resolution.step(at(&capture), &mut rng) else {
-        panic!("a query")
-    };
-    assert!(query.timeout < query.left, "{query:?}");
-    let timeout = query.timeout;
-    resolution.receive(Reply::Timeout, at(&capture) + timeout);
-    assert_eq!(caches.infra.len(), 1);
+    for reply in [Reply::Timeout, Reply::Unreachable] {
+        let caches = caches(false);
+        let mut resolution = start(&capture, &caches, limits);
+        let now = at(&capture) + limits.time.saturating_sub(Duration::from_millis(10));
+        let Next::Send(query) = resolution.step(now, &mut rng) else {
+            panic!("a query")
+        };
+        assert_eq!(query.timeout, query.left);
+        let timeout = query.timeout;
+        resolution.receive(reply, now + timeout);
+        assert_eq!(caches.infra.len(), 0, "{reply:?}");
+        // With time left, the same timeout is the server's.
+        let mut resolution = start(&capture, &caches, limits);
+        let Next::Send(query) = resolution.step(at(&capture), &mut rng) else {
+            panic!("a query")
+        };
+        assert!(query.timeout < query.left, "{query:?}");
+        let timeout = query.timeout;
+        resolution.receive(reply, at(&capture) + timeout);
+        assert_eq!(caches.infra.len(), 1, "{reply:?}");
+    }
 }
 
 #[test]

@@ -179,6 +179,7 @@ fn hand(resolving: &mut Resolving, query: &Query, asked: Asked, now: Duration) {
         },
         Outcome::Timeout => Reply::Timeout,
         Outcome::TcpTimeout => Reply::TcpTimeout,
+        Outcome::Unreachable => Reply::Unreachable,
         Outcome::ServerError => Reply::ServerError,
         Outcome::LocalError => Reply::LocalError,
     };
@@ -200,6 +201,9 @@ enum Outcome {
     },
     Timeout,
     TcpTimeout,
+    /// No response before the deadline, an ICMP error seen meanwhile ([`ServerError::Unreachable`] after a send):
+    /// a timeout in all but its kind, cut short as one is (D195).
+    Unreachable,
     ServerError,
     LocalError,
 }
@@ -258,7 +262,12 @@ async fn asked<N: Io>(
     let cut = deadline == ends || outcome.is_err();
     let outcome = outcome.unwrap_or(Outcome::Timeout);
     // Moved to TCP, its `TCP_TIMEOUT` may fall on `ends`: the transport's timer fires there before `timeout_at`'s.
-    if cut && matches!(outcome, Outcome::Timeout | Outcome::TcpTimeout) {
+    if cut
+        && matches!(
+            outcome,
+            Outcome::Timeout | Outcome::TcpTimeout | Outcome::Unreachable
+        )
+    {
         drop(lead);
     } else {
         lead.finish(&outcome);
@@ -294,6 +303,12 @@ fn outcome(answered: Result<Answer, AuthoritativeError>, server: SocketAddr) -> 
         },
         Err(AuthoritativeError::Server(ServerError::TimedOut { .. })) => Outcome::Timeout,
         Err(AuthoritativeError::Server(ServerError::TcpTimedOut { .. })) => Outcome::TcpTimeout,
+        // Not an immediate failure (`sends` 0, no route): a wait to the deadline, which the resolution's end may cut.
+        Err(AuthoritativeError::Server(ServerError::Unreachable { sends: 1.., kind })) => {
+            metrics::counter!(SENT, "error" => "unreachable").increment(1);
+            tracing::debug!(%kind, server = %server, "authoritative server unreachable");
+            Outcome::Unreachable
+        }
         Err(AuthoritativeError::Server(error)) => {
             let label = match error {
                 ServerError::Forged { .. } => "forged",
@@ -530,17 +545,20 @@ mod tests {
         });
     }
 
-    /// A timeout cut short by the sender's resolution's end is not the server's: those waiting are not handed it,
+    /// A timeout, or an unreachable server after one, cut short by the sender's resolution's end is not the server's: those waiting are not handed it,
     /// and one of them sends the query again in its own time. A timeout of the server's is handed. The same over
     /// TCP: a query moved there whose `TCP_TIMEOUT` falls at the resolution's end times out over TCP at that end.
     #[test]
     fn d195_a_timeout_cut_short_by_the_sender_s_end_is_not_shared() {
         Runtime::new().expect("a runtime").block_on(async {
             let cases = [(Duration::from_millis(10), false), (SECOND, true)];
-            for ((left, shared), timeout) in cases
-                .into_iter()
-                .flat_map(|case| [(case, Outcome::Timeout), (case, Outcome::TcpTimeout)])
-            {
+            for ((left, shared), timeout) in cases.into_iter().flat_map(|case| {
+                [
+                    (case, Outcome::Timeout),
+                    (case, Outcome::TcpTimeout),
+                    (case, Outcome::Unreachable),
+                ]
+            }) {
                 let flights = Flights::default();
                 let ends = Compio.now() + left;
                 let waiting = RefCell::new(None);
@@ -730,6 +748,8 @@ mod tests {
         for (asked, judged) in [
             (Asked::Sent(Outcome::Timeout), 1),
             (Asked::Shared(Outcome::Timeout), 0),
+            (Asked::Sent(Outcome::Unreachable), 1),
+            (Asked::Shared(Outcome::Unreachable), 0),
             (Asked::Sent(Outcome::ServerError), 1),
             (Asked::Shared(Outcome::ServerError), 0),
         ] {
@@ -809,6 +829,7 @@ mod tests {
                 Outcome::Response { .. } => "response",
                 Outcome::Timeout => "timeout",
                 Outcome::TcpTimeout => "tcp timeout",
+                Outcome::Unreachable => "unreachable",
                 Outcome::ServerError => "server",
                 Outcome::LocalError => "local",
             };
@@ -843,8 +864,17 @@ mod tests {
             remote(ServerError::Forged { sends: 2 }),
             ("server", vec!["forged".to_owned()])
         );
+        // After a send it waited for the deadline, which the resolution's end may cut: not a `ServerError`; with no
+        // route (`sends` 0) it came at once.
         assert_eq!(
             remote(unreachable),
+            ("unreachable", vec!["unreachable".to_owned()])
+        );
+        assert_eq!(
+            remote(ServerError::Unreachable {
+                sends: 0,
+                kind: io::ErrorKind::HostUnreachable,
+            }),
             ("server", vec!["unreachable".to_owned()])
         );
         assert_eq!(
