@@ -3,6 +3,8 @@
 
 #![deny(clippy::disallowed_methods)]
 
+use std::error::Error;
+use std::fmt;
 use std::net::SocketAddr;
 use std::pin::pin;
 use std::sync::Arc;
@@ -144,11 +146,11 @@ pub(super) async fn answer<N: Io>(
                     pipeline.receive(upstream, Some(&response.wire), thread.now(), &mut out)
                 }
                 Fetched::Own(Err(error), _) if error.is_local() => {
-                    tracing::warn!(%error, %server, "upstream query not sent");
+                    tracing::warn!(error = %Causes(error), %server, "upstream query not sent");
                     pipeline.abandon(&upstream, &mut out)
                 }
                 Fetched::Own(Err(error), _) => {
-                    tracing::debug!(%error, %server, "upstream");
+                    tracing::debug!(error = %Causes(error), %server, "upstream");
                     pipeline.receive(upstream, None, thread.now(), &mut out)
                 }
                 Fetched::Shared(wire) => {
@@ -401,6 +403,22 @@ pub(super) fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
     }
 }
 
+/// An error and its causes, `top: cause: cause`, as the log shows it: a [`ClientError`]'s own text names only the
+/// transport ("Oblivious `DoH`", "UDP"), its causes say what failed.
+struct Causes<'a>(&'a ClientError);
+
+impl fmt::Display for Causes<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)?;
+        let mut cause = self.0.source();
+        while let Some(error) = cause {
+            write!(f, ": {error}")?;
+            cause = error.source();
+        }
+        Ok(())
+    }
+}
+
 // The tests run sockets and a runtime, which loom's threads and locks cannot drive (D135).
 #[cfg(test)]
 #[cfg(not(dedens_loom))]
@@ -411,6 +429,7 @@ pub(super) fn copy_out(wire: &[u8], transport: Transport) -> Option<Vec<u8>> {
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::future::poll_fn;
+    use std::io;
     use std::net::IpAddr;
     use std::pin::{Pin, pin};
     use std::rc::Rc;
@@ -433,7 +452,7 @@ mod tests {
     use dedens_testkit::responder::Responder;
     use futures_util::future::{join, join_all};
 
-    use super::{Ask, answer, target};
+    use super::{Ask, Causes, ClientError, answer, target};
     use crate::flights::Key;
     use crate::lists::Store;
     use crate::reload::Current;
@@ -818,5 +837,12 @@ mod tests {
             assert_eq!(target(&plain, client).1, plain_over, "{client:?}");
             assert_eq!(target(&tls, client).1, Transport::Tls, "{client:?}");
         }
+    }
+
+    /// An upstream error is logged with its causes: the port unreachable a UDP server's host answers, not "UDP" alone.
+    #[test]
+    fn an_upstream_error_is_logged_with_its_causes() {
+        let refused = ClientError::Udp(io::Error::from(io::ErrorKind::ConnectionRefused));
+        assert_eq!(Causes(&refused).to_string(), "UDP: connection refused");
     }
 }
