@@ -119,10 +119,11 @@ impl Rollover {
     /// BIND keeps it until revoked, RFC 5011 §4 too, which leaves a key the operator dropped trusted forever.
     pub const KEEP_MISSING: u64 = 366 * DAY;
 
-    /// The shortest wait between two queries, 12 hours: the root's DNSKEY `RRset` has a TTL of 2 days and
-    /// signatures of 3 weeks, so RFC 5011 §2.3's half of either is longer, and a smaller one only comes from a
-    /// cache's remaining TTL. RFC 5011 §2.3, Unbound (`set_tp_times`) and BIND (`refresh_time`) floor it at an hour.
-    pub const QUERY_FLOOR: u64 = 12 * 60 * 60;
+    /// The shortest wait between two queries, an hour (RFC 5011 §2.3), as Unbound (`set_tp_times`) and BIND
+    /// (`refresh_time`) floor it. The root's DNSKEY `RRset` has a TTL of 2 days and signatures of 3 weeks, so half
+    /// of either is longer: a smaller one comes only from a cache's remaining TTL, or from the end of the
+    /// signatures drawing near.
+    pub const QUERY_FLOOR: u64 = 60 * 60;
 
     /// The longest wait between two queries, 15 days (RFC 5011 §2.3), as Unbound's `set_tp_times` and BIND's
     /// `refresh_time` cap it. The root's TTL of 2 days never reaches it, so no answer of the root's does in a test.
@@ -308,7 +309,15 @@ impl Rollover {
             KeyState::Missing { since } => now.saturating_sub(since) <= Self::KEEP_MISSING,
             _ => true,
         });
-        let hold_down = Self::ADD_HOLD_DOWN.max(u64::from(dnskeys.ttl().get()));
+        // The original TTL is signed; the lowest of the RRSIGs, so that one bogus signature beside the others cannot
+        // stretch the wait of a new key, which is no less than the 30 days.
+        let original_ttl = (sigs.iter())
+            .map(Signature::rrsig)
+            .filter(|rrsig| rrsig.type_covered == RecordType::DNSKEY)
+            .map(|rrsig| u64::from(rrsig.original_ttl))
+            .min()
+            .unwrap_or_default();
+        let hold_down = Self::ADD_HOLD_DOWN.max(original_ttl);
         for key in published.iter().filter(|key| {
             let dnskey = key.dnskey();
             dnskey.is_secure_entry_point()

@@ -2063,7 +2063,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `observe(records, now)` applies revocations first, a REVOKE key signing the `RRset` itself (§2.1;
     `rrsig::verify_revocation`, the one check a revoked key passes, D73), even when no trusted key signs the
     rest; then needs a Valid or Missing key's signature, else changes nothing more and errs. The table (§4): a new
-    SEP key AddPend until now plus the larger of 30 days and the TTL (§2.4.1), Valid when seen past it, dropped
+    SEP key AddPend until now plus the larger of 30 days and the RRSIGs' original TTL, the lowest one so that a
+    bogus signature beside them stretches nothing (§2.4.1), Valid when seen past it, dropped
     when unseen before; Valid unseen Missing, Missing seen Valid; Revoked kept for good, a tombstone (§2.4.2
     lets a resolver forget it after 30 days, but a stale seed would trust it again: §2.1 and §4 make a revocation
     final, as Unbound keeps the key in its state file). `reseed(anchors, records, now)` replaces the state by
@@ -2074,11 +2075,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     hold-downs 30 days (Unbound's defaults, BIND's `dns_zone_mkey_month`); `KEEP_MISSING` 366 days, a Missing key
     dropped past it while another is Valid (Unbound's `keep-missing`; BIND and RFC 5011 keep it forever); the
     wait between queries the verified TTL's half (the least of the `RRset`'s, original TTL and seconds to the
-    signatures' end, D73) within 12 hours and 15 days (§2.3 floors it at an hour, as Unbound's `set_tp_times` and
-    BIND's `refresh_time`: the root's TTL of 2 days makes 12 hours the floor of a cached answer only); an hour
-    after a failure (§2.3's `retryTime` floor); the default verification budget per answer; the state text 64 KiB, which is read and
-    written no longer (a longer one is not saved, warn!); 32 keys followed, tombstones and missing keys included
-    (RFC 5011 §2.4.3 expects a handful), a new key past it not followed, warn!.
+    signatures' end, D73) within an hour and 15 days (§2.3's floor, as Unbound's `set_tp_times` and BIND's
+    `refresh_time`: the root's TTL of 2 days makes it a cached answer's or a signature's end drawing near that
+    reaches it); an hour after a failure (§2.3's `retryTime` floor); the default verification budget per answer;
+    the state text 64 KiB, which is read and written no longer (a longer one is not saved, warn!); 32 keys
+    followed, tombstones and missing keys included (RFC 5011 §2.4.3 expects a handful), a new key past it not
+    followed, warn!.
   - `dedensd`: a validating `recurse` stage without `trust_anchors` follows the root's keys. The state is
     `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
     file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the

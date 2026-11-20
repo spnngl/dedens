@@ -12,13 +12,14 @@
 //! `testdata/dnssec/rollover-*.zone`, each named by its capture time; the time is set by each test inside the window of
 //! the snapshot's signatures.
 
+use std::fmt::Write as _;
 use std::fs;
 
 use dedens_dnssec::crypto::key_tag;
 use dedens_dnssec::rrsig::SigError;
 use dedens_dnssec::{KeyState, Rollover, RolloverError, TrustAnchors};
-use dedens_proto::rdata::{Dnskey, RData};
-use dedens_proto::{Name, Record, ZoneEntry, ZoneReader};
+use dedens_proto::rdata::{Dnskey, RData, Rrsig};
+use dedens_proto::{Class, Name, Record, RecordType, SecAlgorithm, Ttl, ZoneEntry, ZoneReader};
 
 /// The root's DS record of KSK-2010, as IANA's `root-anchors.xml` lists it.
 const DS_2010: &str =
@@ -183,12 +184,80 @@ fn rfc5011_s2_2_new_key_trusted_after_the_add_hold_down() {
     assert_eq!(trusted(&rollover), [19036, 20326]);
 }
 
-/// RFC 5011 §2.3: half the seconds left to the signatures' end, 6 hours, is raised to 12 hours.
+/// RFC 5011 §2.4.1: the add hold-down is the larger of 30 days and the `RRset`'s original TTL, the RRSIG's, not the TTL
+/// a cache decremented or a server set: the TTL of the records is 40 days here, the original one 2 days.
 #[test]
-fn rfc5011_s2_3_the_wait_is_at_least_twelve_hours() {
-    let (_, wait) =
-        Rollover::seed(&anchors(DS_2010), &august_2017(), AUGUST_30_2017).expect("seeded");
-    assert_eq!(wait, 12 * 60 * 60);
+fn rfc5011_s2_4_1_the_add_hold_down_is_by_the_original_ttl() {
+    let mut records = july_2017();
+    for record in &mut records {
+        if record.data().rtype() == RecordType::DNSKEY {
+            record.ttl = Ttl::new(40 * u32::try_from(DAY).expect("a day")).expect("a TTL");
+        }
+    }
+    let (mut rollover, _) =
+        Rollover::seed(&anchors(DS_2010), &june_2017(), JUNE_2017).expect("seeded");
+    rollover.observe(&records, JULY_2017).expect("observed");
+    let until = JULY_2017 + Rollover::ADD_HOLD_DOWN;
+    assert_eq!(
+        states(&rollover),
+        [
+            (19036, KeyState::Valid),
+            (20326, KeyState::AddPend { until })
+        ]
+    );
+}
+
+/// The original TTL is the lowest of the RRSIGs over the DNSKEY `RRset`, whichever others the root's records hold: a
+/// bogus RRSIG of 40 days beside the real ones does not stretch the hold-down, nor does one over another type.
+#[test]
+fn rfc5011_s2_4_1_a_bogus_signature_does_not_stretch_the_add_hold_down() {
+    let bogus = |covered| {
+        let signature = [1];
+        let rrsig = Rrsig::new(
+            covered,
+            SecAlgorithm(8),
+            0,
+            40 * u32::try_from(DAY).expect("a day"),
+            u32::MAX,
+            0,
+            1,
+            Name::root(),
+            &signature,
+        )
+        .expect("an RRSIG");
+        let ttl = Ttl::new(3600).expect("a TTL");
+        Record::new(Name::root(), Class::IN, ttl, &RData::Rrsig(rrsig))
+    };
+    let mut records: Vec<_> = (july_2017().into_iter())
+        .filter(|record| match record.data() {
+            RData::Rrsig(rrsig) => rrsig.type_covered == RecordType::DNSKEY,
+            _ => true,
+        })
+        .collect();
+    records.extend([bogus(RecordType::DNSKEY), bogus(RecordType::SOA)]);
+    let (mut rollover, _) =
+        Rollover::seed(&anchors(DS_2010), &june_2017(), JUNE_2017).expect("seeded");
+    rollover.observe(&records, JULY_2017).expect("observed");
+    let until = JULY_2017 + Rollover::ADD_HOLD_DOWN;
+    assert_eq!(
+        states(&rollover),
+        [
+            (19036, KeyState::Valid),
+            (20326, KeyState::AddPend { until })
+        ]
+    );
+}
+
+/// RFC 5011 §2.3: the wait is half the seconds left to the signatures' end, 6 hours at 12, and no less than an hour,
+/// as Unbound and BIND floor it, where 30 minutes are left to half.
+#[test]
+fn rfc5011_s2_3_the_wait_is_at_least_an_hour() {
+    let wait = |now| {
+        let (_, wait) = Rollover::seed(&anchors(DS_2010), &august_2017(), now).expect("seeded");
+        wait
+    };
+    assert_eq!(wait(AUGUST_30_2017), 6 * 60 * 60);
+    assert_eq!(wait(AUGUST_30_2017 + 11 * 60 * 60), 60 * 60);
 }
 
 /// The root's keys are the DNSKEY `RRset` at the root: `com`'s, captured, ahead of it is not taken.
@@ -294,14 +363,14 @@ fn revoked_2010_beside_another_key() -> Rollover {
 /// verified through that DS.
 #[test]
 fn rfc5011_s2_1_a_revoked_key_is_not_trusted_again_by_a_reseed() {
-    let stale = anchors(&format!("{DS_2010}{DS_2017}"));
-    let state = revoked_2010_beside_another_key();
+    let predating = anchors(&format!("{DS_2010}{DS_2017}"));
+    let kept = revoked_2010_beside_another_key();
     assert!(matches!(
-        state.clone().observe(&december_2018(), DECEMBER_2018),
+        kept.clone().observe(&december_2018(), DECEMBER_2018),
         Err(RolloverError::Unverified(_))
     ));
-    let (reseeded, _) = state
-        .reseed(&stale, &december_2018(), DECEMBER_2018)
+    let (reseeded, _) = kept
+        .reseed(&predating, &december_2018(), DECEMBER_2018)
         .expect("KSK-2017 signs and its DS is trusted");
     assert_eq!(
         states(&reseeded),
@@ -315,14 +384,14 @@ fn rfc5011_s2_1_a_revoked_key_is_not_trusted_again_by_a_reseed() {
     // DNSKEY anchors of the revoked key are no more trusted than its DS.
     let key = dnskey(&december_2018(), 19036);
     let dnskey_anchors = anchors(&format!(". IN DNSKEY {key}\n{DS_2017}"));
-    let (reseeded, _) = state
+    let (reseeded, _) = kept
         .reseed(&dnskey_anchors, &december_2018(), DECEMBER_2018)
         .expect("reseeded");
     assert_eq!(trusted(&reseeded), [20326]);
 
     // Only the revoked key's DS: nothing verifies, the revocation stays.
     assert!(matches!(
-        state.reseed(&anchors(DS_2010), &december_2018(), DECEMBER_2018),
+        kept.reseed(&anchors(DS_2010), &december_2018(), DECEMBER_2018),
         Err(RolloverError::Unverified(_))
     ));
 }
@@ -350,13 +419,23 @@ fn rfc5011_s2_1_revoked_keys_alone_are_a_state_that_filters_other_anchors() {
 /// The text of a state of `count` valid keys: KSK-2010, then its key under other algorithm numbers (keys no answer
 /// of the root's signs, which only the bound is tried with).
 fn many_keys(count: u8) -> String {
-    let k2010 = dnskey(&december_2018(), 19036).to_string();
-    let others = (100..).take(usize::from(count) - 1).map(|algorithm| {
-        let (flags, public) = k2010.split_once(" 3 8 ").expect("a DNSKEY");
-        format!("valid {flags} 3 {algorithm} {public}\n")
-    });
-    let others: String = others.collect();
-    format!("dedens rfc5011 1\nvalid {k2010}\n{others}end\n")
+    let others = by_algorithms("valid ", 100..100 + count - 1, "");
+    format!(
+        "dedens rfc5011 1\nvalid {}\n{others}end\n",
+        dnskey(&december_2018(), 19036)
+    )
+}
+
+/// A line per algorithm number of `algorithms`: `before`, KSK-2010 with that number in place of its own, `after`,
+/// a line feed. Keys no answer of the root's signs.
+fn by_algorithms(before: &str, algorithms: std::ops::Range<u8>, after: &str) -> String {
+    let key = dnskey(&december_2018(), 19036).to_string();
+    let (flags, public) = key.split_once(" 3 8 ").expect("a DNSKEY");
+    let mut lines = String::new();
+    for algorithm in algorithms {
+        writeln!(lines, "{before}{flags} 3 {algorithm} {public}{after}").expect("a String");
+    }
+    lines
 }
 
 /// A bound on the keys followed: a new key of a verified `RRset` past it is not followed, a key already followed
@@ -386,11 +465,7 @@ fn rfc5011_s2_4_3_the_keys_followed_are_bounded() {
     assert!(states(&rollover).iter().any(|&(tag, _)| tag == 20326));
 
     // Seeded by more DNSKEY anchors than the bound: the first ones.
-    let key = dnskey(&december_2018(), 19036).to_string();
-    let (flags, public) = key.split_once(" 3 8 ").expect("a DNSKEY");
-    let anchored: String = (100..200)
-        .map(|algorithm| format!(". IN DNSKEY {flags} 3 {algorithm} {public}\n"))
-        .collect();
+    let anchored = by_algorithms(". IN DNSKEY ", 100..200, "");
     let (seeded, _) = Rollover::seed(
         &anchors(&format!("{DS_2010}{anchored}")),
         &july_2017(),
