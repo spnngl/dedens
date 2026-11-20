@@ -9,7 +9,7 @@ use dedens_cache::Checked;
 use dedens_dnssec::crypto::{Budget, Verifications};
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::rdata::{Dnskey, Ds, RData};
+use dedens_proto::rdata::{Dnskey, Ds, RData, Rrsig};
 use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType};
 use dedens_resolver::{Caches, Failure, Limits, Minimisation, Ranked, Resolution, Resolved, Rrset};
 use dedens_testkit::recursion;
@@ -523,6 +523,36 @@ fn rfc4035_5_3_4_an_expansion_is_told_by_its_signature_s_labels() {
         record.name = name("*.sidnlabs.nl.");
     }
     assert!(!set(&answer).expanded());
+    // Changed: a junk signature added, counting a label fewer: the others counting them all, it is no expansion.
+    let junk = (answer.iter())
+        .find_map(|record| match record.data() {
+            RData::Rrsig(rrsig) => {
+                let fewer = Rrsig::new(
+                    rrsig.type_covered,
+                    rrsig.algorithm,
+                    rrsig.labels - 1,
+                    rrsig.original_ttl,
+                    rrsig.expiration,
+                    rrsig.inception,
+                    rrsig.key_tag,
+                    rrsig.signer.clone(),
+                    rrsig.signature(),
+                );
+                let fewer = fewer.expect("an RRSIG");
+                Some(Record::new(
+                    record.name.clone(),
+                    record.class,
+                    record.ttl,
+                    &RData::Rrsig(fewer),
+                ))
+            }
+            _ => None,
+        })
+        .expect("a signature");
+    answer.push(junk);
+    assert!(!set(&answer).expanded());
+    answer.retain(|record| record.rtype() != RecordType::RRSIG);
+    assert!(!set(&answer).expanded(), "an unsigned set tells nothing");
 }
 
 #[test]
