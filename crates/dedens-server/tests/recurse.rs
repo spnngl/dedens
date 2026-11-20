@@ -689,6 +689,44 @@ fn d191_the_stage_hands_its_local_address_switch() {
     );
 }
 
+/// A root hint at 127.0.0.2, a special-purpose address (D191), the only server the caches know.
+const LOOPBACK: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), 53);
+
+/// Every resolution the stage starts, a client's, the root's priming and the root's keys, asks a server at a
+/// special-purpose address when the stage says so, and sends nothing else: a switch dropped on the way would answer
+/// every question SERVFAIL on a network of such addresses, though the configuration loads (D191).
+#[test]
+fn d191_every_resolution_hands_the_stage_its_local_address_switch() {
+    let hints =
+        RootHints::read(b". 3600000 NS a.local.\na.local. 3600000 A 127.0.0.2\n").expect("hints");
+    let now = Duration::from_secs(1_000);
+    for local in [false, true] {
+        let caches = Arc::new(Caches {
+            rrsets: RrsetCache::new(DEFAULT_CAPACITY, Config::default()).expect("a valid config"),
+            infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 64).expect("a valid size"),
+            roots: hints.clone(),
+            tlds: None,
+        });
+        let recurse = unminimised(caches).asking_local_addresses(local);
+        let pipeline = pipeline(Config::default(), recurse);
+        let mut out = vec![0; 512];
+        let query = client_query("example.com", RecordType::A, Flags::NONE, false);
+        let Step::Resolve(client) = pipeline.query(&query, Transport::Udp, CLIENT, 1_000, &mut out)
+        else {
+            panic!("a resolution")
+        };
+        let priming = pipeline.prime(now).expect("due");
+        let keys = pipeline.root_keys().expect("a recurse stage");
+        for (what, mut resolving) in [("client", client), ("priming", priming), ("keys", keys)] {
+            let sent = match resolving.step(now, &mut Seeded(0)) {
+                Turn::Send(query) => Some(query.server),
+                Turn::Done => None,
+            };
+            assert_eq!(sent, local.then_some(LOOPBACK), "{what}, local: {local}");
+        }
+    }
+}
+
 /// A resolution shed for the waiters on its query (`Resolving::shed`) gives its unit back: nothing was sent.
 #[test]
 fn d195_a_resolution_shed_gets_servfail_not_ready_and_pays_nothing() {

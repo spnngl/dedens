@@ -261,6 +261,7 @@ impl Recurse {
             question: Question::new(Name::root(), RecordType::DNSKEY),
             caches: Arc::clone(&self.caches),
             limits: self.limits,
+            local_addresses: self.local_addresses,
             minimisation: self.minimisation,
             paid: 0,
             payer: None,
