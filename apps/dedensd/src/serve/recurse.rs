@@ -255,7 +255,8 @@ async fn asked<N: Io>(
     let outcome = io.timeout_at(ends, send(deadline)).await;
     let cut = deadline == ends || outcome.is_err();
     let outcome = outcome.unwrap_or(Outcome::Timeout);
-    if cut && matches!(outcome, Outcome::Timeout) {
+    // Moved to TCP, its `TCP_TIMEOUT` may fall on `ends`: the transport's timer fires there before `timeout_at`'s.
+    if cut && matches!(outcome, Outcome::Timeout | Outcome::TcpTimeout) {
         drop(lead);
     } else {
         lead.finish(&outcome);
@@ -524,26 +525,35 @@ mod tests {
     }
 
     /// A timeout cut short by the sender's resolution's end is not the server's: those waiting are not handed it,
-    /// and one of them sends the query again in its own time. A timeout of the server's is handed.
+    /// and one of them sends the query again in its own time. A timeout of the server's is handed. The same over
+    /// TCP: a query moved there whose `TCP_TIMEOUT` falls at the resolution's end times out over TCP at that end.
     #[test]
     fn d195_a_timeout_cut_short_by_the_sender_s_end_is_not_shared() {
         Runtime::new().expect("a runtime").block_on(async {
-            for (left, shared) in [(Duration::from_millis(10), false), (SECOND, true)] {
+            let cases = [(Duration::from_millis(10), false), (SECOND, true)];
+            for ((left, shared), timeout) in cases
+                .into_iter()
+                .flat_map(|case| [(case, Outcome::Timeout), (case, Outcome::TcpTimeout)])
+            {
                 let flights = Flights::default();
                 let ends = Compio.now() + left;
                 let waiting = RefCell::new(None);
                 let query = query(Duration::from_millis(100));
                 let asked = asked(&Compio, &flights, &query, ends, async |_| {
                     waiting.replace(Some(flights.enter(&key())));
-                    Outcome::Timeout
+                    timeout.clone()
                 })
                 .await;
-                assert!(matches!(asked, Asked::Sent(Outcome::Timeout)));
+                let Asked::Sent(got) = asked else {
+                    panic!("sent")
+                };
+                assert_eq!(discriminant(&got), discriminant(&timeout));
                 let Some(Entered::Follow(waiting)) = waiting.take() else {
                     panic!("a waiter")
                 };
                 if shared {
-                    assert!(matches!(waiting.try_recv(), Ok(Outcome::Timeout)));
+                    let handed = waiting.try_recv().expect("the outcome");
+                    assert_eq!(discriminant(&handed), discriminant(&timeout));
                 } else {
                     assert!(matches!(
                         waiting.try_recv(),
