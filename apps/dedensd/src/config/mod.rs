@@ -96,6 +96,7 @@
 //!     # each resolution's limits (D191), capped (D195)
 //!     limits: {queries: 32, restarts: 11, referrals: 30, depth: 4, servers: 13, targets: 5, validation: 32,
 //!              time_ms: 4500}
+//!     query_local_addresses: false   # ask servers at loopback, private and other special addresses (D191)
 //!     qname_minimisation: relaxed    # RFC 9156; strict: no fallback to the full name; none (D198)
 //!     local_zones:                   # RFC 6303, home.arpa, resolver.arpa, localhost and invalid, answered here
 //!       resolve: []                  # those of them to resolve instead, by apex: [home.arpa] for a router's

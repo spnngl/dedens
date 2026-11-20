@@ -1,4 +1,5 @@
-//! A `recurse` stage, as written and built (D195): the resolution's limits (D191), its QNAME minimisation (D198),
+//! A `recurse` stage, as written and built (D195): the resolution's limits (D191) and whether it asks servers at
+//! special-purpose addresses (`query_local_addresses`, D191), its QNAME minimisation (D198),
 //! the zones served locally to resolve instead (RFC 6303 §3), a client network's share of the queries (D117), the
 //! sizes of its caches (D193, D194), and its validation (D197), set as a forward stage's (D77). A reload keeps its
 //! caches while their sizes, the cache stage's settings and the validation stay, and the share's buckets while its
@@ -31,6 +32,10 @@ pub(super) struct RecurseFile {
     qname_minimisation: MinimisationFile,
     #[serde(default)]
     local_zones: LocalZonesFile,
+    /// Whether servers at loopback, private and the other special-purpose addresses are asked:
+    /// `Limits::query_local_addresses`.
+    #[serde(default)]
+    query_local_addresses: bool,
     client_share: Option<BudgetFile>,
     rrset_cache_bytes: Option<NonZeroUsize>,
     infra_cache_bytes: Option<NonZeroUsize>,
@@ -92,6 +97,8 @@ const MAX: Limits = Limits {
     validation: 200,
     // A client gives up well before, and a resolution holds one of the thread's upstream queries (D47) all along.
     time: Duration::from_secs(30),
+    // A switch, not a count: either setting is allowed.
+    query_local_addresses: true,
 };
 
 /// How much of the names asked the servers see (RFC 9156, D198).
@@ -163,7 +170,10 @@ pub(super) fn recurse(
         .unwrap_or_default();
     let cache = &cache;
     let context = || format!("stage `{name}`");
-    let limits = limits(file.limits).with_context(context)?;
+    let limits = Limits {
+        query_local_addresses: file.query_local_addresses,
+        ..limits(file.limits).with_context(context)?
+    };
     let rrset_bytes = file
         .rrset_cache_bytes
         .map_or(DEFAULT_CAPACITY, NonZeroUsize::get);
@@ -280,6 +290,7 @@ fn limits(file: LimitsFile) -> anyhow::Result<Limits> {
             ("validation", MAX.validation),
         )?,
         time,
+        query_local_addresses: default.query_local_addresses,
     })
 }
 
@@ -446,6 +457,18 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let message = error(&text);
         assert!(message.contains("cannot read"), "{message}");
+    }
+
+    #[test]
+    fn d191_query_local_addresses_reads_off_by_default() {
+        for (written, set) in [("", false), ("    query_local_addresses: true\n", true)] {
+            let config = format!("{RECURSIVE}{written}");
+            let config = read(&config, env, &Pipeline::default()).expect("valid");
+            let [_, Stage::Recurse(recurse)] = config.pipeline.stages() else {
+                panic!("a cache stage, then a recurse stage")
+            };
+            assert_eq!(recurse.limits().query_local_addresses, set, "{written}");
+        }
     }
 
     #[test]

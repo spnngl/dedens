@@ -99,7 +99,8 @@ pub(super) enum StageFile {
     Tlds {},
     /// Resolves from the root (D195), instead of a forward stage: the `RRsets` learnt are kept in a cache of
     /// `rrset_cache_bytes`, under the cache stage's TTL bounds, the servers' timing in one of `infra_cache_bytes`;
-    /// `limits` bound each resolution (D191), `qname_minimisation` shows the servers less of each name (D198:
+    /// `limits` bound each resolution (D191), `query_local_addresses` has it ask servers at loopback, private and the
+    /// other special-purpose addresses (D191, off), `qname_minimisation` shows the servers less of each name (D198:
     /// `relaxed`, `strict` or `none`), `local_zones.resolve` lists zones served locally to resolve instead
     /// (RFC 6303 §3), and `client_share` is the queries to authoritative servers a client network may send, a
     /// second and at once (D117).

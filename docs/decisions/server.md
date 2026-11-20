@@ -1505,6 +1505,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     or referral is a zone an ancestor on the stack is waiting on ends at once, its name given no address (the loop
     of a zone reachable only through itself costs one query per name). An A lookup ending NXDOMAIN skips the
     name's AAAA.
+  - Addresses: an address at a special-purpose range of RFC 6890 is not asked unless `Limits::query_local_addresses`
+    (`dedensd`'s `recurse` switch of the same name, default false): loopback (127/8, `::1`), "this network" (0/8,
+    `::`), private (10/8, 172.16/12, 192.168/16, fc00::/7), shared (100.64/10), link-local (169.254/16, fe80::/10),
+    IETF protocol assignments (192.0.0/24), multicast (224/4, ff00::/8), reserved (240/4) and broadcast, each
+    IPv4-mapped too. A zone's glue, a name's addresses or a delegation cached could otherwise aim the resolver at
+    its own host, its network or many hosts (SSRF, amplification). Every address enters through `Delegation::add`,
+    which drops those; a cached delegation with no address left to ask is skipped for the TLD's or root hints. This
+    goes beyond Unbound's `do-not-query-localhost` (on by default: loopback and "this network" only; its
+    `private-address` hides private addresses from answers, not from queries) on purpose: `dedensd` is a public
+    resolver, and no stub zones exist yet (a stub zone is how Unbound reaches an internal server). Cost: an internal
+    server reached through a public delegation, or authorities on a test's own host, need the switch.
   - Limits (`Limits`, each a field with its number, a test in `tests/iteration.rs` reaching its default):
     `queries` 32 per client question, its sub-resolutions included, Unbound's `max-sent-count` (BIND 50): the cap
     of what a client costs; `restarts` 11, Unbound's and BIND's `max-query-restarts`, every CNAME hop counted, from

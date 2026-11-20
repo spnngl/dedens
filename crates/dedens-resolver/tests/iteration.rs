@@ -1272,6 +1272,132 @@ fn d191_an_address_given_twice_is_asked_once() {
     assert_eq!(sent.iter().filter(|s| s.0 == google).count(), 1, "{sent:?}");
 }
 
+/// An address of each range a resolution does not ask by default (D191): loopback, "this network", private,
+/// shared, link-local, IETF protocol assignments, multicast, reserved, broadcast, and IPv4-mapped ones.
+const LOCAL: [IpAddr; 20] = [
+    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)),
+    IpAddr::V4(Ipv4Addr::new(0, 1, 2, 3)),
+    IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+    IpAddr::V4(Ipv4Addr::new(172, 31, 0, 1)),
+    IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
+    IpAddr::V4(Ipv4Addr::new(100, 127, 0, 1)),
+    IpAddr::V4(Ipv4Addr::new(169, 254, 0, 1)),
+    IpAddr::V4(Ipv4Addr::new(192, 0, 0, 9)),
+    IpAddr::V4(Ipv4Addr::new(224, 0, 0, 251)),
+    IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1)),
+    IpAddr::V4(Ipv4Addr::BROADCAST),
+    IpAddr::V6(Ipv6Addr::LOCALHOST),
+    IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)),
+    IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+    IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb)),
+    IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped()),
+    IpAddr::V6(Ipv4Addr::new(192, 168, 0, 1).to_ipv6_mapped()),
+    IpAddr::V6(Ipv4Addr::new(100, 64, 0, 1).to_ipv6_mapped()),
+    IpAddr::V6(Ipv4Addr::new(224, 0, 0, 1).to_ipv6_mapped()),
+];
+
+/// `unsigned`, com's referral to google.com giving its servers the addresses of [`LOCAL`] as glue, which fail:
+/// the outcome under `limits`, and the addresses of google.com asked.
+fn local(limits: Limits) -> (Resolved, Vec<IpAddr>) {
+    let capture = recursion::Resolution::read("unsigned");
+    let google = name("google.com.");
+    let caches = caches(false);
+    let authorities = Authorities::new([&capture]);
+    steer(&caches, &capture);
+    let asked = RefCell::new(Vec::new());
+    let server = |query: &Query| {
+        if query.zone == google {
+            asked.borrow_mut().push(query.server.ip());
+            return Answered::ServerError;
+        }
+        let mut response = captured(&authorities, query);
+        if is(&query.zone, "com.") {
+            glued(&mut response, &LOCAL);
+        }
+        Answered::Response(response)
+    };
+    let (outcome, _) = run(&mut start(&capture, &caches, limits), &server, at(&capture));
+    (outcome, asked.into_inner())
+}
+
+/// `referral` with `addresses` for glue in place of its own, given to its servers in turn.
+fn glued(referral: &mut Message<'static>, addresses: &[IpAddr]) {
+    let glue = referral.additional[0].clone();
+    let servers: Vec<Name<'static>> = (referral.authority.iter())
+        .filter_map(|r| match r.data() {
+            RData::Ns(server) => Some(server.into_owned()),
+            _ => None,
+        })
+        .collect();
+    referral.additional = (addresses.iter().zip(servers.iter().cycle()))
+        .map(|(&address, server)| {
+            let data = match address {
+                IpAddr::V4(v4) => RData::A(v4),
+                IpAddr::V6(v6) => RData::Aaaa(v6),
+            };
+            Record::new(server.clone(), glue.class, glue.ttl, &data)
+        })
+        .collect();
+}
+
+#[test]
+fn d191_a_server_at_a_local_address_is_not_asked() {
+    let (outcome, asked) = local(Limits::default());
+    assert_eq!(outcome, Resolved::Failed(Failure::Unreachable));
+    assert_eq!(asked, Vec::<IpAddr>::new());
+}
+
+#[test]
+fn d191_a_server_at_a_local_address_is_asked_when_set() {
+    let limits = Limits {
+        query_local_addresses: true,
+        servers: LOCAL.len(),
+        ..Limits::default()
+    };
+    let (outcome, asked) = local(limits);
+    assert_eq!(outcome, Resolved::Failed(Failure::Network));
+    let asked: HashSet<IpAddr> = asked.into_iter().collect();
+    assert_eq!(asked, HashSet::from(LOCAL));
+}
+
+#[test]
+fn d191_an_address_just_outside_the_local_ranges_is_asked() {
+    // The neighbours of the ranges' edges: 172.32/12's first, 100.128/10's, 192.0.1.0, fbff::, fec0::.
+    let outside = [
+        IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1)),
+        IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1)),
+        IpAddr::V4(Ipv4Addr::new(100, 63, 255, 1)),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 1, 1)),
+        IpAddr::V4(Ipv4Addr::new(223, 255, 255, 1)),
+        IpAddr::V6(Ipv6Addr::new(0xfbff, 0, 0, 0, 0, 0, 0, 1)),
+        IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 1)),
+    ];
+    let capture = recursion::Resolution::read("unsigned");
+    let google = name("google.com.");
+    let caches = caches(false);
+    let authorities = Authorities::new([&capture]);
+    steer(&caches, &capture);
+    let asked = RefCell::new(HashSet::new());
+    let server = |query: &Query| {
+        if query.zone == google {
+            asked.borrow_mut().insert(query.server.ip());
+            return Answered::ServerError;
+        }
+        let mut response = captured(&authorities, query);
+        if is(&query.zone, "com.") {
+            glued(&mut response, &outside);
+        }
+        Answered::Response(response)
+    };
+    run(
+        &mut start(&capture, &caches, Limits::default()),
+        &server,
+        at(&capture),
+    );
+    assert_eq!(asked.into_inner(), HashSet::from(outside));
+}
+
 #[test]
 fn d191_an_address_looked_up_after_it_was_asked_is_not_asked_again() {
     // `glueless`, gandi.net giving each server of netmeister.org ns-143-b.gandi.net's addresses, which fail (a
