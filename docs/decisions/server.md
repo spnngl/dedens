@@ -1492,11 +1492,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     query counts waits, the TCP retry and the EDNS fallback. A response after the query moved to TCP (truncated,
     BADCOOKIE twice, a case mismatch: `Response::moved`) carries no `rtt` (`Reply::Response { rtt: None }`): its
     time is the connection's and the response's size, not the UDP time `Query::timeout` estimates, so it clears the
-    server's timeouts and merges its marks (`InfraCache::answered`) but leaves its RTO as it was. `Lame` marks the server lame for the zone. `Timeout`
-    and `ServerError` back the server off (RTO doubled, skipped after three, D194). REFUSED, SERVFAIL and any other
-    unusable response leave it as it was, as Unbound's `THROWAWAY` (`iter_resptype.c`) and BIND's `add_bad`, per
-    fetch: the infra cache is keyed by address alone, and a back-off would let three REFUSED for one zone shut a
-    server out of all of them. `LocalError` is ours: the server is not touched.
+    server's timeouts and merges its marks (`InfraCache::answered`) but leaves its RTO as it was. `Lame` marks the
+    server lame for the zone. `Timeout` and `ServerError` back the server off (RTO doubled, skipped after three,
+    D194). REFUSED, SERVFAIL and any other unusable response leave it as it was, as Unbound's `THROWAWAY`
+    (`iter_resptype.c`) and BIND's `add_bad`, per fetch: the infra cache is keyed by address alone, and a back-off
+    would let three REFUSED for one zone shut a server out of all of them. `LocalError` is ours: the server is not touched.
   - Caching: every `RRset` of `Scrubbed::ranked` at the scrubber's rank (D192, D193); the referral's NS as of the
     resolution's start when the delegation asked came from the cache, else now (Unbound's `store_rrsets`, D193).
     Negative answers are not cached (step 12). An address that came as glue keeps the glue's rank when answered
@@ -1525,12 +1525,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     one that does not). A NAT64 or 6to4 address embedding a global IPv4 is asked. A zone's glue, a name's
     addresses or a delegation cached could otherwise aim the resolver at its own host, its network or many hosts
     (SSRF, amplification). Every address enters through `Delegation::add`, which drops those; a cached delegation
-    with no address left to ask is skipped for the TLD's or root hints. This goes beyond Unbound's `do-not-query-localhost` (on by default: loopback and "this network" only; its
-    `private-address` hides private addresses from answers, not from queries) on purpose: `dedensd` is a public
-    resolver, and no stub zones exist yet (a stub zone is how Unbound reaches an internal server). Cost: an internal
-    server reached through a public delegation, or authorities on a test's own host, need the switch. Config load
-    refuses `root_hints` none of whose addresses is asked unless the switch is on: every query would fail, and
-    SERVFAIL would be the only sign.
+    with no address left to ask is skipped for the TLD's or root hints. This goes beyond Unbound's
+    `do-not-query-localhost` (on by default: loopback and "this network" only; its `private-address` hides private
+    addresses from answers, not from queries) on purpose: `dedensd` is a public resolver, and no stub zones exist
+    yet (a stub zone is how Unbound reaches an internal server). Cost: an internal server reached through a public
+    delegation, or authorities on a test's own host, need the switch. Config load refuses `root_hints` none of
+    whose addresses is asked unless the switch is on: every query would fail, and SERVFAIL would be the only sign.
   - Limits (`Limits`, each a field with its number, a test in `tests/iteration.rs` reaching its default):
     `queries` 32 per client question, its sub-resolutions included, Unbound's `max-sent-count` (BIND 50): the cap
     of what a client costs; `restarts` 11, Unbound's and BIND's `max-query-restarts`, every CNAME hop counted, from
@@ -1965,9 +1965,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     while another serves it right. The validations of the retries share one D75 budget, as Unbound keeps
     `num_validation_attempts` across `val_restart` (`Validator::restart`, the cost told cumulative), and its
     questions: a deep chain, whose walks ask more, gets fewer retries. None follows one that gave up on KeyTrap's
-    failed signatures or spent the budget (signature verifications, NSEC3 hash blocks, as Unbound's `val_hash_attempts`) or
-    the questions (`Validation::can_restart`). Out of servers, retries,
-    budget or a bound, the answer is bogus with the first code. D86's key cache never holds a bogus key set: the
+    failed signatures or spent the budget (signature verifications, NSEC3 hash blocks, as Unbound's
+    `val_hash_attempts`) or the questions (`Validation::can_restart`). Out of servers, retries, budget or a bound,
+    the answer is bogus with the first code. D86's key cache never holds a bogus key set: the
     `RRset` cache holds it, for the bogus TTL.
   - YXDOMAIN is judged as an answer: bogus unless the chain ends in a DNAME whose substitution makes a name longer
     than 255 bytes (RFC 6672 §2.2, `Chain::overflow`), that DNAME validated. RRSIG questions stay NOTIMP
