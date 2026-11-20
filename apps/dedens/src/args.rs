@@ -381,11 +381,17 @@ fn plus(command: &clap::Command, option: &str) -> Result<String, String> {
     let negated = name
         .strip_prefix("no")
         .filter(|_| value.is_none())
-        .and_then(|rest| long(command, rest).ok());
+        .map(|rest| (rest, long(command, rest)));
     let (arg, value) = match negated {
-        Some(arg) if on_off(arg) => (arg, Some("false")),
-        Some(arg) => return Err(format!("+{name}: --{} is not on/off", long_name(arg))),
-        None => (long(command, name)?, value),
+        Some((_, Ok(arg))) if on_off(arg) => (arg, Some("false")),
+        Some((_, Ok(arg))) => return Err(format!("+{name}: --{} is not on/off", long_name(arg))),
+        // Unless `noX` names a flag itself, an ambiguous `X` is the error, not an unknown `noX`.
+        Some((rest, Err(miss @ Miss::Ambiguous(..)))) => {
+            (long(command, name).map_err(|_| miss.say(rest))?, value)
+        }
+        Some((_, Err(Miss::Unknown))) | None => {
+            (long(command, name).map_err(|miss| miss.say(name))?, value)
+        }
     };
     Ok(match value {
         Some(value) => format!("--{}={value}", long_name(arg)),
@@ -394,7 +400,7 @@ fn plus(command: &clap::Command, option: &str) -> Result<String, String> {
 }
 
 /// The flag whose long name is `prefix`, else the only one starting with it.
-fn long<'c>(command: &'c clap::Command, prefix: &str) -> Result<&'c Arg, String> {
+fn long<'c>(command: &'c clap::Command, prefix: &str) -> Result<&'c Arg, Miss<'c>> {
     let named = || command.get_arguments().filter(|a| a.get_long().is_some());
     if let Some(exact) = named().find(|a| a.get_long() == Some(prefix)) {
         return Ok(exact);
@@ -402,12 +408,30 @@ fn long<'c>(command: &'c clap::Command, prefix: &str) -> Result<&'c Arg, String>
     let mut matching = named().filter(|a| !prefix.is_empty() && long_name(a).starts_with(prefix));
     match (matching.next(), matching.next()) {
         (Some(arg), None) => Ok(arg),
-        (None, _) => Err(format!("+{prefix}: unknown option")),
-        (Some(first), Some(second)) => Err(format!(
-            "+{prefix}: ambiguous, --{} or --{}…",
-            long_name(first),
-            long_name(second)
-        )),
+        (None, _) => Err(Miss::Unknown),
+        (Some(first), Some(second)) => Err(Miss::Ambiguous(first, second)),
+    }
+}
+
+/// Why no flag answers a prefix ([`long`]).
+enum Miss<'c> {
+    /// No flag starts with it.
+    Unknown,
+    /// Several do: two of them.
+    Ambiguous(&'c Arg, &'c Arg),
+}
+
+impl Miss<'_> {
+    /// The error for `+prefix`.
+    fn say(&self, prefix: &str) -> String {
+        match self {
+            Self::Unknown => format!("+{prefix}: unknown option"),
+            Self::Ambiguous(first, second) => format!(
+                "+{prefix}: ambiguous, --{} or --{}…",
+                long_name(first),
+                long_name(second)
+            ),
+        }
     }
 }
 
@@ -514,6 +538,16 @@ mod tests {
             &["-t"],
         ] {
             assert!(rewrite(args).is_err(), "{args:?}");
+        }
+    }
+
+    /// A negation whose name is ambiguous says so, as the name alone does: `+nod` is no unknown option, `d` starts
+    /// several.
+    #[test]
+    fn an_ambiguous_negation_says_it_is_ambiguous() {
+        for args in [["+d"], ["+nod"]] {
+            let error = rewrite(&args).expect_err("ambiguous");
+            assert!(error.starts_with("+d: ambiguous, --"), "{args:?}: {error}");
         }
     }
 
