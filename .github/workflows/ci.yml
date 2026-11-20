@@ -89,6 +89,9 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      # The container's build, in a host directory rust-cache keeps; its registry is the runner's, below.
+      DEDENS_MUSL_TARGET: ${{ github.workspace }}/target/musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -97,13 +100,22 @@ jobs:
         with:
           # renovate: datasource=github-releases depName=casey/just
           just-version: "1.59.0"
+      # The container's toolchain on the host too: rust-cache's key includes the rustc version.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: . -> target/musl
+          key: ${{ matrix.target }}
       - env:
           TARGET: ${{ matrix.target }}
-        run: just musl "$TARGET"
+        run: DEDENS_MUSL_REGISTRY="$HOME/.cargo/registry" just musl "$TARGET"
       - env:
           TARGET: ${{ matrix.target }}
           DEDENS_PRIVILEGES_REQUIRED: 1
-        run: just musl "$TARGET" test -p dedensd --test tests -- --ignored 'privileges::'
+        run: DEDENS_MUSL_REGISTRY="$HOME/.cargo/registry" just musl "$TARGET" test -p dedensd --test tests -- --ignored 'privileges::'
+      # The container wrote as root: rust-cache, saving after this, prunes the build as the runner.
+      - if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" target/musl "$HOME/.cargo/registry"
 
   # Build matrix and dependency checks: platform-independent, Linux only.
   deps:
