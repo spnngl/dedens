@@ -184,8 +184,8 @@ fn rfc5011_s2_2_new_key_trusted_after_the_add_hold_down() {
     assert_eq!(trusted(&rollover), [19036, 20326]);
 }
 
-/// RFC 5011 §2.4.1: the add hold-down is the larger of 30 days and the `RRset`'s original TTL, the RRSIG's, not the TTL
-/// a cache decremented or a server set: the TTL of the records is 40 days here, the original one 2 days.
+/// RFC 5011 §2.4.1: the add hold-down is the larger of 30 days and the `RRset`'s original TTL, the RRSIG's, not the
+/// TTL a cache decremented or a server set: the TTL of the records is 40 days here, the original one 2 days.
 #[test]
 fn rfc5011_s2_4_1_the_add_hold_down_is_by_the_original_ttl() {
     let mut records = july_2017();
@@ -832,7 +832,8 @@ fn rfc5011_s4_agrees_with_the_anchors_of_the_same_keys() {
     let rollover = both_valid();
     assert!(rollover.agrees(&anchors(&format!("{DS_2010}{DS_2017}"))));
     assert!(!rollover.agrees(&anchors(DS_2017)));
-    assert!(!rollover.agrees(&anchors("example. IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n")));
+    let other = "example. IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n";
+    assert!(!rollover.agrees(&anchors(other)));
 }
 
 // --- The state text (D200) ---
@@ -876,6 +877,28 @@ fn rfc5011_state_text_cut_short_is_refused() {
             "read cut at {end}: {:?}",
             &text[..end]
         );
+    }
+}
+
+/// D200: a state of a version this build does not know is told from one that is damaged: the first may be good, and
+/// its tombstones are the state of a newer build that this one must not discard.
+#[test]
+fn rfc5011_state_text_of_an_unknown_version_is_told_from_a_damaged_one() {
+    let k2010 = dnskey(&december_2018(), 19036);
+    for header in ["dedens rfc5011 2", "dedens rfc5011 10", "dedens rfc5011 "] {
+        let error = Rollover::read(&format!("{header}\nvalid {k2010}\nend\n")).unwrap_err();
+        assert!(error.unknown_version(), "{header:?}: {error}");
+    }
+    for text in [
+        format!("dedens rfc5011 1\nvalid  {k2010}\nend\n"),
+        format!("dedens rfc5011\nvalid {k2010}\nend\n"),
+        format!("dedens root anchors 1\nvalid {k2010}\nend\n"),
+        format!("\nvalid {k2010}\nend\n"),
+        format!("dedens rfc5011 1\nvalid {k2010}\n"),
+        String::new(),
+    ] {
+        let error = Rollover::read(&text).unwrap_err();
+        assert!(!error.unknown_version(), "{text:?}: {error}");
     }
 }
 

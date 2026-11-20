@@ -14,6 +14,10 @@ use crate::rrsig::{self, Key, RrSet, SigError, Signature};
 
 /// The first line of the text of [`Rollover`]: what it is, and the version of its format.
 const HEADER: &str = "dedens rfc5011 1";
+/// What every version's header starts with.
+const HEADER_PREFIX: &str = "dedens rfc5011 ";
+/// What a header of another version is refused for.
+const UNKNOWN_VERSION: &str = "a version of `dedens rfc5011` this build does not know";
 
 /// The last line of the text of [`Rollover`]: a text cut short lacks it, so it is refused rather than read as one
 /// with fewer keys.
@@ -107,6 +111,15 @@ pub struct RolloverStateError {
     pub what: &'static str,
 }
 
+impl RolloverStateError {
+    /// Whether the text is of a version of the format this build does not know, a newer one's perhaps: it may be a
+    /// good state, unlike a damaged one, and is not for this build to discard ([`Rollover::read`]).
+    #[must_use]
+    pub fn unknown_version(&self) -> bool {
+        self.what == UNKNOWN_VERSION
+    }
+}
+
 impl Rollover {
     /// The add hold-down, 30 days (RFC 5011 §2.4.1: the larger of 30 days and the `RRset`'s TTL): how long a new
     /// key is seen before it is trusted, so that a stolen key has to be published that long. Unbound's default
@@ -148,8 +161,8 @@ impl Rollover {
     /// The keys `anchors` trusts at the root, followed from `records`, which must hold the root's DNSKEY `RRset`
     /// and its RRSIGs, at `now`, in seconds since 1970: what a resolver starts from without a text of its own
     /// (D200). A DNSKEY anchor is valid, but for one in its revoked form, which is a key revoked; a key of the
-    /// `RRset` a DS anchor digests is valid; the `RRset` must be signed by one of those; its other keys are new ([`Rollover::observe`]). Returns the wait before the next
-    /// query, in seconds.
+    /// `RRset` a DS anchor digests is valid; the `RRset` must be signed by one of those; its other keys are new
+    /// ([`Rollover::observe`]). Returns the wait before the next query, in seconds.
     ///
     /// # Errors
     ///
@@ -245,12 +258,12 @@ impl Rollover {
     /// time left to its signature, between [`Rollover::QUERY_FLOOR`] and [`Rollover::QUERY_CEILING`] (§2.3).
     ///
     /// First, each key trusted (valid or missing) whose revoked form is in the `RRset` and signs it is revoked
-    /// (§2.1), whatever else signs it; a new key whose plain form is gone is dropped like any other (§4). Then the `RRset` must be signed by a trusted key; if so, each key is updated: a new key,
-    /// a secure entry point of a supported algorithm, waits [`Rollover::ADD_HOLD_DOWN`] (or the TTL when longer)
-    /// and is valid when seen after that, unless the bounds are met ([`Rollover::is_full`]); one gone before is
-    /// dropped. A valid key gone is missing, a missing key
-    /// back is valid, and a missing key is dropped after [`Rollover::KEEP_MISSING`] when another is valid. A
-    /// revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver forget it after
+    /// (§2.1), whatever else signs it; a new key whose plain form is gone is dropped like any other (§4). Then the
+    /// `RRset` must be signed by a trusted key; if so, each key is updated: a new key, a secure entry point of a
+    /// supported algorithm, waits [`Rollover::ADD_HOLD_DOWN`] (or the TTL when longer) and is valid when seen after
+    /// that, unless the bounds are met ([`Rollover::is_full`]); one gone before is dropped. A valid key gone is
+    /// missing, a missing key back is valid, and a missing key is dropped after [`Rollover::KEEP_MISSING`] when
+    /// another is valid. A revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver forget it after
     /// the remove hold-down, but a stale anchor it is seeded with would trust it again (§2.1, §4), up to
     /// [`Rollover::MAX_REVOKED`] of them.
     ///
@@ -475,9 +488,10 @@ impl Rollover {
     /// # Errors
     ///
     /// [`RolloverStateError`] at the first line that is not as written, a key that is not after the one before
-    /// (out of order or twice) included; at line 0 when `text` is longer than [`Rollover::MAX_LEN`], does not end
-    /// with `end` and a line feed, or holds no key valid, missing or revoked: a text cut short or emptied is never
-    /// read as trusting nothing, while one of revoked keys is.
+    /// (out of order or twice) included, and a header of a version this build does not know, which
+    /// [`RolloverStateError::unknown_version`] tells; at line 0 when `text` is longer than [`Rollover::MAX_LEN`],
+    /// does not end with `end` and a line feed, or holds no key valid, missing or revoked: a text cut short or
+    /// emptied is never read as trusting nothing, while one of revoked keys is.
     pub fn read(text: &str) -> Result<Self, RolloverStateError> {
         let whole = |what| RolloverStateError { line: 0, what };
         if text.len() > Self::MAX_LEN {
@@ -492,7 +506,11 @@ impl Rollover {
         if header != HEADER {
             return Err(RolloverStateError {
                 line,
-                what: "not `dedens rfc5011 1`",
+                what: if header.starts_with(HEADER_PREFIX) {
+                    UNKNOWN_VERSION
+                } else {
+                    "not `dedens rfc5011 1`"
+                },
             });
         }
         let mut keys: Vec<Tracked> = Vec::new();

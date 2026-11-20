@@ -4,8 +4,9 @@
 //! `state_dir` ([`STATE`]), written whole (D104), and reloads once the anchors it trusts change. The state read at
 //! start serves before the anchors of D128, downloaded or bundled, which are warned of when they disagree; with no
 //! state those anchors serve and seed a new state at the next answer. A state that does not read is set aside as
-//! [`BAD`], warned of, and those anchors serve the same way; one the system fails to read stays where it is, and nothing is
-//! seeded or written until it reads. A revoked key is never trusted again (RFC 5011 §2.1):
+//! [`BAD`], warned of, and those anchors serve the same way; one the system fails to read, one of a version
+//! unknown here, and one that cannot be set aside stay where they are, and nothing is seeded or written until they
+//! read. A revoked key is never trusted again (RFC 5011 §2.1):
 //! the state keeps it, alone when every key trusted was revoked, and it is taken out of the anchors of D128 that
 //! serve then, or seed a new state; a state whose keys sign the root's no more, where those anchors do, is replaced
 //! by them, its revoked keys kept.
@@ -371,11 +372,19 @@ fn served(rollover: &Rollover, seed: &TrustAnchors) -> TrustAnchors {
         .unwrap_or_else(|| rollover.without_revoked(seed))
 }
 
-/// Renames `path`, in `state_dir`, to the first of [`BAD`]`.<now>` and `.<now>.<n>` that is free, and flushes the
-/// directory so that the rename survives a crash; where it went and how that went.
-fn set_aside(state_dir: &Path, path: &Path) -> (PathBuf, io::Result<()>) {
-    let now = unix_seconds();
-    let bad = (0..=u32::MAX)
+/// How many names [`set_aside`] tries at one second: a state set aside that often in a second is not a state of
+/// ours, and the probe of the names that follow would go on as long as the directory fills.
+const ASIDE_TRIES: u32 = 16;
+
+/// Renames `path`, in `state_dir`, to the first of [`BAD`]`.<now>` and `.<now>.<n>` that is free, within
+/// [`ASIDE_TRIES`], and flushes the directory so that the rename survives a crash (warned of when it does not,
+/// `path` being gone); where it went.
+///
+/// # Errors
+///
+/// No name is free, or the rename fails: `path` is where it was, nothing is overwritten.
+fn set_aside(state_dir: &Path, path: &Path, now: u64) -> io::Result<PathBuf> {
+    let bad = (0..ASIDE_TRIES)
         .map(|n| match n {
             0 => state_dir.join(format!("{BAD}.{now}")),
             n => state_dir.join(format!("{BAD}.{now}.{n}")),
@@ -384,9 +393,17 @@ fn set_aside(state_dir: &Path, path: &Path) -> (PathBuf, io::Result<()>) {
             bad.symlink_metadata()
                 .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
         })
-        .unwrap_or_else(|| state_dir.join(BAD));
-    let renamed = std::fs::rename(path, &bad).and_then(|()| download::sync_dir(state_dir));
-    (bad, renamed)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{ASIDE_TRIES} names of {BAD}.{now} are taken"),
+            )
+        })?;
+    std::fs::rename(path, &bad)?;
+    if let Err(error) = download::sync_dir(state_dir) {
+        tracing::warn!(%error, bad = %bad.display(), "the state set aside is not known to be flushed");
+    }
+    Ok(bad)
 }
 
 /// Why the file of the state did not read.
@@ -427,24 +444,40 @@ fn read(state_dir: &Path) -> Stored {
         };
         let bytes = read_capped(file, max).map_err(Fault::of)?;
         let text = String::from_utf8(bytes).map_err(|error| Fault::Content(error.into()))?;
-        Rollover::read(&text)
-            .map(Some)
-            .map_err(|error| Fault::Content(error.into()))
+        Rollover::read(&text).map(Some).map_err(|error| {
+            if error.unknown_version() {
+                // A newer build's state, kept for it: not damaged.
+                Fault::System(io::Error::other(error))
+            } else {
+                Fault::Content(error.into())
+            }
+        })
     };
     match read() {
         Ok(None) => Stored::Absent,
         Ok(Some(rollover)) => Stored::Found(rollover),
-        Err(Fault::Content(error)) => {
-            let (bad, set_aside) = set_aside(state_dir, &path);
-            tracing::warn!(
-                path = %path.display(),
-                error = format!("{error:#}"),
-                bad = %bad.display(),
-                set_aside = ?set_aside,
-                "the state of the root keys followed does not read: trusting the downloaded or bundled anchors"
-            );
-            Stored::Absent
-        }
+        Err(Fault::Content(error)) => match set_aside(state_dir, &path, unix_seconds()) {
+            Ok(bad) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = format!("{error:#}"),
+                    bad = %bad.display(),
+                    "the state of the root keys followed does not read: trusting the downloaded or bundled anchors"
+                );
+                Stored::Absent
+            }
+            // Seeding over it would overwrite it, tombstones and all: the next use tries again.
+            Err(aside) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = format!("{error:#}"),
+                    %aside,
+                    "the state of the root keys followed does not read and cannot be set aside: left where it is, \
+                     the downloaded or bundled anchors serve, asked again at the next use"
+                );
+                Stored::Unreadable
+            }
+        },
         Err(Fault::System(error)) => {
             tracing::warn!(
                 path = %path.display(),
@@ -651,6 +684,116 @@ pub(crate) mod tests {
         );
     }
 
+    /// D200: the names tried for a state set aside are as many as [`ASIDE_TRIES`], none overwritten; when none is
+    /// free, or the rename fails, the state stays where it is, and is not seeded over (it would lose its tombstones).
+    #[test]
+    fn a_state_that_cannot_be_set_aside_is_kept_not_seeded_over() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        let path = dir.join(STATE);
+        fs::write(&path, "broken").unwrap();
+        let now = 1_700_000_000;
+        fs::write(dir.join(format!("{BAD}.{now}")), "first").unwrap();
+        for n in 1..ASIDE_TRIES - 1 {
+            fs::write(dir.join(format!("{BAD}.{now}.{n}")), n.to_string()).unwrap();
+        }
+        let last = dir.join(format!("{BAD}.{now}.{}", ASIDE_TRIES - 1));
+        assert_eq!(
+            super::set_aside(dir, &path, now).unwrap(),
+            last,
+            "the last name"
+        );
+        assert!(!path.exists());
+        fs::write(&path, "broken").unwrap();
+        let full = super::set_aside(dir, &path, now).unwrap_err();
+        assert_eq!(full.kind(), io::ErrorKind::AlreadyExists, "{full}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "broken");
+        assert_eq!(
+            fs::read_to_string(&last).unwrap(),
+            "broken",
+            "not overwritten"
+        );
+
+        if nix::unistd::geteuid().is_root() {
+            // Root renames in any directory.
+            return;
+        }
+        // A directory that cannot be written: the rename fails.
+        let locked = tempfile::tempdir().unwrap();
+        let (dir, path) = (locked.path(), locked.path().join(STATE));
+        fs::write(&path, "broken").unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let mut kept = Kept::default();
+        assert_eq!(kept.anchors(dir, &seed), seed);
+        let failed = kept.observe(&snapshot("20170716113230"), &seed, dir, JULY_2017);
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(failed.wait, RETRY);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "broken",
+            "not seeded over"
+        );
+        assert_eq!(set_aside(dir), Vec::<Vec<u8>>::new());
+    }
+
+    /// D200, RFC 5011 §2.1: a state of a version this build does not know, that of a newer build run before a
+    /// rollback, is left where it is as one the system fails to read is: it may hold tombstones that a seed would
+    /// lose. Nothing is set aside or written, and the next use reads it again.
+    #[test]
+    fn a_state_of_an_unknown_version_is_kept_not_seeded_over() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        let path = dir.join(STATE);
+        let newer = format!("dedens rfc5011 2\nvalid {}\nend\n", ksk_2010());
+        fs::write(&path, &newer).unwrap();
+
+        let mut kept = Kept::default();
+        assert_eq!(kept.anchors(dir, &seed), seed);
+        let failed = kept.observe(&snapshot("20170716113230"), &seed, dir, JULY_2017);
+        assert_eq!(
+            failed,
+            Observed {
+                wait: RETRY,
+                changed: false
+            }
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), newer);
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1, "nothing set aside");
+
+        // A state of this build's version is read again at the next use.
+        let whole = format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010());
+        fs::write(&path, &whole).unwrap();
+        assert!(
+            kept.observe(&snapshot("20170716113230"), &seed, dir, JULY_2017)
+                .wait
+                > RETRY
+        );
+    }
+
+    /// D200, D122: a state that is a symbolic link is no state: `O_NOFOLLOW` refuses it with ELOOP, which is a
+    /// fault of what is there, not of the system. The link, not what it points to, is set aside, and the downloaded
+    /// anchors serve.
+    #[test]
+    fn a_state_that_is_a_link_is_set_aside_not_followed() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        let elsewhere = dir.join("elsewhere");
+        let whole = format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010());
+        fs::write(&elsewhere, &whole).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join(STATE)).unwrap();
+
+        assert_eq!(Kept::default().anchors(dir, &seed), seed, "not followed");
+        assert!(dir.join(STATE).symlink_metadata().is_err(), "set aside");
+        assert_eq!(fs::read_to_string(&elsewhere).unwrap(), whole, "untouched");
+        let aside: Vec<_> = (fs::read_dir(dir).unwrap().flatten())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(BAD))
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert!(aside[0].file_type().unwrap().is_symlink());
+    }
+
     /// D200, RFC 5011 §2.1: a state that cannot be read, for a cause that is no fault of its content (here, a
     /// mode of 0 on a file a run as root left), is not set aside: the tombstones in it are not lost to a seed. The
     /// downloaded anchors serve; an answer fails, to be asked again in an hour, without seeding or writing; the
@@ -751,6 +894,40 @@ pub(crate) mod tests {
         assert!(kept.is_news(Some((a.clone(), b.clone()))));
         assert!(!kept.is_news(None));
         assert!(kept.is_news(Some((a, b))), "they agreed in between");
+    }
+
+    /// D200: `anchors` tells what it serves differs from the download while it does, a revoked key being one such
+    /// difference, and tells nothing while they agree; the run of one is not told again.
+    #[test]
+    fn the_anchors_served_tell_their_disagreement_with_the_download() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        fs::write(
+            dir.join(STATE),
+            format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010()),
+        )
+        .unwrap();
+        let mut kept = Kept::default();
+        kept.anchors(dir, &seed);
+        assert!(kept.told.is_none(), "they agree");
+        let other = TrustAnchors::read(DS_2017).unwrap();
+        kept.anchors(dir, &other);
+        assert!(kept.told.is_some(), "they disagree");
+        kept.anchors(dir, &seed);
+        assert!(kept.told.is_none(), "they agree again");
+
+        kept.observe(&snapshot("20190305003355"), &seed, dir, MARCH_2019);
+        kept.anchors(dir, &seed);
+        assert!(kept.told.is_some(), "every key followed is revoked");
+    }
+
+    /// D200: the bound of keys followed is said when an answer reaches it, not while it stays reached.
+    #[test]
+    fn the_bound_is_said_once_when_reached() {
+        assert!(newly_full(false, true));
+        assert!(!newly_full(true, true));
+        assert!(!newly_full(false, false));
+        assert!(!newly_full(true, false));
     }
 
     /// D200, RFC 5011 §2.1: a state whose every trusted key is revoked is kept, the revoked key its tombstone: the
@@ -895,40 +1072,6 @@ pub(crate) mod tests {
                     true,
                     DebugValue::Counter(2)
                 ),
-    /// D200: `anchors` tells what it serves differs from the download while it does, a revoked key being one such
-    /// difference, and tells nothing while they agree; the run of one is not told again.
-    #[test]
-    fn the_anchors_served_tell_their_disagreement_with_the_download() {
-        let state = tempfile::tempdir().unwrap();
-        let (dir, seed) = (state.path(), seed());
-        fs::write(
-            dir.join(STATE),
-            format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010()),
-        )
-        .unwrap();
-        let mut kept = Kept::default();
-        kept.anchors(dir, &seed);
-        assert!(kept.told.is_none(), "they agree");
-        let other = TrustAnchors::read(DS_2017).unwrap();
-        kept.anchors(dir, &other);
-        assert!(kept.told.is_some(), "they disagree");
-        kept.anchors(dir, &seed);
-        assert!(kept.told.is_none(), "they agree again");
-
-        kept.observe(&snapshot("20190305003355"), &seed, dir, MARCH_2019);
-        kept.anchors(dir, &seed);
-        assert!(kept.told.is_some(), "every key followed is revoked");
-    }
-
-    /// D200: the bound of keys followed is said when an answer reaches it, not while it stays reached.
-    #[test]
-    fn the_bound_is_said_once_when_reached() {
-        assert!(newly_full(false, true));
-        assert!(!newly_full(true, true));
-        assert!(!newly_full(false, false));
-        assert!(!newly_full(true, false));
-    }
-
                 (
                     PROBES.to_owned(),
                     vec!["followed".to_owned()],
