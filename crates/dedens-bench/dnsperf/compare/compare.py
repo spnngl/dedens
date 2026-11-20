@@ -481,8 +481,9 @@ class Bench:
                     self.check(session, name)
                     name, r = self.measure(session, name, "sat")
                     # A server dropping queries at full load saturates lower: 10% under what it answered, twice.
+                    # Loss comes with other reasons (dnsperf busy, a rate missed while lost queries time out).
                     for _ in range(SAT_RETRIES):
-                        if r["void"] != ["loss"]:
+                        if "loss" not in r["void"]:
                             break
                         name, r = self.measure(session, name, "sat", rate=r["qps"] * 0.9)
                     if not r["void"]:
