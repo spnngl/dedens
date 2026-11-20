@@ -2084,8 +2084,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - `dedensd`: a validating `recurse` stage without `trust_anchors` follows the root's keys. The state is
     `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
     file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the
-    first load. Its anchors win over D128's, downloaded or bundled, with a warn! when they disagree: the state
-    was proven from the zone, key by key, since a seed the download gave. No state (no file: only NotFound),
+    first load. Its anchors win over D128's, downloaded or bundled, with a warn! when they disagree (once at each change
+    of either, debug! at the reloads between): the state was proven from the zone, key by key, since a seed the
+    download gave. No state (no file: only NotFound),
     or one that does not read (warn!; any error, a corrupt text or EIO): D128's anchors serve and seed a new
     state from the next answer; an unreadable file is first renamed `root-5011.bad`, for the operator, since the
     new state would overwrite its tombstones. A state whose keys are all revoked is kept, serving D128's anchors
@@ -2093,6 +2094,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of which
     signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
     replaced by those, the tombstones kept, with a warn!. Forward stages keep D128's anchors.
+  - Operator: the state is the server's to write and the operator's to read, and to reset (a key lost to a mistake,
+    a tombstone to forget): stop `dedensd`, delete `root-5011` (and `root-5011.bad` once read) in `state_dir`,
+    start it: D128's anchors seed a new state at the first answer, as a first start does, and the tombstones
+    are forgotten: a key the download still lists is trusted again unless the zone publishes it revoked.
   - Queries: `Probe` in `reload::Current` holds the next query's time; the first serving thread past it takes it
     and resolves `. DNSKEY` through `Pipeline::root_keys` beside the query it serves, as priming (D195): no client,
     no validation (`Rollover` verifies), and the `RRset` cache may answer, its TTL bounding the age. The answer, its

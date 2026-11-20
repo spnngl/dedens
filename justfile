@@ -540,7 +540,7 @@ capture-rollover:
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     for at in 20170615085551 20170716113230 20170816120412 20181224040024 20190305003355 20190406221638; do
-        url="http://web.archive.org/web/${at}id_/https://www.internic.net/domain/root.zone"
+        url="https://web.archive.org/web/${at}id_/https://www.internic.net/domain/root.zone"
         curl -fsSL --retry 3 -o "$tmp/root.txt" "$url"
         { echo "; $url"; grep -E '^\.\s+[0-9]+\s+IN\s+(DNSKEY|RRSIG\s+DNSKEY)\s' "$tmp/root.txt"; } > "$tmp/rollover-$at.zone"
     done

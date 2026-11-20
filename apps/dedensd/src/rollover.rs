@@ -143,7 +143,16 @@ impl Drop for Taken<'_> {
 /// The rollover followed, held across reloads by the thread reloading: read from `state_dir` the first time it is
 /// needed, seeded by the anchors of D128 when there is none.
 #[derive(Debug, Default)]
-pub(crate) enum Kept {
+pub(crate) struct Kept {
+    state: State,
+    /// The anchors served and those of D128 the last warning was about, until they agree again: the same pair is
+    /// not warned of at each reload.
+    told: Option<(TrustAnchors, TrustAnchors)>,
+}
+
+/// What [`Kept`] read.
+#[derive(Debug, Default)]
+enum State {
     #[default]
     Unread,
     Read(Option<Rollover>),
@@ -162,13 +171,21 @@ impl Kept {
     /// The rollover kept in `state_dir`, read the first time; `None` when there is none, or it does not read,
     /// which is warned of and set aside: the anchors of D128 seed a new one.
     fn rollover(&mut self, state_dir: &Path) -> Option<&mut Rollover> {
-        if matches!(self, Self::Unread) {
-            *self = Self::Read(read(state_dir));
+        if matches!(self.state, State::Unread) {
+            self.state = State::Read(read(state_dir));
         }
-        match self {
-            Self::Read(rollover) => rollover.as_mut(),
-            Self::Unread => None,
+        match &mut self.state {
+            State::Read(rollover) => rollover.as_mut(),
+            State::Unread => None,
         }
+    }
+
+    /// Whether `pair`, what [`Kept::anchors`] serves and what it differs from, is new since the last one told, the
+    /// first of a run of the same: warned of, then only debugged. `None`, they agree, ends the run.
+    fn is_news(&mut self, pair: Option<(TrustAnchors, TrustAnchors)>) -> bool {
+        let news = pair.is_some() && self.told != pair;
+        self.told = pair;
+        news
     }
 
     /// The root anchors the validators trust, `seed` those of D128: the rollover's, warned of when they disagree
@@ -178,17 +195,24 @@ impl Kept {
             return seed.clone();
         };
         let Some(anchors) = rollover.anchors() else {
-            tracing::warn!(
-                "every root key followed by RFC 5011 is revoked: trusting the downloaded or bundled anchors, less \
-                 the revoked keys"
-            );
-            return rollover.without_revoked(seed);
+            let served = rollover.without_revoked(seed);
+            let message = "every root key followed by RFC 5011 is revoked: trusting the downloaded or bundled \
+                           anchors, less the revoked keys";
+            if self.is_news(Some((served.clone(), seed.clone()))) {
+                tracing::warn!(message);
+            } else {
+                tracing::debug!(message);
+            }
+            return served;
         };
-        if !rollover.agrees(seed) {
-            tracing::warn!(
-                "the root keys followed by RFC 5011 are not those of the downloaded or bundled anchors: trusting \
-                 those followed"
-            );
+        let agrees = rollover.agrees(seed);
+        let news = self.is_news((!agrees).then(|| (anchors.clone(), seed.clone())));
+        let message = "the root keys followed by RFC 5011 are not those of the downloaded or bundled anchors: \
+                       trusting those followed";
+        if news {
+            tracing::warn!(message);
+        } else if !agrees {
+            tracing::debug!(message);
         }
         anchors
     }
@@ -217,7 +241,7 @@ impl Kept {
                 Ok(wait)
             }),
             None => Rollover::seed(seed, records, now).map(|(rollover, wait)| {
-                *self = Self::Read(Some(rollover));
+                self.state = State::Read(Some(rollover));
                 wait
             }),
         };
@@ -322,6 +346,9 @@ pub(crate) mod tests {
     /// The root's DS record of KSK-2010, as IANA's `root-anchors.xml` lists it.
     pub(crate) const DS_2010: &str =
         ". IN DS 19036 8 2 49AAC11D7B6F6446702E54A1607371607A1A41855200FD2CE1CDDE32F24E8FB5\n";
+    /// The root's DS record of KSK-2017, as IANA's `root-anchors.xml` lists it.
+    const DS_2017: &str =
+        ". IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n";
     /// 2017-07-16 12:00 UTC: KSK-2017 published.
     pub(crate) const JULY_2017: u64 = 1_500_206_400;
     /// 2017-08-16 12:00 UTC: a day after its add hold-down ends.
@@ -482,6 +509,24 @@ pub(crate) mod tests {
     fn trusts_2010(anchors: &TrustAnchors) -> bool {
         let text = anchors.to_string();
         text.contains("19036") || text.contains("AwEAAagAIKlVZrpC6Ia7")
+    }
+
+    /// D200: a disagreement of the anchors followed with those of D128 is warned of once, at each change of
+    /// either, not at each reload, which the next answers repeat.
+    #[test]
+    fn a_disagreement_is_warned_of_once_per_change() {
+        let (a, b) = (seed(), TrustAnchors::read(DS_2017).unwrap());
+        let mut kept = Kept::default();
+        assert!(!kept.is_news(None), "they agree");
+        assert!(kept.is_news(Some((a.clone(), b.clone()))));
+        assert!(
+            !kept.is_news(Some((a.clone(), b.clone()))),
+            "the same again"
+        );
+        assert!(kept.is_news(Some((b.clone(), a.clone()))), "another pair");
+        assert!(kept.is_news(Some((a.clone(), b.clone()))));
+        assert!(!kept.is_news(None));
+        assert!(kept.is_news(Some((a, b))), "they agreed in between");
     }
 
     /// D200, RFC 5011 §2.1: a state whose every trusted key is revoked is kept, the revoked key its tombstone: the
