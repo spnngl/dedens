@@ -2076,7 +2076,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     wait between queries the verified TTL's half (the least of the `RRset`'s, original TTL and seconds to the
     signatures' end, D73) within 12 hours and 15 days (§2.3 floors it at an hour, as Unbound's `set_tp_times` and
     BIND's `refresh_time`: the root's TTL of 2 days makes 12 hours the floor of a cached answer only); an hour
-    after a failure (§2.3's `retryTime` floor); the default verification budget per answer; the state text 64 KiB.
+    after a failure (§2.3's `retryTime` floor); the default verification budget per answer; the state text 64 KiB, which is read and
+    written no longer (a longer one is not saved, warn!); 32 keys followed, tombstones and missing keys included
+    (RFC 5011 §2.4.3 expects a handful), a new key past it not followed, warn!.
   - `dedensd`: a validating `recurse` stage without `trust_anchors` follows the root's keys. The state is
     `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
     file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the
