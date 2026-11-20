@@ -593,7 +593,9 @@ fn lists(
     Ok(Lists::from_merged(tlds, block, allow))
 }
 
-/// The names of `sources` as one set, in the order entries, file, URLs, as [`lists`] says.
+/// The names of `sources` as one set, in the order entries, file, URLs, as [`lists`] says. A saved copy that is not
+/// what the downloader saves (D115: not text, or no list even with TLDs) is left out and its version tag removed, so
+/// that the next fetch gets the list whole rather than a 304 that keeps it out for good.
 fn side(
     stage: &str,
     sources: &Sources,
@@ -606,15 +608,23 @@ fn side(
     }
     for Url(url) in &sources.urls {
         let copy = download::copy(dir, url);
-        let not_a_list = |error: &dyn std::fmt::Display| {
+        let not_a_list = |error: &dyn std::fmt::Display, changed: bool| {
             tracing::warn!(stage, url = download::redacted(url), %error, "the saved copy is not a list");
+            if changed && let Err(error) = download::untag(&copy) {
+                tracing::warn!(
+                    stage,
+                    url = download::redacted(url),
+                    error = format!("{error:#}"),
+                    "the version tag of the saved copy not removed"
+                );
+            }
         };
         match store.saved(&copy, &download::redacted(url)) {
             Ok(saved) => match saved.check(tlds) {
                 Ok(_) => names.push(saved),
-                Err(error) => not_a_list(&error),
+                Err(error) => not_a_list(&error, saved.check(Tlds::Allow).is_err()),
             },
-            Err(Unsaved::NotText(error)) => not_a_list(&error),
+            Err(Unsaved::NotText(error)) => not_a_list(&error, true),
             Err(Unsaved::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 tracing::info!(
                     stage,
@@ -925,11 +935,18 @@ mod tests {
             "no copy yet"
         );
         let copy = download::copy(dir.path(), url);
+        let tag = download::tag(&copy);
+        // Left out, and its version tag removed: the next fetch gets the list whole, not a 304 for a copy that
+        // is not what was fetched.
         std::fs::write(&copy, "not a list: ?\n").unwrap();
+        std::fs::write(&tag, "\"v1\"").unwrap();
         assert!(read(&text, env, &Pipeline::default()).is_ok(), "no list");
+        assert!(!tag.exists(), "no list");
         // A DNS response, saved in its place: not UTF-8.
         std::fs::write(&copy, dedens_testkit::captured("a")).unwrap();
+        std::fs::write(&tag, "\"v1\"").unwrap();
         assert!(read(&text, env, &Pipeline::default()).is_ok(), "no text");
+        assert!(!tag.exists(), "no text");
         std::fs::remove_file(&copy).unwrap();
         std::fs::create_dir(&copy).unwrap();
         let refused = error(&text);

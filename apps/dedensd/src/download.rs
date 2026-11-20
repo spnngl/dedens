@@ -371,8 +371,9 @@ pub(crate) fn untag(copy: &Path) -> anyhow::Result<()> {
     let tag = tag(copy);
     let dir = copy.parent().unwrap_or(Path::new("."));
     match fs::remove_file(&tag) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => sync_dir(dir),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(()) => sync_dir(dir),
     }
     .with_context(|| format!("removing `{}`", tag.display()))
 }
