@@ -1617,6 +1617,7 @@ impl Resolution {
             Resolved::NxDomain { .. } => return self.no_address(&task.question.name),
             // A bound reached says what the lookup's place cost (its depth, its delegation's servers), not that the
             // name has no address: asked again from another place it may resolve.
+            Resolved::Failed(Failure::Limit(_)) => return,
             _ => Vec::new(),
         };
         if let Some(delegation) = self.tasks.asking() {
