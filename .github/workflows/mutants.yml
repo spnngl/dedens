@@ -126,9 +126,13 @@ jobs:
           just-version: "1.59.0"
       # The stable of rust-toolchain.toml; the pinned nightly serves no mutant.
       - run: rustup toolchain install
+      # Saved by a failing shard too (a missed mutant is the common failure, the build as good), by one shard: they
+      # share the key.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: . -> target/mutants/target
+          cache-on-failure: true
+          save-if: ${{ matrix.shard == 0 }}
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-mutants@${{ env.CARGO_MUTANTS_VERSION }},cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
