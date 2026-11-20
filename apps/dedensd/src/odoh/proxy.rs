@@ -3,6 +3,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
@@ -16,6 +18,8 @@ use dedens_net::odoh::proxy::{
 };
 use dedens_net::tls::Trust;
 use http::Response;
+
+use crate::log::Causes;
 
 /// How long a forward may take, the name's resolution, the connection and the target's response together, unless
 /// the configuration says (D94).
@@ -138,9 +142,9 @@ impl Proxy {
     ) -> Response<Vec<u8>> {
         match self.try_forward(forwarder, destination, body).await {
             Ok(response) => response,
-            Err(error) => {
-                tracing::debug!(error = error.token(), "ODoH forward failed");
-                failure(error.status(), error)
+            Err(failed) => {
+                tracing::debug!(error = %failed, "ODoH forward failed");
+                failure(failed.error.status(), failed.error)
             }
         }
     }
@@ -150,11 +154,11 @@ impl Proxy {
         forwarder: &Forwarder,
         destination: &Destination,
         body: &[u8],
-    ) -> Result<Response<Vec<u8>>, ProxyError> {
+    ) -> Result<Response<Vec<u8>>, Failed> {
         // Not a question of the target's name or port in the request, only of the list: a refused port is refused
         // as any target not listed (RFC 9230 §4.1 may refuse non-standard ports).
         if !self.settings.targets.contains(&destination.target) {
-            return Err(ProxyError::HttpRequestDenied);
+            return Err(ProxyError::HttpRequestDenied.into());
         }
         let _in_flight = forwarder
             .enter()
@@ -162,20 +166,55 @@ impl Proxy {
         let deadline = Instant::now() + self.settings.timeout;
         let addr = address(forwarder, &destination.target, deadline).await?;
         let name = destination.target.server_name();
-        let request =
-            forward_request(destination, body).map_err(|_| ProxyError::ProxyInternalError)?;
+        let request = forward_request(destination, body)
+            .map_err(|error| Failed::caused(ProxyError::ProxyInternalError, error))?;
         // The connection first, so that a timeout says which it was: the connection's or the response's.
         forwarder
             .pool
             .connect(addr, name.clone(), deadline)
             .await
-            .map_err(|error| ProxyError::of(&error, false))?;
+            .map_err(|error| Failed::caused(ProxyError::of(&error, false), error))?;
         let (head, body) = forwarder
             .pool
             .send(addr, name, &request, MAX_BODY, deadline)
             .await
-            .map_err(|error| ProxyError::of(&error, true))?;
+            .map_err(|error| Failed::caused(ProxyError::of(&error, true), error))?;
         Ok(forwarded(&head, body))
+    }
+}
+
+/// A forward that failed: the error the client is told, and for the log what caused it, which the token hides
+/// (`proxy_internal_error` for a socket the proxy cannot open as for a request it cannot make).
+#[derive(Debug)]
+struct Failed {
+    error: ProxyError,
+    cause: Option<Box<dyn Error>>,
+}
+
+impl Failed {
+    /// `error`, caused by `cause`.
+    fn caused(error: ProxyError, cause: impl Error + 'static) -> Self {
+        Self {
+            error,
+            cause: Some(Box::new(cause)),
+        }
+    }
+}
+
+impl From<ProxyError> for Failed {
+    fn from(error: ProxyError) -> Self {
+        Self { error, cause: None }
+    }
+}
+
+/// The token, then the causes: `proxy_internal_error: QUIC: cannot open a UDP socket: address in use`.
+impl fmt::Display for Failed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.error.token())?;
+        match &self.cause {
+            Some(cause) => write!(f, ": {}", Causes(cause.as_ref())),
+            None => Ok(()),
+        }
     }
 }
 
@@ -189,7 +228,7 @@ async fn address(
     forwarder: &Forwarder,
     target: &Target,
     deadline: Instant,
-) -> Result<SocketAddr, ProxyError> {
+) -> Result<SocketAddr, Failed> {
     let name = match target.host() {
         Host::Address(ip) => return Ok(SocketAddr::new(*ip, target.port().get())),
         Host::Name(name) => name,
@@ -203,10 +242,10 @@ async fn address(
     )
     .await
     .map_err(|_| ProxyError::DnsTimeout)?
-    .map_err(|_| ProxyError::DnsError)?
+    .map_err(|error| Failed::caused(ProxyError::DnsError, error))?
     .collect::<Vec<_>>();
     if resolved.is_empty() {
-        return Err(ProxyError::DnsError);
+        return Err(ProxyError::DnsError.into());
     }
     let addr = resolved
         .into_iter()
@@ -336,6 +375,28 @@ mod tests {
     }
 
     /// D94: a forward takes a place, given back when it ends, and there are `MAX_FORWARDS` of them.
+    /// A failed forward is logged with what failed, not the client's token alone: the target's address cannot be
+    /// told from a socket the proxy cannot open by `proxy_internal_error`.
+    #[test]
+    fn a_failed_forward_names_its_causes() {
+        use dedens_net::http3::Http3Error;
+        use dedens_net::quic::QuicError;
+
+        let error = Http3Error::Quic(QuicError::Bind(std::io::Error::from(
+            std::io::ErrorKind::AddrInUse,
+        )));
+        let failed = Failed::caused(ProxyError::of(&error, false), error);
+        assert_eq!(failed.error, ProxyError::ProxyInternalError);
+        assert_eq!(
+            failed.to_string(),
+            "proxy_internal_error: QUIC: cannot open a UDP socket: address in use"
+        );
+        assert_eq!(
+            Failed::from(ProxyError::DnsTimeout).to_string(),
+            "dns_timeout"
+        );
+    }
+
     #[test]
     fn forwards_in_flight_are_counted_up_to_the_most() {
         let forwarder = Forwarder::new(Trust::default());
