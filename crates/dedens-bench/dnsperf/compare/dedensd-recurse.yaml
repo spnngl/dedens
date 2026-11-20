@@ -1,0 +1,20 @@
+# dedensd for the `recurse` modes of compare.sh, shipped and lean alike: the recurse stage of deploy/dedensd.yaml's
+# defaults resolving from the root hints of the mini Internet, the bundled files only (`roots: off`: nothing fetched).
+# Rendered by compare.py as dedensd.yaml is.
+listen: ["127.0.0.1:5301"]
+downloads:
+  dir: /w/data
+roots: off
+pipeline: [cache, root]
+stages:
+  cache:
+    type: cache
+#@cache8mib     capacity: 8388608
+  root:
+    type: recurse
+    root_hints: /w/root.hints
+    # The authorities sit on loopback: the one line to set when the recurse stage refuses private addresses (fixes/resolver).
+    # query_local_addresses: true
+#@cache8mib     rrset_cache_bytes: 4194304
+    dnssec: @DNSSEC@
+#@dnssec     trust_anchors: /w/anchors.zone

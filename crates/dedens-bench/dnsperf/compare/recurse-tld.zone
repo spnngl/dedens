@@ -1,0 +1,9 @@
+; The one TLD of the mini Internet (compare.sh): delegates the signed zone the corpus lives in, with glue.
+$ORIGIN bench.
+$TTL 3600
+@               SOA   ns.nic.bench. hostmaster.bench. 1 3600 900 604800 3600
+@               NS    ns.nic.bench.
+ns.nic          A     127.0.0.3
+recurse         NS    ns.recurse.bench.
+ns.recurse      A     127.0.0.4
+#@dnssec recurse         DS    @DS@

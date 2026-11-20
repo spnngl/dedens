@@ -1,0 +1,9 @@
+; The zone the `recurse` corpus lives in (compare.sh): a wildcard answers any name, as the root zone of the forward
+; modes does.
+$ORIGIN recurse.bench.
+$TTL 3600
+@               SOA   ns.recurse.bench. hostmaster.recurse.bench. 1 3600 900 604800 3600
+@               NS    ns.recurse.bench.
+ns              A     127.0.0.4
+*               A     198.18.0.1
+*               AAAA  2001:2::1

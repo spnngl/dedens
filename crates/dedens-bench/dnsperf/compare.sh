@@ -4,8 +4,10 @@
 # (the working tree's dedensd, the others at the versions below), then compare/compare.py measures and prints a
 # table per configuration (shipped, lean), and writes target/compare/results/<time>-<mode>.json.
 # Modes: udp, tcp, dot (from the cache); forward, forward-tcp (the cache-hot names from a cold cache); miss (unique
-# names, each upstream); dnssec (miss, validated); blocked (the 1M-name list); crosscheck (TelltaleDNS's own
-# `bench/run.sh smoke --target` against dedensd, once). `cores` (1): the server's cores, 0 to cores-1; Knot on
+# names, each upstream); dnssec (miss, validated); blocked (the 1M-name list); recurse, recurse-dnssec (unique
+# names resolved from the root hints of a mini Internet of three Knot authorities on 127.0.0.2-4:53, which needs
+# `net.ipv4.ip_unprivileged_port_start` at 53 or less; dedensd and Unbound only, D201); crosscheck (TelltaleDNS's
+# own `bench/run.sh smoke --target` against dedensd, once). `cores` (1): the server's cores, 0 to cores-1; Knot on
 # the last core, dnsperf on those between, unless DEDENS_SERVER_CPUS, DEDENS_KNOT_CPUS or DEDENS_LOAD_CPUS say.
 # DEDENS_CONTAINER: the engine (docker; podman). DEDENS_ROUNDS (2), DEDENS_DURATION (10, seconds a run),
 # DEDENS_SERVERS ("dedensd telltale unbound coredns"; a name twice for an A/A run, `dedensd-8mib` for dedensd on an
@@ -19,8 +21,8 @@ set -euo pipefail
 mode="${1:?usage: compare.sh <mode> [cores]}"
 cores="${2:-1}"
 case $mode in
-    udp | tcp | dot | forward | forward-tcp | miss | dnssec | blocked | crosscheck) ;;
-    *) echo "unknown mode $mode: udp, tcp, dot, forward, forward-tcp, miss, dnssec, blocked or crosscheck" >&2; exit 2 ;;
+    udp | tcp | dot | forward | forward-tcp | miss | dnssec | blocked | recurse | recurse-dnssec | crosscheck) ;;
+    *) echo "unknown mode $mode: udp, tcp, dot, forward, forward-tcp, miss, dnssec, blocked, recurse, recurse-dnssec or crosscheck" >&2; exit 2 ;;
 esac
 [[ $(uname) == Linux ]] || { echo "compare.sh measures Linux servers (io_uring, cgroups): run it on Linux" >&2; exit 2; }
 
