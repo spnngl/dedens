@@ -699,7 +699,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     decryption, not a sealed REFUSED, in UDP, at the TCP accept and for each message. A packet is for the key pair of
     its first eight bytes; with none it is a certificate query if it is a query for the provider name (TXT, IN, QR
     clear, one question), answered in the clear outside the pipeline, so with no rate limit (D113) but the access
-    check: two certificates fit in under 512 bytes, as the test asserts; anything else, a tag that fails or a low-order key is dropped without a word. The decrypted
+    check: two certificates fit in under 512 bytes, as the test asserts; anything else, a tag that fails or a low-order key is dropped without a word,
+    and so is a query that opens to no DNS message (`Query::read` fails), which the pipeline would answer FORMERR: the
+    draft says "MUST be ignored" ("Client Queries Over UDP" and "Over TCP"). The decrypted
     query goes through the pipeline with the peer's address, as UDP or TCP by the carrier, and its reply is sealed within the
     carrier's budget (D97: for UDP, the query packet's length, with TC when records were left out); no randomness is
     no reply. An upstream answer arrives later and is sealed with the context of its query.
