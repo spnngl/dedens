@@ -315,18 +315,18 @@ impl Pipeline {
             return Step::Drop;
         }
         // The cookie is checked first, which costs a hash only for a Server Cookie, and made last, only for a query
-        // that is answered: a flood that is dropped makes none.
+        // that is answered: a flood that is dropped makes none. Both share one reading of the clock.
         let request = self.request_cookie(&query);
-        let standing = self.cookies.as_ref().map_or(Standing::NoCookie, |cookies| {
+        let mut cookies = self.cookies.as_ref().map(Cookies::reading);
+        let standing = cookies.as_mut().map_or(Standing::NoCookie, |cookies| {
             cookies.verify(request.as_ref(), from)
         });
         let admission = self.admit(transport, from, now, standing);
         if admission == Admission::Drop {
             return Step::Drop;
         }
-        let fresh = self
-            .cookies
-            .as_ref()
+        let fresh = cookies
+            .as_mut()
             .zip(request)
             .map(|(cookies, request)| cookies.issue(request.client(), from));
         let client = Client::of(&query, transport).with_cookie(fresh);

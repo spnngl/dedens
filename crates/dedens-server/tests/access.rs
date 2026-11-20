@@ -732,6 +732,7 @@ mod cookies {
 
     use std::net::IpAddr;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use dedens_proto::edns::{Cookie, Edns, EdnsOption};
     use dedens_proto::{Message, Rcode, Transport};
@@ -838,6 +839,34 @@ mod cookies {
                 "the same time, the same cookie"
             );
             assert_eq!(decode(&answer).rcode(), Rcode::NOERROR);
+        }
+    }
+
+    /// A query reads the clock once, for the check of its Server Cookie and the one made for its reply alike; one
+    /// without a cookie reads it not.
+    #[test]
+    fn a_query_reads_the_clock_once() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&reads);
+        let clock: Clock = Arc::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+            NOW
+        });
+        let secret: Secret = "e5e973e5a6b2a43f48e7dc849e37bfcf"
+            .parse()
+            .expect("a secret");
+        let pipeline = caching().with_cookies(Cookies::new(Secrets::new(secret, vec![]), clock));
+        let issued = cookies().issue(CLIENT, LOOPBACK);
+        let response = captured("a");
+        for (sent, expected) in [
+            (with_cookie(query("a", 7), &issued), 1),
+            (with_cookie(query("a", 7), &client_only()), 1),
+            (wire(&query("a", 7)), 0),
+        ] {
+            reads.store(0, Ordering::Relaxed);
+            let answer = reply(&pipeline, &sent, Transport::Udp, Some(&response));
+            assert_eq!(decode(&answer).rcode(), Rcode::NOERROR);
+            assert_eq!(reads.load(Ordering::Relaxed), expected);
         }
     }
 

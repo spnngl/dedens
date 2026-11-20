@@ -158,20 +158,9 @@ impl Cookies {
     }
 
     /// The Server Cookie for `client`, the Client Cookie of a query from `from`, stamped now (RFC 9018 §4).
-    ///
-    /// # Panics
-    ///
-    /// Never: a 16-byte Server Cookie is a valid length.
     #[must_use]
     pub fn issue(&self, client: [u8; 8], from: IpAddr) -> Cookie {
-        let stamp = low32((self.clock)());
-        let fields = [VERSION, 0, 0, 0];
-        let hash = mac(&self.secrets.current, client, fields, stamp, from);
-        let mut server = [0; SERVER_LEN];
-        server[..4].copy_from_slice(&fields);
-        server[4..8].copy_from_slice(&stamp.to_be_bytes());
-        server[8..].copy_from_slice(&hash);
-        Cookie::new(client, Some(&server)).expect("a Server Cookie of 16 bytes is valid")
+        self.reading().issue(client, from)
     }
 
     /// What `cookie`, the first COOKIE option of a query from `from`, if any, says (RFC 7873 §5.2), counted.
@@ -181,12 +170,55 @@ impl Cookies {
     /// timestamp as received (they are not required to be zero, §4.2) and the address, under a secret (§4.4).
     #[must_use]
     pub fn verify(&self, cookie: Option<&Cookie>, from: IpAddr) -> Standing {
+        self.reading().verify(cookie, from)
+    }
+
+    /// The cookies of one query, which share one reading of the clock.
+    pub(crate) const fn reading(&self) -> Reading<'_> {
+        Reading {
+            cookies: self,
+            seconds: None,
+        }
+    }
+}
+
+/// [`Cookies`] for one query: the clock is read once, when first needed, so that the check of its cookie and the
+/// one made for its reply cost one reading, and a query that needs none reads it not.
+pub(crate) struct Reading<'a> {
+    cookies: &'a Cookies,
+    seconds: Option<u64>,
+}
+
+impl Reading<'_> {
+    /// The clock's seconds, read the first time.
+    fn seconds(&mut self) -> u64 {
+        *self.seconds.get_or_insert_with(|| (self.cookies.clock)())
+    }
+
+    /// [`Cookies::issue`] at this reading.
+    ///
+    /// # Panics
+    ///
+    /// Never: a 16-byte Server Cookie is a valid length.
+    pub(crate) fn issue(&mut self, client: [u8; 8], from: IpAddr) -> Cookie {
+        let stamp = low32(self.seconds());
+        let fields = [VERSION, 0, 0, 0];
+        let hash = mac(&self.cookies.secrets.current, client, fields, stamp, from);
+        let mut server = [0; SERVER_LEN];
+        server[..4].copy_from_slice(&fields);
+        server[4..8].copy_from_slice(&stamp.to_be_bytes());
+        server[8..].copy_from_slice(&hash);
+        Cookie::new(client, Some(&server)).expect("a Server Cookie of 16 bytes is valid")
+    }
+
+    /// [`Cookies::verify`] at this reading.
+    pub(crate) fn verify(&mut self, cookie: Option<&Cookie>, from: IpAddr) -> Standing {
         let standing = self.standing(cookie, from);
-        self.counted.count(standing);
+        self.cookies.counted.count(standing);
         standing
     }
 
-    fn standing(&self, cookie: Option<&Cookie>, from: IpAddr) -> Standing {
+    fn standing(&mut self, cookie: Option<&Cookie>, from: IpAddr) -> Standing {
         let Some(cookie) = cookie else {
             return Standing::NoCookie;
         };
@@ -200,7 +232,7 @@ impl Cookies {
         };
         let stamp = u32::from_be_bytes([t0, t1, t2, t3]);
         // Serial arithmetic (RFC 1982): a difference above 2^31 is negative, the timestamp ahead of us.
-        let age = low32((self.clock)()).wrapping_sub(stamp).cast_signed();
+        let age = low32(self.seconds()).wrapping_sub(stamp).cast_signed();
         if version != VERSION || !(-MAX_AHEAD..=MAX_AGE).contains(&age) {
             return Standing::Invalid;
         }
@@ -211,7 +243,7 @@ impl Cookies {
             let expected = mac(secret, client, fields, stamp, from);
             bool::from(hash.as_slice().ct_eq(expected.as_slice()))
         };
-        let Secrets { current, accepted } = &self.secrets;
+        let Secrets { current, accepted } = &self.cookies.secrets;
         if verifies(current) || accepted.iter().any(verifies) {
             Standing::Valid
         } else {
