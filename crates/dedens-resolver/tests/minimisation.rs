@@ -197,13 +197,23 @@ fn rfc8020_2_strict_ends_on_nxdomain_for_a_minimised_name() {
 
 #[test]
 fn d198_relaxed_asks_the_full_name_after_a_refused_minimised_question() {
-    // Changed: jabber.org's server refuses the empty non-terminal. Relaxed, the full name is asked of it; strict,
-    // the minimised question goes to the next server, which the capture never asked.
+    // Changed: jabber.org's server refuses the empty non-terminal. Relaxed, the full name is asked of it, but after
+    // the zone's other server, glueless, is looked up (its AAAA, which the capture never asked): the full name does
+    // not go back to the server that refused at once; strict, the minimised question goes to the next server.
     let capture = minimised("ent");
     let change = ent_answering(Rcode::REFUSED);
     let (relaxed, sent) = resolve(&capture, Minimisation::Relaxed, Limits::default(), &change);
     assert!(matches!(relaxed, Resolved::Answer { .. }), "{relaxed:?}");
-    assert_eq!(sent, recorded(&capture));
+    let at = |wanted: RecordType| sent.iter().position(|(_, _, rtype)| *rtype == wanted);
+    let looked_up = at(RecordType::AAAA).expect("the other server looked up");
+    assert!(Some(looked_up) < at(RecordType::SRV), "{sent:?}");
+    let asked = |sent: &[Sent]| {
+        let asked = sent
+            .iter()
+            .filter(|(_, _, rtype)| *rtype != RecordType::AAAA);
+        asked.cloned().collect::<Vec<_>>()
+    };
+    assert_eq!(asked(&sent), recorded(&capture));
     let (strict, sent) = resolve(&capture, Minimisation::Strict, Limits::default(), &change);
     assert!(matches!(strict, Resolved::Failed(_)), "{strict:?}");
     assert!(
