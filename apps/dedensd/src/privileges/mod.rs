@@ -162,6 +162,14 @@ pub(crate) fn plan(
             bail!("`user` {user} has no entry to take its group from: set `group`")
         }
     };
+    if !root {
+        ensure!(
+            member.uid == current.uid && gid == current.gid,
+            "`user` {user} needs a server started as root: it runs as uid {} and gid {}",
+            current.uid,
+            current.gid
+        );
+    }
     // Root or not: a process already running as the user and a group root is refused too (D122).
     ensure!(
         member.uid != 0,
@@ -174,16 +182,11 @@ pub(crate) fn plan(
             "the group of `user` {user} is root (gid 0): set `group`"
         ),
     }
-    if !root {
-        ensure!(
-            member.uid == current.uid && gid == current.gid,
-            "`user` {user} needs a server started as root: it runs as uid {} and gid {}",
-            current.uid,
-            current.gid
-        );
-        return Ok(Plan::Already);
-    }
-    Ok(Plan::Drop { user: member, gid })
+    Ok(if root {
+        Plan::Drop { user: member, gid }
+    } else {
+        Plan::Already
+    })
 }
 
 /// [`plan`] for the process and the system it runs on.
