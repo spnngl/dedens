@@ -156,14 +156,14 @@ fn draft_examples_of_other_kinds_are_refused_naming_the_kind() {
 
 #[test]
 fn the_draft_doh_example_with_hashes_is_not_canonical_base64url_and_is_refused() {
-    // Appendix B.2 is `DoH`, so refused as a kind, but its text is no one payload'"'"'s canonical form: the unused bits of
+    // Appendix B.2 is `DoH`, so refused as a kind, but its text is no one payload's canonical form: the unused bits of
     // its last character are not zero, so it is refused as base64url, before its kind is read (an erratum of the
-    // draft). With the bits cleared, the draft'"'"'s own payload is refused by kind.
+    // draft). With the bits cleared, the draft's own payload is refused by kind.
     let text = "sdns://AgAAAAAAAAAAACCRERERERERERERERERERERERERERERERERERERERERESAiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiD2Rucy5leGFtcGxlLmNvbQovZG5zLXF1ZXJ5";
     assert_eq!(text.parse::<Stamp>(), Err(StampError::Base64));
     let body = &text[..text.len() - 1];
     let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    // Of the 64 last characters, the 4 that have the draft'"'"'s other bits and zero unused ones read as `DoH`.
+    // Of the 64 last characters, the 4 that have the draft's other bits and zero unused ones read as `DoH`.
     let read: Vec<StampError> = alphabet
         .chars()
         .filter_map(|c| format!("{body}{c}").parse::<Stamp>().err())
