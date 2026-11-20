@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crate::loopback::{accept, receive};
+
 /// The length of the prefix: the magic, the address and the port.
 const PREFIX_LEN: usize = 28;
 
@@ -97,7 +99,8 @@ impl Relay {
         let counted = Arc::clone(&seen);
         thread::spawn(move || {
             let mut buf = vec![0; usize::from(u16::MAX)];
-            while let Ok((len, from)) = udp.recv_from(&mut buf) {
+            loop {
+                let (len, from) = receive(&udp, &mut buf);
                 counted.0.fetch_add(1, Ordering::SeqCst);
                 if let Some(reply) = pass(&buf[..len]) {
                     let _ = udp.send_to(&reply, from);
@@ -106,7 +109,8 @@ impl Relay {
         });
         let counted = Arc::clone(&seen);
         thread::spawn(move || {
-            for stream in tcp.incoming().flatten() {
+            loop {
+                let stream = accept(&tcp);
                 let counted = Arc::clone(&counted);
                 thread::spawn(move || pass_tcp(stream, &counted.1));
             }

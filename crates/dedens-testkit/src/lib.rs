@@ -14,6 +14,8 @@
 #[cfg(feature = "certificates")]
 pub mod certificates;
 pub mod dnssec;
+#[cfg(feature = "responder")]
+mod loopback;
 #[cfg(feature = "recursion")]
 pub mod recursion;
 #[cfg(feature = "responder")]

@@ -8,7 +8,7 @@
 //! times, the questions in flight the validator shares). A test of the library's own timers runs on `dedens-sim`'s
 //! clock instead (D133).
 
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
@@ -26,6 +26,7 @@ use dedens_proto::{Message, Name, RecordType, Ttl};
 use tempfile::NamedTempFile;
 
 use crate::certificates;
+use crate::loopback::{accept, receive};
 
 /// The transport a query came over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +229,8 @@ impl Responder {
         // A thread per connection: on Linux each `dedensd` thread opens its own, and one kept open must not hold up
         // the others.
         thread::spawn(move || {
-            for stream in tcp.incoming().flatten() {
+            loop {
+                let stream = accept(&tcp);
                 let upstream = Arc::clone(&upstream);
                 thread::spawn(move || serve_stream(stream, Transport::Tcp, &upstream));
             }
@@ -290,7 +292,8 @@ impl Responder {
         };
         let upstream = Arc::clone(&responder.upstream);
         thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
+            loop {
+                let stream = accept(&listener);
                 let upstream = Arc::clone(&upstream);
                 let connection = ServerConnection::new(Arc::clone(&config)).expect("a TLS session");
                 thread::spawn(move || {
@@ -516,27 +519,6 @@ impl Responder {
             }
         });
         responder
-    }
-}
-
-/// The next datagram on `socket`, in `buf`: its length and sender. An interrupted receive, or the error of an earlier
-/// datagram some systems report (the ICMP error a reply to a client gone brings back), is skipped.
-///
-/// # Panics
-///
-/// On another error: the server would stop answering, and the test waiting on it would time out with no cause.
-fn receive(socket: &UdpSocket, buf: &mut [u8]) -> (usize, SocketAddr) {
-    loop {
-        match socket.recv_from(buf) {
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::Interrupted
-                        | ErrorKind::ConnectionReset
-                        | ErrorKind::ConnectionRefused
-                ) => {}
-            received => return received.expect("the responder's UDP socket receives"),
-        }
     }
 }
 
