@@ -21,6 +21,7 @@ use dedens_net::quic::RECEIVE_WINDOW;
 
 use super::TCP_IDLE;
 use super::isolate::Origin;
+use super::quic::Activity;
 
 /// The bytes an HTTP/3 connection may receive before `GOAWAY`: 4 MiB, some 25 000 `DoH` GETs of 170 bytes (measured
 /// in `tests/doh.rs`), so a client at 1 000 queries a second changes connection every 25 s. It is the memory an
@@ -44,10 +45,8 @@ pub(super) struct Budget {
     peer: SocketAddr,
     /// When the connection passed [`BUDGET`]: it is being sent `GOAWAY`.
     passed: Cell<Option<Instant>>,
-    /// Requests being answered, each holding a [`Flight`].
-    flights: Cell<usize>,
-    /// When the last [`Flight`] ended, or the connection was registered.
-    landed: Cell<Instant>,
+    /// The requests being answered, from when the connection was registered.
+    activity: Rc<Activity>,
 }
 
 impl Budget {
@@ -56,21 +55,9 @@ impl Budget {
         self.passed.get().is_some()
     }
 
-    /// Whether no request is being answered.
-    pub(super) fn quiet(&self) -> bool {
-        self.flights.get() == 0
-    }
-
-    /// When the last request being answered ended, its reply sent or given up, or else when the connection was
-    /// registered: an HTTP/3 connection's idle time counts from it too (D84).
-    pub(super) fn landed(&self) -> Instant {
-        self.landed.get()
-    }
-
-    /// A request taken: held until it is answered, it keeps the budget checked.
-    pub(super) fn fly(self: &Rc<Self>) -> Flight {
-        self.flights.set(self.flights.get() + 1);
-        Flight(Rc::clone(self))
+    /// The requests being answered: their [`Flight`](super::quic::Flight)s, and when the last one ended.
+    pub(super) fn activity(&self) -> &Rc<Activity> {
+        &self.activity
     }
 
     /// Closes the connection for taking more than its budget.
@@ -99,16 +86,6 @@ impl Budget {
     }
 }
 
-/// A request being answered on a connection with a [`Budget`].
-pub(super) struct Flight(Rc<Budget>);
-
-impl Drop for Flight {
-    fn drop(&mut self) {
-        self.0.flights.set(self.0.flights.get() - 1);
-        self.0.landed.set(Instant::now());
-    }
-}
-
 /// The HTTP/3 connections of one thread that are checked.
 #[derive(Default)]
 pub(super) struct Connections {
@@ -126,8 +103,7 @@ impl Connections {
             connection,
             peer: origin.peer,
             passed: Cell::new(None),
-            flights: Cell::new(0),
-            landed: Cell::new(Instant::now()),
+            activity: Rc::new(Activity::new()),
         });
         self.list.borrow_mut().push(Rc::downgrade(&budget));
         if !self.sweeping.replace(true) {

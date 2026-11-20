@@ -69,16 +69,16 @@ pub(super) async fn requests(
         let wait = if going_away.is_some() {
             DRAIN_TICK
         } else {
-            idle_left(taken, budget)
+            budget.activity().idle_left(taken)
         };
         match compio::time::timeout(wait, requests.accept()).await {
             Ok(Ok(Some(pending))) => {
-                let (path, thread, flight) = (Arc::clone(path), Rc::clone(thread), budget.fly());
-                let slot = Rc::clone(slot);
+                let (path, thread) = (Arc::clone(path), Rc::clone(thread));
+                // The budget too: the connection's bytes are checked until its last request ends.
+                let held = (budget.activity().fly(), Rc::clone(budget), Rc::clone(slot));
                 origin.clone().spawn(&Compio, async move {
                     request(pending, &path, peer, &thread).await;
-                    drop(flight);
-                    drop(slot);
+                    drop(held);
                 });
                 taken = Instant::now();
                 if let Some(last) = &mut going_away {
@@ -88,31 +88,23 @@ pub(super) async fn requests(
             Ok(Err(error)) => return tracing::debug!(%peer, %error, "HTTP/3 connection ended"),
             Ok(Ok(None)) if going_away.is_none() => return,
             Err(_) if going_away.is_none() => {
-                if idle_left(taken, budget).is_zero() {
+                if budget.activity().idle_left(taken).is_zero() {
                     return tracing::debug!(%peer, "HTTP/3 connection idle");
                 }
             }
             // After `GOAWAY`, h3 ends `accept` once the client did too: a request it sent before it heard of
             // `GOAWAY` may still come, to be refused, and dropping `requests` closes the connection.
             Ok(Ok(None)) | Err(_) => {
-                let quiet_since = going_away.map(|last| last.max(budget.landed()));
-                if budget.quiet() && quiet_since.is_some_and(|since| since.elapsed() >= DRAIN_QUIET)
+                let activity = budget.activity();
+                let quiet_since = going_away.map(|last| last.max(activity.landed()));
+                if activity.quiet()
+                    && quiet_since.is_some_and(|since| since.elapsed() >= DRAIN_QUIET)
                 {
                     return tracing::debug!(%peer, "HTTP/3 connection drained");
                 }
                 compio::time::sleep(DRAIN_TICK).await;
             }
         }
-    }
-}
-
-/// What is left of the idle time of a connection whose last request was taken at `taken`: all of [`TCP_IDLE`] while
-/// a request is being answered, else what [`TCP_IDLE`] leaves from the later of `taken` and the last reply (D84).
-fn idle_left(taken: Instant, budget: &Budget) -> Duration {
-    if budget.quiet() {
-        TCP_IDLE.saturating_sub(taken.max(budget.landed()).elapsed())
-    } else {
-        TCP_IDLE
     }
 }
 

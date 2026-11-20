@@ -303,6 +303,75 @@ fn a_quic_connection_without_a_query_is_closed_though_pinged() {
     });
 }
 
+/// `dedensd` answering over QUIC with the certificate of `certificates`, forwarding to `upstream` with 15 s for an
+/// answer: one later than the idle time comes.
+fn patient(certificates: &Certificates, upstream: SocketAddr) -> Server {
+    let (certificate, key) = write_pems(certificates, &write_config(""));
+    Server::configured(|listen| {
+        format!(
+            "listen: ['quic://{listen}']\ntls:\n  certificate: '{}'\n  key: '{}'\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 15000\n    tries: 1\n",
+            certificate.display(),
+            key.display()
+        )
+    })
+}
+
+/// The reply on a new stream of `connection` to the `framed` query.
+async fn on_new_stream(connection: &Connection, framed: Vec<u8>) -> Message<'static> {
+    let (mut send, mut recv) = connection.open_bi_wait().await.expect("a stream");
+    send.write_all(framed).await.0.expect("the query sent");
+    send.finish().expect("finished");
+    decode(&read_message(&mut recv).await.expect("a reply"))
+}
+
+/// D47: a QUIC connection waiting for an answer is not idle: a stream its client opens past the idle time since the
+/// last one, while the upstream is still to answer, is taken and answered.
+#[test]
+fn a_quic_connection_waiting_for_an_answer_takes_new_streams() {
+    let upstream = Responder::delayed(&["a"], Duration::from_secs(12));
+    let ca = certificates();
+    let server = patient(&ca, upstream.addr);
+    Runtime::new().expect("a runtime").block_on(async {
+        let connection = pinging(server.addr, &ca, 1 << 20).await;
+        let slow = on_new_stream(&connection, framed(&query_for("a", 0)));
+        let late = async {
+            compio::time::sleep(Duration::from_millis(10_500)).await;
+            // A header counting a question and carrying none: the server answers FORMERR itself, at once.
+            let late = compio::time::timeout(
+                Duration::from_secs(1),
+                on_new_stream(&connection, framed(&query_for("a", 0)[..12])),
+            );
+            late.await.expect("answered at once")
+        };
+        let (slow, late) = futures_util::join!(slow, late);
+        assert_eq!(late.rcode(), Rcode::FORMERR);
+        assert_eq!(slow.rcode(), Rcode::NOERROR);
+    });
+}
+
+/// D47, D84: the idle time of a QUIC connection counts from its last reply too: a connection whose query is answered
+/// 5 s late is closed 10 s after the reply, not 10 s after the query.
+#[test]
+fn a_quic_connection_idles_from_its_last_reply() {
+    let upstream = Responder::delayed(&["a"], Duration::from_secs(5));
+    let ca = certificates();
+    let server = patient(&ca, upstream.addr);
+    Runtime::new().expect("a runtime").block_on(async {
+        let connection = pinging(server.addr, &ca, 1 << 20).await;
+        let reply = on_new_stream(&connection, framed(&query_for("a", 0))).await;
+        assert_eq!(reply.rcode(), Rcode::NOERROR);
+        let answered = Instant::now();
+        compio::time::timeout(Duration::from_secs(20), connection.closed())
+            .await
+            .expect("closed by the server");
+        let idle = answered.elapsed();
+        assert!(
+            (9..13).contains(&idle.as_secs()),
+            "closed {idle:?} after the reply"
+        );
+    });
+}
+
 /// RFC 9250 §4.2.1, §4.3.3: a query with a Message ID other than 0 is a protocol error: no reply, and the connection is
 /// closed with `DOQ_PROTOCOL_ERROR`, 2.
 #[test]
