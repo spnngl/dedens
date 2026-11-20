@@ -265,14 +265,14 @@ struct Charging {
 impl Charging {
     /// Charges what the validation of `resolution` cost since the last time: its questions and its work. Tells how
     /// it ends when it may ask no more, still validating: past `Allowance::per_query` it is indeterminate, and with
-    /// the allowance or the share in debt it is shed, as a forward stage's validation is (D106).
-    fn charge(&mut self, resolution: &Resolution, validating: bool) -> Option<Ended> {
+    /// the allowance or the share in debt at second `now` it is shed, as a forward stage's validation is (D106).
+    fn charge(&mut self, resolution: &Resolution, validating: bool, now: u32) -> Option<Ended> {
         let cost = resolution.validation_cost()?;
         let spent = u32::try_from(cost.questions)
             .unwrap_or(u32::MAX)
             .saturating_add(work(cost));
         let validation = &self.validating;
-        validation.charge(self.payer, spent.saturating_sub(self.charged));
+        validation.charge(self.payer, spent.saturating_sub(self.charged), now);
         self.charged = spent;
         if !validating {
             None
@@ -280,7 +280,7 @@ impl Charging {
             let failure = Failure::Indeterminate(InfoCode::DNSSEC_INDETERMINATE);
             Some(Ended::Resolved(Resolved::Failed(failure)))
         } else {
-            validation.shed(self.payer).then_some(Ended::Shed)
+            validation.shed(self.payer, now).then_some(Ended::Shed)
         }
     }
 }
@@ -383,7 +383,7 @@ impl Resolving {
         let over = self
             .validation
             .as_mut()
-            .and_then(|charging| charging.charge(resolution, done.is_none()));
+            .and_then(|charging| charging.charge(resolution, done.is_none(), secs(now)));
         let ended = match done {
             _ if over.is_some() => over,
             Some(resolved) => Some(Ended::Resolved(resolved)),

@@ -858,7 +858,7 @@ impl Pipeline {
                 None
             };
             if let Some(mut check) = check {
-                match check.next(validating) {
+                match check.next(validating, now) {
                     Progress::Ask => {
                         // The next question goes to the server that answered the last: one that failed is not
                         // tried again, so a dead server costs one query's patience, not each question's.
