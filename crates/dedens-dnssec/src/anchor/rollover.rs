@@ -128,8 +128,14 @@ impl Rollover {
     /// `refresh_time` cap it. The root's TTL of 2 days never reaches it, so no answer of the root's does in a test.
     pub const QUERY_CEILING: u64 = 1_296_000;
 
-    /// The longest text [`Rollover::read`] reads, 64 KiB: a DNSKEY `RRset` fits in a message of that size, and
-    /// the root's holds four keys or fewer.
+    /// The most keys followed, 32: RFC 5011 §2.4.3 expects a handful, the root's holds four or fewer, and the keys
+    /// missing or revoked, kept, add up. A new key past it is not followed ([`Rollover::is_full`]), so that the
+    /// text stays within [`Rollover::MAX_LEN`] for keys of any usual size.
+    pub const MAX_KEYS: usize = 32;
+
+    /// The longest text [`Rollover::read`] reads, 64 KiB, and a server writes: the text of a key is its base64 and
+    /// its state, over a third more than its wire form, so a DNSKEY `RRset` that fits in a message of that size
+    /// may not fit in a text of it. [`Rollover::MAX_KEYS`] keeps it within for keys of any usual size.
     pub const MAX_LEN: usize = 64 << 10;
 
     /// The keys `anchors` trusts at the root, followed from `records`, which must hold the root's DNSKEY `RRset`
@@ -185,7 +191,7 @@ impl Rollover {
         let mut rollover = Self { keys: revoked };
         for key in dnskeys {
             let key = unrevoked(key);
-            if !rollover.keys.iter().any(|tracked| tracked.key == key) {
+            if !rollover.is_full() && !rollover.keys.iter().any(|tracked| tracked.key == key) {
                 rollover.keys.push(Tracked {
                     key,
                     state: KeyState::Valid,
@@ -224,7 +230,8 @@ impl Rollover {
     /// First, each key followed whose revoked form is in the `RRset` and signs it is revoked (§2.1), whatever
     /// else signs it. Then the `RRset` must be signed by a trusted key; if so, each key is updated: a new key,
     /// a secure entry point of a supported algorithm, waits [`Rollover::ADD_HOLD_DOWN`] (or the TTL when longer)
-    /// and is valid when seen after that; one gone before is dropped. A valid key gone is missing, a missing key
+    /// and is valid when seen after that, unless [`Rollover::MAX_KEYS`] keys are followed; one gone before is
+    /// dropped. A valid key gone is missing, a missing key
     /// back is valid, and a missing key is dropped after [`Rollover::KEEP_MISSING`] when another is valid. A
     /// revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver forget it after
     /// the remove hold-down, but a stale anchor it is seeded with would trust it again (§2.1, §4).
@@ -313,6 +320,9 @@ impl Rollover {
             if self.keys.iter().any(|tracked| tracked.key == dnskey) {
                 continue;
             }
+            if self.is_full() {
+                break;
+            }
             let state = if digested(&ds, key.dnskey()) {
                 KeyState::Valid
             } else {
@@ -325,6 +335,12 @@ impl Rollover {
         self.sort();
         let half = u64::from(verified.ttl.get()) / 2;
         Ok(half.clamp(Self::QUERY_FLOOR, Self::QUERY_CEILING))
+    }
+
+    /// Whether [`Rollover::MAX_KEYS`] keys are followed: a new key is not.
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        self.keys.len() >= Self::MAX_KEYS
     }
 
     /// Each key followed, without its revoke bit, and its state.

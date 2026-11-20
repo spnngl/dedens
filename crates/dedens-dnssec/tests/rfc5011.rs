@@ -347,6 +347,59 @@ fn rfc5011_s2_1_revoked_keys_alone_are_a_state_that_filters_other_anchors() {
     assert_eq!((left.ds().len(), left.dnskeys().len()), (0, 0));
 }
 
+/// The text of a state of `count` valid keys: KSK-2010, then its key under other algorithm numbers (keys no answer
+/// of the root's signs, which only the bound is tried with).
+fn many_keys(count: u8) -> String {
+    let k2010 = dnskey(&december_2018(), 19036).to_string();
+    let others = (100..).take(usize::from(count) - 1).map(|algorithm| {
+        let (flags, public) = k2010.split_once(" 3 8 ").expect("a DNSKEY");
+        format!("valid {flags} 3 {algorithm} {public}\n")
+    });
+    let others: String = others.collect();
+    format!("dedens rfc5011 1\nvalid {k2010}\n{others}end\n")
+}
+
+/// A bound on the keys followed: a new key of a verified `RRset` past it is not followed, a key already followed
+/// still is, and the text of a state at it is read.
+#[test]
+fn rfc5011_s2_4_3_the_keys_followed_are_bounded() {
+    let max = u8::try_from(Rollover::MAX_KEYS).expect("a small bound");
+    let text = many_keys(max);
+    assert!(text.len() < Rollover::MAX_LEN);
+    let mut rollover = Rollover::read(&text).expect("a state at the bound");
+    assert!(rollover.is_full());
+    // KSK-2017 signs and is new: not followed, the keys are the same.
+    rollover
+        .observe(&july_2017(), JULY_2017)
+        .expect("KSK-2010 signs");
+    assert_eq!(rollover.keys().count(), Rollover::MAX_KEYS);
+    assert!(states(&rollover).iter().all(|&(tag, _)| tag != 20326));
+    assert!(trusted(&rollover).contains(&19036));
+
+    // One key fewer: it is room for KSK-2017.
+    let mut rollover = Rollover::read(&many_keys(max - 1)).expect("a state under the bound");
+    assert!(!rollover.is_full());
+    rollover
+        .observe(&july_2017(), JULY_2017)
+        .expect("KSK-2010 signs");
+    assert!(rollover.is_full());
+    assert!(states(&rollover).iter().any(|&(tag, _)| tag == 20326));
+
+    // Seeded by more DNSKEY anchors than the bound: the first ones.
+    let key = dnskey(&december_2018(), 19036).to_string();
+    let (flags, public) = key.split_once(" 3 8 ").expect("a DNSKEY");
+    let anchored: String = (100..200)
+        .map(|algorithm| format!(". IN DNSKEY {flags} 3 {algorithm} {public}\n"))
+        .collect();
+    let (seeded, _) = Rollover::seed(
+        &anchors(&format!("{DS_2010}{anchored}")),
+        &july_2017(),
+        JULY_2017,
+    )
+    .expect("KSK-2010 by its DS");
+    assert_eq!(seeded.keys().count(), Rollover::MAX_KEYS);
+}
+
 // --- RFC 5011 §4: missing keys ---
 
 #[test]

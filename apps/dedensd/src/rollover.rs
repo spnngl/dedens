@@ -245,11 +245,24 @@ impl Kept {
             Some((_, before)) => *before != after,
             None => !rollover.agrees(seed),
         };
+        if rollover.is_full() {
+            tracing::warn!(
+                max = Rollover::MAX_KEYS,
+                "the root keys followed by RFC 5011 are at the most: a new key is not followed"
+            );
+        }
         let path = state_dir.join(STATE);
-        if before.is_none_or(|(before, _)| before != text)
-            && let Err(error) = download::replace(&path, text)
-        {
-            tracing::warn!(path = %path.display(), %error, "the state of the root keys followed not saved");
+        if before.is_none_or(|(before, _)| before != text) {
+            // What the next start would refuse to read, and replace with a state that forgot the revoked keys.
+            if text.len() > Rollover::MAX_LEN {
+                tracing::warn!(
+                    len = text.len(),
+                    max = Rollover::MAX_LEN,
+                    "the state of the root keys followed is too long to be read again: not saved"
+                );
+            } else if let Err(error) = download::replace(&path, text) {
+                tracing::warn!(path = %path.display(), %error, "the state of the root keys followed not saved");
+            }
         }
         if changed {
             tracing::info!("the root keys followed by RFC 5011 changed, reloading");
@@ -519,6 +532,55 @@ pub(crate) mod tests {
             !trusts_2010(&Kept::default().anchors(dir, &predating)),
             "restarted"
         );
+    }
+
+    /// D200: a state longer than `Rollover::MAX_LEN` is not written, as the next start would refuse to read it: the
+    /// file stays as it was; one of exactly that length is.
+    #[test]
+    fn a_state_too_long_to_be_read_again_is_not_saved() {
+        // KSK-2010 and two filler keys (invented bytes: only their length matters) that bring the text to the limit
+        // once KSK-2010 is revoked ("revoked <time>" is longer than "valid"). The first filler'"'"'s length moves it by
+        // 4, the algorithm numbers of the two by a digit each: a text of any length is reached.
+        let march = snapshot("20190305003355");
+        let whole = |filler: usize, algorithms: (u8, u8)| {
+            format!(
+                "dedens rfc5011 1\nvalid {}\nvalid 257 3 {} {}\nvalid 257 3 {} AAAA\nend\n",
+                ksk_2010(),
+                algorithms.0,
+                "A".repeat(filler),
+                algorithms.1
+            )
+        };
+        let revoked = |text: &str| {
+            let mut rollover = Rollover::read(text).ok()?;
+            // No trusted key signs the rest: only the revocation moves the state.
+            rollover.observe(&march, MARCH_2019).unwrap_err();
+            Some(rollover.to_string().len())
+        };
+        let reaching = |len: usize| {
+            let mut candidates = [(9, 10), (9, 100), (10, 100), (100, 200)]
+                .into_iter()
+                .flat_map(|algorithms| {
+                    (len / 4 * 4 - 1000..len)
+                        .step_by(4)
+                        .map(move |filler| whole(filler, algorithms))
+                });
+            candidates
+                .find(|text| revoked(text) == Some(len))
+                .expect("a text of that length")
+        };
+        for (len, saved) in [(Rollover::MAX_LEN, true), (Rollover::MAX_LEN + 1, false)] {
+            let state = tempfile::tempdir().unwrap();
+            let dir = state.path();
+            let text = reaching(len);
+            fs::write(dir.join(STATE), &text).unwrap();
+            let observed = Kept::default().observe(&march, &seed(), dir, MARCH_2019);
+            assert!(observed.changed, "served, saved or not: {len}");
+            let kept = fs::read_to_string(dir.join(STATE)).unwrap();
+            assert_eq!(kept == text, !saved, "{len}");
+            assert_eq!(kept.len() == len, saved, "{len}");
+            assert!(!dir.join(BAD).exists());
+        }
     }
 
     /// D200: the metric of the root's keys asked is described, through `describe` that `main` calls, and counts
