@@ -1,4 +1,4 @@
-# The root hints of the `recurse` modes (compare.sh): the one root server of the mini Internet, in the format of
-# IANA's named.root. dedensd's `root_hints` and Unbound's `root-hints` read it.
+; The root hints of the `recurse` modes (compare.sh): the one root server of the mini Internet, in the format of
+; IANA's named.root. dedensd's `root_hints` and Unbound's `root-hints` read it.
 .               3600000 IN NS  a.root.
 a.root.         3600000 IN A   127.0.0.2
