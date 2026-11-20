@@ -853,6 +853,59 @@ fn rfc6672_2_5_a_compressed_dname_is_dropped_with_its_cname() {
     );
 }
 
+/// DNAME is a singleton type (RFC 6672 §2.4): DNAMEs to two targets at one owner, which of them redirects unknown,
+/// are dropped with the CNAME the server made, as a malformed one is; one sent twice is one.
+#[test]
+fn rfc6672_2_4_dnames_to_two_targets_at_one_owner_are_dropped() {
+    let (bytes, question, zone) = captured(
+        "dname",
+        "dns.netmeister.org.",
+        "www.dname.dns.netmeister.org.",
+        RecordType::A,
+    );
+    let original = decode(&bytes);
+    let at = (original.answer.iter())
+        .position(|r| r.rtype() == RecordType::DNAME)
+        .expect("a DNAME");
+    let cname = (original.answer.iter())
+        .position(|r| r.rtype() == RecordType::CNAME && r.name == question.name)
+        .expect("the server's CNAME");
+    for (target, dropped) in [
+        ("other.dns.netmeister.org.", true),
+        ("dns.netmeister.org.", false),
+    ] {
+        let mut response = original.clone();
+        // Changed: a DNAME at the same owner to `target` put after the server's.
+        let second = dname("dname.dns.netmeister.org.", target);
+        response.answer.insert(at + 1, second);
+        let cname = cname + usize::from(cname > at);
+        let scrubbed = scrub(&response, &question, &zone);
+        if dropped {
+            assert!(
+                matches!(scrubbed.outcome, Outcome::NoSoa(Negative::NoData)),
+                "{}",
+                describe(&scrubbed)
+            );
+            for i in [at, at + 1, cname] {
+                assert_eq!(
+                    reason(&scrubbed, Section::Answer, i),
+                    Some(Reason::Malformed)
+                );
+            }
+        } else {
+            assert!(
+                matches!(scrubbed.outcome, Outcome::Cname { .. }),
+                "{}",
+                describe(&scrubbed)
+            );
+            assert_eq!(
+                reason(&scrubbed, Section::Answer, at + 1),
+                Some(Reason::OffChain)
+            );
+        }
+    }
+}
+
 /// The same DNAME to a target that makes the name asked longer than 255 bytes: the answer is YXDOMAIN with the
 /// DNAME (RFC 6672 §2.2), whether the server says so or not; a YXDOMAIN without such a DNAME says nothing.
 #[test]

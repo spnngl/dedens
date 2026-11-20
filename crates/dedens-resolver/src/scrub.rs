@@ -188,8 +188,8 @@ pub enum Reason {
     OutsideZone,
     /// Of a QTYPE or meta type, or of the QCLASS asked (RFC 6895 §3.1, §3.2): not data.
     NotData,
-    /// Its RDATA does not parse for its type (D9), or a DNAME's is compressed (RFC 6672 §2.5); or it is the CNAME a
-    /// DNAME so dropped would have made.
+    /// Its RDATA does not parse for its type (D9), or a DNAME's is compressed (RFC 6672 §2.5), or its owner has a
+    /// DNAME to another target (§2.4); or it is the CNAME a DNAME so dropped would have made.
     Malformed,
     /// An answer record on no chain from the name asked, or not of the type asked at its end.
     OffChain,
@@ -441,7 +441,7 @@ impl<'m, 'z> Scrub<'m, 'z> {
                 })
                 .collect()
         };
-        Self {
+        let mut scrub = Self {
             response,
             zone,
             fates: [
@@ -449,6 +449,34 @@ impl<'m, 'z> Scrub<'m, 'z> {
                 fates(&response.authority),
                 fates(&response.additional),
             ],
+        };
+        scrub.drop_conflicting_dnames();
+        scrub
+    }
+
+    /// Drops as [`Reason::Malformed`] the DNAMEs of the answer section at an owner with DNAMEs to two targets: DNAME
+    /// is a singleton type (RFC 6672 §2.4), and which of them redirects is unknown. Unbound's `scrub_normalize`
+    /// rejects the response.
+    fn drop_conflicting_dnames(&mut self) {
+        let dnames = || {
+            self.pending(Section::Answer)
+                .filter(|(_, r)| r.rtype() == RecordType::DNAME)
+        };
+        // Each owner's first target, and whether another differs.
+        let mut owners: HashMap<&Name<'_>, (Option<Name<'static>>, bool)> = HashMap::new();
+        for (_, r) in dnames() {
+            let target = dname_target(r);
+            owners
+                .entry(&r.name)
+                .and_modify(|(first, conflict)| *conflict |= *first != target)
+                .or_insert((target, false));
+        }
+        let conflicting: Vec<usize> = dnames()
+            .filter(|(_, r)| owners.get(&r.name).is_some_and(|&(_, conflict)| conflict))
+            .map(|(i, _)| i)
+            .collect();
+        for i in conflicting {
+            self.set(Section::Answer, i, Fate::Dropped(Reason::Malformed));
         }
     }
 

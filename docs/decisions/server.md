@@ -1534,7 +1534,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     question (name, type, class), the name outside `zone`;
   - every section: a record of another class, or owned outside `zone`, is dropped (RFC 2181 §6.1); so is one of a
     type `dedens-proto` decodes whose RDATA does not parse (decoded `Opaque`, D9), and a DNAME whose target is
-    compressed or no name (RFC 6672 §2.5), with the CNAME the server made of it: `Malformed` (Unbound dfc00271d drops
+    compressed or no name (RFC 6672 §2.5), or whose owner has an answer DNAME to another target (a singleton type,
+    §2.4; Unbound's `scrub_normalize` rejects the response), with the CNAME the server made of it: `Malformed`
+    (Unbound dfc00271d drops
     A and AAAA of the wrong size; every typed type here, as the cache would serve them); so is one of a QTYPE, meta
     type or QCLASS (RFC 6895 §3.1, §3.2), `NotData`, which no `RRset` holds: nothing kept is lost in grouping;
   - AA: only authoritative data from the zone's servers is trusted (RFC 2181 §5.4.1). A response without AA that
