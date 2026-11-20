@@ -154,6 +154,17 @@ impl InfraCache {
         });
     }
 
+    /// Learns that `server` answered, after a time that says nothing of its round trip over the transport its
+    /// timeout is for, at `now`: the response came over TCP after the query moved there from UDP (D191, D196), whose
+    /// connection setup and size are not the server's UDP time. It showed `seen`, its timeouts in a row are
+    /// cleared, and its round-trip time stays as it was.
+    pub fn answered(&self, server: SocketAddr, seen: Marks, now: u32) {
+        self.server(server, now, |held, _| {
+            held.timeouts = 0;
+            held.marks = held.marks.merged(seen);
+        });
+    }
+
     /// Learns that `server` did not answer within `sent`, the timeout its query was sent with, at `now`. Its timeout
     /// doubles from `sent` (RFC 6298 §5.5), unless an answer since brought it under `sent`, as Unbound's `rtt_lost`
     /// does: the queries in flight together back off once. An entry made anew since the query left, expired or

@@ -165,7 +165,7 @@ fn drive_as(
         let reply = Reply::Response {
             message: &response,
             seen: Marks::default(),
-            rtt: Duration::from_millis(20),
+            rtt: Some(Duration::from_millis(20)),
         };
         receive(resolving, reply, now);
     }
