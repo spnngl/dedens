@@ -55,7 +55,7 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   crosses zones. So is each set the validator's questions fetched (`Checking::fetched`): a bogus DNSKEY held
   `Unchecked` would be served again on the retry. Its TTL is capped first (`Rrset::cap_ttl`) to the time it has
   left; a bogus answer is asked again of other servers (`Resolution::retry`), then fails the resolution with its EDE
-  (D197).
+  (D197). A set held bogus before the resolution began is the cache's settled verdict: no retry for it.
 - A retry shuns the servers that gave a bogus set (`Answerer::gave`, validator questions included), each in the
   zone it was asked of only (`Delegation::shun`), and restarts the validation within what the earlier ones spent
   (`Validator::restart`): `spent` is cumulative, and the server charges its growth (D197).

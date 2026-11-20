@@ -567,6 +567,38 @@ fn d197_a_bogus_key_set_is_held_for_the_bogus_ttl() {
 }
 
 #[test]
+fn d197_a_key_set_held_bogus_is_not_asked_again() {
+    // Changed: every server of icann.org strips the signatures of its DNSKEY. The set the first resolution left
+    // bogus in the cache is the cache's settled verdict until it expires (RFC 4035 §4.7), as Unbound's bad key: a
+    // second resolution on the same caches asks no DNSKEY and fails bogus.
+    let capture = recursion::Resolution::read("cname-signed");
+    let strip = |zone: &Name<'_>, message: &mut Message<'static>| {
+        if is(zone, "icann.org.") && answers(message, "icann.org.", RecordType::DNSKEY) {
+            (message.answer).retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+        }
+    };
+    let caches = caches(false);
+    let checking = || {
+        (
+            Limits::default(),
+            validator(dedens_dnssec::Limits::default()),
+        )
+    };
+    let (_, first, _) = check(&capture, &caches, checking(), &strip);
+    assert!(
+        matches!(first, Resolved::Failed(Failure::Bogus(_))),
+        "{first:?}"
+    );
+    let (_, second, sent) = check(&capture, &caches, checking(), &strip);
+    assert!(
+        matches!(second, Resolved::Failed(Failure::Bogus(_))),
+        "{second:?}"
+    );
+    let keys = (sent.iter()).filter(|(_, _, rtype)| *rtype == RecordType::DNSKEY);
+    assert_eq!(keys.count(), 0, "{sent:?}");
+}
+
+#[test]
 fn rfc6672_2_2_a_yxdomain_is_validated() {
     // Changed: dns.netmeister.org's answer forged into a YXDOMAIN, its DNAME unsigned, to a target of 255 bytes that
     // makes the name asked too long. Unvalidated, the YXDOMAIN would be served; the DNAME is bogus.

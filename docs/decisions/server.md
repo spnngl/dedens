@@ -1891,14 +1891,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     question, not those that referred it, when none is), are left out of the delegation of the zone they were
     asked as servers of (a server of two zones still serves the other), the client's question asked anew, what the
     cache holds bogus not taken, at most 5 times (Unbound's `VAL_MAX_RESTART_COUNT`), its queries counted in
-    `limits.validation` and the time in `time`. A bogus set no server gave came from the cache: it is asked again
-    all the same, the cache passed over (Unbound's `val_blacklist` of an unknown origin). A spoofed or garbled
-    response from one server, of the answer or of a key set, then does not make the answer bogus while another
-    serves it right. The validations of the retries share one D75 budget, as Unbound keeps
-    `num_validation_attempts` across `val_restart` (`Validator::restart`, the cost told cumulative): none follows
-    one that gave up on KeyTrap's failed signatures or spent the budget (`Validation::can_restart`). Out of
-    servers, retries, budget or a bound, the answer is bogus with the first code. D86's key cache never holds a
-    bogus key set: the `RRset` cache holds it, for the bogus TTL.
+    `limits.validation` and the time in `time`. A bogus set no server gave came from the cache: held unchecked, it
+    is asked again all the same, the cache passed over (Unbound's `val_blacklist` of an unknown origin); held bogus,
+    it is the cache's settled verdict until it expires (RFC 4035 §4.7), not asked again, as Unbound's bad key
+    cached leaves no restart. A set the validator fetched is written bogus before a retry, not only when none
+    follows as Unbound's `key_cache_insert` waits on `val_can_restart`: the last attempt may fetch nothing (its
+    servers shunned) and leave the set unchecked, to be fetched by the next resolution; a retry that does better
+    writes the good set over it, and a resolution beside one still retrying takes the bogus verdict meanwhile. A
+    spoofed or garbled response from one server, of the answer or of a key set, then does not make the answer bogus
+    while another serves it right. The validations of the retries share one D75 budget, as Unbound keeps
+    `num_validation_attempts` across `val_restart` (`Validator::restart`, the cost told cumulative), and its
+    questions: a deep chain, whose walks ask more, gets fewer retries. None follows one that gave up on KeyTrap's
+    failed signatures or spent the budget or the questions (`Validation::can_restart`). Out of servers, retries,
+    budget or a bound, the answer is bogus with the first code. D86's key cache never holds a bogus key set: the
+    `RRset` cache holds it, for the bogus TTL.
   - YXDOMAIN is judged as an answer: bogus unless the chain ends in a DNAME whose substitution makes a name longer
     than 255 bytes (RFC 6672 §2.2, `Chain::overflow`), that DNAME validated. RRSIG questions stay NOTIMP
     (D195); a query with CD, or not class IN, is resolved without the validator (RFC 4035 §3.2.2), and gets what the
