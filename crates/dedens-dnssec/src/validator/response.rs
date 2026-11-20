@@ -459,6 +459,24 @@ impl Validation {
                 ),
             )));
         }
+        // The signatures counting fewer labels than the owner all name the same wildcard, whichever verifies, as
+        // Unbound's `val_rrset_wildcard` (RFC 4035 §5.3.4).
+        let starred = owner.labels().next() == Some(b"*".as_slice());
+        let counted = owner.label_count() - usize::from(starred);
+        let mut wildcards = (sigs.iter())
+            .map(|sig| sig.rrsig().labels)
+            .filter(|&labels| usize::from(labels) < counted);
+        if let Some(first) = wildcards.next()
+            && wildcards.any(|labels| labels != first)
+        {
+            return Err(Unusable::Failed(Failure::bogus(
+                InfoCode::DNSSEC_BOGUS,
+                format!(
+                    "{owner} {} has signatures of different wildcards",
+                    set.rtype()
+                ),
+            )));
+        }
         match self.verify(set, &sigs, &Key::all(keys)) {
             Ok(verified) => Ok((verified.ttl.min(keys_ttl), verified.wildcard)),
             Err(error) => Err(Unusable::Failed(sig_failure(&error, set))),

@@ -609,18 +609,16 @@ fn rfc4035_5_3_4_an_expansion_is_told_by_its_signature_s_labels() {
         set.expect("the answer")
     };
     assert!(set(&answer).expanded());
-    for record in &mut answer {
-        record.name = name("*.sidnlabs.nl.");
-    }
-    assert!(!set(&answer).expanded());
-    // Changed: a junk signature added, counting a label fewer: the others counting them all, it is no expansion.
+    // Changed: a junk signature added, counting every label: the expansion's own still tells it is one, so it is
+    // never served from the cache without its proof.
+    let every = u8::try_from(capture.name.label_count()).expect("a label count");
     let junk = (answer.iter())
         .find_map(|record| match record.data() {
             RData::Rrsig(rrsig) => {
-                let fewer = Rrsig::new(
+                let whole = Rrsig::new(
                     rrsig.type_covered,
                     rrsig.algorithm,
-                    rrsig.labels - 1,
+                    every,
                     rrsig.original_ttl,
                     rrsig.expiration,
                     rrsig.inception,
@@ -628,18 +626,23 @@ fn rfc4035_5_3_4_an_expansion_is_told_by_its_signature_s_labels() {
                     rrsig.signer.clone(),
                     rrsig.signature(),
                 );
-                let fewer = fewer.expect("an RRSIG");
+                let whole = whole.expect("an RRSIG");
                 Some(Record::new(
                     record.name.clone(),
                     record.class,
                     record.ttl,
-                    &RData::Rrsig(fewer),
+                    &RData::Rrsig(whole),
                 ))
             }
             _ => None,
         })
         .expect("a signature");
     answer.push(junk);
+    assert!(set(&answer).expanded());
+    answer.pop();
+    for record in &mut answer {
+        record.name = name("*.sidnlabs.nl.");
+    }
     assert!(!set(&answer).expanded());
     answer.retain(|record| record.rtype() != RecordType::RRSIG);
     assert!(!set(&answer).expanded(), "an unsigned set tells nothing");

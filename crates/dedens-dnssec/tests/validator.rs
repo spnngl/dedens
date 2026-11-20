@@ -1499,6 +1499,36 @@ fn a_junk_signature_before_the_real_one_does_not_make_the_answer_bogus() {
     assert!(secure(&verdict), "{verdict:?}");
 }
 
+/// RFC 4035 §5.3.4, as Unbound's `val_rrset_wildcard`: the signatures of an expansion name one wildcard. A junk
+/// signature counting every label is no wildcard's; one counting fewer labels than the real one names another.
+#[test]
+fn signatures_of_different_wildcards_make_the_answer_bogus() {
+    let script = Script::new();
+    let captured = response("wildcard_answer");
+    let every = u8::try_from(captured.questions[0].name.label_count()).expect("a label count");
+    let sig = (captured.answer.iter())
+        .find(|record| record.rtype() == RecordType::RRSIG)
+        .expect("an RRSIG");
+    let RData::Rrsig(rrsig) = sig.data() else {
+        panic!("an RRSIG")
+    };
+    for (labels, still_secure) in [(every, true), (rrsig.labels - 1, false)] {
+        let mut junk = rrsig.clone().into_owned();
+        junk.labels = labels;
+        let mut response = captured.clone();
+        response.answer.push(Record {
+            rdata: WireRdata::new(&RData::Rrsig(junk)),
+            ..sig.clone()
+        });
+        let verdict = script.run(&Script::validator(), &response, captured_at());
+        if still_secure {
+            assert!(secure(&verdict), "{verdict:?}");
+        } else {
+            assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
+        }
+    }
+}
+
 #[test]
 fn an_answer_with_the_rcode_of_a_name_error_is_bogus() {
     let script = Script::new();
