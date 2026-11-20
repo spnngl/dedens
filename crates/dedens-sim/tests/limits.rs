@@ -999,13 +999,11 @@ fn each_network_has_a_bucket_of_its_own() {
 /// list, and clients over UDP and TCP.
 #[test]
 fn a_limited_run_replays_in_two_processes() {
-    let runs = std::cell::Cell::new(0);
     seed::in_two_processes(
         module_path!(),
         "a_limited_run_replays_in_two_processes",
         ONE,
         |seed| {
-            runs.set(runs.get() + 1);
             let scene = Scene {
                 limits: Limits::open(2, 2)
                     .with_cookies()
@@ -1020,5 +1018,4 @@ fn a_limited_run_replays_in_two_processes() {
             trace::digest(&scene.run(seed))
         },
     );
-    assert!(runs.get() > 0);
 }

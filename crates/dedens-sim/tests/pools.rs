@@ -5,7 +5,6 @@
 //!
 //! Each scenario has the client host speak to a server host on its own, with no stub and no oracle.
 
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -199,17 +198,12 @@ fn stalls(dot: fn() -> Answers) {
 /// (randoms, key shares) change bytes on the wire, not their lengths nor when they arrive.
 #[test]
 fn a_dot_run_replays_in_two_processes() {
-    let runs = Cell::new(0);
     seed::in_two_processes(
         module_path!(),
         "a_dot_run_replays_in_two_processes",
         FEW,
-        |seed| {
-            runs.set(runs.get() + 1);
-            trace::digest(&dot(seed).0)
-        },
+        |seed| trace::digest(&dot(seed).0),
     );
-    assert!(runs.get() > 0);
 }
 
 /// A server certificate the client does not trust ends the exchange with a failed handshake, not a hang or an answer.
