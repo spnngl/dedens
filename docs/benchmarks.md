@@ -383,6 +383,24 @@ sample in brackets; allocations a call.
 (a clone allocates nothing), was tried: no gain measured, not kept. A referral costs 5 µs to sort and 4 to group, its 136 allocations each
 `RRset`'s owned RDATA.
 
+## Resolution step (D201)
+
+`crates/dedens-bench/benches/resolution.rs`, Apple M5, macOS 27.2.1, on a machine shared with other builds (load 10
+to 20), 5 runs of 100 samples: nanoseconds, median of the medians, fastest sample in brackets. The resolution of
+`example.com.` A on `testdata/recursion/signed-com.yaml`, the three calls of the exchange (query out, response in,
+end) timed, the transport the caller's and the capture's response replayed. `warm`: the caches hold the delegations
+and the answer is past its TTL, which is a miss under a load of names that never repeat: one query to the zone's
+server. `cold`: empty caches, so priming, the root's referral, `com.`'s and the answer.
+
+| Measure | time | allocations (bytes) |
+|---|---|---|
+| `warm` | 3 250 (2 800) | 60 (4.5 KB), 30 at most at once |
+| `cold` | 34 900 (33 000) | 992 (57 KB), 475 at most at once |
+
+The state machine is 3 µs of the 63 µs of user CPU a miss costs `dedensd` under `recurse` (below): what the rest
+is, the profile says. `warm` is the part of a miss the resolver crate owns, `cold` the walk a name under a new zone
+pays once.
+
 ## Server hit path (D23, D43)
 
 - `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage
@@ -2302,3 +2320,89 @@ rate: 0.69 / 1.89 ms at 180 µs at 1 core, 0.43 / 2.11 ms at 188 µs at 3, again
   `io_uring`, and `dedensd` only logs its fallback (D107). Its numbers are not kept: `udp` at 1 core gave 72k
   queries/s at 31 µs a query at the common rate where `io_uring` gives 85k and 19 µs; the harness now runs every container without the
   filter and fails a `dedensd` that is not on `io_uring` (D183).
+
+
+## Recursion against Unbound (D201)
+
+`DEDENS_CONTAINER=podman DEDENS_ROUNDS=3 DEDENS_SERVERS="dedensd unbound" bash crates/dedens-bench/dnsperf/compare.sh
+recurse <cores>` and `recurse-dnssec`, 1 and 3 cores, then an A/A run (`dedensd unbound dedensd unbound`, 1 core).
+The setup is D201's: no forwarder, three Knot authorities (a root, `bench.`, and the zone `recurse.bench.` with its
+wildcard) on 127.0.0.2 to 4, each server resolving from a hints file naming the root, a million unique names, each
+asked once of a cold server (every query a miss that asks the zone's server one question; Knot's `mod-stats` counts
+1.00 `A` there and none at the root or the TLD for either server). `dedensd` is `main` at `953b9ca4`
+with `root_hints` (D201), the harness is `3c2a7bf6`'s. The `fixes/resolver` PR that refuses private addresses by
+default had not merged: the authorities are loopback ones and this `main`'s resolver asks them. When it
+lands, the line `query_local_addresses: true` of `dnsperf/compare/dedensd-recurse.yaml` is uncommented and these
+numbers rerun. Host and pinning as the section above, except Linux 6.12.0-264.16.1.el10_3 and podman 6.1.1,
+`net.ipv4.ip_unprivileged_port_start` 53 for the runs and 1024 after, Knot's three processes on core 5. JSON in
+[`comparison/results/`](comparison/results/): `2026-11-20T185637Z` (1 core), `190109Z` (3), the `recurse-dnssec` files
+`190457Z` and `190901Z`, the A/A `191306Z`, and the 8 MiB variant `192456Z`, `192926Z`.
+
+Saturation, thousands of queries a second, medians (range) of the valid runs of 3 rounds, void runs of the 7 to 10
+saturation and half-rate runs:
+
+| Mode | `dedensd` | Unbound | Ratio |
+|---|---|---|---|
+| 1 core: `recurse` | 8.6 (8.0-8.7), 0 void | 8.0 (8.0-8.2), 3 void | 1.08 |
+| `recurse-dnssec` | 5.4 (one valid run), 2 void | 3.1 (3.0-3.1), 3 void | 1.74 |
+| 3 cores: `recurse` | 23.6 (19.7-24.9), 0 void | 19.9 (16.6-20.3), 0 void | 1.19 |
+| `recurse-dnssec` | 9.6 (one valid run), 2 void | 7.0 (5.7-10.1), 3 void | 1.37 |
+
+- The noise threshold of 1.15 (the A/A run: `dedensd` 9185 and 9183, Unbound 8224 and 8149 a second at 1 core, CPU a
+  query at the common rate within 10%) puts `recurse` at 1 core, and 3 cores where the ranges overlap, at no
+  difference; `recurse-dnssec` at 1 core ahead for `dedensd`.
+- At 3 cores the loader is the limit: dnsperf's busiest thread is at 90% (the void threshold) in `recurse`, and a
+  second session (the 8 MiB runs below) had Unbound at 23.4 and `dedensd` at 24.5. The 3-core saturations are floors.
+- `dedensd`'s `recurse-dnssec` saturation runs past its validation allowance answer SERVFAIL for what it cannot
+  validate (D77, as in `dnssec` above) and are void (`rcodes`): the table holds the runs below it. Unbound's void
+  runs are `loss` (about 1 100 queries lost to the timeout at the end of the first saturation run of a round).
+- The first session (`a`, an earlier build of the same sources, 3 rounds each) gave 8.5 and 7.9 (1 core), 22.0 and
+  20.6 (3), 5.1 and 3.0, 9.9 and 5.7 for `dedensd` and Unbound: the ratios agree.
+
+At the common rate (half the slowest median; 4 000 a second at 1 core, 9 930 at 3 for `recurse`; 1 546 and 3 513 for
+`recurse-dnssec`): average / p99 / p99.9 latency in ms, CPU a query in µs (the container's cgroup, user + system; the
+softirq time, 12% to 17% of the core, is charged to none), memory idle / loaded in MiB, start in ms:
+
+| Mode | `dedensd` | Unbound |
+|---|---|---|
+| 1 core: `recurse` | 0.68 / 1.95 / 4.03, 123.9 (53.4 + 70.5), 5 / 34, 8 | 0.48 / 1.38 / 4.99, 87.9 (28.8 + 59.1), 4 / 14, 18 |
+| `recurse-dnssec` | 0.76 / 2.01 / 4.99, 221.3 (137.9 + 83.4), 5 / 30, 10 | 0.82 / 2.01 / 4.22, 304.6 (219.0 + 85.5), 4 / 13, 21 |
+| 3 cores: `recurse` | 0.65 / 6.14 / 30.72, 125.6 (59.7 + 65.9), 9 / 118, 9 | 0.38 / 4.61 / 18.94, 86.7 (32.8 + 54.0), 5 / 17, 16 |
+| `recurse-dnssec` | 0.51 / 2.17 / 7.17, 245.2 (146.7 + 98.5), 9 / 54, 12 | 0.59 / 2.94 / 7.42, 313.6 (222.4 + 91.2), 5 / 18, 20 |
+
+At half its own rate, `recurse` at 1 core: 0.65 / 2.37 / 5.12 ms against Unbound's 0.44 / 1.73 / 3.97.
+
+`dedensd` with its caches at Unbound's sizes (`dedensd-8mib`: the cache stage 8 MiB, the RRset cache 4 MiB; its
+default is 128 MiB of RRsets): 9.1 (7.8-9.2) against 8.2 (8.0-8.4) at 1 core, 24.5 (24.0-27.8, 1 void) against
+23.4 (23.0-29.2) at 3; at the common rate 123.8 µs against 94.2 and 129.8 against 82.3, loaded 22 and 34 MiB against
+14 and 23. The caches' size is the memory (118 MiB loaded at 3 cores is the default 128 MiB filling), not the CPU.
+
+### Where the gap is
+
+The target of the phase is `recurse` within 10% of Unbound's kqps (README choice 8): met at 1 core (1.08) and not
+told apart at 3 (loader-bound). `recurse-dnssec` is ahead. What is not within 10%: the CPU of a plain miss, 124 and
+126 µs against 88 and 87 (+41%, +45%, against 10% of noise), and with it the average latency at the common rate (0.68
+against 0.48 ms) and p99. The profile (`perf record` of user space at the common rate and at saturation, 1 core, and
+`strace -c`, `dedensd` built with line tables, outside the tree as step 02's):
+
+- The gap is user space. User CPU a query is 53 against 29 µs at the common rate, 48 against 28 at saturation; system
+  CPU is 70 against 59 at the common rate and 36 against 48 at saturation, where `io_uring` batches. At saturation
+  both fill their core: user 44% and 27%, system 40% and 43%, softirq 14% and 17%, idle 1% and 12%.
+- The syscalls are not it. Both open a socket for each question to a server (`connect`, `close` a query; D190 for
+  `dedensd`, Unbound's `socket`, `bind`, `connect`, `setsockopt`, 2 `fcntl`, `close`): `dedensd` makes 8 a client
+  query by `strace` (1 each `recvfrom`, `sendto`, `io_uring_enter`, `connect`, `close`, `getsockname`, 2.2
+  `getrandom`) and the ring's own, Unbound 11 (2 `sendto`, 2 `recvfrom`, 2 `fcntl`, 1 each `socket`, `bind`,
+  `connect`, `setsockopt`, `close`).
+- The samples of `dedensd`'s user space at the common rate, self time: the allocator (mimalloc's zeroed page
+  allocation 7.9%, free 2.6%, aligned allocation 1.9%, and the rest of its calls) 16% of them; `memcpy`, `memset`
+  8%; `serve::recurse::gauges` 6.4% (below); `Name::is_within` 2.7%; `RrsetCache::get` 2.3%; the executor and the
+  ring's driver a few percent each. By children: `drive` 48%, the question to a server (`asked`: socket, send,
+  receive, decode) 22%, `Resolution::take`, which scrubs and files the response, 13%. The resolver's step itself is
+  3 µs of the 63 of a miss (`warm` above): the crate's logic is not where it goes, the 60 allocations of each step
+  and the messages decoded and copied around it are. Unbound's profile shows 3% in allocation and 8% in unresolved
+  libc symbols, spin locks (5.5%) and hash tables (lruhash 4%, hashlittle 3.8%).
+- `gauges` is a finding, not a design: after each resolution the stage sets four gauges, the entries and the bytes of
+  the RRset and the infrastructure caches, and `Store::len` and `used` lock each of the shards in turn, four sweeps of
+  the locks for every miss: about 4 µs of the 63.
+
+That is `docs/TODECIDE.md`'s entry; no optimisation is in this step.
