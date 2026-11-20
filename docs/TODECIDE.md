@@ -125,6 +125,19 @@ Open questions, each with its proposed default. Once answered, record the outcom
   capacity (D116, kept: the hit ratio of real traffic is worth more than the bench's row) holds 58 of them, and the
   rest is about Unbound's total (`docs/benchmarks.md`, the 8 MiB cache row). Left: the idle 11 MiB. Default: account
   for it (buffer rings, threads' stacks, the allocator's arenas) before changing a default.
+- The upstream UDP pool's work for each datagram (D50): `receive` (`crates/dedens-net/src/udp.rs:148`) waits for
+  readiness once a datagram, where a loop of `try_recv` until `WouldBlock` would take a burst on one wake; and a query
+  is copied twice, the datagram into its waiter's inbox (`Waiting::deliver`, `udp.rs:228`) and the wire into the owned
+  buffer a compio send takes (`UdpQuery::send`, `udp.rs:289`). Default: as is; drain on each wake, and hand the
+  exchange's `Vec` to the send, when a profile of `forward` at a high rate (`docs/benchmarks.md`) shows them.
+- A DoQ query parsed twice (D66): `breaks_doq` (`apps/dedensd/src/serve/quic.rs:268`) reads the header with
+  `Query::read`, then `Pipeline::query` reads the same bytes again (`start`, `apps/dedensd/src/serve/mod.rs:742`).
+  Default: as is, a few dozen bytes; pass the parsed `Query` on when `Pipeline::query` takes one for another listener.
+- A mistake inside a stage is reported at the stage's line, not the field's (D44): `StageFile` is an internally
+  tagged enum (`apps/dedensd/src/config/sources.rs:34`), which serde reads whole before its fields, so the location
+  `serde-saphyr` gives is the stage's. Default: as is, the message names the field (``unknown field `hints` ``); read
+  `type` first (a `Deserialize` of our own, or a struct for each type chosen by it) when configurations of many
+  stages make the line the way to the mistake.
 
 ## Cache
 
@@ -362,6 +375,19 @@ Open questions, each with its proposed default. Once answered, record the outcom
   it wins.
 - `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
   numbers. Default: add them with TSIG, in the authoritative phase.
+- A second OPT from `Edns::append` (D21): it writes after `buf[..len]` without reading it, so bytes that already hold an
+  OPT get two, which RFC 6891 §6.1.1 forbids. Its caller (`crates/dedens-server/src/reply.rs:247`) keeps the rule by
+  hand: the bytes come from `Message::to_vec_without_edns` (`crates/dedens-cache/src/response.rs:184`). Default: as is,
+  documented; a type for bytes without OPT (returned by `to_vec_without_edns`, taken by `append`) when a third place
+  needs one.
+- `Header::rcode` (`crates/dedens-proto/src/header.rs:164`) is a `Rcode` of 16 bits for the header's four, and
+  `opcode` an `Opcode` of 8: a value above 15 can be set and is refused on encoding (`EncodeError::RcodeOutOfRange`,
+  `OpcodeOutOfRange`). Default: as is, `Message::set_rcode` being the way in; a 4-bit type for each field with the next
+  change to `Header`, so that no such header exists.
+- EDNS option data past 65535 bytes (`EdnsOption::Nsid` and `ExtendedError::text`, `crates/dedens-proto/src/edns/mod.rs:80`,
+  `:90`): `UnknownOption::new` refuses it, but these are built by hand and fail in `encode` with
+  `EncodeError::BufferFull`, as a message too large does. Default: as is; constructors that check, as
+  `UnknownOption::new`, with the next change to `EdnsOption`.
 - What to build after DoH over HTTP/3 (D83), DNSSEC validation (D77), ODoH (D79) and DoC (D81): prewarm (names from
   the configuration kept in the cache), DNSCrypt (client, server, Anonymized DNSCrypt client, PQDNSCrypt; the relay
   role later), kubernetes stage, roots (root and TLD hints bundled, the TLD list and root anchors refreshed, the
