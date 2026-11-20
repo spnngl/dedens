@@ -1486,11 +1486,13 @@ impl Resolution {
         self.no_address(&task.question.name);
     }
 
-    /// Notes that `name` has no address to look up.
+    /// Notes that `name` has no address to look up, but for those a lookup already found: its A found, its AAAA
+    /// lookup that loops or is denied leaves it.
     fn no_address(&mut self, name: &Name<'static>) {
         for rtype in [RecordType::A, RecordType::AAAA] {
             self.found
-                .insert(Question::new(name.clone(), rtype), Vec::new());
+                .entry(Question::new(name.clone(), rtype))
+                .or_default();
         }
     }
 
@@ -1613,6 +1615,8 @@ impl Resolution {
             Resolved::Answer { data, .. } => addresses(&data.rrset).collect(),
             // A name that does not exist has no AAAA either.
             Resolved::NxDomain { .. } => return self.no_address(&task.question.name),
+            // A bound reached says what the lookup's place cost (its depth, its delegation's servers), not that the
+            // name has no address: asked again from another place it may resolve.
             _ => Vec::new(),
         };
         if let Some(delegation) = self.tasks.asking() {

@@ -16,7 +16,7 @@ use std::time::Duration;
 use dedens_cache::{Checked, Config};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Opaque, RData};
-use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, Record, RecordType};
+use dedens_proto::{Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Ttl};
 use dedens_resolver::{
     Caches, DEFAULT_CAPACITY, Failure, InfraCache, Limit, Limits, Marks, Minimisation, Next, Query,
     Rank, Reply, Resolution, Resolved, Rrset, RrsetCache, Unsupported,
@@ -1936,4 +1936,100 @@ fn d193_the_authority_section_of_an_answer_does_not_answer_a_question() {
     .expect("an IN question");
     let next = resolution.step(at(&capture), &mut Seeded(SEED));
     assert!(matches!(next, Next::Send(_)), "{next:?}");
+}
+
+/// google.com's one server, `ns1.google.com`, named without glue by com's referral; com answers its A with
+/// `192.0.2.53` (TTL 0, so that only the resolution's own memory holds it) and its AAAA with the referral back to
+/// google.com, which ends that lookup as a loop (D191). The server times out once, then answers `google.com` with a
+/// CNAME to `www.google.com`, which it answers: the resolution goes on at the same cut, naming the server again.
+fn memoised(aaaa: impl Fn(&Query) -> Message<'static>) -> Resolved {
+    let capture = recursion::Resolution::read("unsigned");
+    let caches = caches(false);
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let ns1 = name("ns1.google.com.");
+    let www = name("www.google.com.");
+    let address = Ipv4Addr::new(192, 0, 2, 53);
+    let mut to_google = response(&capture, "com.", "google.com.");
+    let ns = (to_google.authority.iter())
+        .find(|r| r.rtype() == RecordType::NS)
+        .expect("an NS record")
+        .clone();
+    to_google.authority = vec![Record::new(
+        ns.name.clone(),
+        ns.class,
+        ns.ttl,
+        &RData::Ns(ns1.clone()),
+    )];
+    to_google.additional.clear();
+    let answer = answered(&capture);
+    let template = (answer.answer.iter())
+        .find(|r| r.rtype() == RecordType::A)
+        .expect("an A record")
+        .clone();
+    let a = |owner: &Name<'static>, ttl| {
+        let mut response = answer.clone();
+        response.answer = vec![Record::new(
+            owner.clone(),
+            template.class,
+            ttl,
+            &RData::A(address),
+        )];
+        response
+    };
+    let timed_out = Cell::new(false);
+    let server = |query: &Query| {
+        let question = &query.question;
+        if query.server.ip() == IpAddr::from(address) {
+            if question.name == capture.name && !timed_out.replace(true) {
+                return Answered::Timeout;
+            }
+            if question.name == capture.name {
+                let mut response = a(&capture.name, template.ttl);
+                let cname = RData::Cname(www.clone());
+                response.answer = vec![Record::new(
+                    capture.name.clone(),
+                    template.class,
+                    template.ttl,
+                    &cname,
+                )];
+                return Answered::Response(to(response, question));
+            }
+            return Answered::Response(to(a(&www, template.ttl), question));
+        }
+        if question.name == ns1 && is(&query.zone, "com.") {
+            if question.qtype == RecordType::A {
+                return Answered::Response(to(a(&ns1, Ttl::from_wire(0)), question));
+            }
+            return Answered::Response(to(aaaa(query), question));
+        }
+        if (question.name == capture.name || question.name == www) && is(&query.zone, "com.") {
+            return Answered::Response(to(to_google.clone(), question));
+        }
+        Answered::Response(captured(&authorities, query))
+    };
+    let mut resolution = start(&capture, &caches, Limits::default());
+    seeded(&mut resolution, &server, at(&capture), SEED).0
+}
+
+#[test]
+fn d191_an_address_found_is_kept_when_the_aaaa_lookup_loops() {
+    // The A lookup of ns1.google.com found its address; the AAAA one led back to google.com, which waited on it. The
+    // loop notes no AAAA address, not the loss of the A found: the CNAME's target is asked of the same server.
+    let capture = recursion::Resolution::read("unsigned");
+    let to_google = response(&capture, "com.", "google.com.");
+    let outcome = memoised(|_| {
+        let mut referral = to_google.clone();
+        referral.additional.clear();
+        referral
+    });
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
+}
+
+/// google.com's captured answer to its A question.
+fn answered(capture: &recursion::Resolution) -> Message<'static> {
+    let exchange = (capture.exchanges.iter())
+        .find(|e| is(&e.zone, "google.com.") && e.rtype == RecordType::A && e.name == capture.name)
+        .expect("google.com's A answer");
+    dedens_testkit::message(&exchange.response)
 }
