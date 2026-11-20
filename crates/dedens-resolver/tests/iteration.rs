@@ -2120,3 +2120,57 @@ fn answered(capture: &recursion::Resolution) -> Message<'static> {
         .expect("google.com's A answer");
     dedens_testkit::message(&exchange.response)
 }
+
+#[test]
+fn d191_a_delegation_takes_no_more_addresses_than_unbound_does() {
+    // com's referral names one server without glue, whose lookup gives 300 addresses (a response can hold some
+    // thousands), all failing: with the servers bound out of the way, 100 are asked, Unbound's `delegpt_max_addr`.
+    let capture = recursion::Resolution::read("unsigned");
+    let google = name("google.com.");
+    let unglued = name("ns.example.net.");
+    let caches = caches(false);
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let template = response(&capture, "com.", "google.com.");
+    let question = Question::new(capture.name.clone(), capture.rtype);
+    let mut to_google = referral(&template, &question, &google, &[Ipv4Addr::UNSPECIFIED]);
+    to_google.additional.clear();
+    let ns = to_google.authority[0].clone();
+    to_google.authority = vec![Record::new(
+        ns.name.clone(),
+        ns.class,
+        ns.ttl,
+        &RData::Ns(unglued.clone()),
+    )];
+    let mut found = answered(&capture);
+    let class = found.answer[0].class;
+    let ttl = found.answer[0].ttl;
+    found.answer = (0..300_u32)
+        .map(|i| {
+            let address = Ipv4Addr::from(u32::from(Ipv4Addr::new(203, 0, 0, 0)) + i);
+            Record::new(unglued.clone(), class, ttl, &RData::A(address))
+        })
+        .collect();
+    let asked = RefCell::new(HashSet::new());
+    let server = |query: &Query| {
+        let question = &query.question;
+        if query.zone == google {
+            asked.borrow_mut().insert(query.server.ip());
+            Answered::ServerError
+        } else if question.name == unglued && question.qtype == RecordType::A {
+            Answered::Response(to(found.clone(), question))
+        } else if is(&query.zone, "com.") {
+            Answered::Response(to(to_google.clone(), question))
+        } else {
+            Answered::Response(captured(&authorities, query))
+        }
+    };
+    let limits = Limits {
+        servers: 1000,
+        queries: 1000,
+        ..Limits::default()
+    };
+    let (outcome, _) = run(&mut start(&capture, &caches, limits), &server, at(&capture));
+    assert_eq!(outcome, Resolved::Failed(Failure::Network));
+    assert_eq!(asked.borrow().len(), 100);
+}
