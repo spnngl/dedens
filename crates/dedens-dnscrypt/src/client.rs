@@ -12,7 +12,7 @@ use crate::key::{KEY_LEN, SecretKey, SharedKey};
 use crate::padding::{self, BLOCK};
 use crate::pq::{self, RESUME_MAGIC, TicketOffer};
 use crate::secretbox::{self, NONCE_LEN, TAG_LEN};
-use crate::{CLIENT_MAGIC_LEN, MAX_PACKET_LEN, NONCE_HALF_LEN, QUERY_OVERHEAD, RESPONSE_MAGIC};
+use crate::{MAX_PACKET_LEN, NONCE_HALF_LEN, QUERY_OVERHEAD, RESPONSE_MAGIC};
 
 /// The 12 bytes the client picks for a query; the resolver repeats them in its response, which is how the client
 /// knows what the response answers (draft "Protocol Components": `<client-nonce>`).
@@ -178,16 +178,15 @@ impl ClientSession {
         padding: QueryPadding,
         nonce: ClientNonce,
     ) -> Result<(Vec<u8>, QueryContext), EncryptQueryError> {
-        let mut head = Vec::with_capacity(CLIENT_MAGIC_LEN + self.client_kex.len());
-        head.extend_from_slice(self.magic.as_bytes());
-        head.extend_from_slice(&self.client_kex);
+        let head: [&[u8]; 2] = [self.magic.as_bytes(), &self.client_kex];
         seal_query(&head, &self.shared, self.origin, query, padding, nonce)
     }
 }
 
-/// The packet of `query` sealed with `shared`, after `head`: everything that comes before the client nonce.
+/// The packet of `query` sealed with `shared`, after the parts of `head`: everything that comes before the client
+/// nonce. The query is padded and sealed in the packet, which is allocated once.
 fn seal_query(
-    head: &[u8],
+    head: &[&[u8]],
     shared: &SharedKey,
     origin: Option<TicketOrigin>,
     query: &[u8],
@@ -200,25 +199,29 @@ fn seal_query(
         return Err(EncryptQueryError::NoQuestion);
     }
     let padded_len = padding.0.max(query.len() + 1);
-    let overhead = head.len() + NONCE_HALF_LEN + TAG_LEN;
+    let head_len = head.iter().map(|part| part.len()).sum::<usize>();
+    let overhead = head_len + NONCE_HALF_LEN + TAG_LEN;
     if overhead + padded_len > MAX_PACKET_LEN {
         return Err(EncryptQueryError::TooLong);
     }
 
-    let mut ciphertext = Vec::with_capacity(padded_len);
-    ciphertext.extend_from_slice(query);
-    padding::pad(&mut ciphertext, padded_len);
+    let mut packet = Vec::with_capacity(overhead + padded_len);
+    for part in head {
+        packet.extend_from_slice(part);
+    }
+    packet.extend_from_slice(nonce.as_bytes());
+    packet.resize(overhead, 0);
+    packet.extend_from_slice(query);
+    padding::pad(&mut packet, overhead + padded_len);
+    let (sealed_head, ciphertext) = packet.split_at_mut(overhead);
     let tag = secretbox::seal(
         shared,
         &secretbox::query_nonce(nonce.as_bytes()),
-        &mut ciphertext,
+        ciphertext,
     );
-
-    let mut packet = Vec::with_capacity(overhead + padded_len);
-    packet.extend_from_slice(head);
-    packet.extend_from_slice(nonce.as_bytes());
-    packet.extend_from_slice(&tag);
-    packet.extend_from_slice(&ciphertext);
+    if let Some((_, tag_slot)) = sealed_head.split_last_chunk_mut::<TAG_LEN>() {
+        *tag_slot = tag;
+    }
 
     let context = QueryContext {
         nonce,
@@ -292,10 +295,7 @@ impl Resumption {
         );
         let ticket_len =
             u16::try_from(self.ticket.len()).map_err(|_| EncryptQueryError::TooLong)?;
-        let mut head = Vec::with_capacity(resumed_head_len(self.ticket.len()));
-        head.extend_from_slice(&RESUME_MAGIC);
-        head.extend_from_slice(&ticket_len.to_be_bytes());
-        head.extend_from_slice(&self.ticket);
+        let head: [&[u8]; 3] = [&RESUME_MAGIC, &ticket_len.to_be_bytes(), &self.ticket];
         seal_query(&head, &shared, Some(self.origin), query, padding, nonce)
     }
 }
@@ -386,8 +386,11 @@ impl QueryContext {
         if decoded.message.questions != self.questions {
             return Err(ResponseError::QuestionMismatch);
         }
+        // The message ends the plaintext: the control field, if any, is all that goes before it.
+        let control_len = plaintext.len() - message.len();
+        plaintext.drain(..control_len);
         Ok(Opened {
-            message: message.to_vec(),
+            message: plaintext,
             resumption,
         })
     }
