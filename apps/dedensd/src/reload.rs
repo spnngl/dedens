@@ -129,8 +129,9 @@ const RETRY: Duration = Duration::from_secs(60);
 struct Ticks {
     /// The wait after the next failure.
     retry: Duration,
-    /// A downloaded list changed and no reload served it yet. The list and its `ETag` are saved before the reload,
-    /// so the next fetch finds it unchanged (304): only this remembers that the pipeline is behind the lists.
+    /// A downloaded list or the anchors followed (D200) changed and no reload served it yet. The list and its
+    /// `ETag`, or the state of the rollover, are saved before the reload, so the next fetch finds the list unchanged
+    /// (304) and the next answer the anchors: only this remembers that the pipeline is behind them.
     pending: bool,
 }
 
@@ -147,6 +148,24 @@ impl Ticks {
     const fn served(&mut self) {
         self.pending = false;
         self.retry = RETRY;
+    }
+
+    /// What follows a reload that `served` or not, asked by `read`: whether the thread goes back to the top of its
+    /// loop. A failed one of the anchors followed (D200) is pending, tried again on the next tick as a list's is;
+    /// the lists are read again by a SIGHUP's, and a file that does not load waits for its next SIGHUP.
+    const fn reloaded(&mut self, served: bool, read: Read) -> bool {
+        if served {
+            self.served();
+        } else if matches!(read, Read::Last) {
+            self.pending = true;
+        }
+        !served || matches!(read, Read::File)
+    }
+
+    /// Whether the thread fetches and reloads on this tick, `nothing_to_fetch` when no list or root file is
+    /// downloaded: it does when a reload is pending, for the retry.
+    const fn fetches(&self, nothing_to_fetch: bool) -> bool {
+        !nothing_to_fetch || self.pending
     }
 
     /// How long to wait after a fetch that found `fetched`, `refresh` being the interval of the downloads in use.
@@ -181,8 +200,8 @@ impl Ticks {
 /// configuration last loaded, again without reading `file`; and once the root keys a serving thread asked changed
 /// the anchors they are followed to (RFC 5011, D200), building `text` again too. One thread for all, so a refresh
 /// never replaces the pipeline of a reload with an older one. A panic while fetching or reloading is logged and
-/// counts as a failure; the thread goes on, and a reload that failed after the lists changed is tried again on the
-/// next tick (D104). The SIGHUP handler is installed before this returns: a SIGHUP once the server logged that it
+/// counts as a failure; the thread goes on, and a reload that failed after the lists or the anchors followed
+/// changed is tried again on the next tick (D104). The SIGHUP handler is installed before this returns: a SIGHUP once the server logged that it
 /// serves never ends the process.
 ///
 /// # Errors
@@ -232,9 +251,7 @@ pub(crate) fn control(
             let mut refresh = Refresh::default();
             let mut following = false;
             loop {
-                let wait = if downloads.is_empty() {
-                    Duration::MAX
-                } else {
+                let wait = if ticks.fetches(downloads.is_empty()) {
                     let fetched = guarded("list download", || {
                         client.fetch(&downloads.urls, &downloads.dir, &mut store)
                             | refresh.fetch(
@@ -259,6 +276,8 @@ pub(crate) fn control(
                         refresh = Refresh::default();
                         Some(every)
                     })
+                } else {
+                    Duration::MAX
                 };
                 follow(
                     current.probe(),
@@ -279,14 +298,14 @@ pub(crate) fn control(
                     else {
                         continue;
                     };
-                    if let Some(new) = reload(&file, read, &mut text, &current, &fixed, &mut store)
-                    {
+                    let new = reload(&file, read, &mut text, &current, &fixed, &mut store);
+                    let served = new.is_some();
+                    if let Some(new) = new {
                         downloads = new;
                         refresh = Refresh::default();
-                        // Built from the lists on disk, the pending reload included.
-                        ticks.served();
                     }
-                    if matches!(read, Read::File) {
+                    // Served, built from the lists on disk, the pending reload included.
+                    if ticks.reloaded(served, read) {
                         break;
                     }
                 }
@@ -568,6 +587,46 @@ mod tests {
             failed: true,
         };
         assert_eq!(ticks.wait(failed, refresh, || panic!("reloaded")), RETRY);
+    }
+
+    /// D104, D200: a reload of the anchors followed that failed after the state was saved is tried again on the
+    /// next tick, though nothing is downloaded and the next answer finds the state unchanged; a SIGHUP's failed
+    /// reload is not, and a served one clears the retry.
+    #[test]
+    fn a_failed_reload_of_the_anchors_followed_is_retried() {
+        let refresh = Duration::from_hours(24);
+        let mut ticks = Ticks::new();
+        assert!(!ticks.fetches(true), "nothing to fetch, nothing pending");
+        assert!(ticks.fetches(false));
+
+        assert!(
+            !ticks.reloaded(true, Read::Last),
+            "served: the thread waits for a wake"
+        );
+        assert!(!ticks.fetches(true));
+        assert!(
+            ticks.reloaded(false, Read::Last),
+            "failed: the top of the loop"
+        );
+        assert!(ticks.fetches(true), "pending: the tick retries");
+        assert_eq!(ticks.wait(Fetched::default(), refresh, || None), RETRY);
+        assert!(ticks.fetches(true));
+        let wait = ticks.wait(Fetched::default(), refresh, || Some(refresh));
+        assert_eq!(wait, refresh);
+        assert!(!ticks.fetches(true), "served");
+
+        assert!(ticks.reloaded(false, Read::File));
+        assert!(
+            !ticks.fetches(true),
+            "a SIGHUP's file that does not load is not retried"
+        );
+        assert!(
+            ticks.reloaded(true, Read::File),
+            "a SIGHUP's reload served ends the loop"
+        );
+        assert!(ticks.reloaded(false, Read::Last));
+        assert!(!ticks.reloaded(true, Read::Last));
+        assert!(!ticks.fetches(true), "served clears it");
     }
 
     /// A SIGHUP's reload serves the lists on disk: nothing stays pending and the backoff starts again.
