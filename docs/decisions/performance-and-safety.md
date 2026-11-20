@@ -225,14 +225,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   RFC 6891 §6.1.2 allows, adds 1 to ARCOUNT and writes the record, else changes nothing (9 s); a client subnet of up to
   8 bytes decodes and encodes back (RFC 7871 §6, 3 s); NSEC type bit maps of up to 6 bytes, `contains` agreeing with
   `types` (RFC 4034 §4.1.2, 4.6 min); the cache's `whole_cut` against its spec on 3 bytes of bits (6 s); a CoAP option nibble for every `u32` (RFC 7252
-  §3.1, 0.3 s); ODoH's message and plaintext of up to 8 bytes parse and encode back (RFC 9230 §6.1, 9 s and 15 s).
+  §3.1, 0.3 s); ODoH's message and plaintext of up to 8 bytes parse and encode back (RFC 9230 §6.1, 7 s and 13 s,
+  2026-11-20).
   Dropped, over 10 min: the name table's `add`, `find` and `truncate` (3 names in one home group, the comparison
   with the message stubbed: no end in 15 min, 19 million variables, as every slot of 256 is symbolic), and a parsed
   CoAP message writing back its bytes (no end in 10 min at 8 bytes: each option a `Vec`), left to the fuzzer. `just
   kani <package>` runs a package's proofs; `kani.yml` a job per package holding a `#[kani::proof]`. `just kani-fast`
   runs those of under a minute, listed in it, on each pull request in `deep.yml`, informational (68 s warm, against
   12 min for dedens-proto's 7 alone); a name matching no proof fails it. A slice compared at a symbolic length
-  needs `#[kani::unwind]`: without it CBMC unrolls `memcmp` without end. `--harness` picks each proof whose path
+  needs `#[kani::unwind]`: without it CBMC unrolls `memcmp` without end. A `Vec::with_capacity` of a symbolic
+  length is an object of unknown size to CBMC: sized from the parsed lengths, ODoH's two proofs passed 2 GB in a
+  minute and ran out of memory on the runner in 5; their buffers start empty under `cfg(kani)`, the bytes the same.
+  `--harness` picks each proof whose path
   holds the name; `--exact` with the path picks one. cargo-mutants skips every `proofs::` function and `src/proofs.rs`, built only
   under `cfg(kani)`. Tried with `-Z stubbing` (unstable) and dropped, the whole message left to the fuzzer:
   walking a message, `Name::decode` standing in by what `name_decoding` proves, ran out of memory at 11 bytes past
