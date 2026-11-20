@@ -486,6 +486,18 @@ measured. The medians' gaps, both ways, are the load's.
   `hit` 99.4 / 143 → 100 / 144. `read` of the heads 17.6 → 18.7 µs (+6%: the hashes are sorted and deduplicated
   on the way). `check` (the download's check, 11 µs) is now `parse` (13.7-14.1 µs: it hashes the names, which the
   reload's second read did); `merge` of the heads into one side 0.47-0.50 µs.
+- The read as `user` after the drop (D122, audit 4 of `dedensd`). Apple M5, macOS, release, a throwaway test of
+  `lib.rs` (the drop itself is Linux only): a blocklist stage of one `file`, 2M generated names (`h<16 hex>.example`,
+  not kept), `build` once as root then once more as the start does after the drop, 3 runs. Before, the second read
+  had a fresh `Store`; after, the first one's, and the first pipeline as `previous`. `ps` RSS with both reads held,
+  as `main` held them (the first `Config` and `Store` lived as long as it), 2 runs:
+
+  | | before | after |
+  |---|---|---|
+  | first read | 0.58-0.67 s | same |
+  | second read | 0.59-0.69 s | 0.2-3.1 ms |
+  | RSS, one read | 77 MB | 79 MB |
+  | RSS, both held | 136-143 MB | 79 MB |
 
 ## DoH core (D82)
 
