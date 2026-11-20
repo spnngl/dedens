@@ -2093,9 +2093,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     and resolves `. DNSKEY` through `Pipeline::root_keys` beside the query it serves, as priming (D195): no client,
     no validation (`Rollover` verifies), and the `RRset` cache may answer, its TTL bounding the age. The answer, its
     RRSIGs with it (empty when it failed), goes to the thread reloading, which observes it, saves the state, sets
-    the next time and reloads (D55's last configuration) when the anchors trusted changed. A server with no
-    queries asks nothing; a start asks at the first query. A task that took the query and was dropped or panicked
-    hands an empty answer (a guard, `Probe::take`), a failure asked again in an hour, not left unasked. `dedensd_root_key_probes_total{outcome}`: `followed`,
+    the next time and reloads (D55's last configuration) when the anchors trusted changed; a reload that fails
+    (the file edited badly since) is tried again on the next tick (D104), the state being saved already. A server
+    with no queries asks nothing; a start asks at the first query. A task that took the query and was dropped or
+    panicked hands an empty answer (a guard, `Probe::take`), a failure asked again in an hour, not left unasked.
+    `dedensd_root_key_probes_total{outcome}`: `followed`,
     `failed`.
   - Test data: `testdata/dnssec/rollover-*.zone` (`just capture-rollover`), the root's DNSKEY `RRset` and its
     RRSIGs from the Internet Archive's copies of `https://www.internic.net/domain/root.zone`, through the
