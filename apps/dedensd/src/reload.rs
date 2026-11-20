@@ -461,16 +461,16 @@ mod tests {
         let (probe, mut following, now) = (Probe::default(), false, unix_seconds());
         follow(&probe, &mut following, false);
         assert!(!following);
-        assert!(!probe.take(now));
+        assert!(probe.take(now).is_none());
         follow(&probe, &mut following, true);
         assert!(following);
-        assert!(probe.take(now));
+        assert!(probe.take(now).is_some());
         follow(&probe, &mut following, true);
-        assert!(!probe.take(now), "asked once");
+        assert!(probe.take(now).is_none(), "asked once");
         probe.wait(now, 0);
         follow(&probe, &mut following, false);
         assert!(!following);
-        assert!(!probe.take(now), "asked no more");
+        assert!(probe.take(now).is_none(), "asked no more");
     }
 
     /// D200: an answer of the root's keys reloads once the anchors trusted changed, a SIGHUP reloads the file with
@@ -503,8 +503,8 @@ mod tests {
         );
         assert_eq!(pending, None, "KSK-2017 pending");
         assert!(dir.join(STATE).exists());
-        assert!(!probe.take(JULY_2017), "asked again in a day");
-        assert!(probe.take(JULY_2017 + 86_400));
+        assert!(probe.take(JULY_2017).is_none(), "asked again in a day");
+        assert!(probe.take(JULY_2017 + 86_400).is_some());
 
         let queued = [keys("20170816120412"), Wake::Hangup].into_iter();
         let hangup = woken(Wake::Hangup, queued, followed, dir, &mut store, AUGUST_2017);
