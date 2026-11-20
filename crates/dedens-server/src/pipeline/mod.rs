@@ -1021,6 +1021,17 @@ impl Pipeline {
             Stage::Cache(_) | Stage::Forward(_) | Stage::Plugin(_) => None,
         })
     }
+
+    /// The query of the root's DNSKEY `RRset` by the first recurse stage, for the server itself (RFC 5011 §2.3,
+    /// D200): stepped as a client's resolution, its answer, from the stage's `RRset` cache or the root's servers,
+    /// is not validated, and [`Pipeline::resolved`] writes no reply for it.
+    #[must_use]
+    pub fn root_keys(&self) -> Option<Box<Resolving>> {
+        self.stages.iter().find_map(|stage| match stage {
+            Stage::Recurse(recurse) => Some(recurse.root_keys()),
+            Stage::Cache(_) | Stage::Forward(_) | Stage::Plugin(_) => None,
+        })
+    }
 }
 
 impl Upstream {

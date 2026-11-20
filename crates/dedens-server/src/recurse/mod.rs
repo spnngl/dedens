@@ -233,11 +233,27 @@ impl Recurse {
             asker: Asker::Priming(Priming(Arc::clone(&self.priming))),
         }))
     }
+
+    /// The root's DNSKEY `RRset` asked for the server itself, not validated: the caller follows the root's trust
+    /// anchors with it, checking its signatures (RFC 5011 §2.3, D200).
+    pub(crate) fn root_keys(&self) -> Box<Resolving> {
+        Box::new(Resolving {
+            state: State::Ready,
+            question: Question::new(Name::root(), RecordType::DNSKEY),
+            caches: Arc::clone(&self.caches),
+            limits: self.limits,
+            minimisation: self.minimisation,
+            paid: 0,
+            payer: None,
+            validation: None,
+            asker: Asker::RootKeys,
+        })
+    }
 }
 
-/// A client's question to resolve, or the priming of the root's servers: step it, send each [`Query`] it gives to
-/// its server, hand back the reply, until [`Turn::Done`]; then [`Pipeline::resolved`](crate::Pipeline::resolved)
-/// writes the client's reply.
+/// A client's question to resolve, the priming of the root's servers or the root's keys asked (D200): step it,
+/// send each [`Query`] it gives to its server, hand back the reply, until [`Turn::Done`]; then
+/// [`Pipeline::resolved`](crate::Pipeline::resolved) writes the client's reply.
 #[derive(Debug)]
 pub struct Resolving {
     question: Question<'static>,
@@ -310,6 +326,7 @@ pub(crate) enum Ended {
 pub(crate) enum Asker {
     Client(Asking),
     Priming(#[expect(dead_code, reason = "held until the priming ends, for its drop")] Priming),
+    RootKeys,
 }
 
 /// A client's query, as its reply needs it.
