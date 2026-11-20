@@ -106,8 +106,7 @@ pub(super) async fn resolve<N: Io>(
     };
     // The root's keys, when due, for the thread reloading to follow its trust anchors by (RFC 5011 §2.3, D200).
     let keys = async {
-        let probe = thread.current.probe();
-        if probe.take(unix_seconds()) {
+        if let Some(taken) = thread.current.probe().take(unix_seconds()) {
             let mut answer = Vec::new();
             if let Some(mut keys) = pipeline.root_keys() {
                 drive(thread, &mut keys).await;
@@ -118,7 +117,7 @@ pub(super) async fn resolve<N: Io>(
                     resolved => tracing::debug!(?resolved, "the root's keys not resolved"),
                 }
             }
-            probe.answered(answer);
+            taken.answered(answer);
         }
     };
     let reply = async {

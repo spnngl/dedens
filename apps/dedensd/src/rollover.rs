@@ -81,18 +81,23 @@ impl Probe {
         let _ = self.reload.set(reload);
     }
 
-    /// Whether the root's keys are due at `now`: then this caller, alone, asks them and hands the answer to
-    /// [`Probe::answered`].
-    pub(crate) fn take(&self, now: u64) -> bool {
+    /// The hand to ask the root's keys with when they are due at `now`: this caller, alone, asks them and hands
+    /// the answer to [`Taken::answered`]. Dropping it unanswered, a panic or a cancelled task, hands an empty
+    /// answer, a failure asked again after [`RETRY`]: the keys are never left unasked until a restart.
+    pub(crate) fn take(&self, now: u64) -> Option<Taken<'_>> {
         let due = self.due.load(Ordering::Acquire);
-        now >= due
+        let taken = now >= due
             && (self.due)
                 .compare_exchange(due, NEVER, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
+                .is_ok();
+        taken.then(|| Taken {
+            probe: self,
+            answer: Vec::new(),
+        })
     }
 
     /// Hands `answer`, the root's DNSKEY `RRset` and its signatures, to the thread reloading.
-    pub(crate) fn answered(&self, answer: Vec<Record<'static>>) {
+    fn send(&self, answer: Vec<Record<'static>>) {
         if let Some(reload) = self.reload.get() {
             let _ = reload.send(Wake::RootKeys(answer));
         }
@@ -111,6 +116,27 @@ impl Probe {
     /// Asks them no more: no stage follows them.
     pub(crate) fn stop(&self) {
         self.due.store(NEVER, Ordering::Release);
+    }
+}
+
+/// The right to ask the root's keys that [`Probe::take`] gave, which hands an answer to the thread reloading when
+/// dropped: the one of [`Taken::answered`], else an empty one.
+#[derive(Debug)]
+pub(crate) struct Taken<'a> {
+    probe: &'a Probe,
+    answer: Vec<Record<'static>>,
+}
+
+impl Taken<'_> {
+    /// Hands `answer`, the root's DNSKEY `RRset` and its signatures, to the thread reloading.
+    pub(crate) fn answered(mut self, answer: Vec<Record<'static>>) {
+        self.answer = answer;
+    }
+}
+
+impl Drop for Taken<'_> {
+    fn drop(&mut self) {
+        self.probe.send(std::mem::take(&mut self.answer));
     }
 }
 
@@ -272,6 +298,8 @@ fn read(state_dir: &Path) -> Option<Rollover> {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::fs;
+    use std::pin::pin;
+    use std::task::{Context, Waker};
 
     use dedens_proto::{ZoneEntry, ZoneReader};
     use metrics_util::debugging::DebugValue;
@@ -550,19 +578,49 @@ pub(crate) mod tests {
     #[test]
     fn the_root_keys_are_asked_once_when_due() {
         let probe = Probe::default();
-        assert!(!probe.take(0), "no stage follows them");
+        assert!(probe.take(0).is_none(), "no stage follows them");
         probe.start(10);
-        assert!(!probe.take(9));
-        assert!(probe.take(10));
-        assert!(!probe.take(11), "taken");
+        assert!(probe.take(9).is_none());
+        assert!(probe.take(10).is_some());
+        assert!(probe.take(11).is_none(), "taken");
         probe.wait(11, 5);
-        assert!(!probe.take(15));
-        assert!(probe.take(16));
+        assert!(probe.take(15).is_none());
+        assert!(probe.take(16).is_some());
         probe.stop();
-        assert!(!probe.take(NEVER - 1));
+        assert!(probe.take(NEVER - 1).is_none());
         let (reload, wakes) = mpsc::channel();
         probe.connect(reload);
-        probe.answered(Vec::new());
+        probe.start(0);
+        let taken = probe.take(0).expect("due");
+        taken.answered(snapshot("20170716113230"));
+        assert!(matches!(wakes.try_recv(), Ok(Wake::RootKeys(answer)) if !answer.is_empty()));
+        assert!(wakes.try_recv().is_err(), "answered once");
+    }
+
+    /// D200: a task that took the root's keys and was dropped or panicked before answering hands an empty answer,
+    /// which the thread reloading asks again after an hour, rather than leaving them unasked until a restart.
+    #[test]
+    fn the_root_keys_taken_and_never_answered_fail_and_are_asked_again() {
+        let (probe, (reload, wakes)) = (Probe::default(), mpsc::channel());
+        probe.connect(reload);
+        probe.start(0);
+        {
+            let mut asking = pin!(async {
+                let _taken = probe.take(0).expect("due");
+                std::future::pending::<()>().await;
+            });
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(asking.as_mut().poll(&mut cx).is_pending());
+            assert!(wakes.try_recv().is_err(), "still asking");
+        }
+        assert!(matches!(wakes.try_recv(), Ok(Wake::RootKeys(answer)) if answer.is_empty()));
+
+        let panicked = std::panic::catch_unwind(|| {
+            probe.start(0);
+            let _taken = probe.take(0).expect("due");
+            panic!("the keys future");
+        });
+        assert!(panicked.is_err());
         assert!(matches!(wakes.try_recv(), Ok(Wake::RootKeys(answer)) if answer.is_empty()));
     }
 }
