@@ -102,6 +102,8 @@
 //!     client_share: {rate: 1000, burst: 2000}  # queries to authoritative servers a client network may send (D117)
 //!     rrset_cache_bytes: 134217728   # the RRsets learnt (D193)
 //!     infra_cache_bytes: 4194304     # the servers' round-trip times and quirks (D194)
+//!     # root_hints: /etc/dedensd/root.hints  # a private root's servers, zone text as named.root, in place of
+//!     #                                      # the bundled hints and the TLD hints (D201)
 //!     dnssec: off                    # or validate, with trust_anchors and insecure as a forward stage's (D197)
 //! ```
 
