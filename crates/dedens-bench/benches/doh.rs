@@ -80,7 +80,10 @@ fn server_request_get(bencher: Bencher<'_, '_>, case: &str) {
 #[divan::bench(args = CASES)]
 fn server_response_get(bencher: Bencher<'_, '_>, case: &str) {
     let body = captured(case);
-    bencher.bench_local(|| {
-        server_response(black_box(body.clone()), &http::Method::GET).expect("a response")
-    });
+    // The copy of the body the call takes is made outside the timing.
+    bencher
+        .with_inputs(|| body.clone())
+        .bench_local_values(|body| {
+            server_response(black_box(body), &http::Method::GET).expect("a response")
+        });
 }
