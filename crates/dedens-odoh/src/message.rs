@@ -89,9 +89,11 @@ impl Message {
     /// The bytes of the message.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            1 + self.key_id.encoded_len() + self.encrypted_message.encoded_len(),
-        );
+        let mut out = buffer(&[
+            1,
+            self.key_id.encoded_len(),
+            self.encrypted_message.encoded_len(),
+        ]);
         out.push(self.message_type.byte());
         self.key_id.put(&mut out);
         self.encrypted_message.put(&mut out);
@@ -209,11 +211,22 @@ pub(crate) fn encode_plaintext(
 /// reallocation leaves a copy of a query's plaintext behind, unwiped.
 fn put_plaintext(dns_message: &Field<impl AsRef<[u8]>>, padding: u16, spare: usize) -> Vec<u8> {
     let padding_len = usize::from(padding);
-    let mut out = Vec::with_capacity(dns_message.encoded_len() + 2 + padding_len + spare);
+    let mut out = buffer(&[dns_message.encoded_len(), 2, padding_len, spare]);
     dns_message.put(&mut out);
     out.extend_from_slice(&padding.to_be_bytes());
     out.resize(out.len() + padding_len, 0);
     out
+}
+
+/// An empty buffer with room for the sum of `parts` bytes, under Kani for none: CBMC holds an allocation of symbolic
+/// size as an array of unknown length, and the proofs below ran out of memory on it (D179). The bytes written are
+/// the same.
+fn buffer(parts: &[usize]) -> Vec<u8> {
+    if cfg!(kani) {
+        Vec::new()
+    } else {
+        Vec::with_capacity(parts.iter().sum())
+    }
 }
 
 /// The block a query is padded to (RFC 8467 §4.1).
