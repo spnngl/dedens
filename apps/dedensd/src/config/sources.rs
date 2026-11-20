@@ -791,7 +791,8 @@ mod tests {
         let text = validating(state.path());
         let mut store = Store::default();
         let mut build = |previous: &Pipeline| {
-            crate::config::read(&text, env, previous, &mut store).map(|config| config.pipeline)
+            crate::config::read(&text, env, (previous, None), &mut store)
+                .map(|config| config.pipeline)
         };
         let parts = |pipeline: &Pipeline| match pipeline.stages() {
             [Stage::Cache(cache), Stage::Forward(forward)] => (
@@ -829,8 +830,13 @@ mod tests {
         // A kept file that does not read keeps the anchors in use on reload, and refuses a start (D115).
         fs::write(&file, "dedens root anchors 2\n").unwrap();
         assert_eq!(parts(&build(&same).unwrap()).2, tag);
-        let error = crate::config::read(&text, env, &Pipeline::default(), &mut Store::default())
-            .unwrap_err();
+        let error = crate::config::read(
+            &text,
+            env,
+            (&Pipeline::default(), None),
+            &mut Store::default(),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("line 1"), "{error:#}");
     }
 
@@ -847,8 +853,13 @@ mod tests {
             )
         };
         let build = |text: &str| {
-            crate::config::read(text, env, &Pipeline::default(), &mut Store::default())
-                .map(|config| config.pipeline)
+            crate::config::read(
+                text,
+                env,
+                (&Pipeline::default(), None),
+                &mut Store::default(),
+            )
+            .map(|config| config.pipeline)
         };
         let tag = |pipeline: &Pipeline| match pipeline.stages() {
             [Stage::Cache(_), Stage::Recurse(recurse)] => {
@@ -893,7 +904,7 @@ mod tests {
         fs::write(state.path().join(roots::ANCHORS), undated).unwrap();
         let text = validating(state.path());
         let mut store = Store::default();
-        let started = crate::config::read(&text, env, &Pipeline::default(), &mut store)
+        let started = crate::config::read(&text, env, (&Pipeline::default(), None), &mut store)
             .unwrap()
             .pipeline;
         let tag = validation_tag(&started);
@@ -903,7 +914,7 @@ mod tests {
                 .all(|key| tag.contains(key)),
             "{tag}"
         );
-        let reloaded = crate::config::read(&text, env, &started, &mut store)
+        let reloaded = crate::config::read(&text, env, (&started, None), &mut store)
             .unwrap()
             .pipeline;
         assert_eq!(validation_tag(&reloaded), tag);

@@ -572,9 +572,13 @@ mod tests {
         let text = format!(
             "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    {stage}\n    timeout_ms: 200\n    tries: 1\n"
         );
-        let config =
-            crate::config::read(&text, |_| None, &Pipeline::default(), &mut Store::default())
-                .expect("read");
+        let config = crate::config::read(
+            &text,
+            |_| None,
+            (&Pipeline::default(), None),
+            &mut Store::default(),
+        )
+        .expect("read");
         let thread = Thread::new(Arc::new(Current::new(config.pipeline)), 1, Trust::default());
         let pipeline = thread.pipeline();
         let mut out = vec![0; 65535];
@@ -622,7 +626,7 @@ mod tests {
             let config = crate::config::read(
                 &text,
                 |_| None,
-                &Pipeline::default(),
+                (&Pipeline::default(), None),
                 &mut Store::default(),
             )
             .expect("read");

@@ -478,9 +478,13 @@ mod tests {
     #[test]
     fn a_tcp_query_without_upstream_room_gets_servfail() {
         let text = "listen: ['127.0.0.1:53']\npipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
-        let config =
-            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
-                .expect("read");
+        let config = crate::config::read(
+            text,
+            |_| None,
+            (&Pipeline::default(), None),
+            &mut Store::default(),
+        )
+        .expect("read");
         let thread = Rc::new(Thread::new(
             Arc::new(Current::new(config.pipeline)),
             0,
@@ -715,9 +719,13 @@ mod tests {
     #[test]
     fn a_connection_whose_writer_gave_up_asks_nothing_more() {
         let text = "listen: ['127.0.0.1:53']\npipeline: [hosts, up]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 www.example']\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
-        let config =
-            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
-                .expect("read");
+        let config = crate::config::read(
+            text,
+            |_| None,
+            (&Pipeline::default(), None),
+            &mut Store::default(),
+        )
+        .expect("read");
         let thread = Rc::new(Thread::new(
             Arc::new(Current::new(config.pipeline)),
             8,

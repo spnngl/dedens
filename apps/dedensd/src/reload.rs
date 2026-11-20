@@ -296,7 +296,12 @@ fn reload(
             Read::File => crate::read(file)?,
             Read::Last => text.clone(),
         };
-        let new = crate::build(file, &new_text, &current.get(), store)?;
+        let new = crate::build(
+            file,
+            &new_text,
+            (&current.get(), Some(fixed.threads)),
+            store,
+        )?;
         *text = new_text;
         anyhow::Ok(new)
     })

@@ -543,7 +543,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   query costs at most `Allowance::per_query` (256), the sum over its chase: past it the verdict is indeterminate
   (EDE 5, validation ran, failure held as any). All the queries share a token bucket in `Validating` (clones share
   it; `Validating::allowing`; defaults `Allowance::serving(threads)`: `per_second` 10 000 for every two serving
-  threads, one at least, `burst` two seconds of it): `Pipeline::query`, before the client's
+  threads, one at least, `burst` two seconds of it; the threads serving since the start, which a reload does not
+  change): `Pipeline::query`, before the client's
   question is sent, takes a unit if the bucket has one left, and the query that finds none waits for one on its
   thread (D186), then, still without one, is answered SERVFAIL with EDE 14 (Not Ready) and nothing is asked, decoded or validated (`dedens_validations_total{verdict="shed"}`);
   the work of the validations is charged to it as it runs, so it can go into debt (at most the in-flight queries'

@@ -103,7 +103,7 @@ pub fn main() -> anyhow::Result<()> {
     let path = file.display();
     let mut text = read(&file)?;
     let mut store = Store::default();
-    let mut config = build(&file, &text, &Pipeline::default(), &mut store)?;
+    let mut config = build(&file, &text, (&Pipeline::default(), None), &mut store)?;
     // The keys are read here, once: `validate` checks they read.
     let services = Services::new(&config)?;
     if let Some(Command::Validate) = args.command {
@@ -439,7 +439,12 @@ fn drop_root(
     }
     let mut again = || -> anyhow::Result<_> {
         let text = read(file)?;
-        let config = build(file, &text, &previous.pipeline, store)?;
+        let config = build(
+            file,
+            &text,
+            (&previous.pipeline, Some(previous.threads)),
+            store,
+        )?;
         Ok((text, config))
     };
     again()
@@ -447,7 +452,8 @@ fn drop_root(
         .context("after dropping to `user`, the configuration or a file it names cannot be read: make them readable by it (D122)")
 }
 
-/// The configuration `text`, read from `file`, its cache stage that of `previous` while its settings are the same.
+/// The configuration `text`, read from `file`, its cache stage that of `previous` while its settings are the same,
+/// for a server serving with `started` threads, `None` before it starts.
 ///
 /// # Errors
 ///
@@ -455,7 +461,7 @@ fn drop_root(
 fn build(
     file: &Path,
     text: &str,
-    previous: &Pipeline,
+    previous: (&Pipeline, Option<usize>),
     store: &mut Store,
 ) -> anyhow::Result<Config> {
     config::read(text, |name| std::env::var(name).ok(), previous, store)

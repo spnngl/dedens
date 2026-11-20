@@ -836,9 +836,13 @@ mod tests {
     #[test]
     fn a_hit_to_prefetch_is_sent_then_asked_upstream() {
         let text = "listen: ['127.0.0.1:53']\npipeline: [cache, up]\nstages:\n  cache:\n    type: cache\n    prefetch_percent: 100\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
-        let config =
-            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
-                .expect("read");
+        let config = crate::config::read(
+            text,
+            |_| None,
+            (&Pipeline::default(), None),
+            &mut Store::default(),
+        )
+        .expect("read");
         let thread = Thread::new(Arc::new(Current::new(config.pipeline)), 1, Trust::default());
         let pipeline = thread.pipeline();
         let (query, response) = example_com_a();
@@ -911,9 +915,13 @@ mod tests {
     /// A thread whose pipeline answers `www.example` A at once, with no upstream.
     pub(super) fn answering() -> Rc<Thread> {
         let text = "listen: ['127.0.0.1:53']\npipeline: [hosts]\nstages:\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 www.example']\n";
-        let config =
-            crate::config::read(text, |_| None, &Pipeline::default(), &mut Store::default())
-                .expect("read");
+        let config = crate::config::read(
+            text,
+            |_| None,
+            (&Pipeline::default(), None),
+            &mut Store::default(),
+        )
+        .expect("read");
         let current = Arc::new(Current::new(config.pipeline));
         Rc::new(Thread::new(current, 0, Trust::default()))
     }
