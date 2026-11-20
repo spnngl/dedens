@@ -1762,7 +1762,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     always (RFC 5452 §4.4); a `480 s` blacklist, which Unbound's `BLACKLIST_PENALTY` is not: 480,000 ms added to a
     server's RTT for one query (`iterator/iterator.c`), the iterator's (step 04) to apply.
     Open: times per (address, zone) if a server is measured slow for one zone only (TODECIDE).
-- D195 (amended by D197; builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
+- D195 (amended by D197, D201; builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
   from the root, `Stage::Recurse` behind the cache stage where a forwarder has a forward stage.
   - Shape: `dedens_server::Recurse` holds the resolver's caches (`Arc<Caches>`: RRsets D193, servers D194, the root
     and TLD hints D126), `Limits` (D191), the locally served zones and the client budget. Sans-IO as the rest of the
@@ -1791,8 +1791,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     next resolution after its expiry primes again (§3.1); `dedensd` logs what the priming came to
     (`Resolving::resolved`), a warning when it got no answer. Meanwhile resolutions go on from the hints: D191 asks the
     TLD hints for a TLD's servers, the root hints for the rest, so no client waits for the priming (§3's choice).
-    The hints are the bundled ones (D126): D128 refreshes the TLD list and the root's trust anchors into
-    `state_dir`, not `named.root`, so the step file's "refreshed copy" is not built (TODECIDE).
+    The hints are the bundled ones (D126) unless `root_hints` names a `named.root`-style file (D201: the root of a
+    private network, the bench's; the TLD hints are then not used either). D128 refreshes the TLD list and the
+    root's trust anchors into `state_dir`, not `named.root`, so the step file's "refreshed copy" is not built
+    (TODECIDE).
   - Locally served zones, class IN's, answered by the stage with AA and no query (another class goes on to the
     resolution, which refuses it): RFC 6303 §4's reverse zones (the RFC 1918
     ranges, 0, 127, 169.254, the TEST-NETs, 255.255.255.255, `::`, `::1`, `fe80::/10`, `fd00::/8`, the IPv6

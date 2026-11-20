@@ -278,7 +278,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
 
 ## Recursive resolver
 
-- Root hints: the recurse stage primes from the bundled hints (D126, D195); D128 refreshes the TLD list and the
+- Root hints: the recurse stage primes from the bundled hints (D126, D195) unless `root_hints` names a file (D201); D128 refreshes the TLD list and the
   root's trust anchors into `state_dir`, not `named.root`. A root server renumbered after a release is asked until
   priming learns its new address from the others. Default: fetch IANA's `named.root` with the TLD list (D128),
   read it at start, the bundled copy as fallback.
