@@ -16,8 +16,8 @@ const INDEX: &str = "docs/decisions/README.md";
 const COVERAGE: &str = "docs/rfc/coverage.md";
 /// Extensions of the text files that cite decisions, anywhere in the tree; a file with none (`justfile`,
 /// `Containerfile`) does too. RFC archives (`.txt`) and captured data are not read.
-const CITING_EXTENSIONS: [&str; 10] = [
-    "rs", "md", "toml", "yaml", "yml", "sh", "go", "c", "py", "nu",
+const CITING_EXTENSIONS: [&str; 12] = [
+    "rs", "md", "toml", "yaml", "yml", "sh", "go", "c", "py", "nu", "json5", "dict",
 ];
 /// The folder whose files all cite decisions, whatever their extension: man pages, systemd units, package scripts.
 const CITING_FOLDER: &str = "deploy/";
