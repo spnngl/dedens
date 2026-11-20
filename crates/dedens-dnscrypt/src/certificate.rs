@@ -28,8 +28,9 @@ const ANON_MAGIC_PREFIX: [u8; 8] = [0xff; 8];
 /// The 8 bytes that open every query built from a certificate and tell the resolver which certificate, so which
 /// secret key, the query is for (draft "Certificates": `<client-magic>`).
 ///
-/// Never one the draft forbids: eight 0xff bytes, which an Anonymized `DNSCrypt` relay would read as its own prefix,
-/// seven NUL bytes first, which look like QUIC (RFC 9000), and the `PQDNSCrypt` `<resume-magic>`.
+/// Never one the draft forbids, seven NUL bytes first, which look like QUIC (RFC 9000), and the `PQDNSCrypt`
+/// `<resume-magic>`; nor, by this crate's own rule, eight 0xff bytes, which an Anonymized `DNSCrypt` relay would read
+/// as the start of its `<anon-magic>`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClientMagic([u8; 8]);
 

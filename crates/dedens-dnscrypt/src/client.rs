@@ -140,7 +140,9 @@ impl ClientSession {
     /// The session with the resolver of `certificate`, an X-Wing one: a fresh encapsulation, whose ciphertext is
     /// the `<client-pk>` of the queries of the session (draft "PQ Key Derivation").
     ///
-    /// A client that does not want a resolver to link its queries makes one session per query.
+    /// The draft has the ciphertext "freshly generated for every query" ("PQ Certificates"), and its forward secrecy
+    /// rests on it ("PQ Security Considerations"): make one session per query, as `dedens-net` does. Reused, the
+    /// session links its queries and shares one key among them.
     ///
     /// # Errors
     ///
@@ -264,7 +266,7 @@ impl Resumption {
     }
 
     /// When the ticket expires, in Unix seconds, if it was received at `received_at`: the resolver's lifetime,
-    /// cut short at the end of the certificate (draft "Resumption Tickets").
+    /// cut short at the end of the certificate (draft "Issuing a Ticket").
     #[must_use]
     pub fn expires_at(&self, received_at: u64) -> u64 {
         received_at
@@ -408,8 +410,8 @@ impl QueryContext {
             .split_at_checked(usize::from(u16::from_be_bytes(*len)))
             .ok_or(ResponseError::Control)?;
         let offer = TicketOffer::parse(control).map_err(|ControlError| ResponseError::Control)?;
-        // "It MAY ignore tickets that are too large for its supported query size" (draft "Resumption Tickets"): one
-        // whose resumed query, at the 256 bytes a classical UDP query starts at, would not fit the largest packet.
+        // A ticket whose resumed query, at the 256 bytes a classical UDP query starts at, would not fit the largest
+        // packet is ignored, as `dnscrypt-proxy` does; the draft sets no limit ("Issuing a Ticket").
         let fits = |ticket: &[u8]| {
             resumed_head_len(ticket.len()) + NONCE_HALF_LEN + TAG_LEN + RESUMED_UDP_FLOOR
                 <= MAX_PACKET_LEN
@@ -473,9 +475,9 @@ mod tests {
         context.open_response(&packet)
     }
 
-    /// Draft "Resumption Tickets": a client MAY ignore a ticket too large for its query size, as `dnscrypt-proxy`
-    /// does (`pq.go`) when the resumed query, 256 bytes at least, would not fit the largest packet: the response
-    /// is kept, the ticket is not. The largest ticket that fits is kept.
+    /// A ticket too large for a resumed query is ignored, as `dnscrypt-proxy` does (`pq.go`) when the resumed query,
+    /// 256 bytes at least, would not fit the largest packet: the response is kept, the ticket is not. The largest
+    /// ticket that fits is kept.
     #[test]
     fn a_ticket_too_large_for_a_resumed_query_is_ignored() {
         // "PQResume" (8), the two-byte length and the draft's 130-byte ticket: the 140 bytes before the nonce of the
