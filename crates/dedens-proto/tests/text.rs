@@ -246,6 +246,35 @@ fn rdata_over_65535_bytes_is_refused() {
     );
 }
 
+/// RFC 3597 §5: the length after `\#` is the bytes of the hex that follows, and a hex longer than it is refused as
+/// soon as it is, not read to its end: a token after the excess, malformed, is not what the error is about.
+#[test]
+fn generic_rdata_must_hold_its_declared_length() {
+    assert_eq!(
+        error(r"x. 60 TYPE731 \# 3 4142"),
+        (
+            1,
+            15,
+            TextErrorKind::GenericLength {
+                declared: 3,
+                actual: 2
+            }
+        )
+    );
+    assert_eq!(
+        error(r"x. 60 TYPE731 \# 1 4142"),
+        (1, 15, TextErrorKind::GenericTooLong { declared: 1 })
+    );
+    assert_eq!(
+        error(r"x. 60 TYPE731 \# 1 4142 zz"),
+        (1, 15, TextErrorKind::GenericTooLong { declared: 1 })
+    );
+    assert_eq!(
+        error(r"x. 60 TYPE731 \# 1 41 zz"),
+        (1, 23, TextErrorKind::Invalid("hex RDATA"))
+    );
+}
+
 /// RFC 1035 §5.1: only a token that starts with `"` is quoted; names are never quoted.
 #[test]
 fn quotes_start_tokens_and_never_names() {

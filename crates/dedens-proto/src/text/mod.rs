@@ -68,13 +68,20 @@ pub enum TextErrorKind {
     /// A type without a text form here: its RDATA must be written `\# length hex` (RFC 3597 §5).
     #[error("this type has no text form here: write its RDATA as \\# length hex")]
     NeedsGeneric,
-    /// The length of a generic RDATA does not match its hex bytes.
+    /// The hex of a generic RDATA holds fewer bytes than the length written after `\#`.
     #[error("\\# declares {declared} bytes, the hex holds {actual}")]
     GenericLength {
         /// The length written after `\#`.
         declared: usize,
-        /// The bytes the hex holds.
+        /// The bytes the hex holds: fewer than `declared`.
         actual: usize,
+    },
+    /// The hex of a generic RDATA holds more bytes than the length written after `\#`; reading stopped at the first
+    /// token that went past it.
+    #[error("\\# declares {declared} bytes, the hex holds more")]
+    GenericTooLong {
+        /// The length written after `\#`.
+        declared: usize,
     },
     /// Generic RDATA of a known type that is not valid for it.
     #[error("RDATA invalid for its type: {0}")]
