@@ -138,7 +138,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   one `io_uring` receive did both, cost no CPU or latency the runs see (`docs/benchmarks.md`, "One receive buffer
   per pool"). A socket error goes to the queries that sent on
   it, each counting it as a lost try, as does a send refused for an earlier datagram's ICMP error (another send
-  error ends the exchange); errors in a row pause the socket's task 10 ms. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
+  error ends the exchange, and the socket is left: the next query on its slot opens another, as a socket connected
+  from an address the host lost fails every send, the route of its source gone; audit 4); errors in a row pause the socket's task 10 ms. Forwarding to a second `dedensd` (`just bench-dnsperf HEAD forward`): about 125k → 127k queries/s,
   the upstream on one core being the limit there. Rejected: renewing sockets on a timer (no attack measured
   against a kept port yet); muxing by question too (the exchange checks it).
 - D51 (amended by D107, D123) The io_uring of a serving thread runs completion work cooperatively (`COOP_TASKRUN` and `TASKRUN_FLAG`,

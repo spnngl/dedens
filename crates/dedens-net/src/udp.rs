@@ -11,7 +11,7 @@
 
 #![deny(clippy::disallowed_methods)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::io;
@@ -28,7 +28,7 @@ use crate::io::{Compio, Io, Udp};
 /// flooded or slow does not take the room of the others on its socket (D108).
 const INBOX: usize = 4;
 
-/// Sockets per server, opened on first use and kept for the life of the pool.
+/// Sockets per server, opened on first use and kept until a send fails for a reason of their own.
 #[derive(Debug)]
 pub struct UdpPool<N: Io = Compio> {
     io: N,
@@ -75,12 +75,9 @@ impl<N: Io> UdpPool<N> {
     /// The socket cannot be opened or connected.
     pub async fn query(&self, server: SocketAddr, pick: usize, id: u16) -> io::Result<UdpQuery<N>> {
         let index = pick % self.size;
-        let open = self
-            .servers
-            .borrow()
-            .get(&server)
-            .and_then(|sockets| sockets[index].clone());
-        let mux = if let Some(mux) = open {
+        let open = |sockets: &Sockets<N>| sockets[index].clone().filter(|mux| !mux.left.get());
+        let kept = self.servers.borrow().get(&server).and_then(open);
+        let mux = if let Some(mux) = kept {
             mux
         } else {
             let mux =
@@ -90,7 +87,9 @@ impl<N: Io> UdpPool<N> {
             let sockets = servers
                 .entry(server)
                 .or_insert_with(|| vec![None; self.size].into_boxed_slice());
-            Rc::clone(sockets[index].get_or_insert(mux))
+            let mux = open(sockets).unwrap_or(mux);
+            sockets[index] = Some(Rc::clone(&mux));
+            mux
         };
         let token = mux.waiting.borrow_mut().add(id);
         Ok(UdpQuery { mux, token })
@@ -105,6 +104,8 @@ struct Mux<N: Io> {
     /// Its local address, asked once: a system call.
     local: SocketAddr,
     waiting: Rc<RefCell<Waiting>>,
+    /// A send failed for a reason of the socket's own: the next query takes another (D50).
+    left: Cell<bool>,
     /// Cancelled with the socket.
     _receiving: N::Task,
 }
@@ -128,6 +129,7 @@ impl<N: Io> Mux<N> {
             socket,
             local,
             waiting,
+            left: Cell::new(false),
             _receiving: receiving,
         })
     }
@@ -271,7 +273,9 @@ impl<N: Io> UdpQuery<N> {
         }
     }
 
-    /// Sends `wire` as one datagram; from then on, an error of the socket is the query's too.
+    /// Sends `wire` as one datagram; from then on, an error of the socket is the query's too. A send that fails
+    /// but for an earlier datagram's ICMP error leaves the socket to the queries on it: one connected from an address
+    /// the host no longer has fails every send, and the next query opens another (D50).
     ///
     /// # Errors
     ///
@@ -283,7 +287,12 @@ impl<N: Io> UdpQuery<N> {
             waiter.error = None;
         }
         let BufResult(sent, _) = self.mux.socket.send(wire.to_vec()).await;
-        if sent? == wire.len() {
+        let sent = sent.inspect_err(|error| {
+            if error.kind() != io::ErrorKind::ConnectionRefused {
+                self.mux.left.set(true);
+            }
+        })?;
+        if sent == wire.len() {
             Ok(())
         } else {
             Err(io::Error::new(
@@ -354,7 +363,7 @@ mod tests {
     const FAILS: usize = 4;
 
     /// A socket whose receives fail at once, [`FAILS`] times, with `ConnectionRefused` as after ICMP port
-    /// unreachables, or with `WouldBlock` as after a wake with nothing there.
+    /// unreachables, or with `WouldBlock` as after a wake with nothing there; its sends fail with the same error.
     #[derive(Debug)]
     struct Refusing {
         /// When each receive came.
@@ -376,8 +385,8 @@ mod tests {
                 if self.receives.borrow().len() == FAILS {
                     break;
                 }
-                let _ = Refused
-                    .timeout_at(Refused.now() + Duration::from_millis(10), pending::<()>())
+                let _ = Compio
+                    .timeout_at(Compio.now() + Duration::from_millis(10), pending::<()>())
                     .await;
             }
         }
@@ -391,11 +400,11 @@ mod tests {
 
     impl Udp for Refusing {
         fn local_addr(&self) -> io::Result<SocketAddr> {
-            Err(io::ErrorKind::NotConnected.into())
+            Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, 5353)))
         }
 
         fn connect(&self, _: SocketAddr) -> impl Future<Output = io::Result<()>> {
-            ready(Err(io::ErrorKind::Unsupported.into()))
+            ready(Ok(()))
         }
 
         fn recv<B: IoBufMut>(&self, _: B) -> impl Future<Output = BufResult<usize, B>> {
@@ -415,7 +424,7 @@ mod tests {
         }
 
         fn send<B: IoBuf>(&self, buffer: B) -> impl Future<Output = BufResult<usize, B>> {
-            ready(BufResult(Err(io::ErrorKind::Unsupported.into()), buffer))
+            ready(BufResult(Err(self.error.into()), buffer))
         }
 
         type Datagram = <compio::net::UdpSocket as Udp>::Datagram;
@@ -437,9 +446,9 @@ mod tests {
         }
     }
 
-    /// Compio with [`Refusing`] sockets.
+    /// Compio with [`Refusing`] sockets, failing with its error.
     #[derive(Debug, Clone)]
-    struct Refused;
+    struct Refused(io::ErrorKind);
 
     impl Io for Refused {
         type Udp = Refusing;
@@ -472,7 +481,7 @@ mod tests {
         }
 
         fn udp_bind(&self, _: SocketAddr) -> impl Future<Output = io::Result<Self::Udp>> {
-            ready(Ok(Refusing::default()))
+            ready(Ok(Refusing::failing(self.0)))
         }
 
         fn tcp_connect(&self, _: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> {
@@ -485,8 +494,8 @@ mod tests {
     #[compio::test]
     async fn an_error_after_an_error_pauses_the_receiving() {
         let socket = Rc::new(Refusing::default());
-        let _receiving = Refused.spawn(receive(
-            Refused,
+        let _receiving = Compio.spawn(receive(
+            Refused(io::ErrorKind::ConnectionRefused),
             Rc::clone(&socket),
             Rc::default(),
             Rc::default(),
@@ -514,8 +523,8 @@ mod tests {
         if let Some(waiter) = waiting.borrow_mut().waiter(token) {
             waiter.sent = true;
         }
-        let _receiving = Refused.spawn(receive(
-            Refused,
+        let _receiving = Compio.spawn(receive(
+            Refused(io::ErrorKind::ConnectionRefused),
             Rc::clone(&socket),
             Rc::clone(&waiting),
             Rc::default(),
@@ -550,6 +559,24 @@ mod tests {
         assert_eq!(ids, [8]);
         drop(other);
         assert!(mux.waiting.borrow().queries.is_empty());
+    }
+
+    /// A socket whose send fails for a reason of its own, as one connected from an address the host no longer has,
+    /// is left: the next query on its slot opens another (D50). One refused for an earlier datagram's ICMP error is kept.
+    #[compio::test]
+    async fn a_socket_failing_a_send_of_its_own_is_replaced() {
+        let server = SocketAddr::from((Ipv4Addr::LOCALHOST, 53));
+        for (error, kept) in [
+            (io::ErrorKind::AddrNotAvailable, false),
+            (io::ErrorKind::ConnectionRefused, true),
+        ] {
+            let pool = UdpPool::with_io(Refused(error), 1);
+            let first = pool.query(server, 0, 1).await.expect("a socket");
+            let sent = first.send(&[0, 1]).await.map_err(|error| error.kind());
+            assert_eq!(sent, Err(error));
+            let next = pool.query(server, 0, 2).await.expect("a socket");
+            assert_eq!(Rc::ptr_eq(&first.mux, &next.mux), kept, "{error:?}");
+        }
     }
 
     /// A query keeps [`INBOX`] datagrams, no more, and what is sent to one takes no room from another.
