@@ -11,9 +11,12 @@ use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Dnskey, Ds, RData, Rrsig};
 use dedens_proto::{Class, Message, Name, Question, Rcode, Record, RecordType};
-use dedens_resolver::{Caches, Failure, Limits, Minimisation, Ranked, Resolution, Resolved, Rrset};
+use dedens_resolver::{
+    Caches, Failure, Limits, Minimisation, Next, Rank, Ranked, Resolution, Resolved, Rrset,
+};
 use dedens_testkit::recursion;
 
+use crate::seeded::Seeded;
 use crate::iteration::{
     Answered, Change, Sent, at, caches, captured, configured, is, name, resolvable, run, served,
     start, steer, to,
@@ -1061,4 +1064,41 @@ fn d197_the_validation_tells_its_cost() {
         (cost.questions, cost.verifications, cost.nsec3_blocks),
         (5, 6, 0)
     );
+}
+
+#[test]
+fn d193_a_secure_nsec_of_an_authority_section_answers_no_question() {
+    // `nodata-signed` validated: the validator proves sidn.nl's NSEC secure, held at the rank of an authority
+    // section. A later NSEC question for sidn.nl is asked again, not answered with it, AD set, whatever its verdict:
+    // only a DS may be served from an authority section (Unbound's rrset path, `dns_cache_lookup`).
+    let capture = recursion::Resolution::read("nodata-signed");
+    let caches = caches(false);
+    let defaults = (
+        Limits::default(),
+        validator(dedens_dnssec::Limits::default()),
+    );
+    let (_, resolved, _) = check(&capture, &caches, defaults, &|_, _| {});
+    assert!(matches!(resolved, Resolved::NoData { .. }), "{resolved:?}");
+    let held = (caches.rrsets)
+        .get(&capture.name, RecordType::NSEC, Class::IN, captured_at(&capture))
+        .expect("the NSEC of the denial is kept");
+    assert_eq!(
+        (held.rank, held.checked),
+        (Rank::AuthorityAuthoritative, Checked::Secure)
+    );
+    let question = Question::new(capture.name.clone(), RecordType::NSEC);
+    let mut resolution = Resolution::start(
+        question,
+        Arc::clone(&caches),
+        at(&capture),
+        Limits::default(),
+        Minimisation::Off,
+    )
+    .expect("an IN question")
+    .validated(
+        validator(dedens_dnssec::Limits::default()),
+        at(&capture).as_secs(),
+    );
+    let next = resolution.step(at(&capture), &mut Seeded(0));
+    assert!(matches!(next, Next::Send(_)), "{next:?}");
 }
