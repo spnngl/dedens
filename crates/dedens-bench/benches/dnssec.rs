@@ -587,34 +587,34 @@ const ENDLESS_SHARE: Share = Share {
 #[divan::bench(threads = [1, 2, 4, 8])]
 fn serve_cold(bencher: divan::Bencher<'_, '_>) {
     let query = client_query();
-    let mut out = vec![0; 1232];
     bencher
         .with_inputs(|| {
-            validating_pipeline(
+            let pipeline = validating_pipeline(
                 Validator::new(TrustAnchors::root(), Limits::default()),
                 ENDLESS,
                 ENDLESS_SHARE,
-            )
+            );
+            (pipeline, vec![0; 1232])
         })
-        .bench_local_refs(|pipeline| {
+        .bench_refs(|(pipeline, out)| {
             assert!(matches!(
-                serve(pipeline, black_box(&query), &mut out),
+                serve(pipeline, black_box(&query), out),
                 Step::Reply(_)
             ));
         });
 }
 
 /// The same with the chain in the validator's key cache: no question but the client's. The threads share one
-/// allowance, as the clients of `dedensd` do: its lock is what the scaling shows.
+/// allowance and one key cache, as the clients of `dedensd` do: what the scaling shows. Each thread has its output
+/// buffer: `bench_local` would run one thread whatever `threads`.
 #[divan::bench(threads = [1, 2, 4, 8])]
 fn serve_warm(bencher: divan::Bencher<'_, '_>) {
     static PIPELINE: LazyLock<Pipeline> =
         LazyLock::new(|| validating_pipeline(WARM.clone(), ENDLESS, ENDLESS_SHARE));
     let query = client_query();
-    let mut out = vec![0; 1232];
-    bencher.bench_local(|| {
+    bencher.with_inputs(|| vec![0; 1232]).bench_refs(|out| {
         assert!(matches!(
-            serve(&PIPELINE, black_box(&query), &mut out),
+            serve(&PIPELINE, black_box(&query), out),
             Step::Reply(_)
         ));
     });
@@ -632,10 +632,9 @@ fn serve_shed(bencher: divan::Bencher<'_, '_>) {
         validating_pipeline(WARM.clone(), spent, ENDLESS_SHARE)
     });
     let query = client_query();
-    let mut out = vec![0; 1232];
-    bencher.bench_local(|| {
+    bencher.with_inputs(|| vec![0; 1232]).bench_refs(|out| {
         assert!(matches!(
-            serve(&PIPELINE, black_box(&query), &mut out),
+            serve(&PIPELINE, black_box(&query), out),
             Step::Reply(_)
         ));
     });
@@ -653,10 +652,9 @@ fn serve_shed_share(bencher: divan::Bencher<'_, '_>) {
         validating_pipeline(WARM.clone(), ENDLESS, spent)
     });
     let query = client_query();
-    let mut out = vec![0; 1232];
-    bencher.bench_local(|| {
+    bencher.with_inputs(|| vec![0; 1232]).bench_refs(|out| {
         assert!(matches!(
-            serve(&PIPELINE, black_box(&query), &mut out),
+            serve(&PIPELINE, black_box(&query), out),
             Step::Reply(_)
         ));
     });

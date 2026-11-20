@@ -8,6 +8,9 @@ The noise between sessions reaches ±30%: compare a base and a tree in one sessi
 copied out of `cargo bench --no-run`. `dedensd`'s numbers that decisions quote come from Linux (`io_uring`, a thread
 per core), as macOS runs `poll` on one thread.
 
+A divan bench with `threads` calls `bench`, `bench_refs` or `bench_values`: the `bench_local` ones run one thread
+whatever `threads` says, which the `serve_` benches of `benches/dnssec.rs` did until 2026-11-20.
+
 `dnsperf/compare.sh` (`just bench-compare`) measures dedensd against TelltaleDNS, Unbound and CoreDNS
 (`docs/comparison/`). Its traps:
 

@@ -1130,7 +1130,9 @@ answer through `Pipeline::query` and `receive` of a validating forward stage wit
 upstream, so each run validates or is shed. Cold: a validator that knows no zone, five questions and the keys of three
 zones verified; warm: its key cache holds the chain; shed: `Allowance::burst` 0, so the allowance refuses the query
 before anything is sent. `t=N` threads share one pipeline in warm and shed, so one allowance and one `Mutex`; the
-cold ones build their own. Median per query, one run.
+cold ones build their own. Median per query, one run. The benches ran on one thread whatever `t=N` (divan's
+`bench_local` does): the rows are four runs of one thread, and [Threads in the serve benches](#threads-in-the-serve-benches)
+has the threads.
 
 | Threads | Cold | Warm | Shed |
 |---|---|---|---|
@@ -1140,7 +1142,7 @@ cold ones build their own. Median per query, one run.
 | 8 | 106 µs | 6.2 µs | 0.11 µs |
 
 Admitting and charging a query costs a few atomic updates (D117; two critical sections of a `Mutex` before), not seen against the 6 µs
-of a warm one, and eight threads do not slow it. A shed query costs 0.1 µs (0.15 µs since D117): a flood of uncached queries past
+of a warm one. A shed query costs 0.1 µs (0.15 µs since D117): a flood of uncached queries past
 the allowance asks nothing upstream and decodes nothing. A unit (`Allowance`) is about 10 µs at the cold figure (five
 questions and some seven checks, 12 units, 115 µs, no network), 3 µs for an RSA check, 27 µs for ECDSA P-256 and
 340 µs for P-384, the worst case the default `per_second` (10 000, so 0.1 core on the common algorithms, 3.4 on
@@ -1255,9 +1257,28 @@ network's share (burst 0) with the global allowance unlimited.
 | 4 | 106.2 / 105.9 µs | 6.23 / 6.09 µs | 0.117 / 0.148 µs | 0.131 µs |
 | 8 | 105.3 / 105.3 µs | 5.96 / 6.02 µs | 0.119 / 0.146 µs | 0.129 µs |
 
-Cold and warm do not move. A shed query costs about 25 ns more with 2 threads or more (none with 1, where the noise is
-larger than the difference): the share's slot hashed and its word read before the allowance's. The allowance's `Mutex`
-is gone: a query takes no lock.
+Cold and warm do not move. A shed query costs about 25 ns more: the share's slot hashed and its word read before the
+allowance's. The allowance's `Mutex` is gone: a query takes no lock. The rows ran on one thread, as those above.
+
+### Threads in the serve benches
+
+The `serve_` benches of `benches/dnssec.rs` called `bench_local`, which runs one thread whatever the bench's `threads`:
+the `t=N` rows of the tables of this section and of D186's are runs of one thread each. They now use `bench_refs`, each
+thread with its output buffer. 2026-11-20, Apple M5 (4 performance cores, 6 efficiency ones), macOS 27.2.1, rustc
+1.100.0, other builds on the machine; 4 runs of `cargo bench -p dedens-bench --bench dnssec -- serve_`, the mean of the
+middle two medians. A cell is the time of one query on one thread with the others running.
+
+| Threads | Cold | Warm | Shed | Shed by the share |
+|---|---|---|---|---|
+| 1 | 108 µs | 3.19 µs | 0.250 µs | 0.166 µs |
+| 2 | 129 µs | 6.87 µs | 0.604 µs | 0.220 µs |
+| 4 | 148 µs | 8.24 µs | 0.776 µs | 0.296 µs |
+| 8 | 196 µs | 12.9 µs | 0.838 µs | 0.424 µs |
+
+The threads of a warm query share the validator's key cache, whose hits take a write lock: a second thread doubles a
+query's time, where a cold one, sharing nothing of the pipeline, takes 19 % more. A shed query (the allowance's word,
+shared) takes 2.4 times as long with two threads; one shed by the share 1.3 times. Past 4 threads some run on efficiency cores, which the cold column's growth includes. The one-thread warm query
+takes half the time of the tables above, unexplained here.
 
 `benches/odoh.rs`: `decrypt_query_message` is the HPKE open of a query, the cost a flood of posts asks of the target:
 36.7 µs median before and after (34.4-34.7 µs fastest; one round at 52 µs while the machine was busy). `budget_admit` is what
@@ -1285,7 +1306,8 @@ decapsulations (1000 a second, 2000 in a burst); the global `odoh.budget` (10 00
 
 Machine: Apple M5, macOS 27.2.1, rustc 1.99.1 (Homebrew), the laptop busy with other builds. Rounds interleave, 4 of them,
 each running `cargo bench -p dedens-bench --bench dnssec -- serve_` on the tree before D186 (commit 9972ad5, a worktree with
-its own `target`), then on this one. The cells are the mean of the middle two of the 4 rounds' medians.
+its own `target`), then on this one. The cells are the mean of the middle two of the 4 rounds' medians. Each row ran on
+one thread ([Threads in the serve benches](#threads-in-the-serve-benches)).
 
 `serve_shed` is now a query the allowance refuses, parked, then given up at once as one past its wait (`Pipeline::shed`):
 what a query costs the pipeline beyond the line, without the wait.
