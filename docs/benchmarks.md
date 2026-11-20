@@ -136,6 +136,17 @@ Apple's `ld` (D166), beside another agent's build (load 12 to 23 on 10 cores): `
 table above within their noise. `partition_point` always narrows to one suffix and then compares it, and the suffix
 at its index is looked up again: 9 lookups for a `deep_fresh` name of 110 labels, against 7.
 
+### Name equality, the bytes first
+
+`impl PartialEq for Name` on two names without pointers compares the bytes, then, only when they differ, without
+case: kept. Equal names nearly always have the same case, and `==` on bytes is a `memcmp` where
+`eq_ignore_ascii_case` folds each byte. The base b6141d4 and the change, `message` built by `cargo bench --no-run`,
+run alternately from copies of the binaries, 2 rounds each, under a load of 90 on 10 cores (times noisy): instructions
+retired (`time -l`) for the run of 2 million `name_map_get` lookups, 1819.7/1815.2 M to 1674.7/1672.1 M (-8%, about
+72 a lookup); the medians short/long 24.6-25.1/53.8-55.9 to 23.1-23.8/51.5-51.7 ns. Tried and dropped, same runs:
+`impl Hash for Name` lowercasing a flat name straight from its bytes, skipping the 255-byte buffer it unpacks into:
+`name_hash` 4004-4009 M to 3982 M instructions for 3 million hashes (-0.5%), times within their noise.
+
 ## Unbound (D14)
 
 Unbound 1.26.2, `just bench-unbound` (`-O2`, median of 101 samples), next to `cargo bench -p dedens-bench` in
