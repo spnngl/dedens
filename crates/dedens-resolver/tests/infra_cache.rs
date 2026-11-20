@@ -369,7 +369,7 @@ fn d194_a_server_backed_off_less_than_the_most_is_heard_anew_past_expiry() {
 fn rfc6298_5_5_a_timeout_on_an_entry_made_anew_doubles_from_its_timeout() {
     // a's 900 ms, sent just before its entry expires: the entry made anew backs off from it, not from 376 ms.
     let cache = cache();
-    let [a, ..] = roots()[..] else {
+    let [a, b, ..] = roots()[..] else {
         panic!("13 roots")
     };
     cache.reply(a, 300 * MS, Marks::default(), 0);
@@ -377,6 +377,9 @@ fn rfc6298_5_5_a_timeout_on_an_entry_made_anew_doubles_from_its_timeout() {
     assert_eq!(sent, 900 * MS);
     cache.timeout(a, sent, InfraCache::SERVER_TTL);
     assert_eq!(timeout(&cache, a, InfraCache::SERVER_TTL), sent * 2);
+    // b's entry evicted since its 900 ms query left: none held, the one made backs off from it all the same.
+    cache.timeout(b, sent, 0);
+    assert_eq!(timeout(&cache, b, 0), sent * 2);
 }
 
 #[test]
