@@ -308,6 +308,20 @@ fn padding_hides_the_length_within_a_block() {
     );
 }
 
+/// The recommended padding stops where `encrypted_message<1..2^16-1>` is full (§6.1): a DNS message that fits
+/// unpadded fits padded, up to the largest, 65515 bytes for a response (65535 less the 16 of the tag and the 4 of
+/// the plaintext's lengths) and 65483 for a query (and the 32 of the encapsulated key).
+#[test]
+fn padding_stops_at_the_largest_message() {
+    let key = target();
+    for len in [65_053, 65_515] {
+        exchange(&key, b"query", &vec![2; len]);
+    }
+    for len in [65_409, 65_483] {
+        exchange(&key, &vec![1; len], b"response");
+    }
+}
+
 #[test]
 fn a_flipped_bit_in_a_query_is_refused() {
     let key = target();

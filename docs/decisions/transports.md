@@ -163,7 +163,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     trailing bytes and any message type but 1 and 2.
   - Padding: the caller chooses it; `query_padding` and `response_padding` round the DNS message to 128 and 468
     bytes (RFC 8467 §4.1, as D60 for DoH), as §11 tells implementations. Inside the encryption, so messages of
-    one block have one size on the wire (tested). The live target of Cloudflare answers without padding.
+    one block have one size on the wire (tested). The last block stops where `encrypted_message` is full, so a
+    message that fits unpadded fits padded (tested at the bounds). The live target of Cloudflare answers without padding.
   - Randomness comes in as an argument (`CryptoRng`), so tests replay RFC 9180's ephemeral key and odoh-go's
     response nonces; a target key is derived from a 32-byte secret the caller keeps (`DeriveKeyPair`), so no key
     generation or storage lives here. The docs of `encrypt_query` and `encrypt_response` warn that a replayed

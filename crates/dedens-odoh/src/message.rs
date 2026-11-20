@@ -201,21 +201,30 @@ pub const RESPONSE_BLOCK: usize = 468;
 ///
 /// RFC 9230 §11 prescribes no length and tells implementations to follow RFC 8467, which pads queries to
 /// 128 bytes. The block counts the DNS message alone: the plaintext adds 4 bytes of lengths and the
-/// ciphertext a constant 48, so every query of a block has one size on the wire.
+/// ciphertext a constant 48, so every query of a block has one size on the wire. The last block stops short
+/// where `encrypted_message` is full (§6.1): a message that fits unpadded fits padded.
 #[must_use]
 pub const fn query_padding(dns_len: usize) -> usize {
-    block_padding(dns_len, QUERY_BLOCK)
+    block_padding(dns_len, QUERY_BLOCK, QUERY_ROOM)
 }
 
 /// The padding that brings a DNS response of `dns_len` bytes to a multiple of [`RESPONSE_BLOCK`], as
 /// [`query_padding`] does for queries (RFC 8467 §4.1 pads responses to 468 bytes).
 #[must_use]
 pub const fn response_padding(dns_len: usize) -> usize {
-    block_padding(dns_len, RESPONSE_BLOCK)
+    block_padding(dns_len, RESPONSE_BLOCK, RESPONSE_ROOM)
 }
 
-const fn block_padding(len: usize, block: usize) -> usize {
-    (block - len % block) % block
+/// The most DNS message and padding an `encrypted_message` of 65535 bytes holds: less the 4 bytes of the
+/// plaintext's lengths, the 16 of the tag, and for a query the 32 of the encapsulated key (RFC 9230 §6.1, §6.2).
+const RESPONSE_ROOM: usize = 65_535 - 4 - 16;
+const QUERY_ROOM: usize = RESPONSE_ROOM - 32;
+
+/// The padding of `len` up to a multiple of `block`, cut at `room`.
+const fn block_padding(len: usize, block: usize, room: usize) -> usize {
+    let padding = (block - len % block) % block;
+    let left = room.saturating_sub(len);
+    if padding < left { padding } else { left }
 }
 
 /// Kani proofs of the framing (D145), for every input of up to 8 bytes.
@@ -261,6 +270,10 @@ mod tests {
         assert_eq!(response_padding(468), 0);
         assert_eq!(response_padding(469), 467);
         assert_eq!((response_padding(100) + 100) % RESPONSE_BLOCK, 0);
+        assert_eq!(response_padding(65_053), 65_515 - 65_053);
+        assert_eq!(response_padding(65_515), 0);
+        assert_eq!(response_padding(70_000), 0);
+        assert_eq!(query_padding(65_409), 65_483 - 65_409);
     }
 
     #[test]
