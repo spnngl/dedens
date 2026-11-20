@@ -400,10 +400,12 @@ impl ResponseContext {
                 control = wanted;
             }
         }
-        // The plaintext is written, padded and sealed after the room for the header, in a packet allocated once:
-        // the padding is 4 blocks at most.
-        let most = 2 + control.len() + response.len() + 4 * padding::BLOCK;
-        let mut packet = Vec::with_capacity(RESPONSE_OVERHEAD + most.min(plaintext_budget));
+        // The plaintext is written, padded and sealed after the room for the header, in a packet allocated once.
+        let mut packet = Vec::with_capacity(packet_capacity(
+            control.len(),
+            response.len(),
+            plaintext_budget,
+        ));
         packet.resize(RESPONSE_OVERHEAD, 0);
         // `<control-len> <control>` goes before the response, in a PQ response only.
         if self.is_pq() {
@@ -456,6 +458,13 @@ impl ResponseContext {
             .for_each(|(to, from)| *to = *from);
         Ok(packet)
     }
+}
+
+/// The bytes a response packet is allocated with, so that it is never grown: the header, then the control field,
+/// the response and the padding, 4 blocks at most, no more than `plaintext_budget` in all. Only the allocation
+/// depends on it, which no test sees (`.cargo/mutants.toml`).
+fn packet_capacity(control_len: usize, response_len: usize, plaintext_budget: usize) -> usize {
+    RESPONSE_OVERHEAD + (2 + control_len + response_len + 4 * padding::BLOCK).min(plaintext_budget)
 }
 
 const _: () = assert!(QUERY_OVERHEAD == CLIENT_MAGIC_LEN + KEY_LEN + NONCE_HALF_LEN + TAG_LEN);
