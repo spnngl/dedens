@@ -1,9 +1,9 @@
 //! Secrets and trust (D115): the `odoh` section and the target's key (D79, D94, D117), the permissions of a key
 //! file, and the certificate authorities upstream servers are checked against.
 
-use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 use anyhow::{Context, ensure};
 use compio::rustls::pki_types::CertificateDer;
@@ -14,6 +14,40 @@ use serde::Deserialize;
 use super::limits::BudgetFile;
 #[cfg(feature = "odoh")]
 use super::listen::Listen;
+use crate::roots::read_capped;
+
+/// The longest PEM file read at configuration: a chain of a hundred certificates is about 200 KiB, a key a few KiB.
+pub(super) const MAX_PEM_LEN: u64 = 1 << 20;
+
+/// The bytes of the PEM file `file`: at most [`MAX_PEM_LEN`], or an error, so that a file that is not one cannot fill
+/// the memory.
+pub(super) fn read_pem(file: fs::File) -> io::Result<Vec<u8>> {
+    read_capped(file, MAX_PEM_LEN)
+}
+
+/// The certificates of the PEM file `path`, of the `setting` that names it.
+///
+/// # Errors
+///
+/// A file that does not read, is longer than [`MAX_PEM_LEN`] or has a malformed certificate, or holds no certificate.
+pub(super) fn certificates(
+    path: &Path,
+    setting: &str,
+) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    let shown = path.display();
+    let reading = || format!("{setting}: cannot read certificates from {shown}");
+    let pem = fs::File::open(path)
+        .and_then(read_pem)
+        .with_context(reading)?;
+    let certificates = CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(reading)?;
+    ensure!(
+        !certificates.is_empty(),
+        "{setting}: no certificate in {shown}"
+    );
+    Ok(certificates)
+}
 
 /// The Oblivious `DoH` target `dedensd` serves as (D79).
 #[derive(Debug, Deserialize)]
@@ -162,20 +196,7 @@ pub(super) fn trusted(path: Option<&Path>) -> anyhow::Result<Trust> {
     let Some(path) = path else {
         return Ok(Trust::System);
     };
-    let certificates = CertificateDer::pem_file_iter(path)
-        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
-        .with_context(|| {
-            format!(
-                "`upstream_ca`: cannot read certificates from {}",
-                path.display()
-            )
-        })?;
-    ensure!(
-        !certificates.is_empty(),
-        "`upstream_ca`: no certificate in {}",
-        path.display()
-    );
-    Ok(Trust::Roots(certificates))
+    Ok(Trust::Roots(certificates(path, "`upstream_ca`")?))
 }
 
 #[cfg(test)]

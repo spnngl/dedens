@@ -4,17 +4,17 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fmt, fs, io};
+use std::{fmt, fs};
 
-use anyhow::{Context, bail, ensure};
+use anyhow::{Context, bail};
+use compio::rustls::pki_types::PrivateKeyDer;
 use compio::rustls::pki_types::pem::PemObject as _;
-use compio::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use dedens_net::doh::DEFAULT_PATH;
 use dedens_net::tls::Presented;
 use http::uri::PathAndQuery;
 use serde::Deserialize;
 
-use super::keys::guard_key;
+use super::keys::{certificates, guard_key, read_pem};
 use super::upstream::{ENCRYPTED_PORT, HTTPS_PORT};
 
 /// The certificate `dedensd` presents, as written: PEM files, read again on each reload.
@@ -145,7 +145,7 @@ pub(super) fn distinct_ports(listen: &[Listen]) -> anyhow::Result<()> {
         for other in others.filter(|other| other.addr() == one.addr()) {
             let both = matches!(one, Listen::Dnscrypt(_)) || matches!(other, Listen::Dnscrypt(_));
             let ((udp, tcp), (other_udp, other_tcp)) = (ports(one), ports(other));
-            ensure!(
+            anyhow::ensure!(
                 !both || !(udp && other_udp || tcp && other_tcp),
                 "`listen`: {one:?} and {other:?} take the same port"
             );
@@ -228,10 +228,7 @@ pub(super) fn presented(
         }
     };
     let path = tls.certificate.display();
-    let chain = CertificateDer::pem_file_iter(&tls.certificate)
-        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
-        .with_context(|| format!("`tls`: cannot read certificates from {path}"))?;
-    ensure!(!chain.is_empty(), "`tls`: no certificate in {path}");
+    let chain = certificates(&tls.certificate, "`tls`")?;
     let unreadable = || {
         format!(
             "`tls`: cannot read a private key from {}",
@@ -240,7 +237,8 @@ pub(super) fn presented(
     };
     let file = fs::File::open(&tls.key).with_context(unreadable)?;
     guard_key(&file, "`tls`", &tls.key)?;
-    let key = PrivateKeyDer::from_pem_reader(io::BufReader::new(file)).with_context(unreadable)?;
+    let pem = read_pem(file).with_context(unreadable)?;
+    let key = PrivateKeyDer::from_pem_slice(&pem).with_context(unreadable)?;
     let presented = Presented::new(chain, key)
         .with_context(|| format!("`tls`: the key does not fit {path}"))?;
     Ok(Some(presented))
@@ -251,6 +249,7 @@ mod tests {
     use dedens_server::Pipeline;
 
     use super::*;
+    use crate::config::keys::MAX_PEM_LEN;
     use crate::config::tests::*;
 
     #[test]
@@ -369,5 +368,50 @@ mod tests {
                 .presented
                 .is_none()
         );
+    }
+
+    /// A certificate chain or a key file longer than `MAX_PEM_LEN` is refused, naming the file, before it is read
+    /// whole: a real PEM then comment lines, which a PEM reader skips and so would read to the end.
+    #[cfg(unix)]
+    #[test]
+    fn a_pem_file_over_the_cap_is_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use dedens_testkit::certificates::certificates;
+
+        let certificates = certificates();
+        let dir = tempfile::tempdir().unwrap();
+        let junk = format!(
+            "\n{}",
+            "# padding\n".repeat(usize::try_from(MAX_PEM_LEN).unwrap() / 10 + 1)
+        );
+        let write = |name: &str, pem: &str, tail: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, format!("{pem}{tail}")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let certificate = write("cert.pem", &certificates.server_pem, "");
+        let key = write("key.pem", &certificates.key_pem, "");
+        let long_certificate = write("long-cert.pem", &certificates.server_pem, &junk);
+        let long_key = write("long-key.pem", &certificates.key_pem, &junk);
+        let encrypted = MINIMAL.replace("'127.0.0.1:53'", "'tls://127.0.0.1'");
+        let configured = |certificate: &std::path::Path, key: &std::path::Path| {
+            let tls = format!(
+                "tls:\n  certificate: {}\n  key: {}\n{encrypted}",
+                certificate.display(),
+                key.display()
+            );
+            read(&tls, env, &Pipeline::default())
+        };
+        assert!(configured(&certificate, &key).unwrap().presented.is_some());
+        for (certificate, key, long) in [
+            (&long_certificate, &key, &long_certificate),
+            (&certificate, &long_key, &long_key),
+        ] {
+            let shown = format!("{:#}", configured(certificate, key).unwrap_err());
+            assert!(shown.contains(&long.display().to_string()), "{shown}");
+            assert!(shown.contains("longer than"), "{shown}");
+        }
     }
 }

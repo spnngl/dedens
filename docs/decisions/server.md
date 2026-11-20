@@ -363,7 +363,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
 - D66 (amends D42, D44; amended by D115, D122) `dedensd` answers over TLS (RFC 7858) and QUIC (RFC 9250) on `listen` addresses behind
   `tls://` and `quic://`, port 853 unless set; with a top-level `tls: {certificate, key}` of PEM files, required
   with such an address and refused without one. A reload reads the files again and the next handshakes present
-  the new certificate (`dedens_net::tls::Presented`, a rustls certificate resolver); a bad file fails the reload.
+  the new certificate (`dedens_net::tls::Presented`, a rustls certificate resolver); a bad file fails the reload, one
+  over 1 MiB too (as `upstream_ca`'s), the error naming it.
   rustls with ring, ALPN `dot` or `doq` alone, TLS 1.3 alone over QUIC, no 0-RTT (RFC 9250 §4.5). Over TLS a
   connection is a TCP one (D47's limits, its handshake within the idle time), its halves polled as the client's
   (D60). Over QUIC each query is alone on a stream the client opens, read to its end: a stream that is not one

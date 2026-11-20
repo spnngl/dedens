@@ -246,7 +246,7 @@ fn open(path: &Path) -> io::Result<Option<(File, Stamp)>> {
 }
 
 /// The bytes of `file`, at most `max`: a longer file is an error.
-fn read_capped(file: File, max: u64) -> io::Result<Vec<u8>> {
+pub(crate) fn read_capped(file: File, max: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max {
