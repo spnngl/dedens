@@ -93,7 +93,7 @@ jobs:
       - id: list
         run: |
           set -euo pipefail
-          list="$(sed -n 's/^mod \([a-z_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util | jq -Rnc '[inputs]')"
+          list="$(sed -n 's/^mod \([a-z0-9_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util | jq -Rnc '[inputs]')"
           [[ "$list" != "[]" ]] || { echo "no family in crates/dedens-sim/tests/tests.rs" >&2; exit 1; }
           echo "list=$list" >> "$GITHUB_OUTPUT"
   sim:

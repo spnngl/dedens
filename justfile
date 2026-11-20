@@ -423,7 +423,7 @@ fuzz-all seconds="60": fuzz-seeds
 # crates/dedens-sim/tests: just sim 100 dnssec (an unknown family fails, not runs nothing). A failure prints its
 # `DEDENS_SIM_SEED=<n>`.
 sim runs="100" family="":
-    DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test tests -- {{ if family == "" { "" } else if path_exists("crates/dedens-sim/tests/" + family + ".rs") == "true" { family + "::" } else { error("no simulation family `" + family + "` in crates/dedens-sim/tests") } }}
+    DEDENS_SIM_RUNS={{ runs }} cargo test -p dedens-sim --test tests -- {{ if family == "" { "" } else if family =~ "^(util|tests)$" { error("`" + family + "` is a module of crates/dedens-sim/tests, not a simulation family") } else if path_exists("crates/dedens-sim/tests/" + family + ".rs") == "true" { family + "::" } else { error("no simulation family `" + family + "` in crates/dedens-sim/tests") } }}
 
 # The wall time of each simulation family run alone, then of them all, as `just check` runs them (the workspace's
 # debug build with every feature, the fixed seeds): over D133's budgets, 2 s a family and 10 s the crate, it says
@@ -465,7 +465,7 @@ sim-time:
             printf '%-10s %7s s\n' "$name" "$took"
         fi
     }
-    for family in $(sed -n 's/^mod \([a-z_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util); do
+    for family in $(sed -n 's/^mod \([a-z0-9_]*\);$/\1/p' crates/dedens-sim/tests/tests.rs | grep -vx util); do
         measure "$family" "$family_budget" "$family::"
     done
     measure crate "$crate_budget"
