@@ -716,7 +716,7 @@ enum At {
     /// Looking for an answer or the closest delegation in the cache.
     Start,
     /// Asking the servers of a delegation.
-    Asking(Delegation),
+    Asking(Box<Delegation>),
 }
 
 /// Where a delegation's NS records come from, which says when an NS `RRset` it refers to is stored (D193).
@@ -754,8 +754,10 @@ impl Heard {
 struct Delegation {
     zone: Name<'static>,
     source: Source,
-    /// The addresses known, asked or not.
+    /// The addresses known, asked or not, the shunned ones too so that none comes back.
     known: HashSet<IpAddr>,
+    /// The addresses known that are shunned (D197): they stay out of the [`MAX_ADDRESSES`].
+    shunned: HashSet<IpAddr>,
     /// The addresses not asked yet.
     untried: Vec<SocketAddr>,
     /// The addresses whose last query timed out, asked again once nothing new is left to ask (RFC 1035 §7.2, D196).
@@ -785,6 +787,7 @@ impl Delegation {
             zone,
             source,
             known: HashSet::new(),
+            shunned: HashSet::new(),
             untried: Vec::new(),
             timed_out: Vec::new(),
             asked: 0,
@@ -798,11 +801,11 @@ impl Delegation {
         delegation
     }
 
-    /// Adds the addresses not known yet that may be asked ([`askable`]), up to [`MAX_ADDRESSES`] known: every
-    /// address of glue, a lookup, the cache or the hints comes through here.
+    /// Adds the addresses not known yet that may be asked ([`askable`]), up to [`MAX_ADDRESSES`] known but the
+    /// shunned ones: every address of glue, a lookup, the cache or the hints comes through here.
     fn add(&mut self, addresses: impl IntoIterator<Item = IpAddr>) {
         for address in addresses {
-            if self.known.len() >= MAX_ADDRESSES {
+            if self.known.len() - self.shunned.len() >= MAX_ADDRESSES {
                 debug!(zone = %self.zone, "delegation at its address bound, the rest not taken");
                 break;
             }
@@ -822,6 +825,7 @@ impl Delegation {
             .map(|&(server, _)| server)
             .collect();
         self.known.extend(&servers);
+        self.shunned.extend(&servers);
         self.untried
             .retain(|server| !servers.contains(&server.ip()));
         self.timed_out
@@ -1272,7 +1276,7 @@ impl Resolution {
             return self.abandon(&task);
         }
         let task = self.tasks.active();
-        task.at = At::Asking(delegation);
+        task.at = At::Asking(Box::new(delegation));
         task.descend();
     }
 
@@ -1439,7 +1443,7 @@ impl Resolution {
         debug!(%zone, "referral");
         let delegation = self.delegation(zone, ns, glue, now);
         let task = self.tasks.active();
-        task.at = At::Asking(delegation);
+        task.at = At::Asking(Box::new(delegation));
         task.descend();
     }
 
@@ -1618,7 +1622,7 @@ impl Resolution {
                 let delegation = self.delegation(point, data, &[], now);
                 let task = self.tasks.active();
                 task.cut = Some(Cut::Over);
-                task.at = At::Asking(delegation);
+                task.at = At::Asking(Box::new(delegation));
                 task.descend();
             }
             _ => match parent(&point) {
