@@ -50,7 +50,7 @@ pub struct Caches {
 }
 
 /// The bounds of a resolution: each ends it, or the branch that reached it, so that a zone made to loop or to fan
-/// out costs a bounded number of queries (RFC 1035 §7.1, RFC 9520 §3).
+/// out costs a bounded number of queries (RFC 1035 §7.1, RFC 9520 §3); and the addresses it may send them to.
 ///
 /// The defaults are the lower of Unbound's and BIND's, unless D191 says otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +86,11 @@ pub struct Limits {
     /// Time from start to answer: 4.5 s, a stub's 5 s timer (glibc's `RES_TIMEOUT`) less the time for the
     /// SERVFAIL to reach it before it asks again.
     pub time: Duration,
+    /// Whether a server at a special-purpose address is asked: loopback, private, link-local, multicast and the
+    /// rest `askable` lists. False: a zone would aim the resolver at its own host, its network, or many hosts at
+    /// once, as Unbound's `do-not-query-localhost` (on by default) keeps it off loopback and "this network"; true
+    /// for authorities on a test's own host or network (D191).
+    pub query_local_addresses: bool,
 }
 
 impl Default for Limits {
@@ -99,6 +104,7 @@ impl Default for Limits {
             targets: 5,
             validation: 32,
             time: Duration::from_millis(4500),
+            query_local_addresses: false,
         }
     }
 }
@@ -761,6 +767,8 @@ struct Delegation {
     /// Address lookups started.
     looked_up: usize,
     heard: Heard,
+    /// Whether its servers at local addresses are asked ([`Limits::query_local_addresses`]).
+    local: bool,
 }
 
 impl Delegation {
@@ -769,6 +777,7 @@ impl Delegation {
         source: Source,
         addresses: impl IntoIterator<Item = IpAddr>,
         missing: Vec<Name<'static>>,
+        local: bool,
     ) -> Self {
         let mut delegation = Self {
             zone,
@@ -781,15 +790,19 @@ impl Delegation {
             aaaa: None,
             looked_up: 0,
             heard: Heard::Nothing,
+            local,
         };
         delegation.add(addresses);
         delegation
     }
 
-    /// Adds the addresses not known yet.
+    /// Adds the addresses not known yet that may be asked ([`askable`]): every address of glue, a lookup, the cache
+    /// or the hints comes through here.
     fn add(&mut self, addresses: impl IntoIterator<Item = IpAddr>) {
         for address in addresses {
-            if self.known.insert(address) {
+            if !askable(address, self.local) {
+                debug!(zone = %self.zone, %address, "local address not asked");
+            } else if self.known.insert(address) {
                 self.untried.push(SocketAddr::new(address, PORT));
             }
         }
@@ -1226,7 +1239,7 @@ impl Resolution {
             return self.restart(vec![cname], target);
         }
         let parent = qtype == RecordType::DS;
-        let delegation = closest(&caches, name, parent, self.limits.servers, now);
+        let delegation = closest(&caches, name, parent, &self.limits, now);
         if let Some(task) = self.tasks.looping(&delegation.zone) {
             return self.abandon(&task);
         }
@@ -1415,7 +1428,8 @@ impl Resolution {
             }
             known.extend(at);
         }
-        Delegation::new(zone, Source::Parent, known, missing)
+        let local = self.limits.query_local_addresses;
+        Delegation::new(zone, Source::Parent, known, missing, local)
     }
 
     /// Records what the server asked did, for the failure of its delegation.
@@ -2023,9 +2037,16 @@ fn cached_addresses(rrsets: &RrsetCache, name: &Name<'_>, now: u32) -> Vec<IpAdd
 }
 
 /// The closest delegation above `name` the caches know, strictly above it if `parent` (the root's hints for the root): an NS
-/// `RRset` with an address for one of its first `cap` servers, else a TLD's hints, else the root's (RFC 1034 §5.3.3
-/// step 2).
-fn closest(caches: &Caches, name: &Name<'_>, parent: bool, cap: usize, now: u32) -> Delegation {
+/// `RRset` with an address that may be asked ([`askable`]) for one of its first [`Limits::servers`] servers, else a
+/// TLD's hints, else the root's (RFC 1034 §5.3.3 step 2).
+fn closest(
+    caches: &Caches,
+    name: &Name<'_>,
+    parent: bool,
+    limits: &Limits,
+    now: u32,
+) -> Delegation {
+    let local = limits.query_local_addresses;
     let mut buf = [0; MAX_NAME_LEN];
     let wire = name.to_wire(&mut buf);
     // Each suffix of the name, longest first and the root last, borrowed from its wire form: a label is its
@@ -2043,27 +2064,56 @@ fn closest(caches: &Caches, name: &Name<'_>, parent: bool, cap: usize, now: u32)
         if let Some(ns) = caches.rrsets.get(&zone, RecordType::NS, Class::IN, now) {
             let mut addresses = Vec::new();
             let mut missing = Vec::new();
-            for server in servers(&ns.rrset, cap) {
+            for server in servers(&ns.rrset, limits.servers) {
                 let known = cached_addresses(&caches.rrsets, &server, now);
                 if known.is_empty() {
                     missing.push(server);
                 }
                 addresses.extend(known);
             }
-            if !addresses.is_empty() {
+            if addresses.iter().any(|&address| askable(address, local)) {
                 debug!(%zone, "delegation from the cache");
-                return Delegation::new(zone.into_owned(), Source::Cache, addresses, missing);
+                let zone = zone.into_owned();
+                return Delegation::new(zone, Source::Cache, addresses, missing, local);
             }
         }
         if zone.label_count() == 1
             && let Some(tld) = caches.tlds.as_ref().and_then(|tlds| tlds.get(&zone))
         {
             debug!(%zone, "delegation from the TLD hints");
-            return hinted(zone.into_owned(), tld.servers());
+            return hinted(zone.into_owned(), tld.servers(), local);
         }
     }
     debug!("delegation from the root hints");
-    hinted(Name::root(), caches.roots.servers())
+    hinted(Name::root(), caches.roots.servers(), local)
+}
+
+/// Whether a server at `address` may be asked: any if `local` ([`Limits::query_local_addresses`]), else one at an
+/// address outside the RFC 6890 special-purpose ranges a zone could aim the resolver at its own host, its network
+/// or many hosts with: loopback (127/8, `::1`), "this network" (0/8, `::`), private (10/8, 172.16/12, 192.168/16,
+/// `fc00::/7`), shared (100.64/10), link-local (169.254/16, `fe80::/10`), IETF protocol assignments (192.0.0/24),
+/// multicast (224/4, `ff00::/8`), reserved (240/4) and broadcast (255.255.255.255), each IPv4-mapped too (D191).
+fn askable(address: IpAddr, local: bool) -> bool {
+    local
+        || match address.to_canonical() {
+            IpAddr::V4(v4) => {
+                let [first, second, third, _] = v4.octets();
+                !(v4.is_loopback()
+                    || first == 0
+                    || v4.is_private()
+                    || (first == 100 && second & 0xc0 == 64)
+                    || v4.is_link_local()
+                    || (first, second, third) == (192, 0, 0)
+                    || first >= 224)
+            }
+            IpAddr::V6(v6) => {
+                !(v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+                    || v6.is_multicast())
+            }
+        }
 }
 
 /// The `RRsets` of `records`, as `kept` holds them, grouped by the scrubber with its ranks (D192), in the order their
@@ -2102,7 +2152,7 @@ fn parent(name: &Name<'_>) -> Option<Name<'static>> {
 }
 
 /// The delegation to `zone` that hints give.
-fn hinted(zone: Name<'static>, servers: &[Server]) -> Delegation {
+fn hinted(zone: Name<'static>, servers: &[Server], local: bool) -> Delegation {
     let addresses = servers.iter().flat_map(Server::addresses);
-    Delegation::new(zone, Source::Parent, addresses, Vec::new())
+    Delegation::new(zone, Source::Parent, addresses, Vec::new(), local)
 }
