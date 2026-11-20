@@ -327,7 +327,7 @@ pub struct Validation {
     asked: usize,
     pending: Option<Question<'static>>,
     budget: Budget,
-    /// Whether a check gave up on an `RRset` whose signatures failed too often ([`SigError::TooManyFailures`],
+    /// Whether a check gave up on an `RRset` whose signatures failed too often ([`crate::rrsig::SigError::TooManyFailures`],
     /// D73): the response is built to waste work, and asking again would waste as much.
     gave_up: bool,
     /// What the walk found of each name that is, or sits below, an apex: written by `settle` only (and
