@@ -20,7 +20,7 @@ use dedens_dnscrypt::{
 use dedens_net::entropy::Entropy;
 use dedens_net::io::{Datagram, Io, Udp as _};
 use dedens_net::tcp::frame;
-use dedens_proto::Transport;
+use dedens_proto::{Query, Transport};
 use dedens_server::Pipeline;
 use futures_util::future::{join, join_all};
 use futures_util::lock::Mutex;
@@ -77,6 +77,17 @@ enum Open {
     /// The answer to a certificate query, to send in the clear.
     Clear(Vec<u8>),
     Drop,
+}
+
+impl Open {
+    /// The opened `plaintext`, a query for the pipeline, unless it is no DNS message: the draft ignores it (§5.4.6,
+    /// §5.4.7), where the pipeline would answer FORMERR to a header that reads. Dropping `reply` counts it dropped.
+    fn query(plaintext: Vec<u8>, reply: Reply) -> Self {
+        if Query::read(&plaintext).is_err() {
+            return Self::Drop;
+        }
+        Self::Query(plaintext, reply)
+    }
 }
 
 impl Keys {
@@ -159,7 +170,7 @@ impl Keys {
                 return Open::Drop;
             }
             return match resolver.decrypt_query(packet) {
-                Ok((query, context)) => Open::Query(
+                Ok((query, context)) => Open::query(
                     query,
                     Reply {
                         context,
@@ -193,7 +204,7 @@ impl Keys {
             opened
         };
         match opened {
-            Ok((query, context)) => Open::Query(
+            Ok((query, context)) => Open::query(
                 query,
                 Reply {
                     context,
@@ -229,7 +240,7 @@ fn resume(set: &Arc<KeySet>, packet: &[u8], unix: u64, from: IpAddr) -> Open {
     match issued.resolver.decrypt_resumed(&query, unix) {
         Ok((plaintext, context)) => {
             let near_end = u64::from(query.expiry()) <= unix + u64::from(TICKET_LIFETIME / 2);
-            Open::Query(
+            Open::query(
                 plaintext,
                 Reply {
                     context,
@@ -823,5 +834,47 @@ mod tests {
         let pipeline = thread.pipeline();
         assert!(codec.silenced(&pipeline, "8.8.8.8".parse().expect("an address")));
         assert!(!codec.silenced(&pipeline, "127.0.0.1".parse().expect("an address")));
+    }
+
+    /// Draft §5.4.6, §5.4.7: a query that opens to no DNS message, its header whole and its question cut, is ignored
+    /// and counted dropped, where the pipeline would answer FORMERR; the whole query goes to the pipeline.
+    #[test]
+    fn a_query_that_opens_to_no_dns_message_is_dropped() {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            let thread = answering();
+            let service = pq_service();
+            let keys = Keys::new(Arc::clone(&service), &thread);
+            let set = Arc::clone(&keys.held.borrow().set);
+            let mut entropy = Entropy::new().expect("entropy");
+            let from: IpAddr = "127.0.0.1".parse().expect("an address");
+            let mut opened = || {
+                let (packet, ..) = pq_query(&service, &set, &mut entropy);
+                match keys.open(&thread, &thread.pipeline(), from, &packet, Carrier::Tcp) {
+                    Open::Query(wire, reply) => (wire, reply),
+                    _ => panic!("the query opens"),
+                }
+            };
+            let (wire, reply) = opened();
+            assert!(matches!(
+                Open::query(wire[..20].to_vec(), reply),
+                Open::Drop
+            ));
+            let (wire, reply) = opened();
+            assert!(matches!(Open::query(wire, reply), Open::Query(..)));
+        });
+        let dropped: Vec<_> = counted(&recorder)
+            .into_iter()
+            .filter(|(counter, ..)| counter == QUERIES)
+            .collect();
+        assert_eq!(
+            dropped,
+            [(
+                QUERIES.to_owned(),
+                vec!["xwing".to_owned(), "dropped".to_owned()],
+                2
+            )],
+            "the cut query, and the whole one that the test does not answer"
+        );
     }
 }
