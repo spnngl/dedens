@@ -29,7 +29,8 @@ pub enum Rank {
     /// §4.1.1): the rest of a CNAME and DNAME chain, and the data at its end. Never the answer section of a response
     /// without AA, which is lame (D192, a deviation from Unbound). The least rank that answers a client.
     AnswerNonAuthoritative,
-    /// The authority section of an authoritative answer.
+    /// The authority section of an authoritative answer: above the answer non-authoritative in trust, yet it
+    /// answers no client, whatever its section's data (an NSEC at a cut is the parent's, not the child's answer).
     AuthorityAuthoritative,
     /// The answer section of an authoritative answer, at the name asked or the first owner name (a DNAME's); or the
     /// DS records of a referral to the name asked for them, which the parent holds as authoritative data (RFC 4035

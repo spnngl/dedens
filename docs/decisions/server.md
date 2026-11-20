@@ -1645,8 +1645,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (`util/data/packed_rrset.h`): authoritative first, authority over additional. No zone-data ranks: the resolver
     holds no zone. Secure data is trusted above every rank (the RFC's closing paragraph). Step 05's scrubber ranks
     what it keeps: `insert` takes its `Scrubbed::ranked` `RRsets`, in the bailiwick of the server they came from,
-    and trusts the rank given. `get` returns any rank: only answer non-authoritative and above, or secure data, may answer a client
-    (RFC 2181 §5.4.1), which `Ranked` says and its caller checks; the rest serves the resolution.
+    and trusts the rank given. `get` returns any rank: only answer-section data (answer non-authoritative or authoritative), or secure data,
+    may answer a client (RFC 2181 §5.4.1), which `Ranked` says and its caller checks; the rest, authority
+    authoritative included (the parent's NSEC at a cut does not answer `child. NSEC`), serves the resolution. A DS
+    of a referral does not answer a DS question either, unlike Unbound's `dns_cache_lookup`: it is asked of the
+    parent (D191).
   - Replacement, Unbound's `need_to_update_rrset` (`services/cache/rrset.c`): an expired entry gives way to anything;
     more trusted data replaces, except data equal to bogus data that is not itself secure (it would lengthen the
     bogus data's life, RFC 4035 §4.7); other data of equal trust replaces (the last heard of); the same data of equal

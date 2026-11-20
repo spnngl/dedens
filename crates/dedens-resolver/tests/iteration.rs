@@ -1896,3 +1896,32 @@ fn d195_a_timeout_cut_short_by_the_resolution_s_end_does_not_judge_the_server() 
     resolution.receive(Reply::Timeout, at(&capture) + timeout);
     assert_eq!(caches.infra.len(), 1);
 }
+
+#[test]
+fn d193_the_authority_section_of_an_answer_does_not_answer_a_question() {
+    // `nodata-signed`: sidn.nl's servers deny its SRV with the NSEC at sidn.nl in the authority section, held
+    // authority authoritative. A later NSEC question for sidn.nl is asked again, not answered with it: only an
+    // answer section answers (RFC 2181 §5.4.1; Unbound's `dns_cache_lookup` serves no authority or additional
+    // section).
+    let capture = recursion::Resolution::read("nodata-signed");
+    let caches = caches(false);
+    let (outcome, _) = resolve(&capture, &caches, Limits::default());
+    assert!(matches!(outcome, Resolved::NoData { .. }), "{outcome:?}");
+    let now = secs(at(&capture));
+    let held = caches
+        .rrsets
+        .get(&capture.name, RecordType::NSEC, Class::IN, now)
+        .expect("the NSEC of the denial is kept");
+    assert_eq!(held.rank, Rank::AuthorityAuthoritative);
+    let question = Question::new(capture.name.clone(), RecordType::NSEC);
+    let mut resolution = Resolution::start(
+        question,
+        Arc::clone(&caches),
+        at(&capture),
+        Limits::default(),
+        Minimisation::Off,
+    )
+    .expect("an IN question");
+    let next = resolution.step(at(&capture), &mut Seeded(SEED));
+    assert!(matches!(next, Next::Send(_)), "{next:?}");
+}
