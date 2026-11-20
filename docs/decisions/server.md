@@ -1506,7 +1506,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     server without an address, drawn at random with the resolution's `rng`, is looked up, A then AAAA, by a
     sub-resolution on the same stack sharing the limits; its result is memoised by its question for the whole resolution. A lookup whose closest delegation
     or referral is a zone an ancestor on the stack is waiting on ends at once, its name given no address (the loop
-    of a zone reachable only through itself costs one query per name). An A lookup ending NXDOMAIN skips the
+    of a zone reachable only through itself costs one query per name), which leaves an address the name's A lookup found. An A lookup ending NXDOMAIN skips the
     name's AAAA.
   - Addresses: an address at a special-purpose range of RFC 6890 is not asked unless `Limits::query_local_addresses`
     (`dedensd`'s `recurse` switch of the same name, default false): loopback (127/8, `::1`), "this network" (0/8,
