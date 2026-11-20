@@ -26,7 +26,7 @@ dedens-net.workspace = true
 dedens-odoh.workspace = true
 dedens-plugins.workspace = true
 dedens-proto.workspace = true
-# The `RRset` cache of `benches/rrset_cache.rs`.
+# The `RRset` cache of `benches/rrset_cache.rs`, the scrubber of `benches/scrub.rs`.
 dedens-resolver.workspace = true
 dedens-roots.workspace = true
 dedens-server.workspace = true
@@ -40,8 +40,8 @@ metrics-util = { workspace = true, features = ["debugging"], optional = true }
 rand_core.workspace = true
 
 [dev-dependencies]
-# The shared test data (D161).
-dedens-testkit.workspace = true
+# The shared test data (D161); `recursion`, the captured resolutions of `benches/scrub.rs`.
+dedens-testkit = { workspace = true, features = ["recursion"] }
 
 [[bench]]
 name = "message"
@@ -100,6 +100,10 @@ harness = false
 
 [[bench]]
 name = "rrset_cache"
+harness = false
+
+[[bench]]
+name = "scrub"
 harness = false
 
 # D143: the benches' dependencies stay regular ones, so cargo-deny checks them (D14).
