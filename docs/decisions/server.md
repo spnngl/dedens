@@ -953,13 +953,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     hit still counts in the cache metrics.
   - Where it runs, what is stored. A validating forward stage (D77): the first upstream response is reviewed
     before the validation starts (a refused one is not worth its DS and DNSKEY questions; its admission's unit stays
-    taken, D117: the response was read and reviewed), and the validated
-    answer again, for the validator's chase may have lengthened the chain; a refused response is never stored,
-    since only a validated one is stored there. A stage without validator: the response is reviewed before it is
-    stored; a refused one is stored all the same, unmarked, and refused again on each hit, as the block answer
-    itself is never cached (a block action may change at a reload, a response is the cache's only unit): not
-    storing it would send each repeat upstream. Not stored when the refusing plugin is after the cache stage,
-    which a hit does not ask.
+    taken, D117: the response was read and reviewed), and not stored when refused: unvalidated, it has no verdict to
+    be stored with. The answer `Finish::deliver` ends with (a validated one: the first response again, which the
+    chase leaves as it is; a client's with CD, unvalidated; a recursion's) is reviewed before it is stored, and one
+    refused is stored with its verdict, as below (audit 4: it was not, and a repeat with CD went upstream each
+    time). A stage without validator: the response is reviewed before it is stored; a refused one is stored all the
+    same, unmarked, and refused again on each hit, as the block answer itself is never cached (a block action may
+    change at a reload, a response is the cache's only unit): not storing it would send each repeat upstream. Not
+    stored when the refusing plugin is after the cache stage, which a hit does not ask.
   - Cost of a hit. The cache's reply is wire bytes, and `dedens-proto` has no allocation-free walker, so a hit
     reviewed decodes it. Each pipeline takes an id from a process-wide counter (a reload builds a new pipeline, so
     a new id); a response that passed the review is stored with the id as the cache's opaque mark (`Cache::insert`,
@@ -1014,7 +1015,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `a_response_a_plugin_after_the_cache_replaces_is_not_stored`,
     `a_response_no_plugin_replaces_is_cached_and_reviewed_once`, `a_reload_reviews_an_entry_again_once`,
     `a_plugin_does_not_review_its_own_answers`, `a_plugin_after_the_forward_stage_is_not_asked`,
-    `a_validated_response_is_reviewed` (`dedens-server/tests/stages.rs`); fuzz `parse_lists` runs a chain of
+    `a_validated_response_is_reviewed`, `a_delivered_response_refused_is_stored_and_refused_on_a_hit`,
+    `a_delivered_response_kept_is_reviewed_once` (`dedens-server/tests/stages.rs`); fuzz `parse_lists` runs a chain of
     arbitrary names through a blocklist, a cache and a forward stage, the reply and the hit checked against a
     plain model. Bench: `benches/blocklist.rs` `review`, `hit`.
 - D119 (amends D61, D83, D109; amended by D121; builds on D117) What a QUIC peer can make the server hold, from the audit (S2): h3

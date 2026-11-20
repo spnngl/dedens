@@ -52,6 +52,13 @@ impl Finish<'_> {
         self.cache.and_then(|index| self.pipeline.cache(index))
     }
 
+    /// Whether a response the plugin at stage `blocked`, if any, refuses is stored: unmarked, for the hit to refuse
+    /// it again, as not storing it would send each repeat upstream; not when the plugin sits after the cache stage,
+    /// which a hit does not ask (D118).
+    fn keeps(&self, blocked: Option<usize>) -> bool {
+        blocked.is_none_or(|at| self.cache.is_some_and(|cache| at < cache))
+    }
+
     /// Ends the query with a response nothing validated (no validator at this forward stage, or a recursion's):
     /// stored, reviewed and replied as D118 says. `ttls` says whether its TTLs are bounded already.
     pub(super) fn plain(&self, mut decoded: Decoded<'_>, ttls: Ttls, out: &mut [u8]) -> Step {
@@ -62,13 +69,8 @@ impl Finish<'_> {
         // A stored response answers as a hit does, without encoding it again, but not counted a use: a name
         // asked once stays the first evicted (D43). Some are not stored (RFC 2308, D22): the reply goes out all
         // the same.
-        // A response a plugin refuses is stored all the same, unmarked, for the hit to refuse again: not
-        // storing it would send each repeat upstream. Not when the plugin sits after the cache stage, which a
-        // hit does not ask (D118).
         let blocked = pipeline.review(self.forward, query, &decoded.message);
-        let keep = blocked
-            .as_ref()
-            .is_none_or(|&(at, _)| self.cache.is_some_and(|cache| at < cache));
+        let keep = self.keeps(blocked.as_ref().map(|&(at, _)| at));
         let mark = if blocked.is_none() { pipeline.id } else { 0 };
         let stored = self.store().filter(|cache| {
             keep && match ttls {
@@ -95,8 +97,8 @@ impl Finish<'_> {
         reply(client, decoded.message, rcode, out)
     }
 
-    /// Ends the query with the `answer` a plugin gave instead of the response (D118): nothing is stored, and the
-    /// client has it unless it was answered already.
+    /// Ends the query with the `answer` a plugin gave instead of the response (D118): the client has it unless it
+    /// was answered already.
     pub(super) fn blocked(&self, answer: &Answer<'_>, out: &mut [u8]) -> Step {
         if self.purpose != Purpose::Reply {
             return Step::Drop;
@@ -129,27 +131,32 @@ impl Finish<'_> {
             return Step::Drop;
         }
         // A bogus response is not reviewed: it is not served, and its copy for clients that check for themselves
-        // has no mark, so that a hit reviews it.
-        let mark = if matches!(checked, Checked::Bogus(_)) {
-            0
-        } else if let Some((_, answer)) =
+        // has no mark, so that a hit reviews it. A refused one is stored with its verdict as `plain` stores it.
+        let blocked = if matches!(checked, Checked::Bogus(_)) {
+            None
+        } else {
             self.pipeline
                 .review(self.forward, self.query, &decoded.message)
-        {
-            return self.blocked(&answer, out);
-        } else {
+        };
+        let keep = self.keeps(blocked.as_ref().map(|&(at, _)| at));
+        let mark = if blocked.is_none() && !matches!(checked, Checked::Bogus(_)) {
             self.pipeline.id
+        } else {
+            0
         };
         present(&mut decoded.message, outcome, cap, self.client.dnssec());
         let rcode = decoded.message.rcode();
         let (query, now) = (self.query, self.now);
         let stored = self.store().filter(|cache| {
-            match ttls {
+            keep && match ttls {
                 Ttls::Received => cache.insert_checked(query, &decoded, now, checked, mark),
                 Ttls::Bounded => cache.insert_bounded(query, &decoded, now, checked, mark),
             }
             .is_ok()
         });
+        if let Some((_, answer)) = blocked {
+            return self.blocked(&answer, out);
+        }
         if self.purpose != Purpose::Reply {
             return Step::Drop;
         }
