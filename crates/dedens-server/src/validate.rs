@@ -266,21 +266,24 @@ impl Validating {
         self.bucket.refund(Slot::ONLY);
     }
 
-    /// Takes `units` of work done for `payer` from its share and from the allowance (D106).
-    pub(crate) fn charge(&self, payer: Payer, units: u32) {
+    /// Takes `units` of work done at second `now` for `payer` from its share and from the allowance (D106).
+    pub(crate) fn charge(&self, payer: Payer, units: u32, now: u32) {
         if let Some(share) = payer.share {
-            self.shares.charge(share, units);
+            self.shares.charge(share, units, now);
         }
-        self.bucket.charge(Slot::ONLY, units);
+        self.bucket.charge(Slot::ONLY, units, now);
     }
 
-    /// Counts and tells whether the share of `payer` or the allowance owes units (D106).
-    pub(crate) fn shed(&self, payer: Payer) -> bool {
-        if payer.share.is_some_and(|share| self.shares.in_debt(share)) {
+    /// Counts and tells whether the share of `payer` or the allowance owes units at second `now` (D106).
+    pub(crate) fn shed(&self, payer: Payer, now: u32) -> bool {
+        if payer
+            .share
+            .is_some_and(|share| self.shares.in_debt(share, now))
+        {
             self.metrics.shed_share();
             return true;
         }
-        if self.bucket.in_debt(Slot::ONLY) {
+        if self.bucket.in_debt(Slot::ONLY, now) {
             self.metrics.shed();
             return true;
         }
@@ -402,17 +405,17 @@ impl Check {
     /// What to do next: ask [`Check::asking`], or the outcome. What the query has cost since the last time is
     /// charged to `validating`'s allowance and the client's share of it, after the step: a query past
     /// [`Allowance::per_query`] gets no more questions, nor one that finds either in debt (D106, D117), which is
-    /// counted shed.
-    pub(crate) fn next(&mut self, validating: &Validating) -> Progress {
+    /// counted shed. `now` is the second of [`Validating::admit`]'s clock.
+    pub(crate) fn next(&mut self, validating: &Validating, now: u32) -> Progress {
         let progress = self.advance();
         let spent = self.spent();
-        validating.charge(self.payer, spent.saturating_sub(self.charged));
+        validating.charge(self.payer, spent.saturating_sub(self.charged), now);
         self.charged = spent;
         if matches!(progress, Progress::Ask) {
             if spent > validating.allowance.per_query {
                 return Progress::Done(Outcome::Indeterminate(InfoCode::DNSSEC_INDETERMINATE));
             }
-            if validating.shed(self.payer) {
+            if validating.shed(self.payer, now) {
                 return Progress::Shed;
             }
         }

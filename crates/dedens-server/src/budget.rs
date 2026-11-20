@@ -240,14 +240,9 @@ impl Budgets {
         // An `Err` is a word left as it was.
         self.word(slot)
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |word| {
-                let (last, debt) = unpack(word);
-                let earned = self
-                    .config
-                    .per_second
-                    .saturating_mul(now.saturating_sub(last));
-                let debt = debt.saturating_sub(earned);
+                let (second, debt) = self.refilled(word, now);
                 admitted = debt < self.config.burst;
-                let next = pack(last.max(now), if admitted { debt + 1 } else { debt });
+                let next = pack(second, if admitted { debt + 1 } else { debt });
                 (next != word).then_some(next)
             })
             .ok();
@@ -292,21 +287,34 @@ impl Budgets {
             .ok();
     }
 
-    /// Whether work done left the bucket owing units: a query in this state asks no more questions (D106).
+    /// Whether work done left the bucket owing units at second `now`, after the refill: a query in this state asks
+    /// no more questions (D106).
     #[must_use]
-    pub fn in_debt(&self, slot: Slot) -> bool {
-        let (_, debt) = unpack(self.word(slot).load(Ordering::Relaxed));
+    pub fn in_debt(&self, slot: Slot, now: u32) -> bool {
+        let (_, debt) = self.refilled(self.word(slot).load(Ordering::Relaxed), now);
         debt > self.config.burst
     }
 
-    /// Takes `units` of work done, down to a debt of one burst and no further (D106).
-    pub fn charge(&self, slot: Slot, units: u32) {
+    /// Takes `units` of work done at second `now`, after the refill earned until then, down to a debt of one burst
+    /// and no further (D106).
+    pub fn charge(&self, slot: Slot, units: u32, now: u32) {
         let floor = self.config.burst.saturating_mul(2);
         self.word(slot)
             .update(Ordering::Relaxed, Ordering::Relaxed, |word| {
-                let (last, debt) = unpack(word);
-                pack(last, debt.saturating_add(units).min(floor))
+                let (second, debt) = self.refilled(word, now);
+                pack(second, debt.saturating_add(units).min(floor))
             });
+    }
+
+    /// The bucket `word` at second `now`: the later of its second and `now`, and its debt less the refill earned
+    /// since its second.
+    fn refilled(&self, word: u64, now: u32) -> (u32, u32) {
+        let (last, debt) = unpack(word);
+        let earned = self
+            .config
+            .per_second
+            .saturating_mul(now.saturating_sub(last));
+        (last.max(now), debt.saturating_sub(earned))
     }
 }
 
@@ -366,7 +374,7 @@ mod tests {
         let start = 1_000;
         assert!((0..10_000).all(|_| bucket.admit(Slot::ONLY, start)));
         for _ in 0..10_000 {
-            bucket.charge(Slot::ONLY, 256);
+            bucket.charge(Slot::ONLY, 256, start);
         }
         assert!(!bucket.admit(Slot::ONLY, start));
         assert!(!bucket.admit(Slot::ONLY, start + 2));
@@ -378,10 +386,26 @@ mod tests {
     fn the_bucket_is_in_debt_only_below_zero() {
         let bucket = budgets(1, 10);
         assert!(bucket.admit(Slot::ONLY, 1));
-        bucket.charge(Slot::ONLY, 9);
-        assert!(!bucket.in_debt(Slot::ONLY));
-        bucket.charge(Slot::ONLY, 1);
-        assert!(bucket.in_debt(Slot::ONLY));
+        bucket.charge(Slot::ONLY, 9, 1);
+        assert!(!bucket.in_debt(Slot::ONLY, 1));
+        bucket.charge(Slot::ONLY, 1, 1);
+        assert!(bucket.in_debt(Slot::ONLY, 1));
+    }
+
+    /// D106: a charge is owed from its second, after the refill earned before it: the seconds a bucket was idle
+    /// repay what it owed then, not the work charged after them.
+    #[test]
+    fn an_idle_period_does_not_repay_a_later_charge() {
+        let bucket = budgets(1, 10);
+        assert!(bucket.admit(Slot::ONLY, 0));
+        // 100 idle seconds repay the unit taken; the work done then leaves 10 units owed past the burst.
+        bucket.charge(Slot::ONLY, 20, 100);
+        assert!(bucket.in_debt(Slot::ONLY, 100));
+        assert!(!bucket.admit(Slot::ONLY, 100));
+        // Ten seconds repay ten: no longer in debt, and the next admits.
+        assert!(!bucket.in_debt(Slot::ONLY, 110));
+        assert!(!bucket.admit(Slot::ONLY, 110));
+        assert!(bucket.admit(Slot::ONLY, 111));
     }
 
     /// D106: a debt within the burst is kept whole, so that the clamp costs work that owes less nothing.
@@ -389,7 +413,7 @@ mod tests {
     fn a_debt_within_the_burst_is_repaid_as_owed() {
         let bucket = budgets(10, 100);
         assert!(bucket.admit(Slot::ONLY, 1));
-        bucket.charge(Slot::ONLY, 150);
+        bucket.charge(Slot::ONLY, 150, 1);
         // 100 - 1 - 150 = -51: five seconds repay 50, which leaves a unit owed; a sixth admits.
         assert!(!bucket.admit(Slot::ONLY, 6));
         assert!(bucket.admit(Slot::ONLY, 7));

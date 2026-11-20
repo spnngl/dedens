@@ -695,7 +695,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     while they run. `per_query` bounds one query to within the step that goes over it, as `Check::next` checks
     after the step. Rejected: reserving `per_query` at admission and refunding the rest (the audit's first fix): it
     adds an exit path to each query's life in the pipeline to refund from, and a query that costs 2 units would
-    still hold 256 while it runs.
+    still hold 256 while it runs. `charge` and `in_debt` take the second, as `admit` does, and count the refill
+    earned until then first; `charge` moves the bucket's second to it. Before (audit 4), the seconds a bucket was
+    idle before a charge repaid that charge at the next `admit`.
   - NSEC3 blocks: `Budget::nsec3_hash(salt, iterations, owner)` is the one way to hash with a budget: it spends the
     SHA-1 blocks the hash computes (RFC 5155 §5), then hashes (`spend_nsec3_blocks` is private, so no hash is
     unpaid): `blocks(owner wire length + salt length) + iterations * blocks(20 + salt length)`, with `blocks(n) =
@@ -715,7 +717,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     verdict of zones that validate today, where counting changes only what a response may cost. Each chased CNAME
     name starts a validation with a fresh `Budget` (D77), so one query may spend 9 of them (the first and
     `MAX_CHASES`), 73 728 blocks, 18 units, 6.6 ms of hashing at most; the `Allowance` charges it as it goes.
-  - Tests: `the_debt_of_a_flood_stops_at_one_burst` and `the_bucket_is_in_debt_only_below_zero` in `budget.rs`,
+  - Tests: `the_debt_of_a_flood_stops_at_one_burst`, `the_bucket_is_in_debt_only_below_zero` and
+    `an_idle_period_does_not_repay_a_later_charge` in `budget.rs`,
     `the_debt_of_queries_in_flight_is_at_most_a_burst` and `a_flood_in_flight_asks_no_more_than_the_burst_allows` in
     `dedens-server/tests/dnssec.rs` (captured chains), `a_long_salt_costs_the_blocks_it_makes` in
     `dedens-dnssec/tests/denial.rs` (RFC 5155 Appendix A's records, salt rewritten) and the unit tests of
