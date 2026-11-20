@@ -52,7 +52,7 @@ pub(super) fn links<'r>(apex: &Name<'_>, records: &'r [Record<'r>]) -> Vec<Link<
 pub(super) fn prove(links: &[Link<'_>], question: &Question<'_>) -> Result<Proof, Unproven> {
     let (qname, qtype) = (&question.name, question.qtype);
     if let Some(link) = links.iter().find(|l| l.owner == qname) {
-        return Ok(Proof::new(at_name(&link.types, qtype)?, link.ttl));
+        return Ok(Proof::new(at_name(&link.types, qname, qtype)?, link.ttl));
     }
     let covering = links
         .iter()

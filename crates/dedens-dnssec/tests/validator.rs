@@ -361,6 +361,17 @@ fn a_denial_is_kept_three_hours_at_most() {
     }
 }
 
+#[test]
+fn the_root_s_own_nsec_proves_it_has_no_ds() {
+    // The root has no parent: the NSEC of its apex, with SOA, is the only proof there is (RFC 4035 §3.1.4.1).
+    let mut response = response("nodata_root_nsec");
+    if let Some(question) = response.questions.first_mut() {
+        question.qtype = RecordType::DS;
+    }
+    let verdict = Script::new().run(&Script::validator(), &response, captured_at());
+    assert!(matches!(verdict, Verdict::Secure { .. }), "{verdict:?}");
+}
+
 /// What an opt-out NSEC3 record covers may exist unsigned: the README calls these proofs secure, the response
 /// is insecure (RFC 5155 §9.2, D75). The unsupported algorithm is Ed448 (D71).
 const INSECURE: &[(&str, InsecureReason)] = &[

@@ -184,7 +184,7 @@ pub(super) fn prove(
     let (qname, qtype) = (&question.name, question.qtype);
     let qhash = chain.hash(qname, budget)?;
     if let Some(entry) = chain.matching(&qhash) {
-        return Ok(Proof::new(at_name(&entry.types, qtype)?, entry.ttl));
+        return Ok(Proof::new(at_name(&entry.types, qname, qtype)?, entry.ttl));
     }
     let encloser = chain.closest_encloser(apex, qname, &qhash, budget)?;
     let opt_out = encloser.next_closer.opt_out;
