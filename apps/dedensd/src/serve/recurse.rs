@@ -127,7 +127,7 @@ fn clock<N: Io>(thread: &Thread<N>) -> Duration {
 
 /// Steps `resolving` to its end, each query sent, shared or shed ([`ask`]); a resolution without randomness to draw
 /// its server with stops, unresolved, as does one whose step drew more than [`Entropy`] holds: the query it gave was
-/// drawn with zeros, and is not sent.
+/// drawn with zeros, and is withdrawn unsent.
 async fn drive<N: Io>(thread: &Thread<N>, resolving: &mut Resolving) {
     loop {
         let mut rng = match Entropy::from_io(&thread.io) {
@@ -143,6 +143,7 @@ async fn drive<N: Io>(thread: &Thread<N>, resolving: &mut Resolving) {
         };
         if let Err(error) = rng.finish() {
             tracing::warn!(%error, "a resolution's step drew past its randomness");
+            resolving.withdraw();
             return;
         }
         let asked = ask(thread, &query).await;

@@ -469,6 +469,22 @@ impl Resolving {
         }
     }
 
+    /// Takes back the query [`Resolving::step`] gave, which is not sent: the caller had no randomness to draw its
+    /// server with (D190). The client's network gets back the unit it took, and a later step that gives it again
+    /// pays for it again.
+    pub fn withdraw(&mut self) {
+        // Paid for when the count of those paid is that of those given; withdrawn twice, it is paid back once.
+        if let State::Running(resolution) = &self.state
+            && self.paid == resolution.sent()
+            && let Some(paid) = self.paid.checked_sub(1)
+        {
+            self.paid = paid;
+            if let Some((share, slot)) = &self.payer {
+                share.refund(*slot);
+            }
+        }
+    }
+
     /// What it resolved to; `None` before it ended, or when it ended shed or unsupported.
     #[must_use]
     pub const fn resolved(&self) -> Option<&Resolved> {
@@ -492,4 +508,89 @@ impl Resolving {
 /// `now` in whole seconds, the clock of the caches and budgets.
 fn secs(now: Duration) -> u32 {
     u32::try_from(now.as_secs()).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+    use std::net::Ipv4Addr;
+
+    use dedens_cache::Config;
+    use dedens_resolver::{DEFAULT_CAPACITY, InfraCache, RrsetCache};
+    use dedens_roots::RootHints;
+    use rand_core::{TryCryptoRng, TryRng};
+
+    use super::*;
+    use crate::Budget;
+
+    /// Draws zeros: the first server each time. A CSPRNG by marker only, for tests.
+    struct Zeros;
+
+    impl TryRng for Zeros {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+            Ok(0)
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+            Ok(0)
+        }
+
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
+            dst.fill(0);
+            Ok(())
+        }
+    }
+
+    impl TryCryptoRng for Zeros {}
+
+    /// A query withdrawn, twice, gives its unit back once to the client's network, which pays another resolution's
+    /// with it; the withdrawn one, stepped again, pays again, and has nothing left to pay with.
+    #[test]
+    fn a_withdrawn_query_is_paid_back_and_paid_again() {
+        let caches = Arc::new(Caches {
+            rrsets: RrsetCache::new(DEFAULT_CAPACITY, Config::default()).expect("a valid config"),
+            infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 64).expect("a valid size"),
+            roots: RootHints::bundled().clone(),
+            tlds: None,
+        });
+        let share = Budgets::new(Budget {
+            per_second: 1,
+            burst: 2,
+            table: 1,
+        })
+        .expect("a budget");
+        let recurse = Recurse::new(caches).with_share(share);
+        let resolving = || {
+            let question = Question::new("example.com.".parse().expect("a name"), RecordType::A);
+            let asking = Asking {
+                query: Box::default(),
+                transport: Transport::Udp,
+                cookie: None,
+                stage: 0,
+                cache: None,
+            };
+            recurse.resolving_for(
+                question,
+                asking,
+                (Ipv4Addr::LOCALHOST.into(), true, false),
+                true,
+            )
+        };
+        let now = Duration::from_secs(1_000);
+        let sends = || matches!(resolving().step(now, &mut Zeros), Turn::Send(_));
+        let mut withdrawn = resolving();
+        assert!(matches!(withdrawn.step(now, &mut Zeros), Turn::Send(_)));
+        assert!(sends(), "the burst's second unit");
+        withdrawn.withdraw();
+        withdrawn.withdraw();
+        assert!(sends(), "paid with the unit given back, once");
+        assert!(!sends(), "nothing left");
+        assert_eq!(
+            withdrawn.step(now, &mut Zeros),
+            Turn::Done,
+            "nothing to pay again with"
+        );
+    }
 }

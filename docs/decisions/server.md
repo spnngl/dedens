@@ -1764,7 +1764,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     The resolution takes the driver's clock (a `Duration`) and randomness at each step, which `Pipeline::query`
     (seconds, no randomness) has not: so the step returns and the driver resolves, as it forwards. One query of a
     resolution is in flight at a time (D191); `dedensd` draws a fresh `Entropy` (D190) for each step, and ends the
-    resolution, its query unsent, when a step drew more than it holds (`Entropy::finish`: zeros past it).
+    resolution, its query unsent and withdrawn, when a step drew more than it holds (`Entropy::finish`: zeros past
+    it).
   - Replies: RD clear REFUSED with EDE 20 and ANY over UDP truncated (RFC 8482), as the forward stage; a type or
     class the resolver does not ask (RRSIG, meta types; not IN) NOTIMP and REFUSED. The answer is built from
     `Resolved`: chain and data in the answer section, the SOA in the authority section of NXDOMAIN and NODATA, the
@@ -1818,7 +1819,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `client_share` (default 1000/s, burst 2000, as the forward stage's); one refused ends it, SERVFAIL with EDE 14
     (Not Ready), as validation's shed. The rate limit's exempt networks pay nothing. A query shared is paid as one
     sent: the unit is taken when the step gives the query, before the flight is known, and kept, which errs on the
-    side of the budget; only a shed resolution, which waits on nothing, gets it back. A reload with the same budget
+    side of the budget; only a shed resolution, which waits on nothing, and a query withdrawn unsent get it back
+    (`Resolving::shed`, `Resolving::withdraw`). A reload with the same budget
     keeps the buckets, as validation's (D117): a reload is no fresh burst.
   - Configuration: `type: recurse` with `limits` (D191's), `local_zones.resolve`,
     `client_share`, `rrset_cache_bytes` (default 128 MiB, D193) and `infra_cache_bytes` (default 4 MiB, D194). A
