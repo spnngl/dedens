@@ -139,8 +139,8 @@ struct LocalZonesFile {
 ///
 /// A limit above [`MAX`]'s; a `root_hints` file that does not read, holds no root server, or none at an address
 /// asked (D191: every query would fail, unless `query_local_addresses` is set); a zone in `local_zones.resolve`
-/// that is not a name, not served locally or listed twice; a `client_share` [`Budgets::new`] refuses; caches [`RrsetCache::new`] or [`InfraCache::new`] refuses; validation
-/// settings [`Validation::validating`] refuses.
+/// that is not a name, not served locally or listed twice; a `client_share` [`Budgets::new`] refuses; caches
+/// [`RrsetCache::new`] or [`InfraCache::new`] refuses; validation settings [`Validation::validating`] refuses.
 pub(super) fn recurse(
     name: &str,
     file: RecurseFile,

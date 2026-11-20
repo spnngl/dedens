@@ -545,9 +545,10 @@ mod tests {
         });
     }
 
-    /// A timeout, or an unreachable server after one, cut short by the sender's resolution's end is not the server's: those waiting are not handed it,
-    /// and one of them sends the query again in its own time. A timeout of the server's is handed. The same over
-    /// TCP: a query moved there whose `TCP_TIMEOUT` falls at the resolution's end times out over TCP at that end.
+    /// A timeout, or an unreachable server after one, cut short by the sender's resolution's end is not the
+    /// server's: those waiting are not handed it, and one of them sends the query again in its own time. A timeout
+    /// of the server's is handed. The same over TCP: a query moved there whose `TCP_TIMEOUT` falls at the
+    /// resolution's end times out over TCP at that end.
     #[test]
     fn d195_a_timeout_cut_short_by_the_sender_s_end_is_not_shared() {
         Runtime::new().expect("a runtime").block_on(async {
