@@ -722,6 +722,17 @@ pub(crate) mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "a.example\n");
     }
 
+    /// A copy with no version tag is untagged already; a tag that cannot be removed is an error, so that the copy is
+    /// not written as if the next request were unconditional (D104).
+    #[test]
+    fn a_missing_tag_is_untagged_and_one_not_removed_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.list");
+        untag(&path).unwrap();
+        fs::create_dir(tag(&path)).unwrap();
+        assert!(untag(&path).is_err());
+    }
+
     /// A copy is named by the 64-bit FNV-1a of its URL, so that one saved by an earlier version keeps its name.
     #[test]
     fn a_copy_is_named_by_the_fnv_1a_of_its_url() {

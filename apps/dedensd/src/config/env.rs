@@ -513,6 +513,9 @@ mod tests {
             ("k: 'a\n  '' ${PORT}'", "k: 'a\n  '' 5353'"),
             // After a tag, alone.
             ("key: !!str ${TEXT}", "key: !!str 'a: b #c'"),
+            // Past a plain scalar or a block scalar, at the indentation of its key.
+            ("- a\n- ${TEXT}", "- a\n- 'a: b #c'"),
+            ("k: |\n  t\nj: ${TEXT}", "k: |\n  t\nj: 'a: b #c'"),
             // A default is the template's own text.
             ("key: ${NOPE:-a: b}", "key: a: b"),
         ] {
@@ -544,8 +547,13 @@ mod tests {
             "k: a\n  '${TEXT}'",
             "- a\n\n  '${TEXT}'",
             "[a\n '${QUOTE}']",
+            "[a\n'${QUOTE}']",
+            "k: a\n  b\n  '${TEXT}'",
             // The text of a block scalar.
             "k: |\n  ${TEXT}",
+            "k: |\n  t\n  ${TEXT}",
+            // Text by its indentation, more than the key's, not by the length of the line.
+            "  a_long_key: |\n    ${TEXT}",
             "k: >-\n  '${QUOTE}'",
         ] {
             let refused = interpolate(text, env).expect_err(text).to_string();
