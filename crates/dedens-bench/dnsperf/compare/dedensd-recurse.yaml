@@ -13,8 +13,9 @@ stages:
   root:
     type: recurse
     root_hints: /w/root.hints
-    # The authorities sit on loopback: the one line to set when the recurse stage refuses private addresses (fixes/resolver).
-    # query_local_addresses: true
+    # The authorities sit on loopback and the recurse stage refuses such servers by default (D191): ask them, as
+    # `do-not-query-localhost: no` of unbound-recurse.conf does for Unbound.
+    query_local_addresses: true
 #@cache8mib     rrset_cache_bytes: 4194304
     dnssec: @DNSSEC@
 #@dnssec     trust_anchors: /w/anchors.zone
