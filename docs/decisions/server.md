@@ -1504,7 +1504,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Servers: the first `servers` names of a referral's NS `RRset`; each name's addresses are its glue, else those
     cached; `InfraCache::select` draws among those not tried (and those timed out, D196). When none is left, a
     server without an address, drawn at random with the resolution's `rng`, is looked up, A then AAAA, by a
-    sub-resolution on the same stack sharing the limits; its result is memoised by its question for the whole resolution. A lookup whose closest delegation
+    sub-resolution on the same stack sharing the limits; its result is memoised by its question for the whole resolution, but for a bound reached (`depth`,
+    `targets`, `servers`, time), which is the place's, not the name's: asked from another it may resolve. A lookup whose closest delegation
     or referral is a zone an ancestor on the stack is waiting on ends at once, its name given no address (the loop
     of a zone reachable only through itself costs one query per name), which leaves an address the name's A lookup found. An A lookup ending NXDOMAIN skips the
     name's AAAA.

@@ -2026,6 +2026,93 @@ fn d191_an_address_found_is_kept_when_the_aaaa_lookup_loops() {
     assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
 }
 
+/// A referral to `child` naming `server`, without glue, answering `question`: com's referral to google.com, the NS
+/// and the glue changed.
+fn glueless_referral(
+    template: &Message<'static>,
+    question: &Question<'static>,
+    child: &str,
+    server: &str,
+) -> Message<'static> {
+    let ns = (template.authority.iter())
+        .find(|r| r.rtype() == RecordType::NS)
+        .expect("an NS record");
+    let data = RData::Ns(name(server));
+    let mut response = to(template.clone(), question);
+    response.authority = vec![Record::new(name(child), ns.class, ns.ttl, &data)];
+    response.additional.clear();
+    response
+}
+
+/// google.com's servers named `ns.alpha.org.` and `ns.beta.net.`, without glue. The first is reached through a
+/// referral to org naming the second, which is reached through one to net naming `ns.gamma.de.`, which the root
+/// answers: with a depth bound of 2 that last lookup is past the bound inside the first lookup, and within it when
+/// the second is looked up from google.com's servers. `seed` draws which is looked up first.
+fn deeply(seed: u64) -> Resolved {
+    let capture = recursion::Resolution::read("unsigned");
+    let to_google = response(&capture, "com.", "google.com.");
+    let real = (capture.exchanges.iter())
+        .find_map(|e| match e.server {
+            IpAddr::V4(v4) if is(&e.zone, "google.com.") && e.rtype == RecordType::A => Some(v4),
+            _ => None,
+        })
+        .expect("a server of google.com");
+    let answer = answered(&capture);
+    let template = (answer.answer.iter())
+        .find(|r| r.rtype() == RecordType::A)
+        .expect("an A record")
+        .clone();
+    let direct = |question: &Question<'static>, address: Ipv4Addr| {
+        let mut response = answer.clone();
+        let data = RData::A(address);
+        response.answer = vec![Record::new(
+            question.name.clone(),
+            template.class,
+            template.ttl,
+            &data,
+        )];
+        to(response, question)
+    };
+    let lookup = |query: &Query| {
+        let question = &query.question;
+        let (zone, asked) = (query.zone.to_string(), question.name.to_string());
+        if question.qtype != RecordType::A {
+            return to(answer.clone(), question);
+        }
+        match (zone.as_str(), asked.as_str()) {
+            (".", "ns.alpha.org.") => {
+                glueless_referral(&to_google, question, "org.", "ns.beta.net.")
+            }
+            (".", "ns.beta.net.") => {
+                glueless_referral(&to_google, question, "net.", "ns.gamma.de.")
+            }
+            ("org.", "ns.alpha.org.") | ("net.", "ns.beta.net.") => direct(question, real),
+            _ => direct(question, Ipv4Addr::new(192, 0, 2, 7)),
+        }
+    };
+    let names = [name("ns.alpha.org."), name("ns.beta.net.")];
+    // The AAAA lookups, unanswered, cost queries.
+    let limits = Limits {
+        depth: 2,
+        queries: 200,
+        ..Limits::default()
+    };
+    glueless(&names, limits, seed, &lookup).0
+}
+
+#[test]
+fn d191_a_lookup_past_the_depth_bound_is_not_taken_for_no_address() {
+    // Looked up inside another lookup, `ns.beta.net.` fails the depth bound; looked up from google.com's servers
+    // next, within it, it resolves: the failure is not a name with no address.
+    for seed in 0..8 {
+        let outcome = deeply(seed);
+        assert!(
+            matches!(outcome, Resolved::Answer { .. }),
+            "seed {seed}: {outcome:?}"
+        );
+    }
+}
+
 /// google.com's captured answer to its A question.
 fn answered(capture: &recursion::Resolution) -> Message<'static> {
     let exchange = (capture.exchanges.iter())
