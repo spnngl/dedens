@@ -165,7 +165,8 @@ jobs:
   careful:
     needs: packages
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    # The slowest, dedens-sim, takes 7 min (D144).
+    timeout-minutes: 20
     permissions:
       contents: read
     strategy:
