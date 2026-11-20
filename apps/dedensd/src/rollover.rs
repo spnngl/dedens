@@ -229,24 +229,24 @@ impl Kept {
         };
         let Some(anchors) = rollover.anchors() else {
             let served = rollover.without_revoked(seed);
-            let message = "every root key followed by RFC 5011 is revoked: trusting the downloaded or bundled \
-                           anchors, less the revoked keys";
-            if self.is_news(Some((served.clone(), seed.clone()))) {
-                tracing::warn!(message);
-            } else {
-                tracing::debug!(message);
-            }
+            let news = self.is_news(Some((served.clone(), seed.clone())));
+            say(
+                news,
+                true,
+                "every root key followed by RFC 5011 is revoked: trusting the downloaded or bundled anchors, less \
+                 the revoked keys",
+            );
             return served;
         };
-        let agrees = rollover.agrees(seed);
-        let news = self.is_news((!agrees).then(|| (anchors.clone(), seed.clone())));
-        let message = "the root keys followed by RFC 5011 are not those of the downloaded or bundled anchors: \
-                       trusting those followed";
-        if news {
-            tracing::warn!(message);
-        } else if !agrees {
-            tracing::debug!(message);
-        }
+        let disagreement = (!rollover.agrees(seed)).then(|| (anchors.clone(), seed.clone()));
+        let standing = disagreement.is_some();
+        let news = self.is_news(disagreement);
+        say(
+            news,
+            standing,
+            "the root keys followed by RFC 5011 are not those of the downloaded or bundled anchors: trusting those \
+             followed",
+        );
         anchors
     }
 
@@ -323,7 +323,7 @@ impl Kept {
             None => !rollover.agrees(seed),
         };
         // Once, when the bound is reached: not at every answer after it.
-        if rollover.is_full() && !was_full {
+        if newly_full(was_full, rollover.is_full()) {
             tracing::warn!(
                 max = Rollover::MAX_KEYS,
                 "the root keys followed by RFC 5011 are at the most: a new key is not followed"
@@ -346,6 +346,21 @@ impl Kept {
             tracing::info!("the root keys followed by RFC 5011 changed, reloading");
         }
         Observed { wait, changed }
+    }
+}
+
+/// Whether the keys followed reach their bound with this answer: said once, not at every answer after it.
+const fn newly_full(was_full: bool, is_full: bool) -> bool {
+    is_full && !was_full
+}
+
+/// Says `message`, the one thing of [`Kept::anchors`] no test sees: warned of when `news`, debugged while the
+/// disagreement `standing` goes on, nothing when it does not.
+fn say(news: bool, standing: bool, message: &str) {
+    if news {
+        tracing::warn!(message);
+    } else if standing {
+        tracing::debug!(message);
     }
 }
 
@@ -880,6 +895,40 @@ pub(crate) mod tests {
                     true,
                     DebugValue::Counter(2)
                 ),
+    /// D200: `anchors` tells what it serves differs from the download while it does, a revoked key being one such
+    /// difference, and tells nothing while they agree; the run of one is not told again.
+    #[test]
+    fn the_anchors_served_tell_their_disagreement_with_the_download() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        fs::write(
+            dir.join(STATE),
+            format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010()),
+        )
+        .unwrap();
+        let mut kept = Kept::default();
+        kept.anchors(dir, &seed);
+        assert!(kept.told.is_none(), "they agree");
+        let other = TrustAnchors::read(DS_2017).unwrap();
+        kept.anchors(dir, &other);
+        assert!(kept.told.is_some(), "they disagree");
+        kept.anchors(dir, &seed);
+        assert!(kept.told.is_none(), "they agree again");
+
+        kept.observe(&snapshot("20190305003355"), &seed, dir, MARCH_2019);
+        kept.anchors(dir, &seed);
+        assert!(kept.told.is_some(), "every key followed is revoked");
+    }
+
+    /// D200: the bound of keys followed is said when an answer reaches it, not while it stays reached.
+    #[test]
+    fn the_bound_is_said_once_when_reached() {
+        assert!(newly_full(false, true));
+        assert!(!newly_full(true, true));
+        assert!(!newly_full(false, false));
+        assert!(!newly_full(true, false));
+    }
+
                 (
                     PROBES.to_owned(),
                     vec!["followed".to_owned()],
