@@ -11,12 +11,13 @@
 //! by them, its revoked keys kept.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, mpsc};
 
 use dedens_dnssec::{Rollover, TrustAnchors};
 use dedens_proto::Record;
 
+use crate::config::unix_seconds;
 use crate::download;
 use crate::roots::{open, read_capped};
 use crate::sync::{AtomicU64, Ordering};
@@ -24,8 +25,9 @@ use crate::sync::{AtomicU64, Ordering};
 /// The state of the rollover followed, in `state_dir`.
 pub(crate) const STATE: &str = "root-5011";
 
-/// Where a state that does not read is set aside, in `state_dir`, for the operator to read: its revoked keys are
-/// lost to the new state.
+/// What a state that does not read is set aside as, in `state_dir`, for the operator to read, `BAD.<Unix seconds>`
+/// (`.<n>` more within the same second): its revoked keys are lost to the new state, and an earlier one set aside is
+/// the evidence of what went wrong first, so none is overwritten.
 pub(crate) const BAD: &str = "root-5011.bad";
 
 /// The root's keys asked, by `outcome`: `followed` (the answer verified, the state moved on) or `failed` (no
@@ -263,6 +265,7 @@ impl Kept {
                 changed: false,
             };
         }
+        let was_full = self.rollover().is_some_and(|rollover| rollover.is_full());
         let before =
             (self.rollover()).map(|rollover| (rollover.to_string(), served(rollover, seed)));
         let followed = match self.rollover() {
@@ -306,7 +309,8 @@ impl Kept {
             Some((_, before)) => *before != after,
             None => !rollover.agrees(seed),
         };
-        if rollover.is_full() {
+        // Once, when the bound is reached: not at every answer after it.
+        if rollover.is_full() && !was_full {
             tracing::warn!(
                 max = Rollover::MAX_KEYS,
                 "the root keys followed by RFC 5011 are at the most: a new key is not followed"
@@ -337,6 +341,24 @@ fn served(rollover: &Rollover, seed: &TrustAnchors) -> TrustAnchors {
     rollover
         .anchors()
         .unwrap_or_else(|| rollover.without_revoked(seed))
+}
+
+/// Renames `path`, in `state_dir`, to the first of [`BAD`]`.<now>` and `.<now>.<n>` that is free, and flushes the
+/// directory so that the rename survives a crash; where it went and how that went.
+fn set_aside(state_dir: &Path, path: &Path) -> (PathBuf, io::Result<()>) {
+    let now = unix_seconds();
+    let bad = (0..=u32::MAX)
+        .map(|n| match n {
+            0 => state_dir.join(format!("{BAD}.{now}")),
+            n => state_dir.join(format!("{BAD}.{now}.{n}")),
+        })
+        .find(|bad| {
+            bad.symlink_metadata()
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+        })
+        .unwrap_or_else(|| state_dir.join(BAD));
+    let renamed = std::fs::rename(path, &bad).and_then(|()| download::sync_dir(state_dir));
+    (bad, renamed)
 }
 
 /// Why the file of the state did not read.
@@ -385,8 +407,7 @@ fn read(state_dir: &Path) -> Stored {
         Ok(None) => Stored::Absent,
         Ok(Some(rollover)) => Stored::Found(rollover),
         Err(Fault::Content(error)) => {
-            let bad = state_dir.join(BAD);
-            let set_aside = std::fs::rename(&path, &bad);
+            let (bad, set_aside) = set_aside(state_dir, &path);
             tracing::warn!(
                 path = %path.display(),
                 error = format!("{error:#}"),
@@ -549,36 +570,57 @@ pub(crate) mod tests {
         );
     }
 
-    /// D200: a state cut short or corrupted, or that cannot be read, is set aside as `root-5011.bad` and left for the
-    /// downloaded anchors, never trusting nothing; one that is not there is no state, and sets nothing aside. The next
-    /// answer seeds a new state.
+    /// What was set aside in `dir`: each `root-5011.bad.*`'s content, a directory's as empty, sorted.
+    fn set_aside(dir: &Path) -> Vec<Vec<u8>> {
+        let mut aside: Vec<_> = (fs::read_dir(dir).unwrap().flatten())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                let name = path.file_name().unwrap().to_string_lossy();
+                name.starts_with(BAD) && name.len() > BAD.len()
+            })
+            .map(|path| fs::read(path).unwrap_or_default())
+            .collect();
+        aside.sort();
+        aside
+    }
+
+    /// D200: a state cut short or corrupted, or not a file, is set aside as `root-5011.bad.<time>`, each one kept
+    /// beside those before it, and left for the downloaded anchors, never trusting nothing; one that is not there
+    /// is no state, and sets nothing aside. The next answer seeds a new state.
     #[test]
     fn a_state_that_does_not_read_starts_from_the_downloaded_anchors() {
         let state = tempfile::tempdir().unwrap();
         let (dir, seed) = (state.path(), seed());
         let whole = format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010());
-        for broken in [
+        let broken = [
             &whole[..whole.len() - 4],
             "dedens rfc5011 1\nend\n",
             "\u{0}\u{ff}",
-        ] {
+        ];
+        for broken in broken {
             fs::write(dir.join(STATE), broken).unwrap();
             assert_eq!(Kept::default().anchors(dir, &seed), seed, "{broken:?}");
             assert!(!dir.join(STATE).exists(), "{broken:?}");
-            assert_eq!(fs::read(dir.join(BAD)).unwrap(), broken.as_bytes());
         }
+        // Within the same second or not, the earlier evidence is not overwritten.
+        let mut expected: Vec<_> = broken.iter().map(|text| text.as_bytes().to_vec()).collect();
+        expected.sort();
+        assert_eq!(set_aside(dir), expected);
         // Not a file: no more readable, set aside as well.
-        fs::remove_file(dir.join(BAD)).unwrap();
         fs::create_dir(dir.join(STATE)).unwrap();
         assert_eq!(Kept::default().anchors(dir, &seed), seed);
-        assert!(dir.join(BAD).is_dir() && !dir.join(STATE).exists());
-        fs::remove_dir(dir.join(BAD)).unwrap();
+        assert!(!dir.join(STATE).exists());
+        assert_eq!(set_aside(dir).len(), 4);
 
         let mut kept = Kept::default();
         let seeded = kept.observe(&snapshot("20170716113230"), &seed, dir, JULY_2017);
         assert!(!seeded.changed);
         assert_ne!(Kept::default().anchors(dir, &seed), seed);
-        assert!(!dir.join(BAD).exists());
+        assert_eq!(
+            set_aside(dir).len(),
+            4,
+            "a state that reads sets nothing aside"
+        );
     }
 
     /// D200, RFC 5011 §2.1: a state that cannot be read, for a cause that is no fault of its content (here, a
@@ -611,7 +653,7 @@ pub(crate) mod tests {
                 changed: false
             }
         );
-        assert!(path.exists() && !dir.join(BAD).exists());
+        assert!(path.exists() && set_aside(dir).is_empty());
         assert_eq!(fs::read_dir(dir).unwrap().count(), 1, "nothing written");
 
         // Readable again: the next answer follows the state that was kept, not a seed.
@@ -742,7 +784,7 @@ pub(crate) mod tests {
             let kept = fs::read_to_string(dir.join(STATE)).unwrap();
             assert_eq!(kept == text, !saved, "{len}");
             assert_eq!(kept.len() == len, saved, "{len}");
-            assert!(!dir.join(BAD).exists());
+            assert_eq!(set_aside(dir), Vec::<Vec<u8>>::new());
         }
     }
 

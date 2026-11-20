@@ -443,7 +443,7 @@ pub(crate) fn sweep(copies: &[PathBuf], dir: &Path) {
 
 /// Flushes the entries of `dir` to disk, so a rename or removal in it survives a crash; a no-op where a directory
 /// cannot be opened as a file.
-fn sync_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     if cfg!(unix) {
         fs::File::open(dir)?.sync_all()
     } else {
