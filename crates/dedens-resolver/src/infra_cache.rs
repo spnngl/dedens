@@ -141,7 +141,7 @@ impl InfraCache {
     /// (RFC 6298 §2.3), its timeouts in a row cleared.
     pub fn reply(&self, server: SocketAddr, rtt: Duration, seen: Marks, now: u32) {
         let rtt = millis(rtt);
-        self.server(server, now, |held| {
+        self.server(server, now, |held, _| {
             held.rtt = match held.rtt {
                 // RFC 6298 §5.7: after backing off, the old estimate is likely wrong.
                 Rtt::Measured { srtt, rttvar, .. } if held.timeouts < Self::TIMEOUT_LIMIT => {
@@ -156,11 +156,15 @@ impl InfraCache {
 
     /// Learns that `server` did not answer within `sent`, the timeout its query was sent with, at `now`. Its timeout
     /// doubles from `sent` (RFC 6298 §5.5), unless an answer since brought it under `sent`, as Unbound's `rtt_lost`
-    /// does: the queries in flight together back off once. Past [`InfraCache::TIMEOUT_LIMIT`] timeouts in a row,
-    /// it is skipped until its probe time, its timeout from now.
+    /// does: the queries in flight together back off once. An entry made anew since the query left, expired or
+    /// evicted, doubles from `sent` too, as Unbound's `infra_rtt_update`. Past [`InfraCache::TIMEOUT_LIMIT`]
+    /// timeouts in a row, it is skipped until its probe time, its timeout from now.
     pub fn timeout(&self, server: SocketAddr, sent: Duration, now: u32) {
         let sent = millis(sent);
-        self.server(server, now, |held| {
+        self.server(server, now, |held, renewed| {
+            if renewed {
+                held.rtt.back_off(sent);
+            }
             let rto = held.rtt.rto();
             if rto >= sent {
                 held.rtt.back_off(sent.saturating_mul(2).min(millis(Self::MAX_TIMEOUT)).max(rto));
@@ -268,17 +272,21 @@ impl InfraCache {
             .unwrap_or(false)
     }
 
-    /// Changes the entry of `server` at `now`, a new one if none is held or the one held expired.
-    fn server(&self, server: SocketAddr, now: u32, change: impl FnOnce(&mut Server)) {
+    /// Changes the entry of `server` at `now`, a new one if none is held or the one held expired, which `change`
+    /// is told.
+    fn server(&self, server: SocketAddr, now: u32, change: impl FnOnce(&mut Server, bool)) {
         let new = Entry::Server(Server::new(now));
-        let ((), evicted) = self.store.upsert(&server_key(server), new, |held, _| {
-            let mut changed = match held {
-                Entry::Server(held) => held.at(now),
-                Entry::Lame { .. } => Server::new(now),
-            };
-            change(&mut changed);
-            *held = Entry::Server(changed);
-        });
+        let ((), evicted) = self
+            .store
+            .upsert(&server_key(server), new, |held, offered| {
+                let (mut changed, renewed) = match held {
+                    Entry::Server(held) if offered.is_none() => (*held, true),
+                    Entry::Server(held) => (held.at(now), held.expired(now)),
+                    Entry::Lame { .. } => (Server::new(now), true),
+                };
+                change(&mut changed, renewed);
+                *held = Entry::Server(changed);
+            });
         self.metrics.evicted(evicted);
     }
 }
@@ -325,20 +333,27 @@ impl Server {
         }
     }
 
-    /// The entry as it stands at `now`: itself until [`InfraCache::SERVER_TTL`] after its making (a clock gone back
-    /// keeps it), then made anew; a server still skipped keeps its time, timeouts and probe time, so that its expiry
-    /// does not bring a flood of queries on it (Unbound's `infra_host` does the same).
+    /// The entry as it stands at `now`: itself until [`InfraCache::SERVER_TTL`] after its making, then made anew;
+    /// a server backed off to [`InfraCache::MAX_TIMEOUT`] keeps its time, timeouts and probe time, so that its
+    /// expiry does not bring a flood of queries on it, as Unbound's `infra_host`. A server backed off less is
+    /// heard anew: kept, its timeout would leave it out of the band of a faster server for good, no query to it
+    /// ever bringing it back.
     fn at(self, now: u32) -> Self {
-        if now.saturating_sub(self.born) < InfraCache::SERVER_TTL {
+        if !self.expired(now) {
             return self;
         }
         let mut new = Self::new(now);
-        if self.timeouts >= InfraCache::TIMEOUT_LIMIT {
+        if self.rtt.rto() >= millis(InfraCache::MAX_TIMEOUT) {
             new.rtt = self.rtt;
             new.timeouts = self.timeouts;
             new.probe = self.probe;
         }
         new
+    }
+
+    /// Whether it is [`InfraCache::SERVER_TTL`] old at `now`; a clock gone back keeps it.
+    const fn expired(&self, now: u32) -> bool {
+        now.saturating_sub(self.born) >= InfraCache::SERVER_TTL
     }
 }
 

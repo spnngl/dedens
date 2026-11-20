@@ -1713,7 +1713,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (lameness lives with its host entry), BIND none (`lame-ttl` defaults to 0, the lame cache off).
   - Times: an answer sets the estimate (§2.2 the first, §2.3 the next); a timeout of a query sent with a timeout no
     less than the server's RTO doubles that timeout, at most `MAX_TIMEOUT` (§5.5, Unbound's `rtt_lost`), so queries
-    in flight together back off once; the first answer after `TIMEOUT_LIMIT` timeouts starts the estimate anew
+    in flight together back off once, and so does a timeout on an entry made anew since its query left (expired or
+    evicted: Unbound's `infra_rtt_update` takes the timeout sent); the first answer after `TIMEOUT_LIMIT` timeouts starts the estimate anew
     (§5.7). BIND smooths 7/10 old and 3/10 new (`adb.c` `adjustsrtt`), unknown servers first by a random 1-31 µs:
     RFC 6298 gives the timeout too, which BIND takes elsewhere (800 ms, then backed off).
   - Choice, `select(servers, zone, remaining, now, rng)`: servers skipped (`TIMEOUT_LIMIT` timeouts in a row, until
@@ -1729,8 +1730,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     turning one into the other, are merged into the entry, never cleared by a later answer: `Supported` is not
     downgraded by `Unsupported` (one answer without OPT proves nothing, RFC 6891 §7, Unbound's `infra_edns_update`), `Unknown`
     keeps what is held, no `0x20` and TCP stay set. They go with the entry: `SERVER_TTL` runs from its creation, not
-    its last use, so a server fixed is asked plainly again within 15 minutes; a skipped server's entry, renewed, keeps
-    its times and probe (Unbound's `infra_host` the same).
+    its last use, so a server fixed is asked plainly again within 15 minutes; the entry of a server backed off to
+    `MAX_TIMEOUT`, renewed, keeps its times and probe, as Unbound's `infra_host` keeps them from
+    `USEFUL_SERVER_TOP_TIMEOUT` (its `RTT_MAX_TIMEOUT`, 120 s) up. One backed off less is heard anew: its timeout,
+    out of the band of a faster server, would leave it out for good, no query to it ever bringing it back.
   - Sizing (D116): one `dedens_cache::Store<Entry>` (D193) for both kinds of entry, a server's 20-byte key (kind,
     family, 16 address bytes, port) and a lame entry's with the zone's wire form, changed by `Store::upsert`;
     `Entry`'s `Cost` is 0, all of it inline in the slot. `new(capacity, shards)`; a server takes 260 bytes, slot
