@@ -359,6 +359,30 @@ and after. The generic `Entry<Stored>` had padded a slot to 96 bytes, 288 with t
 The fastest samples agree within 5 % (`hit_spread` aside, whose medians move both ways from run to run): no change
 measured. The medians' gaps, both ways, are the load's.
 
+## Resolver scrubber (D192)
+
+`crates/dedens-bench/benches/scrub.rs`, Apple M5, macOS 27.2.1, on a machine shared with other builds (load 4 to
+8): `sort` is `scrub` of a captured response to an A question, `ranked` the grouping of what it kept into the
+`RRsets` the cache takes. `referral` is the root's to `com.` (13 NS, DS, 26 glue), `answer` `example.com.`'s signed
+A, `nxdomain` `nl.`'s with NSEC3, `dname` `dns.netmeister.org.`'s through a DNAME. Before (`20024446`) and after
+(the data of a record decoded only when its type is the one looked for; a referral's name server names borrowed from
+the response, not copied), the two builds alternated, 5 runs each: nanoseconds, median of the medians, fastest
+sample in brackets; allocations a call.
+
+| Measure | before | after | allocations before / after |
+|---|---|---|---|
+| `sort` answer | 361 (345) | 379 (351) | 5 / 5 |
+| `sort` dname | 937 (888) | 963 (900) | 9 / 9 |
+| `sort` nxdomain | 875 (829) | 830 (762) | 7 / 7 |
+| `sort` referral | 5 250 (4 873) | 5 237 (4 903) | 31 / 18 |
+| `ranked` answer / dname / nxdomain | 426 / 763 / 893 | 387 / 682 / 826 | 14 / 27 / 34 |
+| `ranked` referral | 4 056 (3 889) | 3 995 (3 849) | 136 |
+
+`ranked` is the same code in both builds: its gaps, up to 10 %, are the load's, and so are `sort`'s. A referral's
+13 allocations fewer are the one change measured. `ranked` grouping its records by reference, not cloned
+(a clone allocates nothing), was tried: no gain measured, not kept. A referral costs 5 µs to sort and 4 to group, its 136 allocations each
+`RRset`'s owned RDATA.
+
 ## Server hit path (D23, D43)
 
 - `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage

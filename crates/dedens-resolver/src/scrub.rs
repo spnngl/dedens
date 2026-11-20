@@ -829,6 +829,8 @@ impl<'m, 'z> Scrub<'m, 'z> {
     fn denials(&mut self, into: &mut Vec<Record<'m>>) {
         let found: Vec<(usize, bool)> = self
             .pending(Section::Authority)
+            // The type first: decoding the data of every record pending costs.
+            .filter(|(_, r)| matches!(r.rtype(), RecordType::NSEC | RecordType::NSEC3))
             .filter_map(|(i, r)| match r.data() {
                 RData::Nsec(nsec) => Some((i, nsec.next.is_within(self.zone))),
                 RData::Nsec3(_) => Some((i, true)),
@@ -857,6 +859,7 @@ impl<'m, 'z> Scrub<'m, 'z> {
         }
         let found: Vec<(usize, usize, bool)> = self
             .pending(section)
+            .filter(|(_, r)| r.rtype() == RecordType::RRSIG)
             .filter_map(|(i, r)| match r.data() {
                 RData::Rrsig(sig) => {
                     let (set, count) = covered.get_mut(&(r.name.clone(), sig.type_covered))?;
@@ -881,7 +884,7 @@ impl<'m, 'z> Scrub<'m, 'z> {
         let servers: HashSet<Name<'_>> = records
             .iter()
             .filter_map(|r| match r.data() {
-                RData::Ns(server) => Some(server.into_owned()),
+                RData::Ns(server) => Some(server),
                 _ => None,
             })
             .collect();
