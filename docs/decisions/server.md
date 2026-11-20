@@ -1876,10 +1876,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     owner and type (the scrubber may keep two sets of one owner and type, in the answer and the authority). The
     DS and DNSKEY sets the walk checked have theirs too (Unbound's `chain_blacklist`), and the sets the validator's
     questions fetched are written back as the answer's: a bogus key set is held for the bogus TTL, not its own.
-    Each RRset, NSEC and NSEC3 (owned within the zone they prove for) included, is re-inserted with its verdict (D193's merge: the same data held unchecked takes it) and the time it has left:
-    `Secure { ttl }` `Checked::Secure` capped to `ttl` (`Rrset::cap_ttl`: the signatures' validity, RFC 4035
-    §5.3.3), `Insecure` capped by D93, `Bogus` for the bogus TTL (D124). One without a verdict of its own (after a
-    bogus one, or a CNAME a DNAME synthesized) stays as held. The answer served takes the response's verdict:
+    Each RRset, NSEC and NSEC3 (owned within the zone they prove for) included, is re-inserted with its verdict
+    (D193's merge: the same data held unchecked takes it) and the time it has left: `Secure { ttl }`
+    `Checked::Secure` capped to `ttl` (`Rrset::cap_ttl`: the signatures' validity, RFC 4035 §5.3.3), `Insecure`
+    capped by D93, `Bogus` for the bogus TTL (D124). One without a verdict of its own (after a bogus one, or a
+    CNAME a DNAME synthesized) stays as held. The answer served takes the response's verdict:
     `Bogus { ede }` fails `Failure::Bogus(code)`; `Indeterminate` and the verdicts a final answer cannot give
     (`Incomplete`, `Referral`) fail `Failure::Indeterminate(code)`. Both failures carry the validator's EDE (RFC
     8914 §4, D77). A CNAME synthesized from a DNAME is not cached at all (RFC 6672 §3.4 lets its TTL be 0): it is
@@ -1887,17 +1888,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - A bogus answer is asked again of other servers, as Unbound's `val_blacklist`: each answer records the sets its
     response gave; the servers that gave a set bogus by itself, a DS, DNSKEY or denial the validator fetched first
     (what is below a bogus key set is bogus through it), else one of the answer (all that answered the client's
-    question when none is), are left out of the delegation of the zone they were asked as servers of (a server of
-    two zones still serves the other), the client's question asked anew, what the cache holds bogus not taken, at
-    most 5 times (Unbound's `VAL_MAX_RESTART_COUNT`), its queries counted in `limits.validation` and the time in
-    `time`. A bogus set no server gave came from the cache: it is asked again all the same, the cache passed over
-    (Unbound's `val_blacklist` of an unknown origin). A spoofed or garbled response from one server, of the answer
-    or of a key set, then does not make the answer bogus while another serves it right. The validations of the
-    retries share one D75 budget, as Unbound keeps `num_validation_attempts` across `val_restart`
-    (`Validator::restart`, the cost told cumulative): none follows one that gave up on KeyTrap's failed
-    signatures or spent the budget (`Validation::can_restart`). Out of servers, retries, budget or a bound, the
-    answer is bogus with the first code. D86's key cache never holds a bogus key set: the `RRset` cache holds it,
-    for the bogus TTL.
+    question, not those that referred it, when none is), are left out of the delegation of the zone they were
+    asked as servers of (a server of two zones still serves the other), the client's question asked anew, what the
+    cache holds bogus not taken, at most 5 times (Unbound's `VAL_MAX_RESTART_COUNT`), its queries counted in
+    `limits.validation` and the time in `time`. A bogus set no server gave came from the cache: it is asked again
+    all the same, the cache passed over (Unbound's `val_blacklist` of an unknown origin). A spoofed or garbled
+    response from one server, of the answer or of a key set, then does not make the answer bogus while another
+    serves it right. The validations of the retries share one D75 budget, as Unbound keeps
+    `num_validation_attempts` across `val_restart` (`Validator::restart`, the cost told cumulative): none follows
+    one that gave up on KeyTrap's failed signatures or spent the budget (`Validation::can_restart`). Out of
+    servers, retries, budget or a bound, the answer is bogus with the first code. D86's key cache never holds a
+    bogus key set: the `RRset` cache holds it, for the bogus TTL.
   - YXDOMAIN is judged as an answer: bogus unless the chain ends in a DNAME whose substitution makes a name longer
     than 255 bytes (RFC 6672 §2.2, `Chain::overflow`), that DNAME validated. RRSIG questions stay NOTIMP
     (D195); a query with CD, or not class IN, is resolved without the validator (RFC 4035 §3.2.2), and gets what the
@@ -1958,12 +1959,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     glue not the answer; an unvalidated cached answer validated; the DS from the child asked again of the parent,
     its cut lookup failing the question, and no cut sought for another type; a CNAME from an unsigned and from a
     bogus zone leaving its signed target's verdict its own; a wildcard expansion asked again, its proof kept; a
-    forged YXDOMAIN bogus; a garbled answer from one server asked again of another, its retries within one budget;
-    a garbled DNSKEY asked again of another server, held bogus for the bogus TTL when all garble it; a server
-    shunned in one zone only; a stripped answer cached unchecked fetched again; a junk RRSIG no expansion),
-    `crates/dedens-dnssec/tests/validator.rs` (each RRset's own verdict, of its data, the walk's keys included, a
-    denial owned outside its zone without one; a restart within what the validations before it left, none after
-    KeyTrap's failed checks; a YXDOMAIN without its DNAME bogus),
+    forged YXDOMAIN bogus; a garbled answer from one server asked again of another, its retries within one budget,
+    5 at most; a garbled DNSKEY asked again of another server, held bogus for the bogus TTL when all garble it; a
+    server shunned in one zone only, one that referred not at all; a stripped answer cached unchecked fetched
+    again; a junk RRSIG no expansion), `crates/dedens-dnssec/tests/validator.rs` (each RRset's own verdict, of its data,
+    the walk's keys included, a denial owned outside its zone without one, the proof of a name beneath an insecure
+    zone the zone's; a restart within what the validations before it left, none after KeyTrap's failed checks,
+    by RRSIGs or DS digests; a YXDOMAIN without its DNAME bogus),
     `crates/dedens-resolver/tests/iteration.rs` and `crates/dedens-net/tests/authoritative.rs` (a TCP timeout
     leaving the server's timeout), `crates/dedens-server/tests/recurse.rs` (AD on each
     secure capture, from the cache stage

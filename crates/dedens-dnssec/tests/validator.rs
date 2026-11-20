@@ -15,7 +15,7 @@ use dedens_dnssec::{
     covered,
 };
 use dedens_proto::edns::InfoCode;
-use dedens_proto::rdata::{Nsec, RData, Rrsig, Soa};
+use dedens_proto::rdata::{Dnskey, Nsec, RData, Rrsig, Soa};
 use dedens_proto::{
     Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Ttl, WireRdata,
 };
@@ -577,6 +577,35 @@ fn only_the_proofs_of_an_insecure_zone_have_its_verdict() {
     assert_eq!(ns, None);
 }
 
+/// A name beneath an insecure zone is in it: the SOA of its name error, at the zone's apex, has the zone's verdict.
+#[test]
+fn the_proof_of_a_name_beneath_an_insecure_zone_is_the_zone_s() {
+    // Changed: `google_com_a` made the name error of a name two labels below the apex, its SOA as above.
+    let mut response = response("google_com_a");
+    let asked = name("nowhere.www.google.com.");
+    (response.questions[0]).name = asked;
+    response.header.rcode = Rcode::NXDOMAIN;
+    response.answer.clear();
+    let soa = Soa {
+        mname: name("ns1.google.com."),
+        rname: name("dns-admin.google.com."),
+        serial: 1,
+        refresh: 900,
+        retry: 900,
+        expire: 1800,
+        minimum: 60,
+    };
+    response.authority = vec![Record {
+        name: name("google.com."),
+        class: Class::IN,
+        ttl: Ttl::from_wire(60),
+        rdata: WireRdata::new(&RData::Soa(soa)),
+    }];
+    let validation = Script::new().validation(&response);
+    let soa = own_of(&validation, &response.authority, &response.authority[0]);
+    assert!(matches!(soa, Some(Verdict::Insecure { .. })), "{soa:?}");
+}
+
 /// The SOA, NSEC and NSEC3 `RRsets` of a denial have their own verdict too, their signatures': secure, whether the
 /// proof is (a name error) or only proves an opt-out span (insecure, RFC 5155 §9.2).
 #[test]
@@ -982,7 +1011,7 @@ fn a_restart_carries_on_with_what_the_validations_before_it_left() {
 }
 
 /// A bogus answer may be asked again of another server, unless its check gave up on signatures that failed too
-/// often (D73): `KeyTrap` by RRSIGs, which a restart would only pay for again (D197). One RRSIG that fails does
+/// often (D73): `KeyTrap` by RRSIGs or by DS digests, which a restart would only pay for again (D197). One RRSIG that fails does
 /// not.
 #[test]
 fn a_check_that_gave_up_on_failed_signatures_is_not_restarted() {
@@ -1013,6 +1042,39 @@ fn a_check_that_gave_up_on_failed_signatures_is_not_restarted() {
         );
         assert_eq!(validation.can_restart(), restart, "{copies}");
     }
+    // `KeyTrap` by the DS digests, on a fresh key cache: `nl`'s keys among more keys of their tags than
+    // `MAX_FAILED`. Swapping two bytes two apart keeps the tag (RFC 4034 Appendix B), a sum of 16-bit words.
+    let mut keys = response("nl_dnskey");
+    let mut colliding = Vec::new();
+    for record in &keys.answer {
+        let RData::Dnskey(key) = record.data() else {
+            continue;
+        };
+        for at in 0..=MAX_FAILED {
+            let mut public = key.public_key().to_vec();
+            public.swap(at, at + 2);
+            let key = Dnskey::new(key.flags(), key.algorithm(), &public).expect("a key");
+            colliding.push(Record::new(
+                record.name.clone(),
+                record.class,
+                record.ttl,
+                &RData::Dnskey(key),
+            ));
+        }
+    }
+    keys.answer.splice(0..0, colliding);
+    let response = response("alg8_a");
+    let question = response.questions.first().expect("a question").clone();
+    let mut validation = Script::validator().start(&question, &response, now);
+    let answer = with_nl_keys(&script, &keys);
+    let verdict = loop {
+        match validation.step() {
+            Next::Ask(ask) => validation.answer(answer(&ask)),
+            Next::Done(verdict) => break verdict,
+        }
+    };
+    assert!(bogus(&verdict, InfoCode::DNSSEC_BOGUS), "{verdict:?}");
+    assert!(!validation.can_restart());
 }
 
 /// The walk records the verdict of each DS and DNSKEY `RRset` it checked (D197), for a cache to hold a bogus one

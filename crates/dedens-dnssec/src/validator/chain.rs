@@ -286,20 +286,14 @@ impl Validation {
     }
 
     /// The apex of the zone the walk found `name` in, `name` being one [`Validation::zone_of`] returned: `name`
-    /// itself, but for a name beneath an unusable zone, that zone's apex, as the walk down to `name` found it.
-    /// `name` when the walk does not know it.
+    /// itself, but for a name beneath an unusable zone, the first name above it the walk did not find beneath
+    /// one, that zone's apex. Only the validation holds `Beneath`: the key cache never keeps it.
     pub(super) fn apex_of(&self, name: &Name<'static>) -> Name<'static> {
         let mut at = name.clone();
-        loop {
-            let known =
-                (self.zones.get(&at).cloned()).or_else(|| self.config.cache.get(&at, self.at));
-            at = match (known, parent(&at)) {
-                (Some(Zone::Apex(_)), _) => return at,
-                (Some(Zone::Beneath(_)), Some(parent)) => parent,
-                (Some(Zone::Inside { apex, .. }), _) => apex,
-                _ => return name.clone(),
-            };
+        while let (Some(Zone::Beneath(_)), Some(above)) = (self.zones.get(&at), parent(&at)) {
+            at = above;
         }
+        at
     }
 
     /// What `name` is: a zone with its keys, or a name in the zone above it.
