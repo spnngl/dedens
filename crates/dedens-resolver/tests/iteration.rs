@@ -35,8 +35,13 @@ const SEED: u64 = 0;
 
 /// Empty caches; the TLD hints when `tlds`.
 pub(crate) fn caches(tlds: bool) -> Arc<Caches> {
+    configured(tlds, Config::default())
+}
+
+/// [`caches`], the `RRset` cache's under `config`.
+pub(crate) fn configured(tlds: bool, config: Config) -> Arc<Caches> {
     Arc::new(Caches {
-        rrsets: RrsetCache::new(DEFAULT_CAPACITY, Config::default()).expect("a valid config"),
+        rrsets: RrsetCache::new(DEFAULT_CAPACITY, config).expect("a valid config"),
         infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 64).expect("a valid size"),
         roots: RootHints::bundled().clone(),
         tlds: tlds.then(|| Tlds::bundled().clone()),
