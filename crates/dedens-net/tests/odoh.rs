@@ -470,6 +470,8 @@ struct Target {
     configs_asked: Cell<u32>,
     /// The queries it decrypted.
     queries: RefCell<Vec<Vec<u8>>>,
+    /// Whether it sends the query back as its response: a message without QR.
+    echoes: Cell<bool>,
 }
 
 impl Target {
@@ -480,6 +482,7 @@ impl Target {
             cache_control: "max-age=3600",
             configs_asked: Cell::new(0),
             queries: RefCell::default(),
+            echoes: Cell::new(false),
         })
     }
 
@@ -515,7 +518,11 @@ impl Target {
                     Ok((plaintext, context)) => {
                         let wire = plaintext.into_dns_message();
                         self.queries.borrow_mut().push(wire.clone());
-                        let reply = answer(&wire, Vec::new());
+                        let reply = if self.echoes.get() {
+                            wire.clone()
+                        } else {
+                            answer(&wire, Vec::new())
+                        };
                         let mut entropy = Entropy::new().expect("randomness");
                         let message = encrypt_response(
                             context,
@@ -799,6 +806,30 @@ async fn s4_3_a_wrong_content_type_fails() {
         .expect_err("no response");
     assert!(
         matches!(error, ClientError::Odoh(OdohError::ContentType(Some(_)))),
+        "{error:?}"
+    );
+}
+
+/// RFC 1035 §4.1.1: a decrypted message without QR is a query, not a response: an error at once, not a wait for the
+/// deadline.
+#[compio::test]
+async fn a_decrypted_message_without_qr_is_an_error() {
+    let certificates = certificates();
+    let target = Target::new(15);
+    target.echoes.set(true);
+    let handler = Rc::clone(&target);
+    let addr = h3_server(
+        &certificates,
+        Rc::new(move |request, body| handler.handle(request, body)),
+    )
+    .await;
+    let client = trusting(certificates);
+    let error = client
+        .exchange_oblivious(query(), named(addr, NAME), None, &Options::default())
+        .await
+        .expect_err("no response");
+    assert!(
+        matches!(error, ClientError::Odoh(OdohError::NotResponse)),
         "{error:?}"
     );
 }

@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
 
 use dedens_odoh::{WireError, decrypt_response, encrypt_query, query_padding};
+use dedens_proto::{Flags, Query};
 use http::Version;
 use http::uri::Authority;
 
@@ -240,9 +241,14 @@ async fn ask(
         return Err(OdohError::Proxy(head.status()));
     }
     let message = response(&head, &body)?;
-    let plaintext = decrypt_response(&context, &message)?;
+    let wire = decrypt_response(&context, &message)?.into_dns_message();
+    // A message the exchange cannot read it drops; one that reads as a query is refused here, as there is no second
+    // response to wait for.
+    if Query::read(&wire).is_ok_and(|read| !read.header().flags.contains(Flags::QR)) {
+        return Err(OdohError::NotResponse);
+    }
     Ok(Reply {
-        wire: plaintext.into_dns_message(),
+        wire,
         http: Http {
             version: Version::HTTP_3,
             status: head.status(),

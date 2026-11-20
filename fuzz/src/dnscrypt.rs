@@ -33,6 +33,13 @@ const DNS_QUERY: [u8; 33] = [
     0x01,
 ];
 
+/// [`DNS_QUERY`] as the response to itself: with QR, which a client requires of a response.
+const DNS_RESPONSE: [u8; 33] = {
+    let mut response = DNS_QUERY;
+    response[2] = 0x81;
+    response
+};
+
 /// The `<client-nonce>` of every query the targets make.
 const NONCE: [u8; 12] = [4; 12];
 
@@ -126,10 +133,8 @@ fn exchange(system: EncryptionSystem) -> Exchange {
         .expect("a query");
     let resolver = ResolverKey::new(&certificate, secret).expect("the certificate's key");
     let (_, response_context) = resolver.decrypt_query(&query).expect("our own query");
-    let mut answer = DNS_QUERY.to_vec();
-    answer[2] = 0x81;
     let response = response_context
-        .encrypt_response(&answer, Carrier::Udp, &mut Fixed(5))
+        .encrypt_response(&DNS_RESPONSE, Carrier::Udp, &mut Fixed(5))
         .expect("a response");
     Exchange {
         session,
@@ -320,10 +325,11 @@ pub fn dnscrypt_tamper_query(data: &[u8]) {
     );
 }
 
-/// The DNS message of `data` as the response to [`DNS_QUERY`]: its ID and its question, which a client requires
-/// of a response. `None` when `data` is no message, or does not encode again.
+/// The DNS message of `data` as the response to [`DNS_QUERY`]: its QR flag, its ID and its question, which a client
+/// requires of a response. `None` when `data` is no message, or does not encode again.
 fn response_to_query(data: &[u8]) -> Option<Vec<u8>> {
     let mut message = Message::decode(data).ok()?.message;
+    message.header.flags = message.header.flags.with(Flags::QR);
     message.header.id = u16::from_be_bytes([DNS_QUERY[0], DNS_QUERY[1]]);
     message.questions.clone_from(&QUESTIONS);
     message.to_vec().ok()
@@ -363,8 +369,8 @@ pub fn dnscrypt_tamper_response(data: &[u8]) {
 
 /// Arbitrary bytes as a resolver's DNS response to the exchange's query, sent over each carrier (draft "Resolver
 /// Responses Over UDP", "Resolver Responses Over TCP"): never a panic; a packet that is made fits its carrier, the
-/// query's size for UDP and under 4096 bytes for TCP. A message that is the response to the query, by its ID and
-/// question, is read by the client, with TC set when records were left out.
+/// query's size for UDP and under 4096 bytes for TCP. A message that is the response to the query, by its QR flag, ID
+/// and question, is read by the client, with TC set when records were left out.
 ///
 /// # Panics
 ///
@@ -429,7 +435,7 @@ static RESUMED: LazyLock<Vec<u8>> = LazyLock::new(|| {
         .expect("a ticket for a PQ session");
     let packet = exchange
         .response_context
-        .encrypt_response_with(&DNS_QUERY, Some(&ticket), Carrier::Tcp, &mut Fixed(5))
+        .encrypt_response_with(&DNS_RESPONSE, Some(&ticket), Carrier::Tcp, &mut Fixed(5))
         .expect("a response");
     let resumption = exchange
         .query_context
@@ -496,7 +502,7 @@ pub fn dnscrypt_control(data: &[u8]) {
     assert!(ticket.lifetime() > 0 && ticket.lifetime() <= lifetime);
     let packet = exchange
         .response_context
-        .encrypt_response_with(&DNS_QUERY, Some(&ticket), Carrier::Tcp, &mut Fixed(5))
+        .encrypt_response_with(&DNS_RESPONSE, Some(&ticket), Carrier::Tcp, &mut Fixed(5))
         .expect("a response");
     let opened = exchange
         .query_context
