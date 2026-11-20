@@ -278,7 +278,8 @@ impl Iterator {
     }
 
     /// The response of `server` to `name` and `rtype`, recorded: over UDP, again over TCP when truncated. An
-    /// exchange already recorded is not asked again.
+    /// exchange already recorded is not asked again. Nothing is recorded unless the last try answers: a truncated
+    /// response kept without its TCP retry would be replayed as the server's answer.
     async fn exchange(
         &mut self,
         zone: usize,
@@ -294,6 +295,7 @@ impl Iterator {
         {
             return Some(dedens_testkit::message(&done.response));
         }
+        let mut tried = Vec::new();
         let mut response = None;
         for transport in [Transport::Udp, Transport::Tcp] {
             let mut options = self.options;
@@ -315,7 +317,7 @@ impl Iterator {
             };
             let decoded = dedens_testkit::message(&wire);
             let truncated = decoded.header.flags.contains(Flags::TC);
-            self.exchanges.push(Exchange {
+            tried.push(Exchange {
                 server,
                 zone: self.zones[zone].name.clone(),
                 name: name.clone(),
@@ -329,6 +331,7 @@ impl Iterator {
                 break;
             }
         }
+        self.exchanges.append(&mut tried);
         response
     }
 }

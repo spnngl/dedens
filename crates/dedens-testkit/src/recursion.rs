@@ -5,7 +5,7 @@
 //! iterator had with root, TLD and zone servers to resolve one name, from priming (RFC 8109 §3) to the answer,
 //! the DS and DNSKEY of each zone on the way included.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -171,14 +171,34 @@ pub struct Authorities {
 }
 
 impl Authorities {
-    /// The servers of `resolutions`.
+    /// The servers of `resolutions`. A question two of them hold, of one server over one transport, gets the
+    /// response of the first given: captures of one server at different times, each answering as the server did.
+    ///
+    /// # Panics
+    ///
+    /// When one resolution holds a question of one server twice over one transport: which response to replay would
+    /// be a guess.
+    #[must_use]
     pub fn new<'r>(resolutions: impl IntoIterator<Item = &'r Resolution>) -> Self {
-        let mut responses: HashMap<_, Vec<_>> = HashMap::new();
-        for exchange in resolutions.into_iter().flat_map(|r| &r.exchanges) {
-            responses
-                .entry((exchange.server, exchange.name.clone(), exchange.rtype))
-                .or_default()
-                .push((exchange.transport, exchange.response.clone()));
+        let mut responses: HashMap<_, Vec<(Transport, Vec<u8>)>> = HashMap::new();
+        for resolution in resolutions {
+            let mut asked = HashSet::new();
+            for exchange in &resolution.exchanges {
+                let question = (exchange.server, exchange.name.clone(), exchange.rtype);
+                assert!(
+                    asked.insert((question.clone(), exchange.transport)),
+                    "{} {} {} asked twice over {:?} in the capture of {}",
+                    exchange.server,
+                    exchange.name,
+                    exchange.rtype,
+                    exchange.transport,
+                    resolution.name,
+                );
+                let held = responses.entry(question).or_default();
+                if held.iter().all(|(over, _)| *over != exchange.transport) {
+                    held.push((exchange.transport, exchange.response.clone()));
+                }
+            }
         }
         Self { responses }
     }
@@ -276,5 +296,37 @@ mod base64 {
         BASE64
             .decode(text.as_bytes())
             .map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capture holding a question twice over one transport, answered differently: `answer` replayed the first
+    /// response and the second went unread.
+    #[test]
+    #[should_panic(expected = "asked twice over Udp")]
+    fn a_question_asked_twice_over_one_transport_in_one_capture_is_refused() {
+        let mut resolution = Resolution::read("unsigned");
+        let mut twice = resolution.exchanges[0].clone();
+        twice.response.clone_from(&resolution.exchanges[1].response);
+        resolution.exchanges.push(twice);
+        let _ = Authorities::new([&resolution]);
+    }
+
+    /// The same question in two captures: the first capture given answers it, the second's response unread by design.
+    #[test]
+    fn a_question_in_two_captures_is_answered_by_the_first() {
+        let first = Resolution::read("unsigned");
+        let mut second = first.clone();
+        second.exchanges[0]
+            .response
+            .clone_from(&first.exchanges[1].response);
+        let exchange = &first.exchanges[0];
+        let query = exchange.query(0).to_vec().expect("a query");
+        let answered =
+            Authorities::new([&first, &second]).answer(exchange.server, exchange.transport, &query);
+        assert_eq!(answered[2..], exchange.response[2..]);
     }
 }
