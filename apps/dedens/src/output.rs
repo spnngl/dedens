@@ -70,6 +70,13 @@ pub(crate) fn print(
     }
 }
 
+/// A record of the human format, with the text of its TTL and type.
+struct Row<'r> {
+    record: &'r RecordReport,
+    ttl: String,
+    rtype: String,
+}
+
 fn human(
     out: &mut impl Write,
     report: &Report,
@@ -96,27 +103,49 @@ fn human(
             None => writeln!(out, "{QUIET}no records{QUIET:#}")?,
         }
     }
-    let records = || sections.iter().flat_map(|(_, records)| records.iter());
-    let width = |field: fn(&RecordReport) -> usize| records().map(field).max().unwrap_or(0);
-    let name_width = width(|r| r.name.len());
-    let ttl_width = width(|r| duration(r.ttl).len());
-    let type_width = width(|r| rtype(r).len());
-    for (heading, records) in sections.iter().filter(|(_, records)| !records.is_empty()) {
+    // The TTL and the type of each record, written once: the widths need them, and so does the printing.
+    let rows: Vec<(&str, Vec<Row<'_>>)> = sections
+        .iter()
+        .filter(|(_, records)| !records.is_empty())
+        .map(|&(heading, records)| {
+            let rows = records.iter().map(|record| Row {
+                record,
+                ttl: duration(record.ttl),
+                rtype: rtype(record),
+            });
+            (heading, rows.collect())
+        })
+        .collect();
+    let width = |field: fn(&Row<'_>) -> usize| {
+        rows.iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .map(field)
+            .max()
+            .unwrap_or(0)
+    };
+    let name_width = width(|row| row.record.name.len());
+    let ttl_width = width(|row| row.ttl.len());
+    let type_width = width(|row| row.rtype.len());
+    for (heading, rows) in &rows {
         writeln!(out, "{STRONG}{heading}{STRONG:#}")?;
         let mut previous: Option<&RecordReport> = None;
-        for r in *records {
+        for Row {
+            record: r,
+            ttl,
+            rtype,
+        } in rows
+        {
             // A run of records of one owner shows it once, and its TTL once while the same.
             let same_name = previous.is_some_and(|p| p.name == r.name);
             let name = if same_name { "" } else { &r.name };
             let ttl = if same_name && previous.is_some_and(|p| p.ttl == r.ttl) {
-                String::new()
+                ""
             } else {
-                duration(r.ttl)
+                ttl
             };
             writeln!(
                 out,
-                "  {name:name_width$}  {ttl:>ttl_width$}  {:type_width$}  {}",
-                rtype(r),
+                "  {name:name_width$}  {ttl:>ttl_width$}  {rtype:type_width$}  {}",
                 r.data
             )?;
             previous = Some(r);
