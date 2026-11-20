@@ -2100,20 +2100,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     verification it needs; `dedens-roots` holds data, no crypto). Per key `KeyState { AddPend { until }, Valid,
     Missing { since }, Revoked { seen } }`; RFC 5011 §4's Start and Removed are a key not held, as Unbound drops
     them (`autr_cleanup_keys`). `Rollover::seed(anchors, records, now)` verifies the `RRset` with the anchors in
-    use, DS or DNSKEY: the keys they name are Valid (Unbound's `key_matches_a_ds`; a DNSKEY anchor in its revoked form is a
-    tombstone, not a key), other SEP keys AddPend.
+    use, DS or DNSKEY: the keys they name are Valid (Unbound's `key_matches_a_ds`; a DNSKEY anchor in its revoked
+    form is a tombstone, not a key), other SEP keys AddPend.
     `observe(records, now)` applies revocations first, a REVOKE key signing the `RRset` itself (§2.1;
     `rrsig::verify_revocation`, the one check a revoked key passes, D73), of a Valid or Missing key only (an
     AddPend key whose plain form is gone is dropped, §4's KeyRem; Unbound's `do_revoked` revokes only VALID or
-    MISSING keys), even when no trusted key signs the rest; then needs a Valid or Missing key's signature, else changes nothing more and errs. The table (§4): a new
-    SEP key AddPend until now plus the larger of 30 days and the RRSIGs' original TTL, the lowest one so that a
+    MISSING keys), even when no trusted key signs the rest; then needs a Valid or Missing key's signature, else
+    changes nothing more and errs. The table (§4): a new SEP key AddPend until now plus the larger of 30 days and the RRSIGs' original TTL, the lowest one so that a
     bogus signature beside them stretches nothing (§2.4.1), Valid when seen past it, dropped
     when unseen before; Valid unseen Missing, Missing seen Valid; Revoked kept for good, a tombstone (§2.4.2
     lets a resolver forget it after 30 days, but a stale seed would trust it again: §2.1 and §4 make a revocation
     final). This deviates from Unbound, which moves a revoked key to REMOVED after the del-holddown and then
     neither writes nor keeps it (`autr_cleanup_keys`): it never reseeds while a state exists, and `reseed` here
-    does, so a tombstone forgotten would be trusted again by a stale download. `reseed(anchors, records, now)` replaces the state by
-    `seed`, the tombstones kept: a key held Revoked is trusted through no DNSKEY anchor, no DS, no answer.
+    does, so a tombstone forgotten would be trusted again by a stale download. `reseed(anchors, records, now)`
+    replaces the state by `seed`, the tombstones kept: a key held Revoked is trusted through no DNSKEY anchor, no DS, no answer.
     `without_revoked(anchors)` takes a tombstone's key out of other anchors. `anchors()` are the DNSKEYs of Valid
     and Missing keys, none when none.
   - Bounds (`Rollover` constants, compared with Unbound's `validator/autotrust.c` and BIND's `lib/dns/zone.c`):
@@ -2134,18 +2134,23 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - `dedensd`: a validating `recurse` stage without `trust_anchors` follows the root's keys. The state is
     `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
     file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the
-    first load. Its anchors win over D128's, downloaded or bundled, with a warn! when they disagree (once at each change
-    of either, debug! at the reloads between): the state was proven from the zone, key by key, since a seed the
-    download gave. No state (no file: only NotFound),
-    or one whose content does not read (warn!; a corrupt text, not UTF-8, too long, no regular file or a symbolic
-    link): D128's anchors serve and seed a new state from the next answer; the file is first renamed
-    `root-5011.bad.<unix seconds>` (`.<n>` more in the same second, flushed to disk: an earlier one is the
-    evidence of what went wrong first, never overwritten, never swept), for the operator, since the new state
-    would overwrite its tombstones. A file the system fails
-    to read (EACCES, EIO, no memory: it may be a good state) stays where it is, with a warn!: D128's anchors serve,
-    a probe fails with `RETRY`, nothing is seeded or written, and the next use reads the file again. A state whose keys are all revoked is kept, serving D128's anchors
-    less the tombstones (warn!), also when D128's anchors predate the revocation: a validator never trusts
-    nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of which
+    first load. Its anchors win over D128's, downloaded or bundled, with a warn! when they disagree (once at each
+    change of either, debug! at the reloads between): the state was proven from the zone, key by key, since a seed
+    the download gave. No state (no file: only NotFound), or one whose content does not read (warn!; a corrupt
+    text, not UTF-8, too long, no regular file or a symbolic link): D128's anchors serve and seed a new state from
+    the next answer; the file is first renamed `root-5011.bad.<unix seconds>` (`.<n>` more in the same second, 16
+    names at most, flushed to disk: an earlier one is the evidence of what went wrong first, never overwritten,
+    never swept), for the operator, since the new state would overwrite its tombstones. A file that cannot be
+    renamed (no free name, a directory not writable) is kept as it is, as the next case. A file the system fails
+    to read (EACCES, EIO, no memory: it may be a good state), or of a version of `dedens rfc5011` this build does
+    not know (a newer build's, run before a rollback: its tombstones are not this build's to discard), stays where
+    it is, with a warn!: D128's anchors serve, a probe fails with `RETRY`, nothing is seeded or written, and the
+    next use reads the file again. Until it does, the validators hold D128's anchors as they are, so a key the
+    state holds revoked is trusted while it stays unreadable: the trade-off of serving anyway, where refusing to
+    serve would fail every answer on the mode of a file. The first answer that finds the state readable reloads
+    them, filtered by it. A state whose keys are all revoked is kept, serving
+    D128's anchors less the tombstones (warn!), also when D128's anchors predate the revocation: a validator
+    never trusts nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of which
     signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
     replaced by those, the tombstones kept, with a warn!. Forward stages keep D128's anchors.
   - Operator: the state is the server's to write and the operator's to read, and to reset (a key lost to a mistake,
@@ -2169,8 +2174,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     KSK-2010 to KSK-2017 rollover (2017 to 2019): KSK-2017 added, signing, KSK-2010 revoked (tag 19164) then gone.
     The KSK-2017 to KSK-2024 rollover has not revoked yet.
   - Tests: `crates/dedens-dnssec/tests/rfc5011.rs` (hold-downs, revocation, missing, an answer no trusted key
-    signs, the state text and each of its prefixes), `apps/dedensd/src/rollover.rs` (seeding, a restart, a state
-    that does not read, a revoked key never trusted again, the query's time), the config test in `apps/dedensd/src/config/sources.rs`,
+    signs, the state text, its prefixes and an unknown version), `apps/dedensd/src/rollover.rs` (seeding, a
+    restart, a state that does not read, is a link, is of an unknown version, cannot be set aside or cannot be
+    read, a revoked key never trusted again, also after the state read again, the query's time), the config test in `apps/dedensd/src/config/sources.rs`,
     the `. DNSKEY` resolution in `crates/dedens-server/tests/recurse.rs`; fuzz target `parse_5011_state`.
   - Rejected: the download winning (a file on a site; the zone is what RFC 5011 trusts, and a download missing
     the roll would keep a revoked key); following without the download (a start with no state would trust the
