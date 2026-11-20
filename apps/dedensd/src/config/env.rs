@@ -1,6 +1,8 @@
 //! `${VAR}` in the configuration (D44, D115): each placeholder replaced by its variable's value as YAML text, never
 //! as YAML.
 
+use std::mem;
+
 use anyhow::{Context, bail, ensure};
 
 /// `text` with each `${VAR}` replaced by the variable's value, written so that it is one value, never YAML
@@ -15,24 +17,283 @@ pub(super) fn interpolate(
     env: impl Fn(&str) -> Option<String>,
 ) -> anyhow::Result<String> {
     let mut out = String::with_capacity(text.len());
+    let mut scan = Scan::default();
     for line in text.split_inclusive('\n') {
+        scan.line(line);
         if line.trim_start().starts_with('#') {
             out.push_str(line);
+            scan.feed(line);
         } else {
-            interpolate_line(line, &env, &mut out)?;
+            interpolate_line(line, &env, &mut scan, &mut out)?;
         }
     }
     Ok(out)
 }
 
-/// How the value of variable `name` is written where `${name}` stands between `before` and `after`, the rest of its
-/// line in the template: a value cannot add YAML of its own (D44, D115).
+/// A quoted scalar of the template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quote {
+    Single,
+    Double,
+}
+
+/// Where a placeholder stands in the YAML of the template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// Where a scalar may start, `flow` inside a flow collection or not.
+    Start { flow: bool },
+    /// Inside a quoted scalar.
+    Quoted(Quote),
+    /// Anywhere else: within a plain scalar, a comment or a block scalar's text, or after a quote that starts no
+    /// scalar.
+    Other,
+}
+
+/// What the last character outside quotes, a scalar's first if a space follows, makes of that space.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Pending {
+    #[default]
+    None,
+    /// `-`, `?` or `:`: an indicator, a scalar may start after the space.
+    Indicator,
+    /// The `!` of a tag or the `&` of an anchor: so is the rest up to the space.
+    Property,
+}
+
+/// The template's YAML as far as [`Place`] needs it, every placeholder taken for text of a scalar: the quoted
+/// scalar open, how deep in flow collections, across lines (D115). A quote opens a quoted scalar only where a
+/// scalar may start (a line's start, after `- `, `? `, `: `, a tag or an anchor, after `[`, `{` or `,` in a flow);
+/// elsewhere it is text, and the rest of its line [`Place::Other`]. A line more indented than the scalar it may
+/// continue, or any line in a flow, continues it; the lines more indented than one ending in `|` or `>` are the
+/// text of a block scalar.
+#[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a fact of the YAML read so far, independent of the others"
+)]
+struct Scan {
+    quote: Option<Quote>,
+    /// A single quote just closed the quoted scalar, unless the next character is one too: `''` is a quote.
+    reopen: bool,
+    /// After a `\` in double quotes.
+    escaped: bool,
+    /// Flow collections open.
+    flow: usize,
+    /// A scalar may start at the next character.
+    start: bool,
+    pending: Pending,
+    /// The last character closed a quoted scalar or a flow collection: in a flow, a `:` right after it is an
+    /// indicator.
+    closed: bool,
+    /// The last character was a space, a tab or the line's start: a `#` there starts a comment.
+    spaced: bool,
+    /// In a comment, or after a quote that starts no scalar, up to the end of the line.
+    lost: bool,
+    /// The indentation of the line where the plain scalar open started.
+    plain: Option<usize>,
+    /// A `|` or `>` that may end its line, and the indentation of that line.
+    header: Option<usize>,
+    /// The indentation of the line ending in `|` or `>`, while the lines are the text of its block scalar.
+    block: Option<usize>,
+    /// The indentation of the line.
+    indent: usize,
+    /// The line is the text of a block scalar.
+    text: bool,
+}
+
+impl Scan {
+    /// Starts `line`, before its characters.
+    fn line(&mut self, line: &str) {
+        self.indent = line.len() - line.trim_start_matches(' ').len();
+        self.reopen = false;
+        if self.quote.is_some() {
+            return;
+        }
+        let blank = line.trim().is_empty();
+        self.text = self.block.is_some_and(|block| blank || self.indent > block);
+        if !self.text {
+            self.block = None;
+        }
+        // A blank line leaves a plain scalar open.
+        if blank {
+            return;
+        }
+        let continued = self
+            .plain
+            .is_some_and(|at| self.flow > 0 || self.indent > at);
+        if !continued {
+            self.plain = None;
+        }
+        self.start = !continued;
+        self.pending = Pending::None;
+        self.closed = false;
+        self.spaced = true;
+        self.lost = false;
+        self.header = None;
+    }
+
+    /// Where a placeholder here stands.
+    const fn place(&self) -> Place {
+        if self.text || self.lost {
+            return Place::Other;
+        }
+        match self.quote {
+            Some(quote) => Place::Quoted(quote),
+            None if self.start => Place::Start {
+                flow: self.flow > 0,
+            },
+            None => Place::Other,
+        }
+    }
+
+    /// Follows a placeholder's value: text of the scalar.
+    const fn value(&mut self) {
+        self.reopen = false;
+        if !self.text && !self.lost && self.quote.is_none() {
+            self.other();
+        }
+    }
+
+    /// Follows the template's `text`.
+    fn feed(&mut self, text: &str) {
+        if !self.text {
+            text.chars().for_each(|c| self.char(c));
+        }
+    }
+
+    fn char(&mut self, c: char) {
+        if mem::take(&mut self.reopen) && c == '\'' {
+            self.quote = Some(Quote::Single);
+            return;
+        }
+        match self.quote {
+            Some(Quote::Single) => {
+                if c == '\'' {
+                    self.close();
+                    self.reopen = true;
+                }
+                return;
+            }
+            Some(Quote::Double) => {
+                if !mem::take(&mut self.escaped) {
+                    match c {
+                        '\\' => self.escaped = true,
+                        '"' => self.close(),
+                        _ => {}
+                    }
+                }
+                return;
+            }
+            None => {}
+        }
+        let spaced = mem::replace(&mut self.spaced, matches!(c, ' ' | '\t'));
+        if c == '\n' {
+            if self.pending != Pending::None {
+                self.plain = None;
+            }
+            if let Some(indent) = self.header {
+                self.block = Some(indent);
+                self.plain = None;
+            }
+            return;
+        }
+        if self.lost {
+            return;
+        }
+        match c {
+            ' ' | '\t' => {
+                if self.pending != Pending::None {
+                    self.pending = Pending::None;
+                    self.start = true;
+                    self.plain = None;
+                }
+                self.closed = false;
+            }
+            '#' if spaced => self.lost = true,
+            '\'' | '"' if self.start => {
+                self.quote = Some(if c == '\'' {
+                    Quote::Single
+                } else {
+                    Quote::Double
+                });
+                self.start = false;
+                self.plain = None;
+            }
+            '\'' | '"' => self.lost = true,
+            '[' | '{' if self.start || self.flow > 0 => {
+                self.flow += 1;
+                self.start = true;
+                self.closed = false;
+                self.plain = None;
+            }
+            ']' | '}' if self.flow > 0 => {
+                self.flow -= 1;
+                self.start = false;
+                self.closed = true;
+                self.plain = None;
+            }
+            ',' if self.flow > 0 => {
+                self.start = true;
+                self.closed = false;
+                self.plain = None;
+            }
+            ':' => {
+                let adjacent = self.closed && self.flow > 0;
+                self.other();
+                self.pending = Pending::Indicator;
+                if adjacent {
+                    self.start = true;
+                    self.plain = None;
+                }
+            }
+            '-' | '?' if self.start => {
+                self.other();
+                self.pending = Pending::Indicator;
+            }
+            '!' | '&' if self.start => {
+                self.other();
+                self.pending = Pending::Property;
+            }
+            '|' | '>' if self.start && self.flow == 0 => {
+                self.other();
+                self.header = Some(self.indent);
+            }
+            '+' | '-' | '0'..='9' if self.header.is_some() => {}
+            _ => self.other(),
+        }
+    }
+
+    /// A character of a plain scalar, maybe its first.
+    const fn other(&mut self) {
+        self.start = false;
+        self.closed = false;
+        self.spaced = false;
+        self.header = None;
+        if matches!(self.pending, Pending::Indicator) {
+            self.pending = Pending::None;
+        }
+        if self.plain.is_none() {
+            self.plain = Some(self.indent);
+        }
+    }
+
+    /// Ends the quoted scalar open.
+    const fn close(&mut self) {
+        self.quote = None;
+        self.start = false;
+        self.closed = true;
+        self.spaced = false;
+    }
+}
+
+/// How the value of variable `name` is written where `${name}` stands, at `place` between `before` and `after`,
+/// the rest of its line in the template: a value cannot add YAML of its own (D44, D115).
 /// - A plain value, made of letters, digits and `_./:@+=%~#-` that YAML cannot read as syntax (it does not start
 ///   with `#`, `@`, `%`, `---`, `...` or end with `:`, and is not `-` or `?`), is written as it is: ports,
 ///   addresses, paths and URLs stay usable anywhere, in a number or in a quoted text.
-/// - Between quotes of the template, it is escaped for them.
-/// - Alone as a value (a whole scalar: after `key:`, `-`, `,` or `[` in a flow, before a `,`, a `]`, a `}`, a
-///   comment or the end of the line), it is written in single quotes; so is a plain value YAML reads as null (`~`,
+/// - Inside quotes of the template, right between two of them, it is escaped for them.
+/// - Alone as a value (a whole scalar: where one may start, before a `,`, a `]`, a `}` in a flow, a `: `, a comment
+///   or the end of the line), it is written in single quotes; so is a plain value YAML reads as null (`~`,
 ///   `null`, `Null`, `NULL`), which would otherwise read as no value.
 ///
 /// # Errors
@@ -40,7 +301,12 @@ pub(super) fn interpolate(
 /// A value spanning lines (`\n` or `\r`), with another control character or a Unicode line separator, which a
 /// YAML reader may take for a line break; one that is not plain and is part of a larger value, for which no
 /// quoting is right.
-fn written(name: &str, value: &str, before: &str, after: &str) -> anyhow::Result<String> {
+fn written(
+    name: &str,
+    value: &str,
+    place: Place,
+    (before, after): (&str, &str),
+) -> anyhow::Result<String> {
     ensure!(
         !value.contains(['\n', '\r']),
         "variable `{name}` spans several lines"
@@ -60,55 +326,56 @@ fn written(name: &str, value: &str, before: &str, after: &str) -> anyhow::Result
         && !value.ends_with(':')
         && !matches!(value, "-" | "?");
     let null = matches!(value, "~" | "null" | "Null" | "NULL");
-    if plain && !(null && alone(before, after)) {
+    let alone = match place {
+        Place::Start { flow } => ends(after, flow),
+        Place::Quoted(_) | Place::Other => false,
+    };
+    if plain && !(null && alone) {
         return Ok(value.to_owned());
     }
-    if before.ends_with('\'') && after.starts_with('\'') {
-        return Ok(value.replace('\'', "''"));
-    }
-    if before.ends_with('"') && after.starts_with('"') {
-        return Ok(value.replace('\\', "\\\\").replace('"', "\\\""));
+    match place {
+        Place::Quoted(Quote::Single) if before.ends_with('\'') && after.starts_with('\'') => {
+            return Ok(value.replace('\'', "''"));
+        }
+        Place::Quoted(Quote::Double) if before.ends_with('"') && after.starts_with('"') => {
+            return Ok(value.replace('\\', "\\\\").replace('"', "\\\""));
+        }
+        _ => {}
     }
     ensure!(
-        alone(before, after),
+        alone,
         "variable `{name}` is not alone as a value and holds text YAML could read as syntax: put `${{{name}}}` alone, or between quotes"
     );
     Ok(format!("'{}'", value.replace('\'', "''")))
 }
 
-/// Whether a placeholder between `before` and `after` makes a whole YAML scalar, a mapping's key or value or an
-/// entry of a sequence or of a flow collection. Reads the line of the template only: it is the template author's.
-fn alone(before: &str, after: &str) -> bool {
-    let flow = before.matches(['[', '{']).count() > before.matches([']', '}']).count();
-    let head = before.trim_end();
-    let spaced = head.len() < before.len();
-    let starts = head.is_empty()
-        || (flow && head.ends_with(['[', '{', ',']))
-        || (spaced && head.ends_with(':'))
-        // Sequence indicators, each `-` apart: `--` starts a plain scalar, which the quotes would then be part of.
-        || (spaced && head.split_whitespace().all(|token| token == "-"));
+/// Whether a scalar starting at a placeholder ends with it, `after` the rest of its line, `flow` inside a flow
+/// collection or not: a mapping's key or value or an entry of a sequence or of a flow collection.
+fn ends(after: &str, flow: bool) -> bool {
     let tail = after.trim_start();
-    let ends = tail.is_empty()
+    tail.is_empty()
         || (tail.len() < after.len() && tail.starts_with('#'))
         || (flow && tail.starts_with([',', ']', '}']))
         || tail
             .strip_prefix(':')
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
-    starts && ends
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
-/// [`interpolate`] for one line, not a comment, appended to `out`.
+/// [`interpolate`] for one line, not a comment, appended to `out`, followed by `scan`.
 fn interpolate_line(
     line: &str,
     env: impl Fn(&str) -> Option<String>,
+    scan: &mut Scan,
     out: &mut String,
 ) -> anyhow::Result<()> {
     let mut rest = line;
     while let Some(at) = rest.find('$') {
         out.push_str(&rest[..at]);
+        scan.feed(&rest[..at]);
         rest = &rest[at..];
         if let Some(after) = rest.strip_prefix("$$") {
             out.push('$');
+            scan.feed("$");
             rest = after;
         } else if let Some(after) = rest.strip_prefix("${") {
             let end = after.find('}').context("a `${` is not closed by `}`")?;
@@ -125,18 +392,24 @@ fn interpolate_line(
             match (env(name).filter(|value| !value.is_empty()), default) {
                 (Some(value), _) => {
                     let before = &line[..line.len() - rest.len()];
-                    out.push_str(&written(name, &value, before, after)?);
+                    out.push_str(&written(name, &value, scan.place(), (before, after))?);
+                    scan.value();
                 }
-                (None, Some(default)) => out.push_str(default),
+                (None, Some(default)) => {
+                    out.push_str(default);
+                    scan.feed(default);
+                }
                 (None, None) => bail!("variable `{name}` is not set"),
             }
             rest = after;
         } else {
             out.push('$');
+            scan.feed("$");
             rest = &rest[1..];
         }
     }
     out.push_str(rest);
+    scan.feed(rest);
     Ok(())
 }
 
@@ -234,6 +507,12 @@ mod tests {
             (r#"key: "${QUOTE}""#, r#"key: "it's""#),
             (r#"key: "${DOUBLE}""#, r#"key: "say \"hi\"\\""#),
             (r"key: '${DOUBLE}'", r#"key: 'say "hi"\'"#),
+            // By the quotes it is in, an escaped quote before it too.
+            ("{k: 'a''${QUOTE}'}", "{k: 'a''it''s'}"),
+            (r#"k: "a\"${DOUBLE}""#, r#"k: "a\"say \"hi\"\\""#),
+            ("k: 'a\n  '' ${PORT}'", "k: 'a\n  '' 5353'"),
+            // After a tag, alone.
+            ("key: !!str ${TEXT}", "key: !!str 'a: b #c'"),
             // A default is the template's own text.
             ("key: ${NOPE:-a: b}", "key: a: b"),
         ] {
@@ -257,6 +536,17 @@ mod tests {
             "key: ${TEXT}#x",
             "key: ${TEXT} x",
             "key: ${TEXT},",
+            // Inside quotes the line's brackets do not count, nor quotes of the other kind.
+            r#"{k: "[${TEXT}]"}"#,
+            r#"{k: 'a"${TEXT}"b'}"#,
+            // A quote within a plain scalar opens nothing, on its line or the next.
+            "k: a '${TEXT}'",
+            "k: a\n  '${TEXT}'",
+            "- a\n\n  '${TEXT}'",
+            "[a\n '${QUOTE}']",
+            // The text of a block scalar.
+            "k: |\n  ${TEXT}",
+            "k: >-\n  '${QUOTE}'",
         ] {
             let refused = interpolate(text, env).expect_err(text).to_string();
             assert!(refused.contains("not alone"), "{text}: {refused}");
@@ -274,7 +564,8 @@ mod tests {
     }
 
     /// D115: whatever the value, `key: ${VAR}` and its quoted and flow forms read as the mapping `key` to exactly
-    /// that text, or are refused: every text of up to three characters from those YAML gives a meaning to.
+    /// that text, or are refused: every text of up to three characters from those YAML gives a meaning to. Within
+    /// a quoted text, a quote of the other kind, a bracket or a line break before it change nothing.
     #[test]
     fn a_value_is_the_text_it_stands_for() {
         const ALPHABET: [char; 17] = [
@@ -294,12 +585,18 @@ mod tests {
         let mut read = 0;
         for value in values.iter().filter(|value| !value.is_empty()) {
             let env = |_: &str| Some(value.clone());
-            for (template, flow) in [
-                ("k: ${V}\n", false),
-                ("k: '${V}'\n", false),
-                ("k: \"${V}\"\n", false),
-                ("k: [${V}]\n", true),
-                ("{k: ${V}}\n", false),
+            for (template, flow, (prefix, suffix)) in [
+                ("k: ${V}\n", false, ("", "")),
+                ("k: '${V}'\n", false, ("", "")),
+                ("k: \"${V}\"\n", false, ("", "")),
+                ("k: [${V}]\n", true, ("", "")),
+                ("{k: ${V}}\n", false, ("", "")),
+                ("{k: 'a\"${V}\"b'}\n", false, ("a\"", "\"b")),
+                ("k: \"a'${V}'b\"\n", false, ("a'", "'b")),
+                ("{k: \"[${V}]\"}\n", false, ("[", "]")),
+                ("k: '{${V}}'\n", false, ("{", "}")),
+                ("k: \"a\n  ${V}\"\n", false, ("a ", "")),
+                ("k: 'a\n  ${V}'\n", false, ("a ", "")),
             ] {
                 let Ok(text) = interpolate(template, env) else {
                     continue;
@@ -313,7 +610,7 @@ mod tests {
                 if let Ok(map) = parsed {
                     assert_eq!(
                         map,
-                        BTreeMap::from([("k".to_owned(), value.clone())]),
+                        BTreeMap::from([("k".to_owned(), format!("{prefix}{value}{suffix}"))]),
                         "{text}"
                     );
                     read += 1;
@@ -321,6 +618,6 @@ mod tests {
             }
         }
         // Most of them read: the check is no refusal of everything.
-        assert!(read > values.len(), "{read} of {}", values.len() * 5);
+        assert!(read > values.len(), "{read} of {}", values.len() * 11);
     }
 }
