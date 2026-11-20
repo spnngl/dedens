@@ -1,13 +1,15 @@
-//! Stable-toolchain stand-in for a short fuzz run: replays every captured response in `testdata/proto/`,
-//! `testdata/dnssec/` and `testdata/odoh/`, the zone files of `testdata/zones/`, the root's anchors, the command lines
-//! of `seeds/` and `dedensd`'s configurations, plus truncated and bit-flipped variants through each target. Any panic
-//! fails the test and the offending input is written under `target/fuzz-smoke-crash/` (turn it into a test).
+//! Stable-toolchain stand-in for a short fuzz run: replays the seeds of the justfile's `fuzz_seeds` and `fuzz-seeds`
+//! (but the `CoAP` captures, of which the first datagram each way), plus truncated and bit-flipped variants, through
+//! each target. Any panic fails the test and the offending input is written under `target/fuzz-smoke-crash/` (turn it
+//! into a test).
 
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Instant;
+
+use dedens_testkit::recursion::Resolution;
 
 use crate::{Entry, TARGETS};
 
@@ -39,6 +41,7 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         }
     }
     seeds.extend(coap_seeds());
+    seeds.extend(recursion());
     seeds.extend(command_lines());
     seeds.extend(stamps());
     seeds.extend(configs());
@@ -96,6 +99,32 @@ fn coap_seeds() -> Vec<(String, Vec<u8>)> {
     seeds
 }
 
+/// The responses of the captured resolutions of `testdata/recursion/` and `testdata/recursion/minimised/` (D188).
+fn recursion() -> Vec<(String, Vec<u8>)> {
+    let mut seeds = Vec::new();
+    for id in ["recursion", "recursion/minimised"] {
+        let dir = root().join("../testdata").join(id);
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|ext| ext != "yaml") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).expect("read resolution");
+            let resolution =
+                Resolution::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let name = format!(
+                "{id}/{}",
+                path.file_stem().expect("file name").to_string_lossy()
+            );
+            seeds.extend(
+                (resolution.exchanges.into_iter().enumerate())
+                    .map(|(i, exchange)| (format!("{name} {i}"), exchange.response)),
+            );
+        }
+    }
+    seeds
+}
+
 /// The command lines of `seeds/command_lines.txt`, NUL between two arguments, as `just fuzz` writes them.
 fn command_lines() -> Vec<(String, Vec<u8>)> {
     include_str!("../seeds/command_lines.txt")
@@ -119,8 +148,8 @@ fn stamps() -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', `seeds/dnscrypt.yaml` and the examples of
-/// `apps/dedensd/src/config/mod.rs` (`example.yaml`, `example2.yaml`).
+/// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', `seeds/dnscrypt.yaml`,
+/// `seeds/odoh.yaml` and the examples of `apps/dedensd/src/config/mod.rs` (`example.yaml`, `example2.yaml`).
 fn configs() -> Vec<(String, Vec<u8>)> {
     let mut examples: Vec<String> = Vec::new();
     let mut open: Option<Vec<&str>> = None;
@@ -153,6 +182,10 @@ fn configs() -> Vec<(String, Vec<u8>)> {
         (
             "dnscrypt.yaml".into(),
             include_bytes!("../seeds/dnscrypt.yaml").to_vec(),
+        ),
+        (
+            "odoh.yaml".into(),
+            include_bytes!("../seeds/odoh.yaml").to_vec(),
         ),
         ("example.yaml".into(), forwarder.into_bytes()),
         ("example2.yaml".into(), resolver.into_bytes()),
