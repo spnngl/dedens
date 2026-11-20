@@ -25,9 +25,9 @@ const DAY: u64 = 24 * 60 * 60;
 // Written out, the ceiling has no arithmetic a mutant could change unseen; it is 15 days all the same.
 const _: () = assert!(Rollover::QUERY_CEILING == 15 * DAY);
 
-/// The state of a key [`Rollover`] follows (RFC 5011 §4). `Start` and `Removed` are no state held: a key in either
-/// is not kept, as Unbound drops them (`validator/autotrust.c`, `autr_cleanup_keys`). A key revoked is published
-/// with its revoke bit and so is another DNSKEY: it is never added again.
+/// The state of a key [`Rollover`] follows (RFC 5011 §4). `Start` is no state held, and `Removed` is one only of a
+/// key that was revoked: any other key `Removed` is not kept, as Unbound drops it (`validator/autotrust.c`,
+/// `autr_cleanup_keys`). A key revoked is kept so that it is never added or trusted again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState {
     /// A new key, seen in a validated `RRset`, not trusted before `until`, in seconds since 1970: the add
@@ -114,11 +114,6 @@ impl Rollover {
     /// (`lib/dns/zone.c`, `keyfetch_done`) are as long.
     pub const ADD_HOLD_DOWN: u64 = 30 * DAY;
 
-    /// The remove hold-down, 30 days (RFC 5011 §2.4.2): how long a revoked key is kept once it is no longer
-    /// published, so that its revocation is not forgotten while a cache may still hold the `RRset`. Unbound's
-    /// `del-holddown` (`do_remtime`) and BIND's `dns_zone_mkey_month` are as long.
-    pub const REMOVE_HOLD_DOWN: u64 = 30 * DAY;
-
     /// How long a missing key stays trusted when another key is valid, 366 days: a key the root unpublishes for a
     /// time (a standby) is trusted when it comes back. Unbound's `keep-missing` (`remove_missing_trustanchors`);
     /// BIND keeps it until revoked, RFC 5011 §4 too, which leaves a key the operator dropped trusted forever.
@@ -151,23 +146,75 @@ impl Rollover {
         records: &[Record<'_>],
         now: u64,
     ) -> Result<(Self, u64), RolloverError> {
+        Self::seeded(Vec::new(), anchors, records, now)
+    }
+
+    /// [`Rollover::seed`] for a state replaced by `anchors`, which may predate a revocation (a stale download):
+    /// the keys `self` holds revoked stay so, and are trusted through neither a DNSKEY anchor nor a DS one, or by
+    /// any answer, as RFC 5011 §2.1 and §4 make a revocation final. Every other key of `self` is forgotten.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Rollover::seed`]; also when only a revoked key of `self` would have signed the `RRset`.
+    pub fn reseed(
+        &self,
+        anchors: &TrustAnchors,
+        records: &[Record<'_>],
+        now: u64,
+    ) -> Result<(Self, u64), RolloverError> {
+        let revoked = (self.keys.iter())
+            .filter(|tracked| matches!(tracked.state, KeyState::Revoked { .. }))
+            .cloned()
+            .collect();
+        Self::seeded(revoked, anchors, records, now)
+    }
+
+    /// `revoked`, the keys revoked, with each DNSKEY anchor that is not one valid, updated from `records`.
+    fn seeded(
+        revoked: Vec<Tracked>,
+        anchors: &TrustAnchors,
+        records: &[Record<'_>],
+        now: u64,
+    ) -> Result<(Self, u64), RolloverError> {
         let (ds, dnskeys) = anchors
             .zones
             .get(&Name::root())
             .map_or((&[][..], &[][..]), |anchor| {
                 (anchor.ds.as_slice(), anchor.dnskeys.as_slice())
             });
-        let mut rollover = Self {
-            keys: (dnskeys.iter())
-                .map(|key| Tracked {
-                    key: unrevoked(key),
+        let mut rollover = Self { keys: revoked };
+        for key in dnskeys {
+            let key = unrevoked(key);
+            if !rollover.keys.iter().any(|tracked| tracked.key == key) {
+                rollover.keys.push(Tracked {
+                    key,
                     state: KeyState::Valid,
-                })
-                .collect(),
-        };
+                });
+            }
+        }
         rollover.sort();
         let wait = rollover.update(ds, records, now)?;
         Ok((rollover, wait))
+    }
+
+    /// `anchors` less what trusts a key `self` holds revoked: the root's DNSKEY anchors of it, and its DS ones. What
+    /// a state of revoked keys alone serves in place of its own anchors ([`Rollover::anchors`] is `None`). When
+    /// nothing is left, the root's anchor is empty, not absent: no key validates the root, rather than the root
+    /// being insecure.
+    #[must_use]
+    pub fn without_revoked(&self, anchors: &TrustAnchors) -> TrustAnchors {
+        let mut anchors = anchors.clone();
+        if let Some(anchor) = anchors.zones.get_mut(&Name::root()) {
+            let wires: Vec<_> = (self.keys.iter())
+                .filter(|tracked| matches!(tracked.state, KeyState::Revoked { .. }))
+                .map(|tracked| wire(&tracked.key))
+                .collect();
+            anchor
+                .ds
+                .retain(|ds| !wires.iter().any(|wire| digests(ds, wire)));
+            anchor.dnskeys.retain(|key| !self.revoked(key));
+        }
+        anchors
     }
 
     /// Updates each key from the root's DNSKEY `RRset` in `records`, with its RRSIGs, at `now`, in seconds since
@@ -179,7 +226,8 @@ impl Rollover {
     /// a secure entry point of a supported algorithm, waits [`Rollover::ADD_HOLD_DOWN`] (or the TTL when longer)
     /// and is valid when seen after that; one gone before is dropped. A valid key gone is missing, a missing key
     /// back is valid, and a missing key is dropped after [`Rollover::KEEP_MISSING`] when another is valid. A
-    /// revoked key is dropped [`Rollover::REMOVE_HOLD_DOWN`] after it was last seen.
+    /// revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver forget it after
+    /// the remove hold-down, but a stale anchor it is seeded with would trust it again (§2.1, §4).
     ///
     /// # Errors
     ///
@@ -225,7 +273,8 @@ impl Rollover {
         let trusted: Vec<Key<'_>> = (published.iter())
             .filter(|key| {
                 !key.dnskey().is_revoked()
-                    && (self.trusts(key.dnskey()) || digested(&ds, key.dnskey()))
+                    && (self.trusts(key.dnskey())
+                        || (!self.revoked(key.dnskey()) && digested(&ds, key.dnskey())))
             })
             .cloned()
             .collect();
@@ -242,9 +291,6 @@ impl Rollover {
                 KeyState::AddPend { .. } if !here => None,
                 KeyState::Valid if !here => Some(KeyState::Missing { since: now }),
                 KeyState::Missing { .. } if here => Some(KeyState::Valid),
-                KeyState::Revoked { seen } if now.saturating_sub(seen) > Self::REMOVE_HOLD_DOWN => {
-                    None
-                }
                 state => Some(state),
             };
             next.inspect(|&state| tracked.state = state).is_some()
@@ -289,7 +335,8 @@ impl Rollover {
     }
 
     /// The root's anchors: the keys valid or missing, as DNSKEY anchors; `None` when there is none, every key
-    /// revoked or dropped, so that the caller trusts its other anchors rather than nothing (D200).
+    /// revoked, so that the caller serves its other anchors less those revoked ([`Rollover::without_revoked`])
+    /// rather than trust nothing (D200).
     #[must_use]
     pub fn anchors(&self) -> Option<TrustAnchors> {
         let dnskeys: Vec<_> = (self.keys.iter())
@@ -333,14 +380,15 @@ impl Rollover {
     }
 
     /// The keys written in `text`, as [`fmt::Display`] writes them: the header line, one key per line in that
-    /// order, at least one valid or missing, then `end`, each line ending with a line feed. Nothing else is read:
-    /// not a blank, not a comment.
+    /// order, at least one valid, missing or revoked, then `end`, each line ending with a line feed. Nothing else
+    /// is read: not a blank, not a comment.
     ///
     /// # Errors
     ///
     /// [`RolloverStateError`] at the first line that is not as written, a key that is not after the one before
     /// (out of order or twice) included; at line 0 when `text` is longer than [`Rollover::MAX_LEN`], does not end
-    /// with `end` and a line feed, or trusts no key: a text cut short or emptied is never read as trusting nothing.
+    /// with `end` and a line feed, or holds no key valid, missing or revoked: a text cut short or emptied is never
+    /// read as trusting nothing, while one of revoked keys is.
     pub fn read(text: &str) -> Result<Self, RolloverStateError> {
         let whole = |what| RolloverStateError { line: 0, what };
         if text.len() > Self::MAX_LEN {
@@ -372,10 +420,21 @@ impl Rollover {
             }
             keys.push(tracked);
         }
-        if !keys.iter().any(|tracked| tracked.state.trusted()) {
-            return Err(whole("no valid or missing key"));
+        // A state of revoked keys alone is kept: it is what stops a stale anchor from trusting them again.
+        if !keys.iter().any(|tracked| {
+            tracked.state.trusted() || matches!(tracked.state, KeyState::Revoked { .. })
+        }) {
+            return Err(whole("no valid, missing or revoked key"));
         }
         Ok(Self { keys })
+    }
+
+    /// Whether `key`, in either form, is one this holds revoked.
+    fn revoked(&self, key: &Dnskey<'_>) -> bool {
+        let plain = unrevoked(key);
+        (self.keys.iter()).any(|tracked| {
+            matches!(tracked.state, KeyState::Revoked { .. }) && tracked.key == plain
+        })
     }
 
     /// Whether `key`, not revoked, is a trust anchor.

@@ -2064,8 +2064,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `rrsig::verify_revocation`, the one check a revoked key passes, D73), even when no trusted key signs the
     rest; then needs a Valid or Missing key's signature, else changes nothing more and errs. The table (§4): a new
     SEP key AddPend until now plus the larger of 30 days and the TTL (§2.4.1), Valid when seen past it, dropped
-    when unseen before; Valid unseen Missing, Missing seen Valid; Revoked dropped 30 days after last seen
-    (§2.4.2). `anchors()` are the DNSKEYs of Valid and Missing keys, none when none.
+    when unseen before; Valid unseen Missing, Missing seen Valid; Revoked kept for good, a tombstone (§2.4.2
+    lets a resolver forget it after 30 days, but a stale seed would trust it again: §2.1 and §4 make a revocation
+    final, as Unbound keeps the key in its state file). `reseed(anchors, records, now)` replaces the state by
+    `seed`, the tombstones kept: a key held Revoked is trusted through no DNSKEY anchor, no DS, no answer.
+    `without_revoked(anchors)` takes a tombstone's key out of other anchors. `anchors()` are the DNSKEYs of Valid
+    and Missing keys, none when none.
   - Bounds (`Rollover` constants, compared with Unbound's `validator/autotrust.c` and BIND's `lib/dns/zone.c`):
     hold-downs 30 days (Unbound's defaults, BIND's `dns_zone_mkey_month`); `KEEP_MISSING` 366 days, a Missing key
     dropped past it while another is Valid (Unbound's `keep-missing`; BIND and RFC 5011 keep it forever); the
@@ -2077,12 +2081,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `root-5011` in `state_dir`: `dedens rfc5011 1`, a line per key (state, time, DNSKEY), `end` last so that a
     file cut short does not read; written whole (D104) when it changed, kept by the leftover sweep, read at the
     first load. Its anchors win over D128's, downloaded or bundled, with a warn! when they disagree: the state
-    was proven from the zone, key by key, since a seed the download gave. No state, one that does not read
-    (warn!), or one whose keys are all revoked (removed, warn!): D128's anchors serve and seed a new state from
-    the next answer. A validator never trusts nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the
-    zone insecure. A state no key of which signs an answer D128's anchors sign, offline past a whole rollover
-    (RFC 5011 §6 leaves it to the operator), is replaced by those, with a warn!. Forward stages keep D128's
-    anchors.
+    was proven from the zone, key by key, since a seed the download gave. No state (no file: only NotFound),
+    or one that does not read (warn!; any error, a corrupt text or EIO): D128's anchors serve and seed a new
+    state from the next answer; an unreadable file is first renamed `root-5011.bad`, for the operator, since the
+    new state would overwrite its tombstones. A state whose keys are all revoked is kept, serving D128's anchors
+    less the tombstones (warn!), also when D128's anchors predate the revocation: a validator never trusts
+    nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of which
+    signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
+    replaced by those, the tombstones kept, with a warn!. Forward stages keep D128's anchors.
   - Queries: `Probe` in `reload::Current` holds the next query's time; the first serving thread past it takes it
     and resolves `. DNSKEY` through `Pipeline::root_keys` beside the query it serves, as priming (D195): no client,
     no validation (`Rollover` verifies), and the `RRset` cache may answer, its TTL bounding the age. The answer, its
@@ -2096,7 +2102,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     The KSK-2017 to KSK-2024 rollover has not revoked yet.
   - Tests: `crates/dedens-dnssec/tests/rfc5011.rs` (hold-downs, revocation, missing, an answer no trusted key
     signs, the state text and each of its prefixes), `apps/dedensd/src/rollover.rs` (seeding, a restart, a state
-    that does not read, one revoked whole, the query's time), the config test in `apps/dedensd/src/config/sources.rs`,
+    that does not read, a revoked key never trusted again, the query's time), the config test in `apps/dedensd/src/config/sources.rs`,
     the `. DNSKEY` resolution in `crates/dedens-server/tests/recurse.rs`; fuzz target `parse_5011_state`.
   - Rejected: the download winning (a file on a site; the zone is what RFC 5011 trusts, and a download missing
     the roll would keep a revoked key); following without the download (a start with no state would trust the

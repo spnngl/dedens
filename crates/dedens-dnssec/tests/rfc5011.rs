@@ -1,8 +1,8 @@
 //! The root's trust anchors followed through its KSK rollover by RFC 5011 (D200), over the root's DNSKEY `RRset`s
 //! of the KSK-2010 (19036) to KSK-2017 (20326) rollover.
 //!
-//! - RFC 5011 §2.1: a key's revocation, signed by itself, makes it no anchor, and it is dropped after the remove
-//!   hold-down (§2.4.2).
+//! - RFC 5011 §2.1: a key's revocation, signed by itself, makes it no anchor, for good: it is kept after the remove
+//!   hold-down (§2.4.2), which a resolver may take to forget it, against an anchor it is seeded with.
 //! - RFC 5011 §2.2 and §2.4.1: a new key is trusted only once seen after the add hold-down, and dropped when gone
 //!   before.
 //! - RFC 5011 §2.3: the wait before the next query, half the `RRset`'s TTL.
@@ -218,7 +218,7 @@ fn rfc5011_s4_pending_key_gone_is_dropped() {
 // --- RFC 5011 §2.1 and §2.4.2: revocation and the remove hold-down ---
 
 #[test]
-fn rfc5011_s2_1_revoked_key_is_no_anchor_then_dropped() {
+fn rfc5011_s2_1_revoked_key_is_no_anchor_and_stays_revoked() {
     let mut rollover = both_valid();
     rollover
         .observe(&march_2019(), MARCH_2019)
@@ -232,23 +232,17 @@ fn rfc5011_s2_1_revoked_key_is_no_anchor_then_dropped() {
     );
     assert_eq!(trusted(&rollover), [20326]);
 
-    // 30 days to the second: the remove hold-down is not over.
+    // Past the remove hold-down, no longer published: still revoked, so that no seed trusts it again.
     rollover
-        .observe(&april_2019(), MARCH_2019 + 30 * DAY)
+        .observe(&april_2019(), APRIL_10_2019)
         .expect("observed");
     assert_eq!(
         states(&rollover),
         [
             (19036, KeyState::Revoked { seen: MARCH_2019 }),
             (20326, KeyState::Valid)
-        ],
-        "the remove hold-down is not over"
+        ]
     );
-
-    rollover
-        .observe(&april_2019(), APRIL_10_2019)
-        .expect("observed");
-    assert_eq!(states(&rollover), [(20326, KeyState::Valid)]);
 }
 
 #[test]
@@ -268,6 +262,89 @@ fn rfc5011_s2_1_revocation_kept_when_nothing_else_signs() {
         [(19036, KeyState::Revoked { seen: MARCH_2019 })]
     );
     assert_eq!(rollover.anchors(), None, "the caller's other anchors hold");
+}
+
+/// The key signing `com`'s DNSKEY `RRset`, captured: a key valid in a state that signs nothing of the root's.
+fn com_ksk() -> Dnskey<'static> {
+    let wire = fs::read(dedens_testkit::path("dnssec/com_dnskey.bin")).expect("captured");
+    dedens_testkit::message(&wire)
+        .answer
+        .iter()
+        .find_map(|record| match record.data() {
+            RData::Dnskey(key) if key.is_secure_entry_point() => Some(key.into_owned()),
+            _ => None,
+        })
+        .expect("com's KSK")
+}
+
+/// A state that holds the revoked KSK-2010 and a valid key that signs nothing of the root's, which no answer of
+/// the root's verifies.
+fn revoked_2010_beside_another_key() -> Rollover {
+    let text = format!(
+        "dedens rfc5011 1\nrevoked {MARCH_2019} {}\nvalid {}\nend\n",
+        dnskey(&december_2018(), 19036),
+        com_ksk(),
+    );
+    Rollover::read(&text).expect("state text")
+}
+
+/// RFC 5011 §2.1 and §4: a revoked key is never a trust anchor again. A state that no answer verifies is replaced by
+/// the anchors it is seeded with, which may predate the revocation (a stale download keeps the DS of KSK-2010): the
+/// revocation is carried over, and an `RRset` KSK-2010 alone signs, as an attacker holding it serves, is not
+/// verified through that DS.
+#[test]
+fn rfc5011_s2_1_a_revoked_key_is_not_trusted_again_by_a_reseed() {
+    let stale = anchors(&format!("{DS_2010}{DS_2017}"));
+    let state = revoked_2010_beside_another_key();
+    assert!(matches!(
+        state.clone().observe(&december_2018(), DECEMBER_2018),
+        Err(RolloverError::Unverified(_))
+    ));
+    let (reseeded, _) = state
+        .reseed(&stale, &december_2018(), DECEMBER_2018)
+        .expect("KSK-2017 signs and its DS is trusted");
+    assert_eq!(
+        states(&reseeded),
+        [
+            (19036, KeyState::Revoked { seen: MARCH_2019 }),
+            (20326, KeyState::Valid)
+        ]
+    );
+    assert_eq!(trusted(&reseeded), [20326]);
+
+    // DNSKEY anchors of the revoked key are no more trusted than its DS.
+    let key = dnskey(&december_2018(), 19036);
+    let dnskey_anchors = anchors(&format!(". IN DNSKEY {key}\n{DS_2017}"));
+    let (reseeded, _) = state
+        .reseed(&dnskey_anchors, &december_2018(), DECEMBER_2018)
+        .expect("reseeded");
+    assert_eq!(trusted(&reseeded), [20326]);
+
+    // Only the revoked key's DS: nothing verifies, the revocation stays.
+    assert!(matches!(
+        state.reseed(&anchors(DS_2010), &december_2018(), DECEMBER_2018),
+        Err(RolloverError::Unverified(_))
+    ));
+}
+
+/// RFC 5011 §2.1: a state of revoked keys only is read, trusts nothing, and takes the revoked keys out of other
+/// anchors, the DS of a revoked key and a DNSKEY, whatever form of it.
+#[test]
+fn rfc5011_s2_1_revoked_keys_alone_are_a_state_that_filters_other_anchors() {
+    let k2010 = dnskey(&december_2018(), 19036);
+    let text = format!("dedens rfc5011 1\nrevoked {MARCH_2019} {k2010}\nend\n");
+    let state = Rollover::read(&text).expect("a state of a revoked key");
+    assert_eq!(state.to_string(), text);
+    assert_eq!(state.anchors(), None);
+    let both = anchors(&format!("{DS_2010}{DS_2017}. IN DNSKEY {k2010}\n"));
+    assert_eq!(state.without_revoked(&both), anchors(DS_2017));
+    assert_eq!(state.without_revoked(&anchors(DS_2017)), anchors(DS_2017));
+    // Nothing is left to trust, not an absent anchor, which would leave the root insecure.
+    let left = state.without_revoked(&anchors(DS_2010));
+    let (_, left) = left
+        .closest(&Name::root())
+        .expect("the root's anchor stays");
+    assert_eq!((left.ds().len(), left.dnskeys().len()), (0, 0));
 }
 
 // --- RFC 5011 §4: missing keys ---
