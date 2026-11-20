@@ -136,8 +136,7 @@ impl Rrset {
     /// would serve it without its proof.
     #[must_use]
     pub fn expanded(&self) -> bool {
-        let starred = self.owner.labels().next() == Some(b"*".as_slice());
-        let counted = self.owner.label_count() - usize::from(starred);
+        let counted = self.owner.signed_label_count();
         (self.rrsigs.iter()).any(|rdata| {
             matches!(rdata.data(), RData::Rrsig(rrsig) if usize::from(rrsig.labels) < counted)
         })

@@ -172,6 +172,14 @@ impl<'a> Name<'a> {
         self.labels().count()
     }
 
+    /// Number of labels a signature of this owner counts, its Labels field (RFC 4034 §3.1.3): without the root
+    /// label nor a leading `*`. One that counts fewer signs a wildcard expansion (RFC 4035 §5.3.2).
+    #[must_use]
+    pub fn signed_label_count(&self) -> usize {
+        let starred = self.labels().next() == Some(b"*".as_slice());
+        self.label_count() - usize::from(starred)
+    }
+
     /// Whether this name is `zone` or below it, whatever the case (RFC 4343).
     #[must_use]
     pub fn is_within(&self, zone: &Name<'_>) -> bool {
@@ -947,6 +955,13 @@ mod tests {
     fn label_count_leaves_out_the_root() {
         assert_eq!(Name::root().label_count(), 0);
         assert_eq!(name(&[b"b", b"a"]).label_count(), 2);
+    }
+
+    #[test]
+    fn rfc4034_3_1_3_signed_label_count_leaves_out_a_leading_star() {
+        assert_eq!(Name::root().signed_label_count(), 0);
+        assert_eq!(name(&[b"*", b"a"]).signed_label_count(), 1);
+        assert_eq!(name(&[b"b", b"*", b"a"]).signed_label_count(), 3);
     }
 
     #[test]

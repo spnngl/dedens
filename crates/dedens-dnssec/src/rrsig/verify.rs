@@ -67,8 +67,7 @@ impl<'s, 'k> Attempt<'s, 'k> {
             return Err(SigError::BadSigner);
         }
         let total = owner.label_count();
-        let starred = owner.labels().next() == Some(b"*".as_slice());
-        let counted = total - usize::from(starred);
+        let counted = owner.signed_label_count();
         let kept = usize::from(rrsig.labels);
         if kept > counted || kept < rrsig.signer.label_count() {
             return Err(SigError::BadLabels {

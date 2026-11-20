@@ -461,8 +461,7 @@ impl Validation {
         }
         // The signatures counting fewer labels than the owner all name the same wildcard, whichever verifies, as
         // Unbound's `val_rrset_wildcard` (RFC 4035 §5.3.4).
-        let starred = owner.labels().next() == Some(b"*".as_slice());
-        let counted = owner.label_count() - usize::from(starred);
+        let counted = owner.signed_label_count();
         let mut wildcards = (sigs.iter())
             .map(|sig| sig.rrsig().labels)
             .filter(|&labels| usize::from(labels) < counted);
