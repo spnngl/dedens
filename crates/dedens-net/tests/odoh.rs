@@ -498,7 +498,7 @@ impl Target {
             (Kind::Configs, Ok(_)) => {
                 self.configs_asked.set(self.configs_asked.get() + 1);
                 let encoded = self.configs.borrow().clone().unwrap_or_else(|| {
-                    Configs::new(vec![self.key.borrow().config().clone()])
+                    Configs::new(self.key.borrow().config().clone(), Vec::new())
                         .encode()
                         .expect("configurations encode")
                 });
@@ -687,7 +687,7 @@ async fn s4_3_kept_configurations_given_are_fetched_again_after_a_401() {
     )
     .await;
     let client = trusting(certificates);
-    let stale = Configs::new(vec![TargetKey::derive(&[16; 32]).config().clone()])
+    let stale = Configs::new(TargetKey::derive(&[16; 32]).config().clone(), Vec::new())
         .encode()
         .expect("configurations encode");
     assert!(matches!(
@@ -714,7 +714,7 @@ async fn s4_3_a_401_under_fresh_configurations_fails() {
     let target = Target::new(5);
     let other = TargetKey::derive(&[6; 32]);
     *target.configs.borrow_mut() = Some(
-        Configs::new(vec![other.config().clone()])
+        Configs::new(other.config().clone(), Vec::new())
             .encode()
             .expect("configurations encode"),
     );
@@ -1109,7 +1109,7 @@ async fn s5_pinned_configurations_are_not_fetched() {
     .await;
     let client = trusting(certificates);
     let encode = |key: &TargetKey| {
-        Configs::new(vec![key.config().clone()])
+        Configs::new(key.config().clone(), Vec::new())
             .encode()
             .expect("configurations encode")
     };
@@ -1172,7 +1172,7 @@ fn live_configs(host: &str) -> Configs {
 fn stale(configs: &Configs) -> Vec<u8> {
     let mut key = *configs.configs()[0].public_key();
     key[0] ^= 1;
-    Configs::new(vec![ConfigContents::new(key)])
+    Configs::new(ConfigContents::new(key), Vec::new())
         .encode()
         .expect("configurations encode")
 }

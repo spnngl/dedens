@@ -266,7 +266,8 @@ mod tests {
     #[test]
     fn the_kept_configurations_are_bounded() {
         let configs = Configs::default();
-        let parsed = dedens_odoh::Configs::new(vec![TargetKey::derive(&[7; 32]).config().clone()]);
+        let parsed =
+            dedens_odoh::Configs::new(TargetKey::derive(&[7; 32]).config().clone(), Vec::new());
         for port in 0..u16::try_from(MAX_TARGETS * 2).expect("a small number") {
             let key = (
                 SocketAddr::from(([127, 0, 0, 1], 1000 + port)),

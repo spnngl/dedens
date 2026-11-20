@@ -66,7 +66,7 @@ fn odoh_config_gives_the_configurations() {
     let configs = |seed: u8| {
         let mut file = tempfile::NamedTempFile::new().expect("a file");
         let key = TargetKey::derive(&[seed; 32]);
-        let encoded = Configs::new(vec![key.config().clone()])
+        let encoded = Configs::new(key.config().clone(), Vec::new())
             .encode()
             .expect("configurations encode");
         file.write_all(&encoded).expect("written");
@@ -107,7 +107,7 @@ fn odoh_config_is_read_once_per_run() {
         .status()
         .expect("mkfifo runs");
     assert!(made.success(), "mkfifo: {made}");
-    let encoded = Configs::new(vec![TargetKey::derive(&[7; 32]).config().clone()])
+    let encoded = Configs::new(TargetKey::derive(&[7; 32]).config().clone(), Vec::new())
         .encode()
         .expect("configurations encode");
     // Opening the pipe waits for the reader: the thread ends once dedens has read it.

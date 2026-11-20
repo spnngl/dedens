@@ -564,7 +564,7 @@ fn oblivious_answer(
     let response = match (kind, query) {
         (_, Err(code)) => status(code),
         (Kind::Configs, Ok(_)) => {
-            let configs = Configs::new(vec![key.config().clone()])
+            let configs = Configs::new(key.config().clone(), Vec::new())
                 .encode()
                 .expect("configurations encode");
             odoh::configs_response(configs, 3600)

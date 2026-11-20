@@ -119,7 +119,7 @@ impl Service {
             "ODoH requests answered 503 before being opened: the client network or all clients were over their budget."
         );
         let key = TargetKey::derive(&secret);
-        let configs = dedens_odoh::Configs::new(vec![key.config().clone()])
+        let configs = dedens_odoh::Configs::new(key.config().clone(), Vec::new())
             .encode()
             .context("`odoh`: the configurations do not encode")?;
         Ok(Self {

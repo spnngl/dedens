@@ -51,7 +51,7 @@ fn key() -> TargetKey {
 
 /// The target's key as a client reads it, from the config the target publishes.
 fn client_key(key: &TargetKey) -> dedens_odoh::ConfigContents {
-    let wire = Configs::new(vec![key.config().clone()])
+    let wire = Configs::new(key.config().clone(), Vec::new())
         .encode()
         .expect("one config");
     Configs::parse(&wire).expect("parses").configs()[0].clone()
