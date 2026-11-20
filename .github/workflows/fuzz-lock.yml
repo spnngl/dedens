@@ -1,9 +1,9 @@
 name: fuzz-lock
 
 # On each push of Renovate to its branches: commits `fuzz/Cargo.lock` when the bump changed what it resolves.
-# `fuzz/` is a workspace of its own, so Renovate updates only `Cargo.lock`, and `just check --locked` then refuses
-# the stale fuzz lock file. The push uses an app's token, as one of GITHUB_TOKEN would start no checks on the new
-# commit; Renovate ignores the app's commits (`gitIgnoredAuthors` in renovate.json5).
+# `fuzz/` is a workspace of its own, so Renovate updates only `Cargo.lock`, and `just check`'s
+# `cargo shear --locked` then refuses the stale fuzz lock file. The push uses an app's token, as one of
+# GITHUB_TOKEN would start no checks on the new commit; Renovate ignores the app's commits (`gitIgnoredAuthors` in renovate.json5).
 on:
   push:
     branches:
