@@ -545,10 +545,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `QuicError::MessageId`, the query not sent again (§4.3.3 SHOULD). Passed on to the exchange, such a
   response was dropped as not answering ID 0, and the next try went on the connection that broke the protocol. Not
   checked: a response carrying edns-tcp-keepalive (§4.3.3, §5.5.2).
-- D97 (amends D69; amended by D101) DNSCrypt (draft-denis-dprive-dnscrypt, revision 11) is `dedens-dnscrypt`, sans-IO, for both classical
+- D97 (amends D69; amended by D100, D101) DNSCrypt (draft-denis-dprive-dnscrypt, revision 11) is `dedens-dnscrypt`, sans-IO, for both classical
   systems: `0x0002` XChaCha20-Poly1305 (the draft's) and `0x0001` XSalsa20-Poly1305 (v2 of 2023, which the draft no
   longer specifies; the resolvers in the field still serve it, Quad9 both). Not here: the post-quantum system `0x0003`
-  (D101), Anonymized DNSCrypt, stamps (D102) and the exchange over a network. Nothing inside reads a clock or the randomness: `now` and a `CryptoRng` are
+  (D101), Anonymized DNSCrypt but its relay prefix (`relay_query`, D100), stamps (D102) and the exchange over a network. Nothing inside reads a clock or the randomness: `now` and a `CryptoRng` are
   arguments.
   The draft is cited by section name, as its numbers move between revisions; the archive holds revision 11 and the 2023
   text (`docs/rfc/list.md`, `coverage.md`). The crate has no `dnscrypt` Cargo feature: it is a library nothing else
@@ -596,10 +596,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Not wiped: `ring`'s key schedule, the by-value copies of the secret key and of the X25519 output that go to
     `x25519` and to HSalsa20 or HChaCha20, the arrays the keys are copied into to build a cipher, the plaintexts,
     copies the allocator moved. No `unwrap`, `expect`, `as` or `unsafe` in non-test code.
-  - Tests: every vector of the draft's "Appendix 2: DNSCrypt Test Vectors" and its negative cases (`tests/draft.rs`),
+  - Tests: every vector of the draft's "Appendix 2: DNSCrypt Test Vectors" and its negative cases (`tests/draft.rs`;
+    case 2, bad padding, in the crate's unit tests (`src/tests.rs`), case 6, validity and serial, in `tests/certificate.rs`),
     certificates (`tests/certificate.rs`), round trips and the limits (`tests/exchange.rs`), and exchanges captured from
     Quad9 for both systems, which a resolver of the field answered (`tests/quad9.rs`, `testdata/dnscrypt/README.md`).
-    The four topic modules sit in `tests/tests.rs` (D162), not in a `tests/dnscrypt.rs`. Fuzz targets, both systems
+    The topic modules sit in `tests/tests.rs` (D162), not in a `tests/dnscrypt.rs`. Fuzz targets, both systems
     and seeded with those captures: `parse_dnscrypt_certificate`, `dnscrypt_decrypt` (no packet but ours is a
     response), `dnscrypt_unpad` (a message padded to any length is read back), `dnscrypt_tamper_query` and
     `dnscrypt_tamper_response` (an authentic packet is read, with one bit changed it is refused) and
@@ -731,7 +732,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     XChaCha20" while reading the `0x0001` certificate, and then keeps the `0x0002` one, as serials are equal); a
     `dedensd` forwarding by stamp to Quad9 (`9.9.9.9:8443`, the stamp of `docs/providers/providers.yaml`) answered `example.com` over UDP
     in 41 ms and over TCP.
-- D100 (amends D98, D99, D102; amended by D101) The client and `dedensd` ask a DNSCrypt resolver through an Anonymized DNSCrypt relay
+- D100 (amends D97, D98, D99, D102; amended by D101) The client and `dedensd` ask a DNSCrypt resolver through an Anonymized DNSCrypt relay
   (draft-denis-dprive-dnscrypt-11, "Anonymized DNSCrypt"), so that the resolver sees the relay's address, not the
   client's: `dedens @sdns://… +dnscrypt-relay=RELAY` and `relays: [RELAY, …]` in a forward stage, in the feature
   `dnscrypt` as D98 and D99 are. A RELAY is a relay stamp (`sdns://gQ…`, 0x81) or an address `ADDR[:port]` (443 unless
@@ -851,7 +852,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     otherwise the answer holds the classical certificates with TC set, and over TCP every certificate is sent. A
     packet is resumed when it starts with `PQResume`; the access check stands before any decapsulation (D91), but
     D113's rate limit does not (it is a pipeline stage, after the query is opened), so a full query pays a budget first
-    (the draft's "Resolvers SHOULD limit unauthenticated KEM work under load"): D117's `Budgets`, as the ODoH target's
+    (the draft's "Resumption Considerations": "A resolver SHOULD rate-limit decapsulation of queries that carry a
+    ciphertext and prioritize valid resumed traffic under load"): D117's `Budgets`, as the ODoH target's
     (D94), one unit a decapsulation, 101 µs, shared by all threads (a table per thread would give a client the budget of
     each thread its packets reach): a client network (a /24 or /48; a UDP source, which can be spoofed, has a bucket
     apart from a TCP one) 250 a second, 500 at once, all clients 2500 a second, 5000 at once, a quarter of a core,

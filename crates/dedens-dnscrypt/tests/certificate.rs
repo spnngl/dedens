@@ -155,8 +155,8 @@ fn unsupported_system_is_not_read_further() {
     }
 }
 
-/// "Certificates": the client magic is never eight 0xff bytes, nor starts with seven NUL bytes, nor is
-/// `PQResume`.
+/// "Certificates": the client magic never starts with seven NUL bytes, nor is `PQResume`; nor, by the crate's own
+/// rule, is it eight 0xff bytes, the start of the Anonymized `DNSCrypt` `<anon-magic>`.
 #[test]
 fn forbidden_client_magics() {
     for forbidden in [

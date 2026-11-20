@@ -22,7 +22,8 @@ pub(crate) const PROFILE: [u8; 12] = [
 /// The `<es-version>` of the X-Wing system.
 pub(crate) const ES_VERSION: [u8; 2] = [0, 3];
 
-/// Length of what a ticket seals (draft "Resumption Tickets"): the resume secret, the binding and the expiry.
+/// Length of what a ticket seals, `ticket-plain` (draft "Issuing a Ticket"): the resume secret, the binding and
+/// the expiry.
 pub(crate) const TICKET_PLAIN_LEN: usize = KEY_LEN + 2 + 8 + 4 + 4 + 4 + 32;
 
 /// Length of a ticket: key id, nonce, tag and the sealed plaintext.
@@ -33,7 +34,7 @@ const TICKET_LEN_WIRE: u16 = 130;
 
 const _: () = assert!(TICKET_LEN == 130 && TICKET_PLAIN_LEN == 86);
 
-/// What a ticket binds a resumed session to: the certificate it was issued under (draft "Resumption Tickets":
+/// What a ticket binds a resumed session to: the certificate it was issued under (draft "Issuing a Ticket":
 /// the sealed certificate-context fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Binding {
@@ -114,8 +115,8 @@ pub(crate) fn session_key(
     SharedKey::new(EncryptionSystem::XWing, key)
 }
 
-/// The secret a ticket carries, from the key and the client nonce of the query it answers (draft "Resumption
-/// Tickets").
+/// The secret a ticket carries, `resume-secret`, from the key and the client nonce of the query it answers (draft
+/// "Issuing a Ticket").
 pub(crate) fn resume_secret(
     shared: &SharedKey,
     magic: [u8; 8],

@@ -152,8 +152,9 @@ impl ResolverKey {
     /// caller's (draft "Resolver Responses Over UDP").
     ///
     /// For an X-Wing key this decapsulates the ciphertext in the packet, which costs more than an X25519 key
-    /// agreement: a resolver rate-limits it (draft "Implicit Rejection"). A ciphertext that was altered gives
-    /// another key and fails to authenticate, like any other forged packet.
+    /// agreement: a resolver rate-limits it (draft "Resumption Considerations"). A ciphertext that was altered
+    /// gives another key, by X-Wing's implicit rejection (draft "PQ Security Considerations"), and fails to
+    /// authenticate, like any other forged packet.
     ///
     /// # Errors
     ///

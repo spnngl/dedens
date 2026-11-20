@@ -103,7 +103,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
 - D95 [transports](transports.md) (amended by D109): DoC discovery through `/.well-known/core`
 - D96 [server](server.md): a cache stage's `prewarm` keeps names answered with no client: asked through the pipeline over UDP with a share of the validator's allowance of its own, again at the prefetch point (a margin before the expiry)
-- D97 [transports](transports.md) (amended by D101): DNSCrypt core `dedens-dnscrypt`: both classical systems, sans-IO, on RustCrypto and `ring`
+- D97 [transports](transports.md) (amended by D100, D101): DNSCrypt core `dedens-dnscrypt`: both classical systems, sans-IO, on RustCrypto and `ring`
 - D98 [transports](transports.md) (amended by D100, D101): DNSCrypt client: `dedens @sdns://…` and `dedens_net::dnscrypt`, an envelope over the UDP and TCP loop, certificates fetched over UDP then TCP and kept until they stop answering, a fresh key per query
 - D99 [transports](transports.md) (amended by D100, D101): DNSCrypt in `dedensd`: a `dnscrypt://` listener, keys rotated every 12 hours, shared keys cached per thread, and `sdns://` upstream servers
 - D100 [transports](transports.md) (amended by D101): Anonymized DNSCrypt client side: `+dnscrypt-relay` and a forward stage's `relays`, a relay picked at random for each query and the failed one skipped once, certificates and queries padded for the relay's size rule, no fallback direct

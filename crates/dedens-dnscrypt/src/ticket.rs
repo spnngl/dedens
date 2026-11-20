@@ -17,7 +17,8 @@ use crate::{CLIENT_MAGIC_LEN, MAX_PACKET_LEN, NONCE_HALF_LEN};
 /// Length of a `<ticket-key-id>`.
 const KEY_ID_LEN: usize = 4;
 
-/// One ticket key, TK: what the resolver seals tickets with, wiped when dropped (draft "Resumption Tickets").
+/// One ticket key, TK: what the resolver seals tickets with, wiped when dropped (draft "Issuing a Ticket"; "Resumption
+/// Considerations" wants it erased at rotation).
 #[derive(Clone)]
 pub struct TicketKey {
     id: [u8; KEY_ID_LEN],
@@ -56,8 +57,9 @@ impl fmt::Debug for TicketKey {
     }
 }
 
-/// The ticket keys a resolver has: the one it seals with, and the ones it only opens with (draft "Resumption
-/// Tickets": the key before the last rotation, kept for the tickets sealed under it).
+/// The ticket keys a resolver has: the one it seals with, and the ones it only opens with (draft "Issuing a
+/// Ticket": `<ticket-key-id>` selects the key; the one before the last rotation is kept for the tickets sealed
+/// under it).
 #[derive(Debug, Clone)]
 pub struct TicketKeys {
     current: TicketKey,
@@ -215,7 +217,7 @@ impl TicketKeys {
     }
 }
 
-/// A ticket to give a client, with the lifetime to tell it (draft "Resumption Tickets").
+/// A ticket to give a client, with the lifetime to tell it (draft "Issuing a Ticket").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
     bytes: Box<[u8; TICKET_LEN]>,
