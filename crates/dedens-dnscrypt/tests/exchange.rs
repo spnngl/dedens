@@ -483,6 +483,20 @@ fn zero_resolver_nonce_is_redrawn() {
     );
 }
 
+/// A randomness that gives nothing but NUL bytes is an error after a few draws, not a loop that never ends.
+#[test]
+fn zero_randomness_is_an_error() {
+    let (_, _, context) = send(EncryptionSystem::XChaCha20Poly1305, QueryPadding::to(64));
+    // Far more draws than the resolver makes: a loop without a bound would use up the bytes and panic.
+    let mut zeroes = Replay::new(&[0; 12 * 1000]);
+    assert_eq!(
+        context
+            .encrypt_response(&hex(DNS_RESPONSE), Carrier::Tcp, &mut zeroes)
+            .err(),
+        Some(EncryptResponseError::ZeroNonce)
+    );
+}
+
 /// The key of another certificate does not make a resolver key.
 #[test]
 fn resolver_key_must_be_the_certificates() {
