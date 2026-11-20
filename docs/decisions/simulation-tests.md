@@ -236,7 +236,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Each server of a zone answers every question the zone was asked: servers of one zone refer to different
     servers of a child (Akamai's), and a capture asked those of the first referral alone. netmeister.org's servers
     were found by a lookup of one of its three names, the others refused: its IPv6 server is the broken one, as
-    the AAAA may be past `Limits::targets` when that name is drawn last.
+    the AAAA may be past `Limits::targets` when that name is drawn last. A silent server drops the questions its
+    zones were asked and refuses the others, as the other server does: a lookup of a name no capture holds would
+    wait on it, asked again with its timeout doubled, where the Internet's other server answers (seed
+    16147968738952915998 spent `Limits::time` on net.'s).
   - Links: each message takes 20 to 30 ms (`Topology::latency`), at a 10 ms step. Turmoil's 0 to 100 ms spread a
     round trip past the RTO the infra cache derives from its first samples, from 50 ms (D194): live servers timed
     out, and with a silent server in each zone of a CNAME chain the question spent `Limits::time`.

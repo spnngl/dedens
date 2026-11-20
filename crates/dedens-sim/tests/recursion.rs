@@ -166,6 +166,9 @@ type Heard = Rc<RefCell<Vec<(IpAddr, Question<'static>)>>>;
 /// `dedensd` resolving from the root, validating at the time `clock` if any, with what the servers heard. Each
 /// server of a zone answers every question the zone was asked with the response first captured: servers of one zone
 /// may refer to different servers of a child (Akamai's do), and the capture asked those of the first referral.
+/// A silent server drops those questions and refuses the others as the rest do: no server was asked them, and a
+/// lookup the capture lacks would wait on the silent one, asked again with its timer doubled (D196), where the
+/// Internet's other server would have answered.
 fn world(
     seed: Seed,
     broken: &BTreeMap<IpAddr, Broken>,
@@ -189,6 +192,9 @@ fn world(
                     .iter()
                     .any(|(zone, at)| *zone == exchange.zone && at.contains(&server))
             });
+        let asked: HashSet<(Name<'static>, RecordType)> = (held.clone())
+            .map(|exchange| (exchange.name.clone(), exchange.rtype))
+            .collect();
         let answers = Answers::default().exchanges(held);
         let (answers, silent) = match broken.get(&server) {
             Some(Broken::Conducts(conduct)) => (answers.conduct(*conduct), false),
@@ -202,7 +208,7 @@ fn world(
         let heard = Rc::clone(&heard);
         let answers = answers.faulty(move |question, _: &mut Rng| {
             heard.borrow_mut().push((server, question.clone()));
-            if silent {
+            if silent && asked.contains(&(question.name.clone(), question.qtype)) {
                 Verdict::Drop
             } else {
                 Verdict::Answer
@@ -322,10 +328,11 @@ fn rfc1035_4_2_1_each_capture_resolves_when_responses_are_lost() {
     });
 }
 
-/// RFC 1035 §7.2: a server that does not answer is left for another of the zone.
+/// RFC 1035 §7.2: a server that does not answer is left for another of the zone. 16147968738952915998 silences
+/// every IPv6 server, net.'s waited on for the lookups of gandi.net names the capture lacks ([`world`]).
 #[test]
 fn rfc1035_7_2_each_capture_resolves_when_a_server_of_each_zone_is_silent() {
-    seed::each(SEEDS, |seed| {
+    seed::each(&[SEEDS, &[16_147_968_738_952_915_998]].concat(), |seed| {
         resolves_each(seed, &one_of_each_broken(seed, Broken::Silent), None);
     });
 }
