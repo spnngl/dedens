@@ -269,13 +269,15 @@ fn matches(
     }
     // A truncated response holds some of the records (RFC 1035 §4.2.1).
     let cut = message.header.flags.contains(Flags::TC);
-    // A stale answer has the TTL of the stale answer setting, whatever the record's.
-    let lift = if is_stale(message) {
-        rules.stale_ttl
-    } else {
-        0
+    // A stale answer has the TTL of the stale answer setting, whatever the record's (RFC 8767 §4).
+    let stale = is_stale(message);
+    let ceiling = |want: &Record<'_>| {
+        if stale {
+            rules.stale_ttl
+        } else {
+            want.ttl.get().max(rules.floor)
+        }
     };
-    let ceiling = |want: &Record<'_>| want.ttl.get().max(rules.floor).max(lift);
     let needed = |record: &Record<'_>| wanted(record, question, rules);
     section(
         "answer",
@@ -733,8 +735,7 @@ mod tests {
             ..Rules::default()
         };
         let lift = |m: &mut Message<'static>| m.answer[0].ttl = Ttl::from_wire(ttl + 10);
-        let stale = |m: &mut Message<'static>| {
-            lift(m);
+        let mark = |m: &mut Message<'static>| {
             let mut edns = Edns::default();
             edns.options.push(EdnsOption::Ede(ExtendedError {
                 code: InfoCode::STALE_ANSWER,
@@ -742,11 +743,21 @@ mod tests {
             }));
             m.edns = Some(edns);
         };
+        let stale = |m: &mut Message<'static>| {
+            lift(m);
+            mark(m);
+        };
         assert_eq!(judged_by(&rules, "a", stale), Ok(()));
         // Not stale: the data's TTL is the bound.
         assert!(judged_by(&rules, "a", lift).is_err());
         // Stale, but over the stale TTL.
         assert!(judged_by(&Rules::default(), "a", stale).is_err());
+        // Stale with the data's TTL, over the stale TTL: a stale copy is not served with its own (RFC 8767 §4).
+        let short = Rules {
+            stale_ttl: held("a").1.answer[0].ttl.get() - 1,
+            ..Rules::default()
+        };
+        assert!(judged_by(&short, "a", mark).is_err());
     }
 
     #[test]
