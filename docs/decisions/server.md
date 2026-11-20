@@ -1131,7 +1131,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     saved id of root is a way back and is refused): nothing is dropped, `NO_NEW_PRIVS` is set, the kept capabilities
     are logged.
   - Read again as the user: right after the drop the start reads the configuration, and the files it names, once
-    more as the user; a file it cannot read ends the start with a message naming `user:`, not the first reload.
+    more as the user; a file it cannot read ends the start with a message naming `user:`, not the first reload. It
+    reads as a reload does, after the read as root (D120, D55): each file opened as the user, a list parsed again
+    only if it changed, the caches kept, and what was read as root replaced, not kept beside it (with a fresh store,
+    each list was parsed twice and both sets kept for the life of the process).
   - Reload (D55) runs as the user: the certificate and key (D66), the files of `blocklist` and `hosts` stages,
     `upstream_ca`, the saved downloads (D104) must be readable by it. The recommended key is `root:<group>` 0640 with
     `<group>` the user's group, which D115 accepts quietly (as PostgreSQL does a root-owned key: as the user, when it

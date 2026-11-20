@@ -101,9 +101,9 @@ pub fn main() -> anyhow::Result<()> {
             .exit()
     };
     let path = file.display();
-    let text = read(&file)?;
+    let mut text = read(&file)?;
     let mut store = Store::default();
-    let config = build(&file, &text, &Pipeline::default(), &mut store)?;
+    let mut config = build(&file, &text, &Pipeline::default(), &mut store)?;
     // The keys are read here, once: `validate` checks they read.
     let services = Services::new(&config)?;
     if let Some(Command::Validate) = args.command {
@@ -119,15 +119,15 @@ pub fn main() -> anyhow::Result<()> {
     let sockets = (0..config.threads)
         .map(|_| serve::bind(&config.listen))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    // Everything that needs root is done: the sockets are bound, and the keys and lists of the start are read. Nothing
+    // has started a thread yet, so none keeps root; a reload reads as the user (D122). What was read as root is
+    // replaced, not kept beside what serves.
+    if let Some((again, read)) = drop_root(plan, &config, &file, &mut store)? {
+        (text, config.pipeline, config.downloads) = (again, read.pipeline, read.downloads);
+    }
     let listen = config.listen.clone();
     let presented = config.presented.map(Arc::new);
-    // Everything that needs root is done: the sockets are bound, and the keys and lists of the start are read. Nothing
-    // has started a thread yet, so none keeps root; a reload reads as the user (D122).
-    let (text, store, pipeline, downloads) = match drop_root(plan, &config.downloads, &file)? {
-        Some((text, store, again)) => (text, store, again.pipeline, again.downloads),
-        None => (text, store, config.pipeline, config.downloads),
-    };
-    let current = Arc::new(Current::new(pipeline));
+    let current = Arc::new(Current::new(config.pipeline));
     // Before "serving" is logged: a SIGHUP from then on reloads, never ends the process (D55).
     reload::control(
         file.clone(),
@@ -144,7 +144,7 @@ pub fn main() -> anyhow::Result<()> {
             #[cfg(feature = "dnscrypt")]
             dnscrypt: config.dnscrypt.clone(),
         },
-        downloads,
+        config.downloads,
         store,
     )
     .context("cannot handle SIGHUP")?;
@@ -417,7 +417,9 @@ fn read(file: &Path) -> anyhow::Result<String> {
 }
 
 /// Applies `plan` (D122). After a drop, the configuration `file` is read again as the user, so that a file it cannot
-/// read fails the start, not the first reload: its text, the store of its lists, and what it says.
+/// read fails the start, not the first reload: its text and what it says. It is read as a reload reads it, after
+/// `previous` built with `store`: each file is opened as the user, and parsed again only if it changed since
+/// (D120), the caches kept (D55).
 ///
 /// # Errors
 ///
@@ -425,19 +427,20 @@ fn read(file: &Path) -> anyhow::Result<String> {
 /// the files it names read as the user.
 fn drop_root(
     plan: privileges::Plan,
-    downloads: &config::Downloads,
+    previous: &Config,
     file: &Path,
-) -> anyhow::Result<Option<(String, Store, Config)>> {
+    store: &mut Store,
+) -> anyhow::Result<Option<(String, Config)>> {
     let dropping = matches!(plan, privileges::Plan::Drop { .. });
+    let downloads = &previous.downloads;
     privileges::apply(plan, downloads.written_dir(), &downloads.roots_dirs())?;
     if !dropping {
         return Ok(None);
     }
-    let again = || -> anyhow::Result<_> {
+    let mut again = || -> anyhow::Result<_> {
         let text = read(file)?;
-        let mut store = Store::default();
-        let config = build(file, &text, &Pipeline::default(), &mut store)?;
-        Ok((text, store, config))
+        let config = build(file, &text, &previous.pipeline, store)?;
+        Ok((text, config))
     };
     again()
         .map(Some)
