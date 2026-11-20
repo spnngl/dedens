@@ -15,8 +15,8 @@ use dedens_resolver::{Caches, Failure, Limits, Minimisation, Ranked, Resolution,
 use dedens_testkit::recursion;
 
 use crate::iteration::{
-    Answered, Change, Sent, at, caches, captured, is, name, resolvable, run, served, start, steer,
-    to,
+    Answered, Change, Sent, at, caches, captured, configured, is, name, resolvable, run, served,
+    start, steer, to,
 };
 
 /// The captures whose answer is signed from the root down.
@@ -389,6 +389,60 @@ fn d197_a_bogus_key_set_is_asked_again_of_another_server() {
         .iter()
         .all(|(ip, _)| *ip != servers[garbled].0);
     assert!(shunned, "{servers:?}");
+}
+
+#[test]
+fn d197_a_server_is_shunned_in_the_zone_it_gave_a_bogus_set_for() {
+    // Changed: 192.5.6.30, a server of com and net, strips the signatures of com's DNSKEY; the other servers of
+    // com, but for 2001:500:856e::30 not captured, answer as it did, and it answers nothing as a server of net.
+    // net's DNSKEY has a TTL of 0, cached by nothing (no minimum TTL), so that the attempt after the shunning asks
+    // it again. Shunned in com only, 192.5.6.30 still serves net.
+    let capture = recursion::Resolution::read("cname-to-signed");
+    let authorities = recursion::Authorities::new([&capture]);
+    let garbling: std::net::IpAddr = "192.5.6.30".parse().expect("an address");
+    let silent: std::net::IpAddr = "2001:500:856e::30".parse().expect("an address");
+    let server = |query: &dedens_resolver::Query| {
+        let ip = query.server.ip();
+        if ip == silent && is(&query.zone, "net.") {
+            return Answered::Timeout;
+        }
+        if ip != garbling && is(&query.zone, "com.") {
+            let wire =
+                (Message::query(0, query.question.clone()).to_vec()).expect("a query encodes");
+            let udp = authorities.answer(silent, recursion::Transport::Udp, &wire);
+            return Answered::Response(dedens_testkit::message(&udp));
+        }
+        let mut response = captured(&authorities, query);
+        if query.server.ip() == garbling && answers(&response, "com.", RecordType::DNSKEY) {
+            (response.answer).retain(|r| r.rdata.rtype() != RecordType::RRSIG);
+        }
+        if answers(&response, "net.", RecordType::DNSKEY) {
+            for record in &mut response.answer {
+                record.ttl = dedens_proto::Ttl::from_wire(0);
+            }
+        }
+        Answered::Response(response)
+    };
+    let caches = configured(
+        false,
+        dedens_cache::Config {
+            min_ttl: 0,
+            ..dedens_cache::Config::default()
+        },
+    );
+    let validator = validator(dedens_dnssec::Limits::default());
+    let mut resolution =
+        start(&capture, &caches, Limits::default()).validated(validator, at(&capture).as_secs());
+    steer(&caches, &capture);
+    let (resolved, sent) = run(&mut resolution, &server, at(&capture));
+    assert_eq!(
+        resolved.checked(),
+        Checked::Insecure,
+        "{resolved:?} {sent:?}"
+    );
+    let keys =
+        (sent.iter()).filter(|(_, name, rtype)| is(name, "com.") && *rtype == RecordType::DNSKEY);
+    assert_eq!(keys.count(), 2, "{sent:?}");
 }
 
 #[test]

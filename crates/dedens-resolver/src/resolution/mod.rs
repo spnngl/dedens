@@ -465,8 +465,10 @@ struct Answerer {
     server: IpAddr,
     /// The zone it was asked as a server of.
     zone: Name<'static>,
-    /// The validator's question it answered; `None` for the client's question, its CNAMEs included.
-    proving: Option<Question<'static>>,
+    /// The `RRsets` its response gave.
+    gave: Vec<Set>,
+    /// Whether it answered a validator's question rather than the client's, its CNAMEs included.
+    proving: bool,
 }
 
 /// The times the client's question is asked again after a bogus verdict, the servers that answered it shunned:
@@ -488,8 +490,8 @@ struct Checking {
     question: Question<'static>,
     outcome: Resolved,
     validation: Box<Validation>,
-    /// The `RRsets` of the answers to the validator's questions: the DS and DNSKEY `RRsets` of the chain, whose own
-    /// verdicts the cache records as it does the answer's (D197).
+    /// The `RRsets` of the answers to the validator's questions: the DS and DNSKEY `RRsets` of the chain and their
+    /// denials, whose own verdicts the cache records as it does the answer's (D197).
     fetched: Vec<Ranked>,
 }
 
@@ -1000,19 +1002,18 @@ impl Resolution {
                 | Outcome::NxDomain { .. }
                 | Outcome::YxDomain { .. }
         );
-        let source = Answerer {
-            server: server.ip(),
-            zone: query.zone.clone(),
-            proving: self.checking.is_some().then(|| query.question.clone()),
-        };
-        if answer
-            && query.question == self.tasks.client.asked
-            && !self.answered_by.contains(&source)
-        {
-            self.answered_by.push(source);
-        }
         let referral = matches!(scrubbed.outcome, Outcome::Referral { .. });
         let ranked = self.cache(scrubbed.ranked(), referral, now_secs);
+        if answer && query.question == self.tasks.client.asked {
+            self.answered_by.push(Answerer {
+                server: server.ip(),
+                zone: query.zone.clone(),
+                gave: (ranked.iter())
+                    .map(|ranked| (ranked.rrset.owner().clone(), ranked.rrset.rtype()))
+                    .collect(),
+                proving: self.checking.is_some(),
+            });
+        }
         if self.minimised(&query.question) && self.went_on(&scrubbed.outcome, server) {
             return;
         }
@@ -1667,12 +1668,7 @@ impl Resolution {
                 // The cost of the validations before it included (`Validator::restart`).
                 self.spent = Some(validation.cost());
                 let answer = bogus(&validation, outcome.rrsets());
-                // The keys and their DS: the rest of what the validator's questions fetched, CNAMEs or denials,
-                // proves nothing of the chain.
-                let keys = |ranked: &&Ranked| {
-                    matches!(ranked.rrset.rtype(), RecordType::DS | RecordType::DNSKEY)
-                };
-                let proofs = bogus(&validation, fetched.iter().filter(keys));
+                let proofs = bogus(&validation, fetched.iter());
                 self.record(fetched.iter(), &validation, now);
                 let outcome = match self.judged(outcome, verdict, &validation, now) {
                     Resolved::Failed(Failure::Bogus(code)) if validation.can_restart() => {
@@ -1696,13 +1692,14 @@ impl Resolution {
     /// Asks `question` again after a bogus answer, `code`, the servers that answered it shunned, as Unbound's
     /// `val_blacklist`: at most [`RETRIES`] times, the queries within [`Limits::validation`], the validation within
     /// what the ones before it left (`Validator::restart`). A spoofed or garbled response from one server does not
-    /// make the answer bogus while another serves it right. The servers shunned are those that answered the
-    /// validator's question for each DS or DNSKEY `RRset` it judged bogus (`proofs`, Unbound's `chain_blacklist`),
-    /// what is below a bogus key set being bogus through it; when none was, those of the zone each `RRset` of the
-    /// answer judged bogus by itself came from (`answer`, their owners), or all that answered when none was either
-    /// (a denial missing). A bogus `RRset` the cache gave has no server to shun: it is asked again all the same,
-    /// the cache passed over (Unbound's `val_blacklist` of an origin it does not know). Without a server to shun
-    /// nor such a set, or out of retries, the answer is bogus with the first code.
+    /// make the answer bogus while another serves it right. The servers shunned, each in the zone it was asked
+    /// as a server of, are those whose responses gave an `RRset` the validator's questions fetched and it judged
+    /// bogus by itself (`proofs`, Unbound's `chain_blacklist`), what is below a bogus key set being bogus through
+    /// it; when there is none, those whose responses gave an `RRset` of the answer judged bogus by itself
+    /// (`answer`), or all that answered the client's question when there is none either (a denial missing). A
+    /// bogus `RRset` the cache gave has no server to shun: it is asked again all the same, the cache passed over
+    /// (Unbound's `val_blacklist` of an origin it does not know). Without a server to shun nor such a set, or out
+    /// of retries, the answer is bogus with the first code.
     fn retry(
         &mut self,
         question: Question<'static>,
@@ -1712,32 +1709,21 @@ impl Resolution {
     ) {
         let code = *self.bogus.get_or_insert(code);
         let answered_by = std::mem::take(&mut self.answered_by);
-        let source = |(owner, _): &Set| {
-            (answered_by.iter())
-                .filter(|answerer| answerer.proving.is_none() && owner.is_within(&answerer.zone))
-                .map(|answerer| &answerer.zone)
-                .max_by_key(|zone| zone.label_count())
-        };
-        let proved = |answerer: &Answerer, (owner, rtype): &Set| {
-            (answerer.proving.as_ref())
-                .is_some_and(|asked| asked.name == *owner && asked.qtype == *rtype)
-        };
-        let blames = |answerer: &&Answerer| match (&answerer.proving, proofs, answer) {
-            (Some(_), _, _) => proofs.iter().any(|set| proved(answerer, set)),
-            (None, [], []) => true,
-            (None, [], answer) => answer.iter().any(|set| source(set) == Some(&answerer.zone)),
-            (None, _, _) => false,
+        let bogus = if proofs.is_empty() { answer } else { proofs };
+        let gave = |answerer: &&Answerer| match bogus {
+            [] => !answerer.proving,
+            bogus => bogus.iter().any(|set| answerer.gave.contains(set)),
         };
         let blamed: Vec<(IpAddr, Name<'static>)> = (answered_by.iter())
-            .filter(blames)
+            .filter(gave)
             .map(|answerer| (answerer.server, answerer.zone.clone()))
             .collect();
-        let cached = match (proofs, answer) {
-            ([], []) => !(answered_by.iter()).any(|answerer| answerer.proving.is_none()),
-            ([], answer) => answer.iter().any(|set| source(set).is_none()),
-            (proofs, _) => (proofs.iter())
-                .any(|set| !(answered_by.iter()).any(|answerer| proved(answerer, set))),
-        };
+        // A bogus set no server gave came from the cache, which holds it bogus now: asked again, it is fetched.
+        let cached = (bogus.iter()).any(|set| {
+            !answered_by
+                .iter()
+                .any(|answerer| answerer.gave.contains(set))
+        });
         if self.retries >= RETRIES || (blamed.is_empty() && !cached) {
             debug!(%code, ?answer, ?proofs, "bogus, not asked again");
             self.settled = Some(Settled::Done(Resolved::Failed(Failure::Bogus(code))));
