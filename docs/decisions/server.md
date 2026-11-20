@@ -1123,7 +1123,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     inherited by the threads started after it): `initgroups` (the groups that list the user, plus `group`; none for
     a numeric id with no entry), `setgid`, `setuid`. Then the real, effective and saved ids are read back, no group
     is root, `setuid(0)` and `setgid(0)` must fail, `PR_SET_NO_NEW_PRIVS` is set and read back, and `CapPrm`,
-    `CapEff` and `CapAmb` of `/proc/self/status` must be 0, or the start ends. The kernel clears them on `setuid`
+    `CapEff` and `CapAmb` of `/proc/self/status` must be 0, or the start ends; a status that cannot be read ends it
+    too (2026-11-20: it passed the checks unread). The kernel clears them on `setuid`
     from root, `AmbientCapabilities=CAP_NET_BIND_SERVICE` included, the sockets being bound already.
   - Root without `user`: a warning, not a refusal (containers, development). Not root with `user`: refused, naming
     the uid, unless it is the user and the group already running (real, effective and saved ids all the same: a

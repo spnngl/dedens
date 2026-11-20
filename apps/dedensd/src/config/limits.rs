@@ -92,6 +92,20 @@ impl RrlFile {
         if !self.enabled {
             return Ok(None);
         }
+        // Left out, the burst comes from the rate: one too large is the rate's error, not the burst's.
+        for (family, file) in [("ipv4", &self.ipv4), ("ipv6", &self.ipv6)] {
+            if let Some(RateFile {
+                rate: Some(rate),
+                burst: None,
+                ..
+            }) = file
+            {
+                ensure!(
+                    *rate <= MAX_BURST,
+                    "`rrl.{family}.rate` is {rate}, over {MAX_BURST}: a burst is at least the rate, and at most that"
+                );
+            }
+        }
         let default = RateLimitConfig::default();
         let config = RateLimitConfig {
             ipv4: RateFile::over(self.ipv4, default.ipv4),
@@ -314,14 +328,28 @@ mod tests {
         for (rate, burst) in [(1, 2), (2, 5), (3, 7), (10, 25), (1_000_000, 2_500_000)] {
             assert_eq!(RateFile::over(file(Some(rate)), default).burst, burst);
         }
-        // A rate of 4 billion would overflow a `u32` doubled and a half over: it stops at the limit of a burst,
-        // which `rrl` then refuses as below the rate.
+        // A rate of 4 billion would overflow a `u32` doubled and a half over: it stops at the limit of a burst.
         assert_eq!(
             RateFile::over(file(Some(u32::MAX)), default).burst,
             MAX_BURST
         );
-        let text = format!("rrl: {{ipv4: {{rate: {}}}}}\n{MINIMAL}", u32::MAX);
-        assert!(read(&text, env, &Pipeline::default()).is_err());
+    }
+
+    /// A rate over the most a burst may be, its burst left out, is refused for the rate written, not for a burst
+    /// that was not; written, the burst below the rate is the error.
+    #[test]
+    fn a_rate_over_the_most_a_burst_may_be_is_named_alone() {
+        let error = |rrl: &str| {
+            let text = format!("rrl: {{ipv6: {rrl}}}\n{MINIMAL}");
+            format!(
+                "{:#}",
+                read(&text, env, &Pipeline::default()).expect_err(rrl)
+            )
+        };
+        let rate = error(&format!("{{rate: {}}}", MAX_BURST + 1));
+        assert!(rate.contains("`rrl.ipv6.rate` is 16777216"), "{rate}");
+        let burst = error(&format!("{{rate: {}, burst: 10}}", MAX_BURST + 1));
+        assert!(burst.contains("burst is 10"), "{burst}");
     }
 
     #[test]
