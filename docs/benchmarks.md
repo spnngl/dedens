@@ -902,6 +902,20 @@ under 1 KB, a thirtieth of the target's side: the target answers from the contex
 operation. An ODoH exchange adds about 88 µs of CPU across both parties to a DNS over HTTPS one, small next to the
 extra hop. Three runs on a quiet machine agree within 1%.
 
+The response path once made 9 allocations and 9 reallocations to encrypt, 7 and 5 to decrypt: the DNS message
+copied into a `MessagePlaintext`, a plaintext grown from empty, a second copy to seal, the AAD and the HKDF input
+on the heap. The plaintext is now written once, sized for the tag, and sealed in place; the AAD is an array and
+the HKDF an HMAC context: 3 allocations each way, no reallocation, and no copy of the query plaintext left by a
+reallocation. Fastest of two interleaved runs of the old and the new binary on a loaded machine (2026-11-20; the
+medians there are noise), `a`, `mx`, `txt_large`:
+
+| Measure | Before | After |
+|---|---|---|
+| Encrypt a response | 1.12 / 1.13 / 1.25 µs | 0.74 / 0.76 / 0.86 µs |
+| Decrypt a response | 0.99 / 0.99 / 1.04 µs | 0.85 / 0.82 / 0.89 µs |
+
+The query side, under HPKE, is unchanged within noise.
+
 ## DNSCrypt (D97)
 
 `benches/dnscrypt.rs`, one call each, on the captured responses `a`, `mx` and `txt_large` (72, 161 and 1187 bytes), for both

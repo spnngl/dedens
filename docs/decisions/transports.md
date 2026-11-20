@@ -174,9 +174,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     answer must not cost the client the context of a query still waiting for the target's.
   - Secrets: the exporter secret, the retained query plaintext (it salts the response keys), the HKDF output,
     the AEAD key bytes, nonce and salt are `Zeroizing`, wiped when dropped. `hpke` wipes its own (shared
-    secret, exporter secret, AEAD key and nonce, private key). Not wiped: `ring`'s HMAC keys, its `LessSafeKey`
-    schedule and the HMAC tag buffer, the plaintext DNS messages, the serialized query before it is sealed
-    (`seal` copies it), and copies the allocator moved. Best effort, not a guarantee. No `unwrap`, `expect` or `as` in non-test code:
+    secret, exporter secret, AEAD key and nonce, private key). The buffers holding the query plaintext are
+    sized once, so no reallocation leaves a copy behind. Not wiped: `ring`'s HMAC keys, its `LessSafeKey`
+    schedule and the HMAC tag buffer, the DNS messages and the response plaintext (`MessagePlaintext`, the
+    buffer the response is sealed or opened in), and copies the allocator moved. Best effort, not a guarantee. No `unwrap`, `expect` or `as` in non-test code:
     the lengths are typed (`Field`, constant prefixes).
   - `ExchangeError::UnknownKey` is the 401 of §4.3 and every other failure of `decrypt_query` the 400. HTTP (the
     media type, §4.1's ban on caching, discovery) belongs to `dedens-net`.

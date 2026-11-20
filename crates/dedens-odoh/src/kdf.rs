@@ -33,10 +33,10 @@ fn leading<const N: usize>(bytes: &[u8]) -> Zeroizing<[u8; N]> {
 /// `Expand(prk, info, N)` for `N` of at most one block.
 pub(crate) fn expand<const N: usize>(prk: &Prk, info: &[u8]) -> Zeroizing<[u8; N]> {
     const { assert!(N <= HASH_LEN) };
-    let mut input = Zeroizing::new(info.to_vec());
-    input.push(1);
-    let tag = hmac::sign(&hmac::Key::new(HMAC_SHA256, prk.as_slice()), &input);
-    leading(tag.as_ref())
+    let mut hmac = hmac::Context::with_key(&hmac::Key::new(HMAC_SHA256, prk.as_slice()));
+    hmac.update(info);
+    hmac.update(&[1]);
+    leading(hmac.sign().as_ref())
 }
 
 #[cfg(test)]
