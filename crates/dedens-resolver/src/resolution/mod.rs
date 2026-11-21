@@ -1244,8 +1244,8 @@ impl Resolution {
                     crate::metrics::limit(limit);
                     self.limit.get_or_insert(limit);
                 }
-                if self.limit.is_none()
-                    && self.retries == 0
+                let ours = self.limit.is_some() || self.retries != 0;
+                if !ours
                     && !self.failed_here
                     && matches!(
                         failure,
