@@ -203,17 +203,12 @@ impl Hold {
     /// Takes `failure`, heard at `now`, into this hold: one heard during the hold counts for nothing (the question
     /// was not asked); one after it doubles the hold, unless a quiet spell as long as the longest hold went by,
     /// which starts again (RFC 9520 §3.2: back off, at most 5 minutes).
-    pub(crate) const fn again(&mut self, failure: Failure, config: &Config, now: u32) {
+    pub(crate) fn again(&mut self, failure: Failure, config: &Config, now: u32) {
         if now < self.until && self.until - now <= config.failure_max {
             return;
         }
         self.length = if self.until <= now && now <= self.until.saturating_add(config.failure_max) {
-            let doubled = self.length.saturating_mul(2);
-            if doubled < config.failure_max {
-                doubled
-            } else {
-                config.failure_max
-            }
+            self.length.saturating_mul(2).min(config.failure_max)
         } else {
             shortest(config)
         };

@@ -727,6 +727,14 @@ fn d191_every_resolution_hands_the_stage_its_local_address_switch() {
     }
 }
 
+/// The stage hands its switch of the aggressive use of NSEC, for a reload to carry it, on by default (D199).
+#[test]
+fn d199_the_stage_hands_its_aggressive_nsec_switch() {
+    let caches = caches(Config::default());
+    assert!(unminimised(Arc::clone(&caches)).aggressive());
+    assert!(!unminimised(caches).aggressive_nsec(false).aggressive());
+}
+
 /// A resolution shed for the waiters on its query (`Resolving::shed`) gives its unit back: nothing was sent.
 #[test]
 fn d195_a_resolution_shed_gets_servfail_not_ready_and_pays_nothing() {

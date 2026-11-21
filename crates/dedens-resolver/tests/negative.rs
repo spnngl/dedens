@@ -9,13 +9,13 @@ use std::time::Duration;
 
 use dedens_cache::{Checked, Config, Cost};
 use dedens_dnssec::crypto::Budget;
-use dedens_dnssec::denial::{canonical_cmp, owner_hash};
+use dedens_dnssec::denial::{canonical_cmp, hashed_owner, owner_hash};
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::rdata::{Nsec3, RData};
 use dedens_proto::{Class, Message, Name, Question, Record, RecordType, Ttl};
 use dedens_resolver::{
-    Caches, Failure, Kind, Limits, Minimisation, Rank, Ranked, Resolution, Resolved, Rrset,
-    RrsetCache,
+    Caches, Failure, Kind, Limits, Minimisation, NotCached, Rank, Ranked, Resolution, Resolved,
+    Rrset, RrsetCache,
 };
 use dedens_testkit::recursion;
 
@@ -279,6 +279,86 @@ fn d199_an_unchecked_negative_answer_gives_way_to_a_verdict_and_the_same_data_do
 }
 
 #[test]
+fn d199_an_entry_over_the_limit_is_not_stored_and_a_longest_name_is_keyed() {
+    let soa = ranked_soa(
+        "nxdomain-unsigned",
+        "google.com.",
+        "dedens-nxdomain.google.com.",
+        60,
+    );
+    let small = Config {
+        max_entry_bytes: Some(270),
+        ..Config::default()
+    };
+    let cache = RrsetCache::new(1 << 20, small).expect("a cache");
+    let owner = name("dedens-nxdomain.google.com.");
+    let denials = vec![soa.clone(); 3];
+    let stored = cache.insert_negative(&owner, Kind::NxDomain, &soa, &denials, Checked::Secure, 0);
+    assert_eq!(stored, Err(NotCached::TooLarge));
+    assert!(cache.negative(&owner, Kind::NxDomain, 0).is_none());
+    // The longest name, 253 octets, with a key longer than any other: a negative answer and a failure held.
+    let label = "a".repeat(63);
+    let longest = name(&format!("{label}.{label}.{label}.{}.", "b".repeat(61)));
+    let cache = RrsetCache::new(1 << 20, Config::default()).expect("a cache");
+    cache
+        .insert_negative(
+            &longest,
+            Kind::NoData(RecordType::TXT),
+            &soa,
+            &[],
+            Checked::Secure,
+            0,
+        )
+        .expect("stored");
+    assert!(
+        cache
+            .negative(&longest, Kind::NoData(RecordType::TXT), 0)
+            .is_some()
+    );
+}
+
+#[test]
+fn d199_a_secure_set_not_within_its_signer_is_not_indexed() {
+    // The NSEC3 record of nl. moved to a name of another zone: its signer does not sign there.
+    let counted = |owner: &Name<'static>| {
+        let config = Config {
+            shards: 1,
+            ..Config::default()
+        };
+        let cache = RrsetCache::new(1 << 20, config).expect("a cache");
+        for set in nsec3_sets(0) {
+            let records: Vec<Record<'static>> = set
+                .rdatas()
+                .iter()
+                .map(|rdata| Record {
+                    name: owner.clone(),
+                    class: Class::IN,
+                    ttl: Ttl::from_wire(300),
+                    rdata: rdata.clone(),
+                })
+                .chain(set.rrsigs().iter().map(|rdata| Record {
+                    name: owner.clone(),
+                    class: Class::IN,
+                    ttl: Ttl::from_wire(300),
+                    rdata: rdata.clone(),
+                }))
+                .collect();
+            for set in Rrset::group(&records) {
+                let rank = Rank::AuthorityAuthoritative;
+                cache.insert(set, rank, Checked::Secure, 0).expect("stored");
+            }
+        }
+        cache.used()
+    };
+    let within = counted(&hashed_owner(&name("nl."), &[1; 20]).expect("a name"));
+    let outside = counted(&hashed_owner(&name("com."), &[1; 20]).expect("a name"));
+    assert!(
+        within > outside,
+        "{within} for a set within nl., {outside} for one outside"
+    );
+}
+
+#[test]
 fn d199_a_negative_answer_costs_what_its_sets_do() {
     let owner = name("dedens-nxdomain.google.com.");
     let soa = ranked_soa(
@@ -343,6 +423,81 @@ fn d199_the_denials_and_the_holds_are_counted() {
     assert_eq!(count("dedens_resolver_denials_total aggressive"), 1);
     assert_eq!(count("dedens_resolver_failure_holds_total recorded"), 1);
     assert_eq!(count("dedens_resolver_failure_holds_total served"), 1);
+}
+
+/// The first NSEC3 record of nl.'s denial in capture `nxdomain-nsec3`, with its signature, as `RRset`s with their
+/// owner another hash `i` of the zone nl., a new one for the index of spans.
+fn nsec3_sets(i: usize) -> Vec<Rrset> {
+    let capture = capture("nxdomain-nsec3");
+    let response = denial("nxdomain-nsec3", "nl.", &capture.name.to_string());
+    let records: Vec<_> = response
+        .authority
+        .iter()
+        .filter(|record| match record.data() {
+            RData::Nsec3(_) => true,
+            RData::Rrsig(sig) => sig.type_covered == RecordType::NSEC3,
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    let first = records.first().expect("an NSEC3 record").name.clone();
+    let mut hash = [0; 20];
+    hash[..8].copy_from_slice(&(u64::try_from(i).expect("a small index") + 1).to_be_bytes());
+    let moved: Vec<_> = records
+        .into_iter()
+        .filter(|record| record.name == first)
+        .map(|record| Record {
+            name: hashed_owner(&name("nl."), &hash).expect("a name"),
+            ..record
+        })
+        .collect();
+    Rrset::group(&moved)
+}
+
+/// The bytes the index of spans takes in a cache of `capacity` bytes in one shard after `count` secure NSEC3 sets
+/// are inserted, `judged` as it is: the cache's `used` less that of one holding the same sets unchecked.
+fn spans_used(capacity: usize, count: usize) -> usize {
+    let config = Config {
+        shards: 1,
+        ..Config::default()
+    };
+    let indexed = RrsetCache::new(capacity, config.clone()).expect("a cache");
+    let apart = RrsetCache::new(capacity, config).expect("a cache");
+    for i in 0..count {
+        for set in nsec3_sets(i) {
+            let rank = Rank::AuthorityAuthoritative;
+            indexed
+                .insert(set.clone(), rank, Checked::Secure, 0)
+                .expect("stored");
+            apart
+                .insert(set, rank, Checked::Insecure, 0)
+                .expect("stored");
+        }
+    }
+    assert!(
+        indexed.used() <= capacity,
+        "{} of {capacity}",
+        indexed.used()
+    );
+    indexed.used() - apart.used()
+}
+
+#[test]
+fn d199_the_index_of_spans_counts_its_zone_and_each_hash_it_holds() {
+    // A zone's own bytes and a hash's, node included: the index is no free of charge.
+    let one = spans_used(1 << 20, 1);
+    let two = spans_used(1 << 20, 2);
+    assert!((60..300).contains(&one), "{one}");
+    assert!((two - one) >= 44 && (two - one) < 100, "{one} then {two}");
+}
+
+#[test]
+fn d199_the_index_of_spans_stays_within_its_share_of_the_capacity() {
+    let capacity = 1 << 16;
+    let used = spans_used(capacity, 400);
+    // 400 hashes of 44 bytes are over the 2 KiB the index may have: it started over, more than once.
+    assert!(used <= capacity / 32, "{used} of {}", capacity / 32);
+    assert!(used > capacity / 64, "{used}: kept next to nothing");
 }
 
 #[test]
@@ -415,6 +570,7 @@ fn rfc8020_2_no_name_exists_below_a_secure_nxdomain() {
     for (below, rtype) in [
         (format!("www.{base}"), RecordType::A),
         (format!("a.b.{base}"), RecordType::TXT),
+        (format!("alpha.beta.{base}"), RecordType::TXT),
         (format!("_dmarc.{base}"), RecordType::MX),
     ] {
         // Without the aggressive use of the NSEC records the zone's span would answer these as well.
@@ -654,6 +810,11 @@ fn rfc9520_3_2_a_clock_gone_back_does_not_extend_a_hold() {
     assert_eq!(fails(base + Duration::from_secs(1)), 0, "held");
     // The hold ends 5 s after the first failure: a clock 10 000 s earlier is outside the longest hold.
     assert!(fails(early) > 0, "held across a clock gone back");
+    // The hold of the failure heard then is a first one, 5 s: not a doubled one of a clock that did not go back.
+    let secs = |s: u64| early + Duration::from_secs(s);
+    assert_eq!(fails(secs(4)), 0, "held until 5");
+    assert!(fails(secs(5)) > 0, "asked at 5");
+    assert_eq!(fails(secs(14)), 0, "held until 15");
 }
 
 #[test]
