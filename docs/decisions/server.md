@@ -2174,7 +2174,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     not held, nor is a failure after a limit was reached (an address lookup's) or a bogus retry shunned the
     servers: a limit is the question's own, and a bogus answer is asked again of other servers (D197). Nor is a
     failure after an exchange failed on our side (`Reply::LocalError`: a send error, no sign of the servers failing;
-    `Delegation::failed_here`). An ICMP unreachable (`Reply::Unreachable`) may hold, as §3.2 allows: a spoofed one
+    `Resolution::failed_here`, set in an address lookup too: the servers of a zone whose addresses were not found
+    were never heard failing). An ICMP unreachable (`Reply::Unreachable`) may hold, as §3.2 allows: a spoofed one
     can make a resolver hold a set for up to `failure_max`, a cost the RFC accepts. A hold
     that would outlast `failure_max` (a clock gone back) is no hold, as in the response cache. The
     server set is part of the key so that a delegation that changed, or another name's servers, is asked. Unbound
