@@ -17,7 +17,7 @@ use tracing::debug;
 
 use crate::negative::{Denied, Kind, lifetime};
 use crate::rrset_cache::{Ranked, RrsetCache};
-use crate::spans::{Chain, HASH_LEN};
+use crate::spans::{Chain, HASH_LEN, hash_of};
 
 /// The SHA-1 blocks of NSEC3 hashing one lookup may spend, the hashes it makes and those the proof makes again
 /// ([`Budget::DEFAULT_NSEC3_BLOCKS`], 8192, is for a whole validation, D71): 6 names at the most iterations
@@ -111,9 +111,24 @@ fn secure(
         rrsets.get_nsec(owner, owner == apex, now)
     } else {
         rrsets.get(owner, rtype, Class::IN, now)
-    }?;
-    (held.checked == Checked::Secure && held.rrset.signer().is_some_and(|signer| signer == *apex))
-        .then_some(held)
+    };
+    let sound = held.filter(|held| {
+        held.checked == Checked::Secure && held.rrset.signer().is_some_and(|signer| signer == *apex)
+    });
+    if sound.is_none() {
+        // The index names an owner the cache cannot back any more (expired, evicted, replaced): drop it, so that it
+        // does not shadow the range it was found for. It comes back when a record of it is stored again.
+        match rtype {
+            RecordType::NSEC => rrsets.spans().forget_nsec(apex, owner),
+            RecordType::NSEC3 => {
+                if let Some(hash) = hash_of(owner) {
+                    rrsets.spans().forget_nsec3(apex, &hash);
+                }
+            }
+            _ => {}
+        }
+    }
+    sound
 }
 
 /// The NSEC records that cover `name` and the wildcard at its closest encloser (RFC 4035 §5.4): the one at or before

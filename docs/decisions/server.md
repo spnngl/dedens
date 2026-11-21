@@ -2102,6 +2102,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     stay one. `Absent`: the SOA and the denial records (NSEC, NSEC3) of one negative answer, their ranks, the
     verdict and the expiry, under a key of `0x80` (no wire name starts above 63), the name lowered, and the type
     asked for a NODATA, ANY for an NXDOMAIN. `Held`: a failure, under `0x81`, the name, the type and a server set.
+    Neither key has a class, unlike an `RRset`'s: only IN is resolved, so a second class would need it in both.
     `KEY_LEN` is 1 + 255 + 2 + 8. A positive lookup ignores both; an entry over `entry_limit` is not cached; the
     cost is the `Rrset`s' (`tests/memory.rs`). A new entry replaces a held one that expired, that has a lesser verdict (secure over
     insecure over unchecked) or the same verdict and other data; one with a lesser verdict is dropped.
@@ -2139,15 +2140,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     its signer is kept under its own key (`0x82`), apart from the NSEC of the same name that the parent signs for a
     delegation, so neither evicts the other and a lookup of an NSEC prefers the apex's (Unbound's
     `PACKED_RRSET_NSEC_AT_APEX`, `validator/val_neg.c`). A child's NSEC3 at the name of a parent's hash is not
-    kept apart: it may still replace the parent's record (a miss, not a forged proof). The proof: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN
-    (not the compact form, which has no NXDOMAIN), NODATA and wildcard NODATA are synthesised. Not synthesised: a proof
-    with the opt-out flag (an unsigned delegation may be there, RFC 5155 §6: it never enters the index in practice,
-    an opt-out answer being insecure, but the proof is refused too); a DS, ANY, RRSIG or NXNAME question; a name
+    kept apart: it may still replace the parent's record (a miss, not a forged proof). Unbound keeps every NSEC at an
+    apex apart by that flag; here only the NSEC is, an NSEC3 owner being a hash, which no zone's apex is. The
+    proof: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN (not the compact form, which has no
+    NXDOMAIN), NODATA and wildcard NODATA are synthesised. Not synthesised: a proof with the opt-out flag (an unsigned
+    delegation may be there, RFC 5155 §6: an opt-out answer is insecure, so a captured one never enters the index, but
+    a record inserted secure does, and the proof is refused: tested); a DS, ANY, RRSIG or NXNAME question; a name
     whose proof needs an NSEC3 hash beyond `NSEC3_BLOCKS` (2048 SHA-1 blocks a lookup, D77's idea); a wildcard
     that matches (§5.1: the cache does not synthesise the positive answer). The index's bytes (an estimate per name,
     `Owner` plus its wire length plus a node) are 1/32 of the cache's capacity (`SPANS_SHARE`), taken out of the
-    store's, in shards by apex; over it, the oldest zone of the shard goes whole. A synthesised answer's TTL is the
-    least of the sets', the SOA's MINIMUM included (§5.4).
+    store's, in shards by apex; over it, the zone of the shard used least recently goes whole (a lookup that finds
+    the zone is a use, as Unbound's negative cache is an LRU, so a busy zone stays). An owner or hash whose record the
+    cache does not hold fresh, secure and signed by the apex any more (expired, evicted, replaced) is dropped when a
+    lookup misses it: it would shadow its range until its zone went. A synthesised answer's TTL is the least of
+    the sets', the SOA's MINIMUM included (§5.4).
   - Switch: `aggressive_nsec: true` by default in the `recurse` stage (`Recurse::aggressive_nsec`,
     `Resolution::aggressive_nsec`): it is the owner's choice (plan README, choice 5), RFC 8198 being a SHOULD,
     Unbound's `aggressive-nsec` being on by default as well. Off, only the exact entries and RFC 8020 act.
@@ -2182,7 +2188,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bounds, a name below a secure NXDOMAIN not asked and below an insecure one asked, a second name in a span
     answered without a query (NSEC and NSEC3, any type, with the switch off asked, a name not covered asked), a
     failing set held, backing off to `failure_max`, not held for another type, a limit and a local send error not
-    held;
+    held; each guard of the index and the synthesis (secure only, the apex the one signer, opt-out, DS, the SOA's
+    MINIMUM, a validating resolution reading no unchecked entry) with a test that fails without it, the real records
+    moved to another zone's names where no capture has them (a child's NSEC, a changed chain or hash, an expired
+    owner, a zone used while others come);
     `tests/memory.rs` with the spans and negative entries; `apps/dedensd/src/config/recurse.rs` the setting.
 - D200 (amends D72, D73, D127, D128, D195) The recursive resolver follows the root's trust anchors through a key
   rollover by RFC 5011 (recursive step 13), from the root's DNSKEY `RRset` it asks itself; the signed download

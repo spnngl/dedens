@@ -3,10 +3,11 @@
 //!
 //! The index holds only the owners (NSEC) or the hashes (NSEC3); the records stay in the `RRset` cache, whose
 //! entries are fresh, secure or gone: an owner whose record is not found there is a miss, never a proof (D199).
-//! Zones are evicted whole, oldest first, to keep each shard within its share of the byte budget.
+//! Zones are evicted whole, the least recently used first, to keep each shard within its share of the byte budget.
+//! An owner whose record is gone is dropped when a lookup misses it, so that it does not shadow its range.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasher, RandomState};
 use std::mem::size_of;
 use std::ops::Bound;
@@ -21,6 +22,14 @@ pub(crate) const HASH_LEN: usize = 20;
 /// What the index counts for each owner or hash it holds, besides the bytes of the owner: the node of the B-tree it
 /// sits in, an estimate, as the allocator's own rounding is not counted (D193).
 const NODE: usize = 24;
+
+/// What a hash counts for.
+const HASH_COST: usize = HASH_LEN + NODE;
+
+/// What an NSEC owner counts for.
+fn owner_cost(owner: &Name<'_>) -> usize {
+    size_of::<Owner>() + owner.wire_len() + NODE
+}
 
 /// An NSEC owner, ordered as RFC 4034 §6.1 orders names.
 #[derive(Debug, Clone)]
@@ -64,20 +73,29 @@ pub(crate) enum Chain {
     Nsec3 { salt: Box<[u8]>, iterations: u16 },
 }
 
-/// A zone and the bytes the index counts for it.
+/// A zone, the bytes the index counts for it, and when it was last used (the shard's `clock` then).
 #[derive(Debug)]
 struct Indexed {
     zone: Zone,
     used: usize,
+    touched: u64,
 }
 
 /// One shard: the zones whose apex hashes to it.
 #[derive(Debug, Default)]
 struct Shard {
     zones: HashMap<Name<'static>, Indexed>,
-    /// The apexes, oldest first: the order they are evicted in.
-    order: VecDeque<Name<'static>>,
+    /// Counts the uses of the zones: the one with the least `touched` is evicted first.
+    clock: u64,
     used: usize,
+}
+
+impl Shard {
+    /// A use of a zone: a number greater than any before it in the shard.
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
 }
 
 /// The index of spans, in shards behind their own locks, held for one call and never across an `.await`.
@@ -112,8 +130,7 @@ impl Spans {
 
     /// Indexes `owner`, an NSEC of the zone `apex`. A zone that was chained otherwise starts over.
     pub(crate) fn add_nsec(&self, apex: &Name<'static>, owner: &Name<'static>) {
-        let cost = size_of::<Owner>() + owner.wire_len() + NODE;
-        self.add(apex, cost, &Chain::Nsec, |zone| match zone {
+        self.add(apex, owner_cost(owner), &Chain::Nsec, |zone| match zone {
             Zone::Nsec(owners) => owners.insert(Owner(owner.clone())),
             Zone::Nsec3 { .. } => false,
         });
@@ -132,7 +149,7 @@ impl Spans {
             salt: salt.into(),
             iterations,
         };
-        self.add(apex, HASH_LEN + NODE, &chain, |zone| match zone {
+        self.add(apex, HASH_COST, &chain, |zone| match zone {
             Zone::Nsec3 { hashes, .. } => hashes.insert(hash),
             Zone::Nsec(_) => false,
         });
@@ -158,55 +175,88 @@ impl Spans {
             },
         };
         let overhead = size_of::<Indexed>() + 2 * apex.wire_len();
+        let touched = shard.tick();
         let indexed = shard.zones.entry(apex.clone()).or_insert_with(|| {
-            shard.order.push_back(apex.clone());
             shard.used += overhead;
             Indexed {
                 zone: fresh(),
                 used: overhead,
+                touched,
             }
         });
+        indexed.touched = touched;
         if !is_chained(&indexed.zone, chain) {
             shard.used -= indexed.used - overhead;
-            *indexed = Indexed {
-                zone: fresh(),
-                used: overhead,
-            };
+            indexed.zone = fresh();
+            indexed.used = overhead;
         }
         if insert(&mut indexed.zone) {
             indexed.used += cost;
             shard.used += cost;
         }
         while shard.used > self.share {
-            let Some(oldest) = shard.order.pop_front() else {
-                break;
-            };
-            if oldest == *apex && shard.order.is_empty() {
-                // The one zone, too big: start it over, with nothing, rather than evict what was just added.
-                shard.order.push_back(oldest);
-                if let Some(indexed) = shard.zones.get_mut(apex) {
-                    shard.used -= indexed.used - overhead;
-                    *indexed = Indexed {
-                        zone: fresh(),
-                        used: overhead,
-                    };
+            let oldest = shard
+                .zones
+                .iter()
+                .min_by_key(|(_, indexed)| indexed.touched)
+                .map(|(oldest, _)| oldest.clone());
+            match oldest {
+                Some(oldest) if oldest != *apex => {
+                    if let Some(gone) = shard.zones.remove(&oldest) {
+                        shard.used -= gone.used;
+                    }
                 }
-                break;
-            }
-            if oldest == *apex {
-                shard.order.push_back(oldest);
-            } else if let Some(gone) = shard.zones.remove(&oldest) {
-                shard.used -= gone.used;
+                _ => {
+                    // The one zone, too big: start it over, with nothing, rather than evict what was just added.
+                    if let Some(indexed) = shard.zones.get_mut(apex) {
+                        shard.used -= indexed.used - overhead;
+                        indexed.zone = fresh();
+                        indexed.used = overhead;
+                    }
+                    break;
+                }
             }
         }
     }
 
-    /// The deepest zone `name` is within that the index holds, with how it is chained.
+    /// Drops `owner`, an NSEC of the zone `apex` whose record the cache no longer holds secure.
+    pub(crate) fn forget_nsec(&self, apex: &Name<'_>, owner: &Name<'_>) {
+        self.forget(apex, owner_cost(owner), |zone| match zone {
+            Zone::Nsec(owners) => owners.remove(&Owner(owner.clone().into_owned())),
+            Zone::Nsec3 { .. } => false,
+        });
+    }
+
+    /// Drops `hash`, an NSEC3 of the zone `apex` whose record the cache no longer holds secure.
+    pub(crate) fn forget_nsec3(&self, apex: &Name<'_>, hash: &[u8; HASH_LEN]) {
+        self.forget(apex, HASH_COST, |zone| match zone {
+            Zone::Nsec3 { hashes, .. } => hashes.remove(hash),
+            Zone::Nsec(_) => false,
+        });
+    }
+
+    /// Runs `remove` on the zone `apex` if the index holds it; `remove` says whether it dropped an item of `cost`
+    /// bytes. The zone keeps its place in the order of use: a lookup that misses is no use.
+    fn forget(&self, apex: &Name<'_>, cost: usize, remove: impl FnOnce(&mut Zone) -> bool) {
+        let mut shard = lock(self.shard(apex));
+        let shard = &mut *shard;
+        if let Some(indexed) = shard.zones.get_mut(&apex.clone().into_owned())
+            && remove(&mut indexed.zone)
+        {
+            indexed.used -= cost;
+            shard.used -= cost;
+        }
+    }
+
+    /// The deepest zone `name` is within that the index holds, with how it is chained. The zone found is the most
+    /// recently used.
     pub(crate) fn zone_of(&self, name: &Name<'_>) -> Option<(Name<'static>, Chain)> {
         (0..=name.label_count()).find_map(|skip| {
             let apex = Name::from_labels(name.labels().skip(skip)).ok()?;
-            let shard = lock(self.shard(&apex));
-            let indexed = shard.zones.get(&apex)?;
+            let mut shard = lock(self.shard(&apex));
+            let touched = shard.tick();
+            let indexed = shard.zones.get_mut(&apex)?;
+            indexed.touched = touched;
             Some((apex, chain_of(&indexed.zone)))
         })
     }
