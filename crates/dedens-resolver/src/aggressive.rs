@@ -44,7 +44,7 @@ pub(crate) fn synthesise(
         return None;
     }
     let (apex, chain) = rrsets.spans().zone_of(name)?;
-    let soa = secure(rrsets, &apex, RecordType::SOA, now)?;
+    let soa = secure(rrsets, &apex, (&apex, RecordType::SOA), now)?;
     let mut budget = Budget::new(Verifications(0), NSEC3_BLOCKS);
     let denials = match &chain {
         Chain::Nsec => nsec(rrsets, &apex, name, now)?,
@@ -96,11 +96,24 @@ pub(crate) fn synthesise(
     Some((kind, denied))
 }
 
-/// The NSEC `RRset` of `owner`, fresh and secure.
-fn secure(rrsets: &RrsetCache, owner: &Name<'_>, rtype: RecordType, now: u32) -> Option<Ranked> {
-    rrsets
-        .get(owner, rtype, Class::IN, now)
-        .filter(|held| held.checked == Checked::Secure)
+/// The `RRset` of `owner` and `rtype` in the zone `apex`, fresh, secure and signed by `apex` alone: the key of an
+/// `RRset` is its owner, type and class, so a set of another zone at the same name (a child's NSEC at its own apex,
+/// or an NSEC3 at the name of one of the parent's hashes) may have replaced the parent's record, and `denial::prove`
+/// takes every record it is given for the zone's (RFC 6840 §4.1). The NSEC at the apex is read under its own key
+/// ([`RrsetCache::get_nsec`]).
+fn secure(
+    rrsets: &RrsetCache,
+    apex: &Name<'_>,
+    (owner, rtype): (&Name<'_>, RecordType),
+    now: u32,
+) -> Option<Ranked> {
+    let held = if rtype == RecordType::NSEC {
+        rrsets.get_nsec(owner, owner == apex, now)
+    } else {
+        rrsets.get(owner, rtype, Class::IN, now)
+    }?;
+    (held.checked == Checked::Secure && held.rrset.signer().is_some_and(|signer| signer == *apex))
+        .then_some(held)
 }
 
 /// The NSEC records that cover `name` and the wildcard at its closest encloser (RFC 4035 §5.4): the one at or before
@@ -110,8 +123,8 @@ fn nsec(rrsets: &RrsetCache, apex: &Name<'_>, name: &Name<'_>, now: u32) -> Opti
     let spans = rrsets.spans();
     let cover = secure(
         rrsets,
-        &spans.owner_before(apex, name)?,
-        RecordType::NSEC,
+        apex,
+        (&spans.owner_before(apex, name)?, RecordType::NSEC),
         now,
     )?;
     let next = cover
@@ -134,7 +147,7 @@ fn nsec(rrsets: &RrsetCache, apex: &Name<'_>, name: &Name<'_>, now: u32) -> Opti
     let at = spans.owner_before(apex, &wildcard)?;
     let mut denials = vec![cover];
     if denials.iter().all(|held| *held.rrset.owner() != at) {
-        denials.push(secure(rrsets, &at, RecordType::NSEC, now)?);
+        denials.push(secure(rrsets, apex, (&at, RecordType::NSEC), now)?);
     }
     Some(denials)
 }
@@ -189,8 +202,8 @@ fn nsec3(
         .map(|before| {
             secure(
                 rrsets,
-                &hashed_owner(apex, before).ok()?,
-                RecordType::NSEC3,
+                apex,
+                (&hashed_owner(apex, before).ok()?, RecordType::NSEC3),
                 now,
             )
         })
