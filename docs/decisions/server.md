@@ -1496,7 +1496,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     server lame for the zone. `Timeout` and `ServerError` back the server off (RTO doubled, skipped after three,
     D194). REFUSED, SERVFAIL and any other unusable response leave it as it was, as Unbound's `THROWAWAY`
     (`iter_resptype.c`) and BIND's `add_bad`, per fetch: the infra cache is keyed by address alone, and a back-off
-    would let three REFUSED for one zone shut a server out of all of them. `LocalError` is ours: the server is not touched.
+    would let three REFUSED for one zone shut a server out of all of them. `LocalError` is ours: the server is not
+    touched.
   - Caching: every `RRset` of `Scrubbed::ranked` at the scrubber's rank (D192, D193); the referral's NS as of the
     resolution's start when the delegation asked came from the cache, else now (Unbound's `store_rrsets`, D193).
     Negative answers are not cached (step 12). An address that came as glue keeps the glue's rank when answered
@@ -1510,25 +1511,28 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     stack is waiting on ends at once, its name given no address (the loop of a zone reachable only through itself
     costs one query per name), which leaves an address the name's A lookup found. An A lookup ending NXDOMAIN skips
     the name's AAAA.
-  - Addresses: an address at a special-purpose range of RFC 6890 is not asked unless
-    `Resolution::asking_local_addresses` (`Recurse::asking_local_addresses`, `dedensd`'s `recurse` switch
-    `query_local_addresses`, default false; the resolution's, not `Limits`' (counts) or the caches', which a reload
-    keeps while the switch changes): loopback (127/8, `::1`), "this network" (0/8, `::`), private (10/8,
-    172.16/12, 192.168/16, fc00::/7), shared (100.64/10), link-local (169.254/16, fe80::/10), IETF protocol
-    assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4, ff00::/8), reserved
+  - Addresses: an address at one of the special-purpose ranges below (RFC 6890's, but for those named after the
+    list) is not asked unless `Resolution::asking_local_addresses` (`Recurse::asking_local_addresses`,
+    `dedensd`'s `recurse` switch `query_local_addresses`, default false; the resolution's, not `Limits`' (counts)
+    or the caches', which a reload keeps while the switch changes): loopback (127/8, `::1`), "this network" (0/8,
+    `::`), private (10/8, 172.16/12, 192.168/16, fc00::/7), shared (100.64/10), link-local (169.254/16, fe80::/10),
+    IETF protocol assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4, ff00::/8), reserved
     (240/4), broadcast, and of IPv6 also: every IPv4-mapped address (`::ffff:0:0/96`, a public IPv4 too, as
     Unbound's `do-not-query-localhost`: the same host would take two infra entries, and a `V6ONLY` socket cannot
     reach it), the deprecated site-local `fec0::/10`, the IPv4-compatible `::/96`, the local-use NAT64
     `64:ff9b:1::/48` (RFC 8215, not globally reachable, the embedded IPv4's place depends on the prefix length of
     RFC 6052 §2.2), and a well-known NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`) address embedding one of the
     IPv4 ranges above (RFC 6052 §3.1 has a NAT64 gateway refuse them, but a zone can still aim the resolver at
-    one that does not). A NAT64 or 6to4 address embedding a global IPv4 is asked. A zone's glue, a name's
-    addresses or a delegation cached could otherwise aim the resolver at its own host, its network or many hosts
-    (SSRF, amplification). Every address enters through `Delegation::add`, which drops those; a cached delegation
-    with no address left to ask is skipped for the TLD's or root hints. This goes beyond Unbound's
-    `do-not-query-localhost` (on by default: loopback and "this network" only; its `private-address` hides private
-    addresses from answers, not from queries) on purpose: `dedensd` is a public resolver, and no stub zones exist
-    yet (a stub zone is how Unbound reaches an internal server). Cost: an internal server reached through a public
+    one that does not). A NAT64 or 6to4 address embedding a global IPv4 is asked, and so is every range of RFC
+    6890 not listed, on purpose: documentation (192.0.2/24, 198.51.100/24, 203.0.113/24, `2001:db8::/32`), the
+    IPv6 protocol assignments `2001::/23` (Teredo `2001::/32` included) and the discard prefix `100::/64` aim at
+    no host of ours, nor at its network. A zone's glue, a name's addresses or a delegation cached could otherwise
+    aim the resolver at its own host, its network or many hosts (SSRF, amplification). Every address enters
+    through `Delegation::add`, which drops those; a cached delegation with no address left to ask is skipped for
+    the TLD's or root hints. This goes beyond Unbound's `do-not-query-localhost` (on by default: loopback, "this
+    network" and `::ffff:0:0/96` only; its `private-address` hides private addresses from answers, not from
+    queries) on purpose: `dedensd` is a public resolver, and no stub zones exist yet (a stub zone is how Unbound
+    reaches an internal server). Cost: an internal server reached through a public
     delegation, or authorities on a test's own host, need the switch. Config load refuses `root_hints` none of
     whose addresses is asked unless the switch is on: every query would fail, and SERVFAIL would be the only sign.
   - Limits (`Limits`, each a field with its number, a test in `tests/iteration.rs` reaching its default):
