@@ -2151,8 +2151,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     it is, with a warn!: D128's anchors serve, a probe fails with `RETRY`, nothing is seeded or written, and the
     next use reads the file again. Until it does, the validators hold D128's anchors as they are, so a key the
     state holds revoked is trusted while it stays unreadable: the trade-off of serving anyway, where refusing to
-    serve would fail every answer on the mode of a file. The first answer that finds the state readable reloads
-    them, filtered by it. A state whose keys are all revoked is kept, serving
+    serve would fail every answer on the mode of a file. The first answer after the state reads again reloads
+    them, filtered by it, also when a reload that read it failed later (a bad configuration keeps the old
+    pipeline): the seed served stays noted until an answer takes it. A state whose keys are all revoked is kept, serving
     D128's anchors less the tombstones (warn!), also when D128's anchors predate the revocation: a validator
     never trusts nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of which
     signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
