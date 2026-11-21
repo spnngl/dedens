@@ -12,6 +12,7 @@ use dedens_cache::{Checked, Config, Cost};
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{canonical_cmp, hashed_owner, owner_hash};
 use dedens_dnssec::{TrustAnchors, Validator};
+use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec3, RData};
 use dedens_proto::{Class, Message, Name, Question, Record, RecordType, Ttl};
 use dedens_resolver::{
@@ -169,9 +170,16 @@ fn denial(id: &str, zone: &str, asked: &str) -> Message<'static> {
     response(&capture(id), zone, asked)
 }
 
-/// The SOA of the negative answer of `zone`'s server to `asked` in capture `id`, as a cache holds it for `ttl`.
+/// The SOA of the negative answer of `zone`'s server to `asked` in capture `id`, as a cache holds it for `ttl`: the
+/// TTL of the records is `ttl` too, so that it may differ from the MINIMUM field the zone gave.
 fn ranked_soa(id: &str, zone: &str, asked: &str, ttl: u32) -> Ranked {
-    let soa = Rrset::group(&denial(id, zone, asked).authority)
+    let records: Vec<_> = (denial(id, zone, asked).authority.into_iter())
+        .map(|record| Record {
+            ttl: Ttl::from_wire(ttl),
+            ..record
+        })
+        .collect();
+    let soa = Rrset::group(&records)
         .into_iter()
         .find(|set| set.rtype() == RecordType::SOA)
         .expect("an SOA RRset");
@@ -519,6 +527,28 @@ fn rfc2308_5_a_negative_answer_is_cached_for_its_name_and_type() {
 }
 
 #[test]
+fn rfc2308_5_the_ttl_is_never_more_than_the_minimum_field_of_the_soa() {
+    // google.com's SOA has a TTL and a MINIMUM of 60; given a TTL of an hour, the entry still ends at the MINIMUM.
+    let config = Config {
+        min_ttl: 0,
+        ..Config::default()
+    };
+    let cache = RrsetCache::new(1 << 20, config).expect("a cache");
+    let owner = name("dedens-nxdomain.google.com.");
+    let soa = ranked_soa(
+        "nxdomain-unsigned",
+        "google.com.",
+        "dedens-nxdomain.google.com.",
+        3600,
+    );
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &soa, &[], Checked::Unchecked, 0)
+        .expect("stored");
+    assert_eq!(left(&cache, &owner, 0), Some((60, "google.com.".into())));
+    assert!(cache.negative(&owner, Kind::NxDomain, 60).is_none());
+}
+
+#[test]
 fn rfc2308_5_the_ttl_is_the_least_of_the_soa_ttl_and_its_minimum_bounded_by_max_negative_ttl() {
     let capture = capture("nxdomain-unsigned");
     let (ttl, minimum) = soa_of(&denial(
@@ -694,6 +724,138 @@ fn rfc8198_5_an_opt_out_span_proves_no_name_absent() {
     assert!(sent > 0, "{second} answered from an opt-out span");
 }
 
+#[test]
+fn rfc8198_5_an_opt_out_span_the_cache_holds_secure_proves_no_name_absent() {
+    // The NODATA of ws. for the DS of dedens.ws: its opt-out NSEC3 records, which match ws. and `*.ws`, and cover
+    // dedens.ws, and its SOA, stored as secure sets. The record that matches `*.ws` is moved to the hash just before
+    // it, where it covers it: the records prove every name the cover of dedens.ws spans absent but for the opt-out
+    // flag, which says an unsigned delegation may be there (RFC 5155 §6).
+    let capture = capture("wildcard-optout");
+    let exchange = capture
+        .exchanges
+        .iter()
+        .find(|e| e.zone == name("ws.") && e.rtype == RecordType::DS)
+        .expect("the DS question of dedens.ws");
+    let response = dedens_testkit::message(&exchange.response);
+    let records = nsec3s(&response);
+    let (_, any) = records.first().expect("an NSEC3 record");
+    let hash = |text: &str| {
+        Budget::default()
+            .nsec3_hash(any.salt(), any.iterations, &name(text))
+            .expect("a hash")
+    };
+    let (cover, next) = records
+        .iter()
+        .find(|(owner, nsec3)| covers(owner, nsec3.next_hashed_owner(), &hash("dedens.ws.")))
+        .map(|(owner, nsec3)| (owner, nsec3.next_hashed_owner()))
+        .expect("a record covering dedens.ws");
+    let second = (0..100_000)
+        .map(|n| format!("dedens-{n}.ws."))
+        .find(|text| text != "dedens.ws." && covers(cover, next, &hash(text)))
+        .expect("a name in the span");
+    let ws = name("ws.");
+    let wildcard = hash("*.ws.");
+    assert!(
+        records.iter().any(|(owner, _)| *owner == wildcard),
+        "a record that matches *.ws"
+    );
+    let mut just_before = wildcard;
+    for byte in just_before.iter_mut().rev() {
+        *byte = byte.wrapping_sub(1);
+        if *byte != u8::MAX {
+            break;
+        }
+    }
+    let at_wildcard = hashed_owner(&ws, &wildcard).expect("a name");
+    let moved = relocated(
+        &response,
+        (&at_wildcard, RecordType::NSEC3),
+        (&hashed_owner(&ws, &just_before).expect("a name"), &ws),
+    );
+    assert_eq!(moved.len(), 1);
+    let kept: Vec<_> = (response.authority.iter())
+        .filter(|record| record.name != at_wildcard)
+        .cloned()
+        .collect();
+    let caches = configured(false, Config::default());
+    store_secure(&caches.rrsets, Rrset::group(&kept), at(&capture));
+    store_secure(&caches.rrsets, moved, at(&capture));
+    let (_, sent) = silent(&caches, (&second, RecordType::A), at(&capture), true);
+    assert!(sent > 0, "{second} answered from an opt-out span");
+}
+
+#[test]
+fn rfc8198_4_a_record_that_came_again_unchecked_or_bogus_after_it_expired_proves_nothing() {
+    // sidn.nl's records, secure at the capture: the index names their owners until the zone goes. Once they have
+    // expired the rest is stored secure again, as a validator leaves them, and the cover of the name comes as an
+    // unchecked set (before its validation, or a spoofed one) or a bogus one: neither is a proof.
+    let capture = capture("nxdomain-signed");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-signed", "sidn.nl.", &asked);
+    let covered = nsec_spanned(&response, &asked);
+    let later = at(&capture) + Duration::from_secs(1000);
+    let cover = name("cybersterk.sidn.nl.");
+    for checked in [
+        Checked::Secure,
+        Checked::Unchecked,
+        Checked::Bogus(InfoCode::RRSIGS_MISSING),
+    ] {
+        let caches = configured(false, Config::default());
+        store_secure(
+            &caches.rrsets,
+            Rrset::group(&response.authority),
+            at(&capture),
+        );
+        let (covers, rest): (Vec<_>, Vec<_>) = Rrset::group(&response.authority)
+            .into_iter()
+            .partition(|set| set.rtype() == RecordType::NSEC && *set.owner() == cover);
+        assert_eq!(covers.len(), 1);
+        store_secure(&caches.rrsets, rest, later);
+        store(&caches.rrsets, covers, checked, later);
+        let (_, sent) = silent(&caches, (&covered, RecordType::A), later, true);
+        assert_eq!(sent == 0, checked == Checked::Secure, "{checked:?}: {sent}");
+    }
+}
+
+#[test]
+fn rfc8198_5_a_ds_question_is_asked_not_denied_from_a_span() {
+    // A name sidn.nl's records prove absent for any other type: the cache does not answer the question of its DS
+    // with it, that is the parent's own answer (RFC 8198 §5.2). ANY, RRSIG and NXNAME are not started at all.
+    let capture = capture("nxdomain-signed");
+    let asked = capture.name.to_string();
+    let covered = nsec_spanned(&denial("nxdomain-signed", "sidn.nl.", &asked), &asked);
+    for rtype in [RecordType::A, RecordType::DS] {
+        let caches = configured(false, Config::default());
+        first("nxdomain-signed", &caches, true);
+        let (_, sent) = silent(&caches, (&covered, rtype), at(&capture), true);
+        assert_eq!(sent == 0, rtype == RecordType::A, "{rtype}: {sent} asked");
+    }
+}
+
+#[test]
+fn d199_a_validating_resolution_does_not_take_an_answer_cached_unchecked() {
+    for id in ["nxdomain-unsigned", "nodata-unsigned"] {
+        let capture = capture(id);
+        let caches = configured(false, Config::default());
+        first(id, &caches, false);
+        let text = capture.name.to_string();
+        let question = (text.as_str(), capture.rtype);
+        let (_, sent) = silent(&caches, question, at(&capture), false);
+        assert_eq!(sent, 0, "{id}: not cached");
+        // The zones' delegations are cached now, so a validating resolution that takes the cached answer asks the
+        // zone's servers nothing; one that does not asks them the question, as the zone's answer is the one it
+        // validates.
+        let mut validating = start(&capture, &caches, Limits::default())
+            .validated(validator(), at(&capture).as_secs());
+        let (_, sent) = served(&capture, &caches, &mut validating, &|_, _| {});
+        assert!(
+            sent.iter()
+                .any(|(_, asked, rtype)| *asked == capture.name && *rtype == capture.rtype),
+            "{id}: a validating resolution took it: {sent:?}"
+        );
+    }
+}
+
 /// The records of `response`'s authority section at `owner` of type `rtype`, with the signatures over them, as
 /// `RRset`s moved to the name `to` and signed by `signer`: the data stays as the zone served it, its place and its
 /// signer are another zone's.
@@ -726,15 +888,18 @@ fn relocated(
     Rrset::group(&moved)
 }
 
-/// Stores `sets` as the validator leaves them, secure, at the rank of an authority section, at `now`.
-fn store_secure(cache: &RrsetCache, sets: Vec<Rrset>, now: Duration) {
+/// Stores `sets` as `checked`, at the rank of an authority section, at `now`.
+fn store(cache: &RrsetCache, sets: Vec<Rrset>, checked: Checked, now: Duration) {
     let now = u32::try_from(now.as_secs()).expect("a time in 32 bits");
     for set in sets {
         let rank = Rank::AuthorityAuthoritative;
-        cache
-            .insert(set, rank, Checked::Secure, now)
-            .expect("stored");
+        cache.insert(set, rank, checked, now).expect("stored");
     }
+}
+
+/// Stores `sets` as the validator leaves them, secure.
+fn store_secure(cache: &RrsetCache, sets: Vec<Rrset>, now: Duration) {
+    store(cache, sets, Checked::Secure, now);
 }
 
 #[test]
