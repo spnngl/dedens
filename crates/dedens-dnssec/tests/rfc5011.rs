@@ -17,7 +17,7 @@ use std::fs;
 
 use dedens_dnssec::crypto::key_tag;
 use dedens_dnssec::rrsig::SigError;
-use dedens_dnssec::{KeyState, Rollover, RolloverError, TrustAnchors};
+use dedens_dnssec::{KeyState, Rollover, RolloverError, RolloverStateError, TrustAnchors};
 use dedens_proto::rdata::{Dnskey, RData, Rrsig};
 use dedens_proto::{Class, Name, Record, RecordType, SecAlgorithm, Ttl, ZoneEntry, ZoneReader};
 
@@ -892,7 +892,7 @@ fn rfc5011_state_text_of_an_unknown_version_is_told_from_a_damaged_one() {
         "dedens rfc5011 99999999999999999999999",
     ] {
         let error = Rollover::read(&format!("{header}\nvalid {k2010}\nend\n")).unwrap_err();
-        assert!(error.unknown_version(), "{header:?}: {error}");
+        assert_eq!(error, RolloverStateError::UnknownVersion, "{header:?}");
     }
     let newer = "dedens rfc5011 2\n";
     let long = format!("{newer}{}end\n", "valid\n".repeat(Rollover::MAX_LEN));
@@ -905,9 +905,10 @@ fn rfc5011_state_text_of_an_unknown_version_is_told_from_a_damaged_one() {
     ];
     for text in texts {
         let error = Rollover::read(&text).unwrap_err();
-        assert!(
-            error.unknown_version(),
-            "{:?}: {error}",
+        assert_eq!(
+            error,
+            RolloverStateError::UnknownVersion,
+            "{:?}",
             &text[..text.len().min(40)]
         );
     }
@@ -917,13 +918,18 @@ fn rfc5011_state_text_of_an_unknown_version_is_told_from_a_damaged_one() {
         "dedens rfc5011 ",
         "dedens rfc5011 0",
         "dedens rfc5011 01",
+        "dedens rfc5011 02",
+        "dedens rfc5011 002",
         "dedens rfc5011 +2",
         "dedens rfc5011 -2",
         "dedens rfc5011 2x",
         "dedens rfc5011 2 ",
     ] {
         let error = Rollover::read(&format!("{header}\nvalid {k2010}\nend\n")).unwrap_err();
-        assert!(!error.unknown_version(), "{header:?}: {error}");
+        assert!(
+            matches!(error, RolloverStateError::Damaged { line: 1, .. }),
+            "{header:?}: {error}"
+        );
     }
     for text in [
         format!("dedens rfc5011 1\nvalid  {k2010}\nend\n"),
@@ -934,7 +940,10 @@ fn rfc5011_state_text_of_an_unknown_version_is_told_from_a_damaged_one() {
         String::new(),
     ] {
         let error = Rollover::read(&text).unwrap_err();
-        assert!(!error.unknown_version(), "{text:?}: {error}");
+        assert!(
+            matches!(error, RolloverStateError::Damaged { .. }),
+            "{text:?}: {error}"
+        );
     }
 }
 
@@ -971,14 +980,20 @@ fn rfc5011_state_text_refused() {
         "x".repeat(Rollover::MAX_LEN)
     );
     assert_eq!(
-        Rollover::read(&long).map_err(|error| (error.line, error.what)),
-        Err((0, "longer than 64 KiB"))
+        Rollover::read(&long),
+        Err(RolloverStateError::Damaged {
+            line: 0,
+            what: "longer than 64 KiB"
+        })
     );
     // 64 KiB is read, to what it lacks.
     let full = format!("{long:.65535}\n");
     assert_eq!(full.len(), 64 << 10);
     assert_eq!(
-        Rollover::read(&full).map_err(|error| (error.line, error.what)),
-        Err((0, "no `end` line at the end"))
+        Rollover::read(&full),
+        Err(RolloverStateError::Damaged {
+            line: 0,
+            what: "no `end` line at the end"
+        })
     );
 }

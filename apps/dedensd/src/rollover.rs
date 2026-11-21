@@ -15,7 +15,7 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, mpsc};
 
-use dedens_dnssec::{Rollover, TrustAnchors};
+use dedens_dnssec::{Rollover, RolloverStateError, TrustAnchors};
 use dedens_proto::Record;
 
 use crate::config::unix_seconds;
@@ -455,14 +455,13 @@ fn read(state_dir: &Path) -> Stored {
         } else {
             String::from_utf8(bytes).map_err(|error| Fault::Content(error.into()))?
         };
-        Rollover::read(&text).map(Some).map_err(|error| {
-            if error.unknown_version() {
+        Rollover::read(&text)
+            .map(Some)
+            .map_err(|error| match error {
                 // A newer build's state, kept for it: not damaged.
-                Fault::System(io::Error::other(error))
-            } else {
-                Fault::Content(error.into())
-            }
-        })
+                RolloverStateError::UnknownVersion => Fault::System(io::Error::other(error)),
+                damaged => Fault::Content(damaged.into()),
+            })
     };
     match read() {
         Ok(None) => Stored::Absent,
