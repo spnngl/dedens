@@ -1106,6 +1106,36 @@ fn d199_the_nsec_at_the_apex_of_a_child_is_not_its_parents_proof_and_does_not_re
 }
 
 #[test]
+fn d199_an_nsec_below_the_apex_signed_by_the_parent_is_not_the_proof_of_the_zone() {
+    // The guard of `aggressive::secure` alone: a set of nl. at cybersterk.sidn.nl, a name in the chain of sidn.nl, is
+    // a stale record from before the cut or a parent signing below its cut. The validator accepts it (the owner is
+    // within the signer), it replaces sidn.nl's record under the same key, and without the guard of the signer it
+    // would be sidn.nl's proof of the name asked.
+    let capture = capture("nxdomain-signed");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-signed", "sidn.nl.", &asked);
+    let caches = configured(false, Config::default());
+    store_secure(
+        &caches.rrsets,
+        Rrset::group(&response.authority),
+        at(&capture),
+    );
+    let owner = name("cybersterk.sidn.nl.");
+    let parent = relocated(
+        &response,
+        (&owner, RecordType::NSEC),
+        (&owner, &name("nl.")),
+    );
+    assert_eq!(parent.len(), 1);
+    store_secure(&caches.rrsets, parent, at(&capture));
+    let (resolved, sent) = silent(&caches, (&asked, RecordType::A), at(&capture), true);
+    assert!(
+        sent > 0 && !matches!(resolved, Resolved::NxDomain { .. }),
+        "{sent} asked, {resolved:?}"
+    );
+}
+
+#[test]
 fn d199_an_apex_nsec_a_foreign_zone_signed_too_does_not_replace_the_delegation_record() {
     // The child zone's apex NSEC has a second signature, another zone's: the set has no one signer, but it is the
     // child's apex NSEC still (Unbound tells it by the data, not by who signed), and the parent's NSEC of the
@@ -1163,8 +1193,10 @@ fn d199_a_set_with_two_signers_proves_only_when_they_are_the_same_zone() {
 fn d199_an_nsec3_signed_by_a_child_at_the_name_of_a_hash_of_its_parent_is_not_its_proof() {
     // nl.'s NSEC3 records of the denial of dedens-nxdomain.nl: the cover of its hash is `cover`. A child zone named
     // like that hash signs an NSEC3 at its own apex, another record of nl. moved there, whose span is the widest of
-    // those held: it replaces the parent's record, and a hash between the cover and the next owner held, which the
-    // parent's span leaves open, falls in it.
+    // those held: a hash between the cover and the next owner held, which the parent's span leaves open, falls in
+    // it. The record has a key of its own (it is signed by its owner), so it replaces nothing; this test covers that
+    // key and the guard of the signer together, the guard alone is covered by
+    // `d199_an_nsec_below_the_apex_signed_by_the_parent_is_not_the_proof_of_the_zone`.
     let capture = capture("nxdomain-nsec3");
     let asked = capture.name.to_string();
     let response = denial("nxdomain-nsec3", "nl.", &asked);
