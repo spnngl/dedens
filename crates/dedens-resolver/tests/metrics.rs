@@ -12,7 +12,7 @@ use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use crate::seeded::Seeded;
 
 /// The counters `snapshotter` holds, as `name label` and value.
-fn counters(snapshotter: &Snapshotter) -> Vec<(String, u64)> {
+pub(crate) fn counters(snapshotter: &Snapshotter) -> Vec<(String, u64)> {
     snapshotter
         .snapshot()
         .into_vec()
