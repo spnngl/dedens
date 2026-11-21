@@ -237,8 +237,8 @@ exclude_re = [
   # `Failure::Limit` and not after the servers failed, whatever the depth, targets and query bounds, a bogus retry ends
   # through `self.bogus`, and test data is real. (The third operand, a failure on our side, is tested.)
   'resolution/mod\.rs:\d+:\d+: replace && with \|\| in Resolution::advance$',
-  # A set of an NSEC3 hash other than SHA-1, or of more than 150 iterations (RFC 9276 §3.2), or a set with two signers:
-  # no capture has one, and test data is real.
+  # A set of an NSEC3 hash other than SHA-1, or of more than 150 iterations (RFC 9276 §3.2): no
+  # capture has one, and test data is real.
   'rrset_cache\.rs:\d+:\d+: replace (\|\| with &&|!= with ==|&& with \|\|) in RrsetCache::index$',
   # An entry whose size is exactly the limit: one byte more is refused, one less is stored, as the test reads it.
   'rrset_cache\.rs:\d+:\d+: replace > with >= in RrsetCache::insert_negative$',
