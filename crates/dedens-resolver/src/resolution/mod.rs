@@ -778,6 +778,9 @@ struct Delegation {
     /// Address lookups started.
     looked_up: usize,
     heard: Heard,
+    /// Whether an exchange with one of its servers failed on our side ([`Reply::LocalError`]): nothing then says the
+    /// servers fail, so their failure is not held (RFC 9520 §3.2, D199).
+    failed_here: bool,
     /// Whether its servers at local addresses are asked ([`Resolution::asking_local_addresses`]).
     local: bool,
 }
@@ -804,6 +807,7 @@ impl Delegation {
             aaaa: None,
             looked_up: 0,
             heard: Heard::Nothing,
+            failed_here: false,
             local,
         };
         delegation.add(addresses);
@@ -1006,6 +1010,12 @@ impl Resolution {
                 }
             }
             Sent::Undecodable => self.heard(Heard::Responses),
+            Sent::LocalError => {
+                if let Some(delegation) = self.tasks.asking() {
+                    delegation.failed_here = true;
+                }
+                self.heard(Heard::Errors);
+            }
             _ => self.heard(Heard::Errors),
         }
     }
@@ -1238,14 +1248,15 @@ impl Resolution {
                 }
                 if self.limit.is_none()
                     && self.retries == 0
+                    && !delegation.failed_here
                     && matches!(
                         failure,
                         Failure::Unreachable | Failure::Network | Failure::Unusable
                     )
                 {
                     // The servers failed this question, not a bound of ours (an address lookup may have hit
-                    // one) nor the shunning of those that gave a bogus set: it is not asked of them again at
-                    // once (RFC 9520 §3.2, D199).
+                    // one) nor the shunning of those that gave a bogus set, nor our own sockets: it is not asked
+                    // of them again at once (RFC 9520 §3.2, D199).
                     debug!(name = %asked.name, rtype = %asked.qtype, ?failure, "failure held");
                     metrics::hold(Hold::Recorded);
                     let (name, qtype, set) = (&asked.name, asked.qtype, delegation.set);

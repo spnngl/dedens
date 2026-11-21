@@ -2165,7 +2165,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     to `failure_max` (5 minutes at most, §3.2); a failure during a hold is not counted; a quiet spell longer than
     `failure_max` starts again (D43's schedule, one rule in two caches). `Limit`, `Bogus` and `Indeterminate` are
     not held, nor is a failure after a limit was reached (an address lookup's) or a bogus retry shunned the
-    servers: a limit is the question's own, and a bogus answer is asked again of other servers (D197). A hold
+    servers: a limit is the question's own, and a bogus answer is asked again of other servers (D197). Nor is a
+    failure after an exchange failed on our side (`Reply::LocalError`: a send error, no sign of the servers failing;
+    `Delegation::failed_here`). An ICMP unreachable (`Reply::Unreachable`) may hold, as §3.2 allows: a spoofed one
+    can make a resolver hold a set for up to `failure_max`, a cost the RFC accepts. A hold
     that would outlast `failure_max` (a clock gone back) is no hold, as in the response cache. The
     server set is part of the key so that a delegation that changed, or another name's servers, is asked. Unbound
     holds nothing per question: its infra cache backs each server off (D194) and `serve-expired` is another matter.
@@ -2178,7 +2181,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     an opt-out zone's insecure answer, NODATA of signed and unsigned zones): an entry per name and type, the TTL
     bounds, a name below a secure NXDOMAIN not asked and below an insecure one asked, a second name in a span
     answered without a query (NSEC and NSEC3, any type, with the switch off asked, a name not covered asked), a
-    failing set held, backing off to `failure_max`, not held for another type, a limit not held;
+    failing set held, backing off to `failure_max`, not held for another type, a limit and a local send error not
+    held;
     `tests/memory.rs` with the spans and negative entries; `apps/dedensd/src/config/recurse.rs` the setting.
 - D200 (amends D72, D73, D127, D128, D195) The recursive resolver follows the root's trust anchors through a key
   rollover by RFC 5011 (recursive step 13), from the root's DNSKEY `RRset` it asks itself; the signed download

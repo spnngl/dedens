@@ -4,6 +4,7 @@
 //! §3.2 (a failure held, backing off). A question that must not be asked meets a server that times out: what the
 //! resolution sends shows whether it asked.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -880,6 +881,44 @@ fn rfc9520_3_2_a_failing_set_of_servers_is_not_asked_again_at_once_and_backs_off
     // Another question of the same servers is not held.
     let (resolved, _) = silent(&caches, (&text, RecordType::AAAA), secs(15), false);
     assert_ne!(resolved, Resolved::Failed(Failure::Network), "AAAA held");
+}
+
+#[test]
+fn rfc9520_3_2_a_local_send_error_is_no_failure_of_the_servers_and_holds_nothing() {
+    let capture = capture("unsigned");
+    let caches = configured(false, Config::default());
+    let text = capture.name.to_string();
+    let question = (text.as_str(), capture.rtype);
+    let now = at(&capture);
+    // Our own socket failing, once or for every server, says nothing of them: asked again at once, by anyone.
+    for round in 0..2 {
+        let mut asking = resolution(&caches, question, now, false);
+        let (resolved, sent) = run(&mut asking, &|_| Answered::LocalError, now);
+        assert_eq!(
+            resolved,
+            Resolved::Failed(Failure::Network),
+            "round {round}"
+        );
+        assert!(!sent.is_empty(), "round {round}: held");
+    }
+    // Nor does one among servers that timed out: the first server's exchange fails here, the others' do not.
+    let first = Cell::new(true);
+    let mut asking = resolution(&caches, question, now, false);
+    let (resolved, _) = run(
+        &mut asking,
+        &|_| {
+            if first.replace(false) {
+                Answered::LocalError
+            } else {
+                Answered::Timeout
+            }
+        },
+        now,
+    );
+    assert_eq!(resolved, Resolved::Failed(Failure::Network));
+    let mut asking = resolution(&caches, question, now, false);
+    let (_, sent) = run(&mut asking, &|_| Answered::Timeout, now);
+    assert!(!sent.is_empty(), "held after a local error");
 }
 
 #[test]
