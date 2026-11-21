@@ -255,7 +255,7 @@ fn read_hints(path: &Path, local: bool) -> anyhow::Result<RootHints> {
         local
             || (roots.servers().iter())
                 .flat_map(Server::addresses)
-                .any(|address| askable(address, false)),
+                .any(askable),
         "{} holds no address that is asked (loopback, private and the other special-purpose ranges are not unless \
          `query_local_addresses` is set)",
         path.display()
