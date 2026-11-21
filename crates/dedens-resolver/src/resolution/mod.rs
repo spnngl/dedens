@@ -809,7 +809,7 @@ impl Delegation {
                 debug!(zone = %self.zone, "delegation at its address bound, the rest not taken");
                 break;
             }
-            if !askable(address, self.local) {
+            if !(self.local || askable(address)) {
                 debug!(zone = %self.zone, %address, "local address not asked");
             } else if self.known.insert(address) {
                 self.untried.push(SocketAddr::new(address, PORT));
@@ -1271,7 +1271,7 @@ impl Resolution {
             return self.restart(vec![cname], target);
         }
         let parent = qtype == RecordType::DS;
-        let delegation = closest(&caches, name, parent, (&self.limits, self.local), now);
+        let delegation = closest(&caches, name, parent, &self.limits, self.local, now);
         if let Some(task) = self.tasks.looping(&delegation.zone) {
             return self.abandon(&task);
         }
@@ -2088,13 +2088,14 @@ fn cached_addresses(rrsets: &RrsetCache, name: &Name<'_>, now: u32) -> Vec<IpAdd
 }
 
 /// The closest delegation above `name` the caches know, strictly above it if `parent` (the root's hints for the
-/// root): an NS `RRset` with an address that may be asked ([`askable`], `local` for any) for one of its first
+/// root): an NS `RRset` with an address that may be asked ([`askable`], any if `local`) for one of its first
 /// [`Limits::servers`] servers, else a TLD's hints, else the root's (RFC 1034 §5.3.3 step 2).
 fn closest(
     caches: &Caches,
     name: &Name<'_>,
     parent: bool,
-    (limits, local): (&Limits, bool),
+    limits: &Limits,
+    local: bool,
     now: u32,
 ) -> Delegation {
     let mut buf = [0; MAX_NAME_LEN];
@@ -2121,7 +2122,7 @@ fn closest(
                 }
                 addresses.extend(known);
             }
-            if addresses.iter().any(|&address| askable(address, local)) {
+            if local || addresses.iter().any(|&address| askable(address)) {
                 debug!(%zone, "delegation from the cache");
                 let zone = zone.into_owned();
                 return Delegation::new(zone, Source::Cache, addresses, missing, local);
@@ -2138,25 +2139,25 @@ fn closest(
     hinted(Name::root(), caches.roots.servers(), local)
 }
 
-/// Whether a server at `address` may be asked: any if `local` ([`Resolution::asking_local_addresses`]), else one at an
-/// address outside the special-purpose ranges a zone could aim the resolver at its own host, its network or many
-/// hosts with (D191): `special_v4`, and of IPv6 the ranges `fc00::/7`, `fe80::/10`, the deprecated site-local
+/// Whether a server at `address` may be asked unless [`Resolution::asking_local_addresses`] is set, which asks any: one
+/// at an address outside the special-purpose ranges a zone could aim the resolver at its own host, its network or
+/// many hosts with (D191): `special_v4`, and of IPv6 the ranges `fc00::/7`, `fe80::/10`, the deprecated site-local
 /// `fec0::/10` and multicast `ff00::/8`, every IPv4-mapped address (`::ffff:0:0/96`, as Unbound's
 /// `do-not-query-localhost`) and IPv4-compatible one (`::/96`, which holds the unspecified address and loopback),
 /// the local-use NAT64 prefix (`64:ff9b:1::/48`, RFC 8215), and a NAT64 (`64:ff9b::/96`, RFC 6052) or 6to4
 /// (`2002::/16`, RFC 3056) address embedding an IPv4 address that is `special_v4`.
 #[must_use]
-pub fn askable(address: IpAddr, local: bool) -> bool {
-    local
-        || !match address {
-            IpAddr::V4(v4) => special_v4(v4),
-            IpAddr::V6(v6) => special_v6(v6),
-        }
+pub fn askable(address: IpAddr) -> bool {
+    !match address {
+        IpAddr::V4(v4) => special_v4(v4),
+        IpAddr::V6(v6) => special_v6(v6),
+    }
 }
 
-/// Whether `v4` is in a special-purpose range of RFC 6890 no server is asked at: loopback (127/8), "this network"
-/// (0/8), private (10/8, 172.16/12, 192.168/16), shared (100.64/10), link-local (169.254/16), IETF protocol
-/// assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4), reserved (240/4) and broadcast.
+/// Whether `v4` is in one of the special-purpose ranges of RFC 6890 no server is asked at (D191): loopback
+/// (127/8), "this network" (0/8), private (10/8, 172.16/12, 192.168/16), shared (100.64/10), link-local
+/// (169.254/16), IETF protocol assignments (192.0.0/24), benchmarking (198.18/15), multicast (224/4), reserved
+/// (240/4) and broadcast.
 fn special_v4(v4: Ipv4Addr) -> bool {
     let [first, second, third, _] = v4.octets();
     v4.is_loopback()
