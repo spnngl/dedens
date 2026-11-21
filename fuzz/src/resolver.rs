@@ -191,20 +191,45 @@ const RTT: Duration = Duration::from_millis(20);
 /// The time a replay starts at, so that a TTL of a response is fresh.
 const START: Duration = Duration::from_secs(1_760_000_000);
 
-/// A response off the wire, which every query of a resolution of its question is answered with, as often as the
-/// draws seeded by its bytes say, the others met by a timeout, a failed exchange or a datagram that does not decode;
-/// half the inputs have the answer validated. The resolution ends within [`Limits`]: the queries it sent, the
-/// validator's beside them, and the time; the caches hold within capacity. D191, D197.
+/// The responses of an input, in the order the resolution sends: the input is messages each behind its length (two
+/// octets, big-endian; the last may be short), a chunk that does not decode a datagram that does not. An input with
+/// no such message is one response off the wire, as the seeds are.
+fn responses(data: &[u8]) -> Vec<Option<Message<'static>>> {
+    let mut rest = data;
+    let mut framed = Vec::new();
+    while let Some((&length, tail)) = rest.split_first_chunk() {
+        let (chunk, tail) = tail.split_at(usize::from(u16::from_be_bytes(length)).min(tail.len()));
+        framed.push(
+            Message::decode(chunk)
+                .ok()
+                .map(|decoded| decoded.message.into_owned()),
+        );
+        rest = tail;
+    }
+    if framed.iter().any(Option::is_some) {
+        return framed;
+    }
+    Message::decode(data)
+        .ok()
+        .map_or_default(|decoded| vec![Some(decoded.message.into_owned())])
+}
+
+/// The responses of an input, which the queries of a resolution of the first one's question are answered with in
+/// turn, the n-th query with the n-th, as often as the draws seeded by its bytes say, the others met by a timeout, a
+/// failed exchange or a datagram that does not decode; half the inputs have the answer validated. The resolution
+/// ends within [`Limits`]: the queries it sent, the validator's beside them, and the time; the caches hold within
+/// capacity. D191, D197.
 ///
 /// # Panics
 ///
 /// On a panic of the resolution, or on a bound of [`Limits`] it passed.
 pub fn resolve_replay(data: &[u8]) {
-    let Ok(decoded) = Message::decode(data) else {
+    let responses = responses(data);
+    let Some(first) = responses.iter().flatten().next() else {
         return;
     };
-    let mut response = decoded.message;
-    let question = (response.questions.first())
+    let id = first.header.id;
+    let question = (first.questions.first())
         .filter(|question| question.qclass == Class::IN)
         .map_or_else(
             || Question::new("example.com.".parse().expect("a name"), RecordType::A),
@@ -231,7 +256,7 @@ pub fn resolve_replay(data: &[u8]) {
         return;
     };
     let length = u16::try_from(data.len()).unwrap_or(u16::MAX);
-    let mut draws = Draws(u64::from(response.header.id) << 16 | u64::from(length));
+    let mut draws = Draws(u64::from(id) << 16 | u64::from(length));
     let mut resolution = if draws.below(2) == 0 {
         resolution
     } else {
@@ -239,6 +264,7 @@ pub fn resolve_replay(data: &[u8]) {
         resolution.validated(validator, START.as_secs())
     };
     let mut elapsed = Duration::ZERO;
+    let mut sent = 0;
     loop {
         let step = match resolution.step(START + elapsed, &mut draws) {
             Next::Done(resolved) => Err(matches!(
@@ -271,25 +297,30 @@ pub fn resolve_replay(data: &[u8]) {
             "{} queries, still asking",
             resolution.sent()
         );
-        match draws.below(8) {
-            0 => resolution.receive(Reply::Timeout, START + elapsed + query.timeout),
-            1 => resolution.receive(Reply::Undecodable, START + elapsed + RTT),
-            2 => resolution.receive(Reply::ServerError, START + elapsed + RTT),
-            _ => {
-                // The transport matches the response to the query: its question is the query's.
-                response.questions = vec![query.question.clone()];
-                let reply = Reply::Response {
-                    message: &response,
+        // The transport matches the response to the query: its question is the query's.
+        let response = responses[sent % responses.len()]
+            .clone()
+            .map(|mut message| {
+                message.questions = vec![query.question.clone()];
+                message
+            });
+        sent += 1;
+        // The clock moves by what the exchange took, and the reply arrives then.
+        let (reply, took) = match (draws.below(8), &response) {
+            (0, _) => (Reply::Timeout, query.timeout),
+            (2, _) => (Reply::ServerError, RTT),
+            (1, _) | (_, None) => (Reply::Undecodable, RTT),
+            (_, Some(message)) => (
+                Reply::Response {
+                    message,
                     seen: Marks::default(),
                     rtt: Some(RTT),
-                };
-                resolution.receive(reply, START + elapsed + RTT);
-            }
-        }
-        elapsed += match draws.below(8) {
-            0 => query.timeout,
-            _ => RTT,
+                },
+                RTT,
+            ),
         };
+        elapsed += took;
+        resolution.receive(reply, START + elapsed);
     }
 }
 
