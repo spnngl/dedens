@@ -365,16 +365,20 @@ impl RrsetCache {
         if held.checked != Checked::Secure || set.class() != Class::IN {
             return;
         }
-        let Some(apex) = set.rrsigs().iter().find_map(|rdata| match rdata.data() {
-            RData::Rrsig(sig)
-                if sig.type_covered == set.rtype() && set.owner().is_within(&sig.signer) =>
-            {
+        // The signer of every signature covering the set is the same: one that is not may be the extra signature of
+        // a server, and the validator's verdict does not say which one it checked.
+        let mut signers = set.rrsigs().iter().filter_map(|rdata| match rdata.data() {
+            RData::Rrsig(sig) if sig.type_covered == set.rtype() => {
                 Some(sig.signer.clone().into_owned())
             }
             _ => None,
-        }) else {
+        });
+        let Some(apex) = signers.next() else {
             return;
         };
+        if !set.owner().is_within(&apex) || signers.any(|other| other != apex) {
+            return;
+        }
         match set.rtype() {
             RecordType::NSEC => self
                 .spans
@@ -521,7 +525,7 @@ impl RrsetCache {
             &[&u16::from(qtype).to_be_bytes(), &set.bytes()],
         );
         self.store.get(key, |held| match held {
-            Entry::Held(held) => held.active(now),
+            Entry::Held(held) => held.active(&self.config, now),
             _ => None,
         })
     }

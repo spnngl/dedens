@@ -405,3 +405,23 @@ fn a_bogus_response_is_not_due_before_it_expires_and_says_so() {
     assert_eq!(refresh.at, refresh.expires);
     assert_eq!(refresh.expires, T0 + small_config().bogus_ttl);
 }
+
+#[test]
+fn a_negative_answer_is_kept_within_max_negative_ttl_not_max_ttl() {
+    // RFC 2308 §5: a negative answer's TTL is capped by its own bound, as the resolver's `RRset` cache reads it (D199).
+    let config = Config {
+        min_ttl: 10,
+        max_ttl: 1000,
+        max_negative_ttl: 100,
+        ..Config::default()
+    };
+    let lifetime = |ttl, checked| config.negative_lifetime(Ttl::from_wire(ttl), checked);
+    assert_eq!(lifetime(50, Checked::Secure), Some(50));
+    assert_eq!(lifetime(500, Checked::Secure), Some(100));
+    assert_eq!(lifetime(500, Checked::Unchecked), Some(100));
+    // The floor of an unchecked answer, none for a secure one.
+    assert_eq!(lifetime(5, Checked::Unchecked), Some(10));
+    assert_eq!(lifetime(5, Checked::Secure), Some(5));
+    // TTL 0 is not cached (RFC 1035 §3.2.1).
+    assert_eq!(lifetime(0, Checked::Secure), None);
+}

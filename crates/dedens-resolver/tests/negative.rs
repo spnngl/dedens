@@ -308,6 +308,26 @@ fn rfc8198_4_a_name_in_an_nsec3_span_the_cache_holds_is_answered_without_a_query
 }
 
 #[test]
+fn rfc8198_4_a_type_the_nsec_record_of_a_name_lacks_is_answered_nodata_without_a_query() {
+    // The NSEC record of sidn.nl, read to answer an SRV question, says the name has no HINFO either.
+    let caches = configured(false, Config::default());
+    let capture = capture("nodata-signed");
+    let asked = first("nodata-signed", &caches, true);
+    assert!(matches!(asked, Resolved::NoData { .. }), "{asked:?}");
+    let name = capture.name.to_string();
+    let (resolved, sent) = silent(&caches, (&name, RecordType::HINFO), at(&capture), true);
+    assert_eq!(sent, 0, "{name} HINFO asked");
+    let Resolved::NoData { soa, denials, .. } = resolved else {
+        panic!("{name}: {resolved:?}")
+    };
+    assert_eq!(soa.checked, dedens_cache::Checked::Secure);
+    assert!(!denials.is_empty(), "no denial records");
+    // A type the record lists exists: asked.
+    let (resolved, _) = silent(&caches, (&name, RecordType::SOA), at(&capture), true);
+    assert!(!matches!(resolved, Resolved::NoData { .. }), "{resolved:?}");
+}
+
+#[test]
 fn rfc8198_4_a_resolution_with_the_switch_off_asks() {
     let caches = configured(false, Config::default());
     let capture = capture("nxdomain-signed");
@@ -393,6 +413,27 @@ fn rfc9520_3_2_a_hold_is_never_longer_than_failure_max() {
     // The second hold, 200 s doubled, is 150 s: until 250.
     assert_eq!(fails(base + Duration::from_secs(249)), 0, "held until 250");
     assert!(fails(base + Duration::from_secs(250)) > 0, "asked at 250");
+}
+
+#[test]
+fn rfc9520_3_2_a_clock_gone_back_does_not_extend_a_hold() {
+    let capture = capture("unsigned");
+    let caches = configured(false, Config::default());
+    let text = capture.name.to_string();
+    let question = (text.as_str(), capture.rtype);
+    let base = at(&capture) + Duration::from_secs(10_000);
+    let fails = |now: Duration| {
+        let mut resolution = resolution(&caches, question, now, false);
+        let (_, sent) = run(&mut resolution, &|_| Answered::ServerError, now);
+        sent.len()
+    };
+    assert!(fails(base) > 0);
+    assert_eq!(fails(base + Duration::from_secs(1)), 0, "held");
+    // The hold ends 5 s after the first failure: a clock 2 hours earlier is outside the longest hold.
+    assert!(
+        fails(base - Duration::from_secs(7_200)) > 0,
+        "held across a clock gone back"
+    );
 }
 
 #[test]

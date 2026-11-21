@@ -44,7 +44,7 @@ pub fn hashed_owner(apex: &Name<'_>, hash: &[u8; HASH_LEN]) -> Result<Name<'stat
     let mut label = [0; HASH_LEN * 8 / 5];
     let (mut digits, mut acc, mut bits) = (label.iter_mut(), 0_u16, 0_u8);
     for &byte in hash {
-        acc = acc << 8 | u16::from(byte);
+        acc = acc * 256 + u16::from(byte);
         bits += 8;
         while bits >= 5 {
             bits -= 5;
