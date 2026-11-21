@@ -1,16 +1,30 @@
-//! The `RRset` cache: what the resolver learned, `RRset` by `RRset`, with how far it trusts each (RFC 2181 §5.4.1).
+//! The `RRset` cache: what the resolver learned, `RRset` by `RRset`, with how far it trusts each (RFC 2181 §5.4.1),
+//! and beside them the negative answers (RFC 2308) and failure holds (RFC 9520) of the same store (D199).
 
 use std::cmp::Ordering;
+use std::hash::{BuildHasher, RandomState};
 use std::sync::Arc;
 
 use dedens_cache::{Checked, Config, ConfigError, Cost, Store};
-use dedens_proto::{Class, MAX_NAME_LEN, Name, RecordType, Ttl};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Class, MAX_NAME_LEN, Name, Nsec3HashAlgorithm, RecordType, Ttl};
 use thiserror::Error;
 
 use crate::metrics::Metrics;
+use crate::negative::{Absent, Denied, Hold, Kind, ServerSet};
 use crate::rank::Rank;
+use crate::resolution::Failure;
 use crate::rrset::Rrset;
+use crate::spans::{Spans, hash_of};
 
+/// The share of the capacity the index of spans may take, as a divisor (D199): the records themselves stay in the
+/// store. Unbound sets its `neg-cache-size` apart, 1 MiB by default (`util/config_file.c`), a quarter of the
+/// 4 MiB of its `rrset-cache-size`.
+const SPANS_SHARE: usize = 32;
+
+/// The most iterations of an NSEC3 chain the index takes, RFC 9276 §3.2's: one that asks for more is never a proof
+/// an answer rests on, and its hashes cost a resolver more than a query does (as Unbound's `nsec3-max-iterations`).
+const MAX_ITERATIONS: u16 = 150;
 /// The default capacity, in bytes: twice the response cache's 64 MiB default, as Unbound's performance guide sets
 /// `rrset-cache-size` to twice `msg-cache-size` (its defaults are 4 MiB each, `util/config_file.c`
 /// `config_create`, small for a busy resolver). BIND has no separate budget: its `max-cache-size`, 90 % of memory by
@@ -75,16 +89,20 @@ pub enum NotCached {
     TooLarge,
 }
 
-/// The value of a key: an `RRset` now; the negative entries of step 12 come into the same key space.
+/// The value of a key: an `RRset`, a negative answer, or a failure held. Their keys never meet (see [`key_of`]).
 #[derive(Debug)]
 enum Entry {
     Rrset(Cached),
+    Absent(Box<Absent>),
+    Held(Hold),
 }
 
 impl Cost for Entry {
     fn cost(&self) -> usize {
         match self {
             Self::Rrset(cached) => cached.rrset.cost(),
+            Self::Absent(absent) => absent.cost(),
+            Self::Held(held) => held.cost(),
         }
     }
 }
@@ -212,23 +230,36 @@ impl Cached {
 #[derive(Debug)]
 pub struct RrsetCache {
     store: Store<Entry>,
+    /// The order of the secure NSEC and NSEC3 records in the store, for RFC 8198 (D199).
+    spans: Spans,
+    /// Keyed: the hash of a server set (D199) is not for an attacker to steer.
+    hasher: RandomState,
     capacity: usize,
     config: Config,
     metrics: Metrics,
 }
 
 impl RrsetCache {
-    /// An empty cache of `capacity` bytes, the shards, entry limit and TTLs of `config`, the response cache's.
+    /// An empty cache of `capacity` bytes, the shards, entry limit and TTLs of `config`, the response cache's: a
+    /// 32nd of it for the index of spans, the rest for the store (D199).
     ///
     /// # Errors
     ///
     /// [`ConfigError`] when `config` is invalid, its `capacity`, the response cache's, included; then when
-    /// `capacity` cannot hold an entry of `config.max_entry_bytes`, or a tenth of a shard's share an entry of the
-    /// longest owner name (D116).
+    /// the store's share of `capacity` cannot hold an entry of `config.max_entry_bytes`, or a tenth of a shard's
+    /// share an entry of the longest key (D116).
     pub fn new(capacity: usize, config: Config) -> Result<Self, ConfigError> {
         config.validate()?;
+        let spans = capacity / SPANS_SHARE;
         Ok(Self {
-            store: Store::new(capacity, config.shards, config.max_entry_bytes, KEY_LEN)?,
+            store: Store::new(
+                capacity - spans,
+                config.shards,
+                config.max_entry_bytes,
+                KEY_LEN,
+            )?,
+            spans: Spans::new(spans, config.shards),
+            hasher: RandomState::new(),
             capacity,
             config,
             metrics: Metrics::new(),
@@ -263,7 +294,15 @@ impl RrsetCache {
             .lifetime(rrset.ttl(), checked)
             .ok_or(NotCached::ZeroTtl)?;
         let mut key = [0; KEY_LEN];
-        let key = key_of(&mut key, rrset.owner(), rrset.rtype(), rrset.class());
+        let key = key_of(
+            &mut key,
+            None,
+            rrset.owner(),
+            &[
+                &u16::from(rrset.rtype()).to_be_bytes(),
+                &u16::from(rrset.class()).to_be_bytes(),
+            ],
+        );
         if key.len() + rrset.cost() > self.store.entry_limit() {
             return Err(NotCached::TooLarge);
         }
@@ -274,32 +313,222 @@ impl RrsetCache {
             ttl,
             expires: now.saturating_add(ttl),
         };
+        // What a key of another kind held, which keys keep apart, is replaced.
+        let stored = Inserted::Stored(new.with_left(new.ttl));
         // What the shard lets go of, the `RRset` offered or the one it replaces, is freed once its lock is released.
         let ((inserted, _freed), evicted) =
-            self.store.upsert(key, Entry::Rrset(new), |held, offered| {
-                let Entry::Rrset(held) = held;
-                let Some(Entry::Rrset(mut new)) = offered else {
-                    return (Inserted::Stored(held.with_left(held.ttl)), None);
-                };
-                match held.merge(&new, now) {
-                    Merge::Keep => (Inserted::Kept(held.with_left(held.left(now))), Some(new)),
-                    Merge::Verdict => {
-                        if !held.pins(&new) {
-                            held.rank = held.rank.max(new.rank);
+            self.store.upsert(key, Entry::Rrset(new), |entry, offered| {
+                match (entry, offered) {
+                    (Entry::Rrset(held), None) => {
+                        (Inserted::Stored(held.with_left(held.ttl)), None)
+                    }
+                    (Entry::Rrset(held), Some(Entry::Rrset(mut new))) => {
+                        match held.merge(&new, now) {
+                            Merge::Keep => (
+                                Inserted::Kept(held.with_left(held.left(now))),
+                                Some(Entry::Rrset(new)),
+                            ),
+                            Merge::Verdict => {
+                                if !held.pins(&new) {
+                                    held.rank = held.rank.max(new.rank);
+                                }
+                                held.checked = new.checked;
+                                held.set_left(held.left(now).min(new.ttl), now);
+                                (
+                                    Inserted::Verdict(held.with_left(held.ttl)),
+                                    Some(Entry::Rrset(new)),
+                                )
+                            }
+                            Merge::Replace => {
+                                held.bound(&mut new, now);
+                                let hit = new.with_left(new.ttl);
+                                (
+                                    Inserted::Stored(hit),
+                                    Some(Entry::Rrset(std::mem::replace(held, new))),
+                                )
+                            }
                         }
-                        held.checked = new.checked;
-                        held.set_left(held.left(now).min(new.ttl), now);
-                        (Inserted::Verdict(held.with_left(held.ttl)), Some(new))
                     }
-                    Merge::Replace => {
-                        held.bound(&mut new, now);
-                        let hit = new.with_left(new.ttl);
-                        (Inserted::Stored(hit), Some(std::mem::replace(held, new)))
-                    }
+                    (_, other) => (stored, other),
                 }
             });
         self.metrics.inserted(&inserted, evicted);
+        self.index(inserted.held());
         Ok(inserted)
+    }
+
+    /// Indexes what the cache holds of an NSEC or NSEC3 `RRset` judged secure, under the zone that signed it: the
+    /// zone's apex is the signer of its signature (RFC 4035 §5.3.1), and the owner of an NSEC3 record is a hash one
+    /// label below it (RFC 5155 §3).
+    fn index(&self, held: &Ranked) {
+        let set = &held.rrset;
+        if held.checked != Checked::Secure || set.class() != Class::IN {
+            return;
+        }
+        let Some(apex) = set.rrsigs().iter().find_map(|rdata| match rdata.data() {
+            RData::Rrsig(sig)
+                if sig.type_covered == set.rtype() && set.owner().is_within(&sig.signer) =>
+            {
+                Some(sig.signer.clone().into_owned())
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+        match set.rtype() {
+            RecordType::NSEC => self
+                .spans
+                .add_nsec(&apex, &set.owner().clone().into_owned()),
+            RecordType::NSEC3 => {
+                let Some(hash) = hash_of(set.owner()) else {
+                    return;
+                };
+                for rdata in set.rdatas() {
+                    if let RData::Nsec3(nsec3) = rdata.data() {
+                        if nsec3.hash_algorithm == Nsec3HashAlgorithm::SHA1
+                            && nsec3.iterations <= MAX_ITERATIONS
+                        {
+                            self.spans
+                                .add_nsec3(&apex, nsec3.salt(), nsec3.iterations, hash);
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Stores a negative answer for `owner`: the SOA of its zone and the `denials` proving it, as judged together
+    /// (`checked`), for the least of the SOA's TTL and MINIMUM field (RFC 2308 §5), replacing one the cache
+    /// holds as an `RRset` is replaced, so that secure data is never replaced by less (D199).
+    ///
+    /// # Errors
+    ///
+    /// [`NotCached`] when it is not stored: the SOA has no readable MINIMUM, or a TTL of 0, or the entry is too
+    /// large; the cache is left as it was.
+    pub fn insert_negative(
+        &self,
+        owner: &Name<'_>,
+        kind: Kind,
+        soa: &Ranked,
+        denials: &[Ranked],
+        checked: Checked,
+        now: u32,
+    ) -> Result<(), NotCached> {
+        let ttl = crate::negative::lifetime(&self.config, soa, denials, checked)
+            .ok_or(NotCached::ZeroTtl)?;
+        let new = Absent::new(kind, soa, denials, checked, ttl, now);
+        let mut key = [0; KEY_LEN];
+        let key = key_of(
+            &mut key,
+            Some(NEGATIVE),
+            owner,
+            &[&u16::from(kind.key_type()).to_be_bytes()],
+        );
+        if key.len() + new.cost() > self.store.entry_limit() {
+            return Err(NotCached::TooLarge);
+        }
+        let (_freed, evicted) =
+            self.store
+                .upsert(key, Entry::Absent(Box::new(new)), |entry, offered| {
+                    match (entry, offered) {
+                        (Entry::Absent(held), Some(Entry::Absent(new)))
+                            if held.replaced_by(&new, now) =>
+                        {
+                            Some(Entry::Absent(std::mem::replace(held, new)))
+                        }
+                        (_, other) => other,
+                    }
+                });
+        self.metrics.evicted(evicted);
+        Ok(())
+    }
+
+    /// The fresh negative answer of `kind` for `owner` at `now`, with the time left as the TTL of each of its sets.
+    #[must_use]
+    pub fn negative(&self, owner: &Name<'_>, kind: Kind, now: u32) -> Option<Denied> {
+        let mut key = [0; KEY_LEN];
+        let key = key_of(
+            &mut key,
+            Some(NEGATIVE),
+            owner,
+            &[&u16::from(kind.key_type()).to_be_bytes()],
+        );
+        self.store.get(key, |held| match held {
+            Entry::Absent(absent) => absent.hit(kind, now),
+            _ => None,
+        })
+    }
+
+    /// Which servers of the zone `zone` a failure is held for: the zone and the names of `servers`, whatever their
+    /// order (D199).
+    pub(crate) fn server_set<'n>(
+        &self,
+        zone: &Name<'_>,
+        servers: impl IntoIterator<Item = &'n Name<'static>>,
+    ) -> ServerSet {
+        let one = |name: &Name<'_>| self.hasher.hash_one(name);
+        ServerSet(
+            servers
+                .into_iter()
+                .fold(one(zone), |set, name| set.wrapping_add(one(name))),
+        )
+    }
+
+    /// Holds the failure of the question `name` and `qtype` to the servers `set`, heard at `now` (RFC 9520 §3.2): for
+    /// [`Config::failure_min`] seconds, as long again for each failure heard after the hold ended, at most
+    /// [`Config::failure_max`], starting over after a quiet spell as long as that (D43). A failure heard during the
+    /// hold counts for nothing.
+    pub(crate) fn hold(
+        &self,
+        name: &Name<'_>,
+        qtype: RecordType,
+        set: ServerSet,
+        failure: Failure,
+        now: u32,
+    ) {
+        let mut key = [0; KEY_LEN];
+        let key = key_of(
+            &mut key,
+            Some(HOLD),
+            name,
+            &[&u16::from(qtype).to_be_bytes(), &set.bytes()],
+        );
+        let first = Entry::Held(Hold::first(failure, &self.config, now));
+        let (_freed, evicted) = self.store.upsert(key, first, |entry, offered| {
+            if let (Entry::Held(held), Some(_)) = (&mut *entry, &offered) {
+                held.again(failure, &self.config, now);
+            }
+            offered
+        });
+        self.metrics.evicted(evicted);
+    }
+
+    /// The failure held for the question `name` and `qtype` to the servers `set` at `now`, if one is.
+    pub(crate) fn held(
+        &self,
+        name: &Name<'_>,
+        qtype: RecordType,
+        set: ServerSet,
+        now: u32,
+    ) -> Option<Failure> {
+        let mut key = [0; KEY_LEN];
+        let key = key_of(
+            &mut key,
+            Some(HOLD),
+            name,
+            &[&u16::from(qtype).to_be_bytes(), &set.bytes()],
+        );
+        self.store.get(key, |held| match held {
+            Entry::Held(held) => held.active(now),
+            _ => None,
+        })
+    }
+
+    /// The index of spans of the secure NSEC and NSEC3 records held, for RFC 8198.
+    pub(crate) const fn spans(&self) -> &Spans {
+        &self.spans
     }
 
     /// The fresh `RRset` of `owner`, any case, `rtype` and `class` at `now`, whatever its rank: see [`Ranked`] for
@@ -313,9 +542,18 @@ impl RrsetCache {
         now: u32,
     ) -> Option<Ranked> {
         let mut key = [0; KEY_LEN];
-        let key = key_of(&mut key, owner, rtype, class);
+        let key = key_of(
+            &mut key,
+            None,
+            owner,
+            &[
+                &u16::from(rtype).to_be_bytes(),
+                &u16::from(class).to_be_bytes(),
+            ],
+        );
         let hit = self.store.get(key, |held| match held {
             Entry::Rrset(cached) => cached.hit(now),
+            Entry::Absent(_) | Entry::Held(_) => None,
         });
         self.metrics.lookup(hit.is_some());
         hit
@@ -333,10 +571,10 @@ impl RrsetCache {
         self.store.is_empty()
     }
 
-    /// Bytes taken, at most the capacity (D116).
+    /// Bytes taken, the index of spans included, at most the capacity (D116).
     #[must_use]
     pub fn used(&self) -> usize {
-        self.store.used()
+        self.store.used() + self.spans.used()
     }
 
     /// The bytes it was made with: a reload keeps a cache of the same capacity and config (D195).
@@ -352,23 +590,40 @@ impl RrsetCache {
     }
 }
 
-/// The longest key: a name, a type and a class.
-const KEY_LEN: usize = MAX_NAME_LEN + 4;
+/// The first byte of the key of a negative answer: past 63, the greatest length of a label, so that no name's wire
+/// form starts with it.
+const NEGATIVE: u8 = 0x80;
 
-/// The key of `owner`, `rtype` and `class` in `buf`: the name's wire form, ASCII letters lowered (RFC 4343; the
-/// length octets, at most 63, have none), then the type and the class.
+/// The first byte of the key of a failure held, apart from [`NEGATIVE`].
+const HOLD: u8 = 0x81;
+
+/// The longest key: a tag, a name, a type and the 8 bytes of a server set.
+const KEY_LEN: usize = 1 + MAX_NAME_LEN + 2 + 8;
+
+/// The key of `owner` in `buf`: the `tag` byte of a kind of entry other than an `RRset`, then the name's wire form,
+/// ASCII letters lowered (RFC 4343; the length octets, at most 63, have none), then the `tail` parts: for an
+/// `RRset`, its type and class; for a negative answer, its type, `ANY` for a name that does not exist; for a
+/// failure held, the type and the server set.
 fn key_of<'b>(
     buf: &'b mut [u8; KEY_LEN],
+    tag: Option<u8>,
     owner: &Name<'_>,
-    rtype: RecordType,
-    class: Class,
+    tail: &[&[u8]],
 ) -> &'b [u8] {
     let mut name = [0; MAX_NAME_LEN];
     let wire = owner.to_wire(&mut name);
-    let len = wire.len();
-    buf[..len].copy_from_slice(wire);
-    buf[..len].make_ascii_lowercase();
-    buf[len..len + 2].copy_from_slice(&u16::from(rtype).to_be_bytes());
-    buf[len + 2..len + 4].copy_from_slice(&u16::from(class).to_be_bytes());
-    &buf[..len + 4]
+    let mut at = 0;
+    if let Some(tag) = tag {
+        buf[0] = tag;
+        at = 1;
+    }
+    let named = &mut buf[at..at + wire.len()];
+    named.copy_from_slice(wire);
+    named.make_ascii_lowercase();
+    at += wire.len();
+    for part in tail {
+        buf[at..at + part.len()].copy_from_slice(part);
+        at += part.len();
+    }
+    &buf[..at]
 }

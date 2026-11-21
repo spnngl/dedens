@@ -99,6 +99,7 @@
 //!              time_ms: 4500}
 //!     query_local_addresses: false   # ask servers at loopback, private and other special addresses (D191)
 //!     qname_minimisation: relaxed    # RFC 9156; strict: no fallback to the full name; none (D198)
+//!     aggressive_nsec: true          # answer from the secure NSEC and NSEC3 records cached, RFC 8198 (D199)
 //!     local_zones:                   # RFC 6303, home.arpa, resolver.arpa, localhost and invalid, answered here
 //!       resolve: []                  # those of them to resolve instead, by apex: [home.arpa] for a router's
 //!     client_share: {rate: 1000, burst: 2000}  # queries to authoritative servers a client network may send (D117)

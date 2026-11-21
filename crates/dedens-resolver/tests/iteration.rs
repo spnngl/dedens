@@ -426,11 +426,14 @@ fn d193_an_address_pinned_to_glue_is_asked_again() {
 
 #[test]
 fn rfc1034_5_3_3_a_zone_cached_is_asked_of_its_own_name() {
-    // google.com's SRV, a NODATA not cached (recursive step 12), asked again: of the google.com servers the first
-    // resolution cached, not com's.
+    // google.com's SRV, a NODATA, asked after its A: of the google.com servers that resolution cached, not com's.
     let capture = recursion::Resolution::read("nodata-unsigned");
     let caches = caches(false);
-    let _ = resolve(&capture, &caches, Limits::default());
+    let _ = resolve(
+        &recursion::Resolution::read("unsigned"),
+        &caches,
+        Limits::default(),
+    );
     let (outcome, sent) = resolve(&capture, &caches, Limits::default());
     assert!(matches!(outcome, Resolved::NoData { .. }), "{outcome:?}");
     let google = name("google.com.");

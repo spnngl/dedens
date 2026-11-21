@@ -5,7 +5,10 @@
 //!
 //! [`RrsetCache`] holds what resolution learned, `RRset` by `RRset` (RFC 2181 §5), each with its [`Rank`]: where it
 //! was read, which decides whether later data replaces it (RFC 2181 §5.4.1), and the validator's verdict on it
-//! (RFC 4035 §4.7). Its TTL rules are the response cache's `Config` (D124, D193).
+//! (RFC 4035 §4.7). Its TTL rules are the response cache's `Config` (D124, D193). It holds negative answers too,
+//! under the name and type (RFC 2308 §5), and the failures of a set of servers (RFC 9520 §3.2); a cached secure
+//! NXDOMAIN denies the names below it (RFC 8020 §2), and its secure NSEC and NSEC3 records the names in their spans
+//! (RFC 8198 §5), unless `Resolution::aggressive_nsec` is off (D199).
 //!
 //! [`InfraCache`] holds what resolution learned of the authoritative servers: each one's round-trip time and
 //! [`Marks`], which servers are lame for which zone, and from them the server to ask next (D194).
@@ -14,9 +17,9 @@
 //! across CNAMEs, to the answer, one query in flight, every response read through [`scrub()`], within the bounds of
 //! [`Limits`] (D191), minimising the names servers see as [`Minimisation`] says (D198).
 //!
-//! RFCs: 1034 §4.3.2/§5.3.3, 1035 §3.2.1/§4.1/§7, 2181 §5/§5.2/§5.4.1/§6.1/§8/§10.1, 2308 §2,
+//! RFCs: 1034 §4.3.2/§5.3.3, 1035 §3.2.1/§4.1/§7, 2181 §5/§5.2/§5.4.1/§6.1/§8/§10.1, 2308 §2/§5,
 //! 4035 §2.3/§3.1.3/§3.1.4/§4.7, 4343, 4697 §2.2, 5452 §4.3/§4.4/§6, 6298 §2/§5, 6672 §2.2/§3.4, 6895 §3.1, 7766 §5,
-//! 8020 §2, 8914 §4, 9156 §2/§3, 9471 §2.
+//! 8020 §2, 8198 §4/§5, 8914 §4, 9156 §2/§3, 9471 §2, 9520 §3.2.
 //!
 //! Feature `metrics`: selection, lookup, insert, eviction and limit counters through the `metrics` facade; without it they compile
 //! away.
@@ -24,15 +27,19 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
+mod aggressive;
 mod infra_cache;
 mod metrics;
+mod negative;
 mod rank;
 mod resolution;
 mod rrset;
 mod rrset_cache;
 mod scrub;
+mod spans;
 
 pub use infra_cache::{Choice, Edns, InfraCache, Marks};
+pub use negative::{Denied, Kind};
 pub use rank::Rank;
 pub use resolution::{
     Caches, Failure, Limit, Limits, Minimisation, Next, Query, Reply, Resolution, Resolved,

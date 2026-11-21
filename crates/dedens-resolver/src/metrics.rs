@@ -19,6 +19,12 @@
 //!
 //! The resolution's (D191), from the recorder installed when it is counted:
 //!
+//! - `dedens_resolver_denials_total{source}`: negative answers given from the cache, so queries not sent (D199), by
+//!   `source`: `exact` (stored for the name, RFC 2308 §5), `below_nxdomain` (a secure NXDOMAIN of a name above, RFC 8020
+//!   §2) or `aggressive` (proved by the zone's NSEC or NSEC3 records held, RFC 8198 §4).
+//! - `dedens_resolver_failure_holds_total{outcome}`: failures held (RFC 9520 §3.2, D199), `recorded` when a
+//!   question failed against all the servers of its delegation, `served` when a question held was answered with
+//!   its failure and not asked.
 //! - `dedens_resolver_limits_total{limit}`: bounds of `Limits` reached, by bound (`Limit`'s field name).
 //! - `dedens_resolver_queries_total{outcome}`: queries sent, by what came of each (D195): `answer` (a response that
 //!   serves: an answer, a denial or a referral), `lame`, `unusable` (a response that does not serve: REFUSED,
@@ -90,6 +96,62 @@ pub(crate) fn limit(limit: Limit) {
 #[cfg(not(feature = "metrics"))]
 pub(crate) const fn limit(_: Limit) {}
 
+/// Where a negative answer the cache gave comes from, for `dedens_resolver_denials_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Denial {
+    /// Stored for the name (RFC 2308 §5).
+    Exact,
+    /// Stored for a name above that does not exist (RFC 8020 §2).
+    BelowNxdomain,
+    /// Proved by the NSEC or NSEC3 records of the zone (RFC 8198 §4).
+    Aggressive,
+}
+
+/// Counts a negative answer the cache gave, a query not sent: a registry lookup, as a query avoided affords.
+#[cfg(feature = "metrics")]
+pub(crate) fn denial(source: Denial) {
+    const DENIALS: &str = "dedens_resolver_denials_total";
+    metrics::describe_counter!(
+        DENIALS,
+        "Negative answers given from the cache, by where they come from."
+    );
+    let source = match source {
+        Denial::Exact => "exact",
+        Denial::BelowNxdomain => "below_nxdomain",
+        Denial::Aggressive => "aggressive",
+    };
+    metrics::counter!(DENIALS, "source" => source).increment(1);
+}
+
+/// Counts a negative answer the cache gave: nothing without the `metrics` feature.
+#[cfg(not(feature = "metrics"))]
+pub(crate) const fn denial(_: Denial) {}
+
+/// What came of a failure held, for `dedens_resolver_failure_holds_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// A question failed against all the servers of a delegation, and is held.
+    Recorded,
+    /// A question held was not asked: it failed again, at once.
+    Served,
+}
+
+/// Counts a failure held: a registry lookup, which a failure afforded by the servers' own delay affords.
+#[cfg(feature = "metrics")]
+pub(crate) fn hold(hold: Hold) {
+    const HOLDS: &str = "dedens_resolver_failure_holds_total";
+    metrics::describe_counter!(HOLDS, "Failures held, by outcome: recorded or served.");
+    let outcome = match hold {
+        Hold::Recorded => "recorded",
+        Hold::Served => "served",
+    };
+    metrics::counter!(HOLDS, "outcome" => outcome).increment(1);
+}
+
+/// Counts a failure held: nothing without the `metrics` feature.
+#[cfg(not(feature = "metrics"))]
+pub(crate) const fn hold(_: Hold) {}
+
 /// The counters of one cache.
 #[cfg(feature = "metrics")]
 #[derive(Debug)]
@@ -147,6 +209,11 @@ impl Metrics {
             Inserted::Kept(_) => &self.kept,
         }
         .increment(1);
+        self.evicted(evicted);
+    }
+
+    /// Counts entries evicted by an insert that is not an `RRset`'s.
+    pub(crate) fn evicted(&self, evicted: usize) {
         self.evictions
             .increment(u64::try_from(evicted).unwrap_or(u64::MAX));
     }
@@ -169,6 +236,12 @@ impl Metrics {
         reason = "the same calls with and without the feature"
     )]
     pub(crate) const fn inserted(&self, _: &Inserted, _: usize) {}
+
+    #[expect(
+        clippy::unused_self,
+        reason = "the same calls with and without the feature"
+    )]
+    pub(crate) const fn evicted(&self, _: usize) {}
 }
 
 /// The counters of one infra cache.

@@ -38,6 +38,8 @@ pub struct Recurse {
     limits: Limits,
     /// Whether servers at special-purpose addresses are asked ([`Recurse::asking_local_addresses`]).
     local_addresses: bool,
+    /// Whether the secure denial records cached answer names they prove absent ([`Recurse::aggressive_nsec`]).
+    aggressive_nsec: bool,
     minimisation: Minimisation,
     local: LocalZones,
     /// What each client network may spend of the queries sent (D117), none for the rate limit's exempt sources.
@@ -62,6 +64,7 @@ impl Recurse {
             caches,
             limits: Limits::default(),
             local_addresses: false,
+            aggressive_nsec: true,
             minimisation: Minimisation::default(),
             local: LocalZones::default(),
             share: None,
@@ -105,6 +108,14 @@ impl Recurse {
     #[must_use]
     pub const fn asking_local_addresses(mut self, ask: bool) -> Self {
         self.local_addresses = ask;
+        self
+    }
+
+    /// The same stage answering from the secure NSEC and NSEC3 records its cache holds, if `on` (RFC 8198, D199),
+    /// which it does by default: [`Resolution::aggressive_nsec`].
+    #[must_use]
+    pub const fn aggressive_nsec(mut self, on: bool) -> Self {
+        self.aggressive_nsec = on;
         self
     }
 
@@ -167,6 +178,12 @@ impl Recurse {
         self.local_addresses
     }
 
+    /// Whether it answers from the secure denial records its cache holds ([`Recurse::aggressive_nsec`]).
+    #[must_use]
+    pub const fn aggressive(&self) -> bool {
+        self.aggressive_nsec
+    }
+
     /// How much of the names it asks it shows each server.
     #[must_use]
     pub const fn minimisation(&self) -> Minimisation {
@@ -215,6 +232,7 @@ impl Recurse {
             caches: Arc::clone(&self.caches),
             limits: self.limits,
             local_addresses: self.local_addresses,
+            aggressive_nsec: self.aggressive_nsec,
             minimisation: self.minimisation,
             paid: 0,
             payer,
@@ -245,6 +263,7 @@ impl Recurse {
             caches: Arc::clone(&self.caches),
             limits: self.limits,
             local_addresses: self.local_addresses,
+            aggressive_nsec: self.aggressive_nsec,
             minimisation: self.minimisation,
             paid: 0,
             payer: None,
@@ -262,6 +281,7 @@ impl Recurse {
             caches: Arc::clone(&self.caches),
             limits: self.limits,
             local_addresses: self.local_addresses,
+            aggressive_nsec: self.aggressive_nsec,
             minimisation: self.minimisation,
             paid: 0,
             payer: None,
@@ -281,6 +301,7 @@ pub struct Resolving {
     caches: Arc<Caches>,
     limits: Limits,
     local_addresses: bool,
+    aggressive_nsec: bool,
     minimisation: Minimisation,
     /// The queries paid for so far.
     paid: usize,
@@ -460,7 +481,9 @@ impl Resolving {
             self.limits,
             self.minimisation,
         ) {
-            Ok(resolution) => resolution.asking_local_addresses(self.local_addresses),
+            Ok(resolution) => resolution
+                .asking_local_addresses(self.local_addresses)
+                .aggressive_nsec(self.aggressive_nsec),
             Err(unsupported) => return State::Ended(Ended::Unsupported(unsupported)),
         };
         let Some(charging) = &self.validation else {
