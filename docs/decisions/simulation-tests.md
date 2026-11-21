@@ -215,6 +215,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Tests: `crates/dedens-sim/tests/internet.rs` loads every capture in one run (29 servers, at a 10 ms step for
     D164's budget) and a client asks each exchange again with 0x20; then one server of each conduct and a
     silent one, the seed picking which.
+  - Derived responses: `Answers::derived(f)` answers the question `f` returns a response for, ahead of the captures:
+    a capture changed as an attack changes it, for names no scenario can list (a thousand glueless servers, a name at
+    random for each query) or for a time (`turmoil::sim_elapsed`: a delegation revoked at 15 s). The response goes
+    the way a capture's does (ID and case of the query, TC past the payload, DNSSEC records for DO). It is built
+    from a capture, never from bytes made up.
+  - Attacks: `crates/dedens-sim/tests/attacks.rs` (recursive step 14) runs each named attack of the recursive
+    resolver on D196's Internet with captures changed as the attack changes them, asserting the bound of the decision
+    that holds it: Kaminsky's flood (D190, D192), NXNSAttack (D191), TsuNAME (D191, D199), CAMP and iDNS (D191,
+    D117), KeyTrap and NSEC3 iterations (D75, D77, D197), MaginotDNS (D192), TuDoor (D190, D191), the ghost domain
+    (D193). Its fuzz target is `resolve_replay` (D181).
 - D196 (amends D190, D191; builds on D133, D164, D182, D189, D194, D195) Recursion in the simulator (recursive step
   09): `crates/dedens-sim/tests/recursion.rs` runs `dedensd`'s own loop (D182) with a cache stage then a recurse stage
   (D195) on D189's Internet, every capture's servers hosted, and a client asks each capture's question in turn. The

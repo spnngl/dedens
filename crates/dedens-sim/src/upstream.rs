@@ -109,6 +109,18 @@ impl fmt::Debug for Fickle {
     }
 }
 
+/// What makes the response to a question, if the scenario has one: [`Answers::derived`].
+type Derive = dyn Fn(&Question<'static>) -> Option<Vec<u8>>;
+
+#[derive(Clone)]
+struct Derived(Rc<Derive>);
+
+impl fmt::Debug for Derived {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Derived(..)")
+    }
+}
+
 /// One UDP response in `one_in` lost: [`Answers::lossy`].
 #[derive(Debug, Clone)]
 struct Loss {
@@ -124,6 +136,8 @@ pub struct Answers {
     attacker: Option<Attacker>,
     cookie: Option<[u8; 8]>,
     fickle: Option<Fickle>,
+    /// The responses made for the question, ahead of the entries: [`Answers::derived`].
+    derived: Option<Derived>,
     /// The UDP responses lost, if any: [`Answers::lossy`].
     loss: Option<Loss>,
     tcp: Behaviour,
@@ -309,6 +323,20 @@ impl Answers {
         self
     }
 
+    /// Has the server answer a question with the response `derive` makes for it, ahead of the captures it holds:
+    /// a capture changed as an attack changes it, for the names a scenario cannot list (a thousand of them, a
+    /// random one for each query), or for a time (read `turmoil::sim_elapsed`): a delegation that is revoked. `None`
+    /// leaves the question to the captures. The response goes the way a capture does: the ID and the case of the
+    /// query, cut to its payload size over UDP with TC, DNSSEC records only for DO.
+    #[must_use]
+    pub fn derived(
+        mut self,
+        derive: impl Fn(&Question<'static>) -> Option<Vec<u8>> + 'static,
+    ) -> Self {
+        self.derived = Some(Derived(Rc::new(derive)));
+        self
+    }
+
     /// Has the server answer as `conduct` says.
     #[must_use]
     pub const fn conduct(mut self, conduct: Conduct) -> Self {
@@ -436,7 +464,12 @@ impl Answers {
             return None;
         }
         let asked = query.questions.first()?.clone();
-        let held = self.entries.iter().find(|entry| entry.question == asked);
+        let made = (self.derived.as_ref())
+            .and_then(|derived| (derived.0)(&asked))
+            .map(|wire| Entry::new(asked.clone(), wire.clone(), wire));
+        let held = made
+            .as_ref()
+            .or_else(|| self.entries.iter().find(|entry| entry.question == asked));
         let mut reply = match (self.conduct, held) {
             (Conduct::Refuses, _) | (_, None) => refusal(&query, Rcode::REFUSED)?,
             (Conduct::Fails, _) => refusal(&query, Rcode::SERVFAIL)?,
@@ -791,6 +824,27 @@ mod tests {
         assert_eq!(reply.rcode(), Rcode::REFUSED);
         assert_eq!(reply.questions, [ask("nothing.example", RecordType::A)]);
         assert_eq!(reply.answer, Vec::new());
+    }
+
+    #[test]
+    fn a_derived_response_goes_ahead_of_the_captures_with_the_queries_id() {
+        let held = ask("example.com", RecordType::A);
+        let made = captured("txt_large");
+        let asked = held.clone();
+        let answers = Answers::new().captured("a").derived(move |question| {
+            // For the question the captures hold, and for no other: the capture's own answer comes for the rest.
+            (*question == asked).then(|| made.clone())
+        });
+        let (reply, _) = answers
+            .reply(&query(held, Some(4096), None), Transport::Udp)
+            .expect("a reply");
+        assert_eq!(reply.get(..2), Some([0x12, 0x34].as_slice()));
+        assert_eq!(reply.get(2..), captured("txt_large").get(2..));
+        let other = ask("nothing.example", RecordType::A);
+        let (reply, _) = answers
+            .reply(&query(other, Some(1232), None), Transport::Udp)
+            .expect("a reply");
+        assert_eq!(decode(&reply).rcode(), Rcode::REFUSED);
     }
 
     #[test]

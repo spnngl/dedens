@@ -25,7 +25,7 @@ scenario. A run must replay from its seed; these rules keep it so.
 - An upstream server or an event count two families use is in `tests/util.rs` (`answers`, `served`, `forwarded`); a
   family's own variant is named for how it differs (`forwarded_to`, `tried_over_udp`), never a shared name.
 - A `Conduct` of an authoritative server changes a captured response as broken servers do, never invents one; a new
-  one goes in D189's list. A topology of authoritative servers alone sets a `resolver` pipeline: the default one
+  one goes in D189's list, and a response `Answers::derived` makes is a capture changed, with no bytes made up. A topology of authoritative servers alone sets a `resolver` pipeline: the default one
   forwards, and panics with no upstream server.
 - A scenario that changes the cache's `min_ttl` or `stale_answer_ttl` sets the oracle's `Rules::floor` and
   `stale_ttl` to match.

@@ -1,0 +1,1351 @@
+//! The attacks on recursive resolvers that have a name, run against `dedensd` resolving from the root on the
+//! simulated Internet of the captured resolutions (D189, D196), each from captured responses changed as the attack
+//! changes them, each held under a number: the queries sent for one client question, the cache entries poisoned
+//! (none), the time to the answer. The bounds are the decisions': D190 (the socket per query), D191 (the
+//! resolution's limits), D192 (the scrubber), D193 (the ranks of the cache), D197 (the validation), D199 (the failure
+//! hold), D117 (the budget of a client network); a bound found wrong goes back to its decision.
+//!
+//! The attacker is the off-path one of RFC 5452 §1 and the forged family (`forged.rs`), or the zone's own server:
+//!
+//! - Kaminsky, "Black Ops 2008: It's The End Of The Cache As We Know It": a flood of forged answers for random
+//!   names in the zone, each with a random ID and case, glue for the zone's server in them. The attacker is given
+//!   the port of the query, which RFC 5452 §4.2 has it guess, and still guesses ID (§9.2) and case
+//!   (draft-vixie-dnsext-dns0x20).
+//! - `NXNSAttack` (Afek, Bremler-Barr, Shister, USENIX Security 2020, CVE-2020-12662 and kin): a referral of a
+//!   thousand server names without an address, in a zone that denies them.
+//! - `TsuNAME` (Moura et al., IMC 2021, CVE-2021-3023 and kin): two zones whose servers are named in each other. The
+//!   failure hold of RFC 9520 §3.2 (D199) stops the next resolution.
+//! - CAMP and iDNS (Afek et al., "Amplification by chaining", 2023): a chain of CNAME records and one of
+//!   referrals, each link a query, and a client network that spends its budget on them (D117).
+//! - `KeyTrap` (CVE-2023-50387) and the NSEC3 iterations (CVE-2023-50868): signatures that fail, many; a proof that
+//!   hashes many times. What a validation does is bounded by its budget (D75, D77, D197).
+//! - `MaginotDNS` (Li et al., USENIX Security 2023): a zone's server answers with records of a sibling zone.
+//! - `TuDoor` (Li et al., IEEE S&P 2024): datagrams that are no message, with the query's ID, port and address.
+//! - The ghost domain (Jiang et al., NDSS 2012): a delegation that the parent revoked, kept alive by the child's
+//!   answers.
+//!
+//! RFC 9199 §3 is the operators' side of the same bounds: a resolver under stress retries and answers from its cache
+//! (C4, C5), so the queries one question may cost are bounded (the numbers asserted) and a cached delegation lives as
+//! long as the parent's and the child's TTLs say, never longer (C6, the ghost domain).
+//!//! The simulation cannot read a validation's cost, signature checks and hashes: the scenarios of the validator
+//! judge by its verdict, and by the budget it is given (`crates/dedens-resolver/tests/validation.rs` counts).
+
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
+
+use dedens_cache::{Cache, Config};
+use dedens_dnssec::{TrustAnchors, Validator};
+use dedens_net::exchange::Options;
+use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::rdata::{Dnskey, Nsec3, RData, Soa};
+use dedens_proto::{
+    Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport, Ttl,
+};
+use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Limits, Minimisation, RrsetCache};
+use dedens_roots::RootHints;
+use dedens_server::{Budget, Budgets, Pipeline, Recurse, Stage, Validating};
+use dedens_sim::attacker::{Attacker, Injection, Reaction};
+use dedens_sim::client::{Carrier, Client};
+use dedens_sim::seed::{self, Rng, Seed};
+use dedens_sim::stub::{Outcome, question};
+use dedens_sim::topology::{Topology, World};
+use dedens_sim::trace::{Event, What};
+use dedens_sim::upstream::{Answers, Verdict};
+use dedens_testkit::recursion::Resolution;
+use dedens_testkit::{dns, message};
+
+use crate::recursion::{TICK, Zones, steer, zones};
+use crate::util::{SECOND, TABLE_KEY};
+
+/// The seeds of `just check`: two of D133's five, the family's budget being two seconds (D164).
+const SEEDS: &[u64] = &[1, 42];
+
+/// The stream of the attacker's draws: no host of a run has it (the resolver's is 0, a client's its number).
+const ATTACKER: u64 = 1 << 32;
+
+/// The address no server holds, which a forgery carries.
+const POISON: Ipv4Addr = Ipv4Addr::new(6, 6, 6, 6);
+
+/// The least and the most a message takes: a round trip within the 50 ms the infra cache's timer starts from (D194),
+/// where `recursion`'s 20 to 30 ms may exceed it and time a server out, which the scenarios asking one server
+/// again and again cannot have.
+const LAG: (Duration, Duration) = (Duration::from_millis(15), Duration::from_millis(20));
+
+/// The second at which the cache is read after a run: the entries of a run are fresh then, their TTLs being the
+/// minutes and the days of the captures.
+const NOW: u32 = 1;
+
+/// Forgeries per query of the Kaminsky flood.
+const FLOOD: usize = 200;
+
+/// The names a Kaminsky attacker draws, one a question.
+const DRAWS: usize = 10;
+
+/// The response a server of a zone makes to a question: `zone` is the zone the server was captured answering for.
+type Derive = dyn Fn(&Name<'static>, &Question<'static>) -> Option<Message<'static>>;
+
+/// The attacker on the servers of a zone, if there is one.
+type Aim = dyn Fn(&Name<'static>) -> Option<Attacker>;
+
+/// What a scenario changes of the Internet of its captures, and of the resolver.
+struct Plot {
+    captures: Vec<Resolution>,
+    /// What the servers answer beside the captures: the capture changed as the attack changes it.
+    derive: Option<Rc<Derive>>,
+    aim: Option<Rc<Aim>>,
+    limits: Limits,
+    /// The share of a client network (D117), if the resolver has one.
+    share: Option<Budget>,
+    /// The clock and the limits of the validator, if the resolver validates (D197).
+    validate: Option<(u64, dedens_dnssec::Limits)>,
+    /// Whether a cache stage answers before the recurse stage: its failure hold (D199) is the same rule.
+    cached: bool,
+    /// How long the run lasts, if more than the simulation's default.
+    duration: Option<Duration>,
+    /// The settings of the resolver's caches.
+    config: Config,
+}
+
+impl Plot {
+    fn new(captures: Vec<Resolution>) -> Self {
+        Self {
+            captures,
+            derive: None,
+            aim: None,
+            limits: Limits::default(),
+            share: None,
+            validate: None,
+            cached: false,
+            duration: None,
+            config: Config::default(),
+        }
+    }
+
+    fn deriving(
+        mut self,
+        derive: impl Fn(&Name<'static>, &Question<'static>) -> Option<Message<'static>> + 'static,
+    ) -> Self {
+        self.derive = Some(Rc::new(derive));
+        self
+    }
+
+    fn attacked(mut self, aim: impl Fn(&Name<'static>) -> Option<Attacker> + 'static) -> Self {
+        self.aim = Some(Rc::new(aim));
+        self
+    }
+}
+
+/// The questions the servers heard, in order, with the server and the time.
+type Heard = Rc<RefCell<Vec<(IpAddr, Question<'static>, Duration)>>>;
+
+/// The caches of the resolver of the run, as it started last.
+type Held = Rc<RefCell<Option<Arc<Caches>>>>;
+
+/// A world of the plot, with what its servers heard and the caches of its resolver.
+struct Lab {
+    world: World,
+    heard: Heard,
+    caches: Held,
+}
+
+/// The questions heard that a client pays for: the priming (`. NS`) is paid by none (D195).
+fn paid(heard: &Heard) -> Vec<(IpAddr, Question<'static>, Duration)> {
+    (heard.borrow().iter())
+        .filter(|(_, question, _)| !(question.name.is_root() && question.qtype == RecordType::NS))
+        .cloned()
+        .collect()
+}
+
+fn pipeline(plot: &Plot, zones: &Zones, held: &Held) -> Pipeline {
+    let config = Config {
+        shards: 1,
+        ..plot.config.clone()
+    };
+    let caches = Caches {
+        rrsets: RrsetCache::new(DEFAULT_CAPACITY, config.clone()).expect("a valid config"),
+        infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 1).expect("a valid size"),
+        roots: RootHints::bundled().clone(),
+        tlds: None,
+    };
+    steer(&caches, zones, &plot.captures);
+    let caches = Arc::new(caches);
+    *held.borrow_mut() = Some(Arc::clone(&caches));
+    let mut recurse = Recurse::new(caches)
+        .with_minimisation(Minimisation::Off)
+        .with_limits(plot.limits);
+    if let Some(share) = plot.share {
+        recurse = recurse.with_share(Budgets::with_key(share, &TABLE_KEY).expect("a valid share"));
+    }
+    if let Some((at, limits)) = &plot.validate {
+        let at = *at;
+        let validator = Validator::new(TrustAnchors::root(), limits.clone());
+        recurse = recurse.validating(Validating::new(validator, Arc::new(move || at)));
+    }
+    let mut stages = Vec::new();
+    if plot.cached {
+        stages.push(Stage::Cache(Arc::new(
+            Cache::new(config).expect("valid settings"),
+        )));
+    }
+    stages.push(Stage::Recurse(recurse));
+    Pipeline::new(stages)
+}
+
+/// The world of `plot`: each captured server at its address, answering what its zone was asked and what the plot
+/// derives, `dedensd` resolving from the root.
+fn lab(seed: Seed, plot: Plot) -> Lab {
+    let zones = zones(&plot.captures);
+    let heard: Heard = Rc::default();
+    let held: Held = Rc::default();
+    let mut topology = Topology::new();
+    if let Some(duration) = plot.duration {
+        topology = topology.duration(duration);
+    }
+    for capture in &plot.captures {
+        topology = topology.resolution(capture);
+    }
+    let servers: BTreeSet<IpAddr> = (zones.iter())
+        .flat_map(|(_, servers)| servers.iter().copied())
+        .collect();
+    for server in servers {
+        let (zone, _) = (zones.iter())
+            .find(|(_, at)| at.contains(&server))
+            .expect("a zone");
+        let held_here = (plot.captures.iter())
+            .flat_map(|capture| &capture.exchanges)
+            .filter(|exchange| {
+                zones
+                    .iter()
+                    .any(|(zone, at)| *zone == exchange.zone && at.contains(&server))
+            });
+        let mut answers = Answers::default().exchanges(held_here);
+        if let Some(derive) = &plot.derive {
+            let (derive, zone) = (Rc::clone(derive), zone.clone());
+            answers = answers
+                .derived(move |question| derive(&zone, question).map(|message| encode(&message)));
+        }
+        if let Some(attacker) = plot.aim.as_ref().and_then(|aim| aim(zone)) {
+            answers = answers.attacked_by(attacker);
+        }
+        let heard = Rc::clone(&heard);
+        answers = answers.faulty(move |question, _: &mut Rng| {
+            let at = turmoil::sim_elapsed().unwrap_or_default();
+            heard.borrow_mut().push((server, question.clone(), at));
+            Verdict::Answer
+        });
+        topology = topology.authoritative_at(server, answers);
+    }
+    let plot = Rc::new(plot);
+    let (shared, kept) = (Rc::clone(&plot), Rc::clone(&held));
+    let world = topology
+        .resolver(move |_| pipeline(&shared, &zones, &kept))
+        .dedensd()
+        .latency(LAG.0, LAG.1)
+        .tick(TICK)
+        .build(seed);
+    Lab {
+        world,
+        heard,
+        caches: held,
+    }
+}
+
+fn encode(message: &Message<'_>) -> Vec<u8> {
+    let mut out = vec![0; 65_535];
+    let len = message.encode(&mut out).expect("a message that encodes");
+    out.truncate(len);
+    out
+}
+
+fn decode(wire: &[u8]) -> Message<'static> {
+    Message::decode(wire)
+        .expect("a message")
+        .message
+        .into_owned()
+}
+
+/// The response of the capture's server of `zone` to the capture's own question.
+fn captured(capture: &Resolution, zone: &Name<'_>) -> Message<'static> {
+    answer_of(capture, zone, &capture.name, capture.rtype)
+}
+
+/// The response of the capture's server of `zone` to `name` and `rtype`.
+fn answer_of(
+    capture: &Resolution,
+    zone: &Name<'_>,
+    name: &Name<'_>,
+    rtype: RecordType,
+) -> Message<'static> {
+    let exchange = (capture.exchanges.iter())
+        .find(|exchange| {
+            exchange.zone == *zone && exchange.name == *name && exchange.rtype == rtype
+        })
+        .expect("an exchange of the zone");
+    message(&exchange.response)
+}
+
+/// `message` with every record living `secs`.
+fn living(mut message: Message<'static>, secs: u32) -> Message<'static> {
+    let ttl = Ttl::new(secs).expect("a TTL");
+    let records = (message.answer.iter_mut())
+        .chain(&mut message.authority)
+        .chain(&mut message.additional);
+    for record in records {
+        record.ttl = ttl;
+    }
+    message
+}
+
+/// The server of the zone of the captures that the attacks aim at: Google's.
+const LEAF: Ipv4Addr = Ipv4Addr::new(216, 239, 32, 10);
+
+/// `response`, answering `question`.
+fn to(mut response: Message<'static>, question: &Question<'static>) -> Message<'static> {
+    response.questions = vec![question.clone()];
+    response
+}
+
+/// A referral of `owner` to the server `server`, with no glue, on the model of `template`, a captured one.
+fn referral(
+    template: Message<'static>,
+    question: &Question<'static>,
+    owner: &Name<'static>,
+    servers: &[Name<'static>],
+) -> Message<'static> {
+    let ns = (template.authority.iter())
+        .find(|record| record.rtype() == RecordType::NS)
+        .expect("an NS record")
+        .clone();
+    let mut response = to(template, question);
+    response.authority = (servers.iter())
+        .map(|server| Record::new(owner.clone(), ns.class, ns.ttl, &RData::Ns(server.clone())))
+        .collect();
+    response.additional.clear();
+    response
+}
+
+/// The queries of a client of the resolver: `question` over UDP, the message and how long it took.
+async fn ask(
+    client: &Client,
+    resolver: SocketAddr,
+    question: &Question<'static>,
+) -> turmoil::Result<(Message<'static>, Duration)> {
+    let start = tokio::time::Instant::now();
+    let response = client
+        .exchange(
+            Message::query(0, question.clone()),
+            resolver,
+            Carrier::Udp,
+            &Options::default(),
+        )
+        .await?;
+    Ok((decode(&response.wire), start.elapsed()))
+}
+
+/// Whether `name` is one a scenario's attacker draws: a label `prefix` and a number, in `zone`.
+fn drawn(name: &Name<'_>, prefix: u8, zone: &Name<'_>) -> bool {
+    name.is_within(zone)
+        && name.label_count() == zone.label_count() + 1
+        && name.labels().next().is_some_and(|label| {
+            label
+                .first()
+                .is_some_and(|byte| byte.eq_ignore_ascii_case(&prefix))
+        })
+}
+
+/// Whether the cache holds `POISON` for `owner` and `rtype`.
+fn poisoned(caches: &Caches, owner: &Name<'_>, rtype: RecordType) -> bool {
+    caches
+        .rrsets
+        .get(owner, rtype, Class::IN, NOW)
+        .is_some_and(|held| {
+            held.rrset
+                .rdatas()
+                .iter()
+                .any(|rdata| matches!(rdata.data(), RData::A(address) if address == POISON))
+        })
+}
+
+/// The extended error of `message`, if any.
+fn ede(message: &Message<'_>) -> Option<InfoCode> {
+    (message.edns.iter())
+        .flat_map(|edns| &edns.options)
+        .find_map(|option| match option {
+            EdnsOption::Ede(ede) => Some(ede.code),
+            _ => None,
+        })
+}
+
+/// What a run left.
+struct Ran {
+    events: Vec<Event>,
+    heard: Heard,
+    caches: Arc<Caches>,
+}
+
+impl Lab {
+    /// Runs the world to its end, failing the test if a client or the oracle does.
+    fn run(self) -> Ran {
+        let events = self.world.run().expect("the run passes its checks");
+        let caches = self
+            .caches
+            .borrow()
+            .clone()
+            .expect("a resolver that started");
+        Ran {
+            events,
+            heard: self.heard,
+            caches,
+        }
+    }
+}
+
+/// How many datagrams the attackers sent in the run.
+fn injected(events: &[Event]) -> usize {
+    (events.iter())
+        .filter(|event| matches!(event.what, What::Injected { .. }))
+        .count()
+}
+
+/// The servers a capture asked for `zone`.
+fn servers_of(capture: &Resolution, zone: &Name<'_>) -> BTreeSet<IpAddr> {
+    (capture.exchanges.iter())
+        .filter(|exchange| exchange.zone == *zone)
+        .map(|exchange| exchange.server)
+        .collect()
+}
+
+/// The name `name` with each letter in a case drawn from `rng`: what an attacker that reads no query guesses of
+/// `0x20` (draft-vixie-dnsext-dns0x20).
+fn guess_case(name: &Name<'_>, rng: &mut Rng) -> Name<'static> {
+    let labels: Vec<Vec<u8>> = (name.labels())
+        .map(|label| {
+            (label.iter())
+                .map(|byte| {
+                    if rng.below(2) == 0 {
+                        byte.to_ascii_lowercase()
+                    } else {
+                        byte.to_ascii_uppercase()
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    Name::from_labels(labels.iter().map(Vec::as_slice)).expect("a name")
+}
+
+/// The forgery of Kaminsky's: `genuine`'s question in a guessed case, a guessed ID, the poison as its answer and as
+/// the glue of the zone's server.
+fn kaminsky(genuine: &[u8], rng: &mut Rng) -> Vec<u8> {
+    let mut message = decode(genuine);
+    let asked = message.questions.first().expect("a question").clone();
+    let name = guess_case(&asked.name, rng);
+    message.header.id = rng.next_u16();
+    message.header.flags = (message.header.flags.with(Flags::AA)).without(Flags::TC);
+    message.header.rcode = Rcode::NOERROR;
+    message.questions = vec![Question::new(name.clone(), asked.qtype)];
+    let ttl = Ttl::new(86_400).expect("a TTL");
+    let server = dns("ns1.google.com.");
+    message.answer = vec![Record::new(name, Class::IN, ttl, &RData::A(POISON))];
+    let ns = RData::Ns(server.clone());
+    message.authority = vec![Record::new(dns("google.com."), Class::IN, ttl, &ns)];
+    message.additional = vec![Record::new(server, Class::IN, ttl, &RData::A(POISON))];
+    encode(&message)
+}
+
+/// An attacker that sends `FLOOD` forgeries a query, each within 30 ms of it, racing the real answer.
+fn flood(rng: Rc<RefCell<Rng>>) -> Attacker {
+    Attacker::new(move |seen| {
+        let Some(genuine) = seen.genuine else {
+            return Reaction::beside(Vec::new());
+        };
+        let mut rng = rng.borrow_mut();
+        let injections = (0..FLOOD)
+            .map(|_| Injection {
+                after: Duration::from_millis(rng.below(30)),
+                wire: kaminsky(genuine, &mut rng),
+            })
+            .collect();
+        Reaction::beside(injections)
+    })
+}
+
+#[test]
+fn rfc5452_9_2_a_kaminsky_flood_of_guessed_ids_and_cases_poisons_nothing() {
+    seed::each(SEEDS, |seed| {
+        let nx = Resolution::read("nxdomain-unsigned");
+        let leaf = dns("google.com.");
+        let leaf_servers = servers_of(&nx, &leaf);
+        let rng = Rc::new(RefCell::new(Rng::new(seed, ATTACKER)));
+        let plot = Plot::new(vec![Resolution::read("unsigned"), nx.clone()])
+            .deriving({
+                let leaf = leaf.clone();
+                move |zone, question| {
+                    drawn(&question.name, b'k', &leaf).then(|| to(captured(&nx, zone), question))
+                }
+            })
+            .attacked({
+                let leaf = leaf.clone();
+                move |zone| (*zone == leaf).then(|| flood(Rc::clone(&rng)))
+            });
+        let mut lab = lab(seed, plot);
+        let slowest = Rc::new(Cell::new(Duration::ZERO));
+        let (resolver, slow) = (lab.world.resolver, Rc::clone(&slowest));
+        lab.world.client_direct(async move |client| {
+            for i in 0..DRAWS {
+                let name = format!("k{i}.google.com");
+                let (answer, elapsed) =
+                    ask(&client, resolver, &question(&name, RecordType::A)).await?;
+                assert_eq!(answer.rcode(), Rcode::NXDOMAIN, "{name}: {answer:?}");
+                assert!(answer.answer.is_empty(), "{name}: {answer:?}");
+                slow.set(slow.get().max(elapsed));
+            }
+            Ok(())
+        });
+        let Ran {
+            events,
+            heard,
+            caches,
+        } = lab.run();
+        for i in 0..DRAWS {
+            let name = dns(&format!("k{i}.google.com."));
+            assert!(!poisoned(&caches, &name, RecordType::A), "{name}");
+        }
+        assert!(!poisoned(&caches, &dns("ns1.google.com."), RecordType::A));
+        assert!(
+            caches
+                .rrsets
+                .get(&leaf, RecordType::NS, Class::IN, NOW)
+                .is_some()
+        );
+        // The walk from the root once, then a query a name to the zone's server: the flood costs no query.
+        let paid = paid(&heard);
+        let at_leaf = (paid.iter())
+            .filter(|(server, _, _)| leaf_servers.contains(server))
+            .count();
+        println!(
+            "kaminsky seed {}: {} queries for {DRAWS} questions, {} forgeries, slowest {:?}",
+            seed.0,
+            paid.len(),
+            injected(&events),
+            slowest.get()
+        );
+        assert_eq!(paid.len(), DRAWS + 2);
+        assert_eq!(injected(&events), at_leaf * FLOOD);
+        assert!(
+            slowest.get() < Duration::from_millis(500),
+            "{:?}",
+            slowest.get()
+        );
+    });
+}
+
+/// Servers named in the referral of the `NXNSAttack`: the attacker's zone, which has none of them.
+const NAMES: usize = 1000;
+
+#[test]
+fn nxnsattack_a_referral_of_a_thousand_servers_without_address_costs_the_targets_limit() {
+    // D191: an address lookup for each server of a delegation, up to `Limits::targets`; the scrubber keeps 20 names
+    // of the thousand (D192), the resolution 13 servers, and the lookups' queries count in the question's.
+    seed::each(SEEDS, |seed| {
+        let (unsigned, nx) = (
+            Resolution::read("unsigned"),
+            Resolution::read("nxdomain-nsec3"),
+        );
+        let (com, nl, google) = (dns("com."), dns("nl."), dns("google.com."));
+        let victim = dns("dedens-nxdomain.nl.");
+        let servers: Vec<Name<'static>> = (0..NAMES)
+            .map(|i| dns(&format!("ns{i}.dedens-nxdomain.nl.")))
+            .collect();
+        let limits = Limits::default();
+        let denying = servers_of(&nx, &nl);
+        let (template, denial) = (unsigned.clone(), nx.clone());
+        let mut plot = Plot::new(vec![unsigned, nx]).deriving(move |zone, question| {
+            if *zone == com && question.name.is_within(&google) {
+                return Some(referral(
+                    captured(&template, zone),
+                    question,
+                    &google,
+                    &servers,
+                ));
+            }
+            let above = zone.is_root() || *zone == nl;
+            (above && question.name.is_within(&victim))
+                .then(|| to(captured(&denial, zone), question))
+        });
+        plot.limits = limits;
+        let mut lab = lab(seed, plot);
+        let slowest = Rc::new(Cell::new(Duration::ZERO));
+        let (resolver, slow) = (lab.world.resolver, Rc::clone(&slowest));
+        lab.world.client_direct(async move |client| {
+            let (answer, elapsed) =
+                ask(&client, resolver, &question("google.com", RecordType::A)).await?;
+            assert_eq!(answer.rcode(), Rcode::SERVFAIL, "{answer:?}");
+            slow.set(elapsed);
+            Ok(())
+        });
+        let Ran { heard, .. } = lab.run();
+        let paid = paid(&heard);
+        let victim = dns("dedens-nxdomain.nl.");
+        let lookups = (paid.iter())
+            .filter(|(server, q, _)| denying.contains(server) && q.name.is_within(&victim))
+            .count();
+        println!(
+            "nxns seed {}: {} queries ({lookups} for the names), {:?}",
+            seed.0,
+            paid.len(),
+            slowest.get()
+        );
+        assert!(lookups <= limits.targets, "{lookups} lookups");
+        assert!(paid.len() <= limits.queries, "{} queries", paid.len());
+        assert!(slowest.get() <= limits.time, "{:?}", slowest.get());
+    });
+}
+
+#[test]
+fn rfc9520_3_tsuname_servers_named_in_each_others_zones_end_once_and_are_held() {
+    // Moura et al. 2021: google.com's server is ns1.example.com, example.com's ns1.google.com, and no glue says
+    // where either is. One resolution ends (D191: a lookup for a name whose zone waits on the stack ends at once);
+    // the next of the question, within the hold of RFC 9520 §3.2, sends nothing (D199).
+    seed::each(SEEDS, |seed| {
+        let unsigned = Resolution::read("unsigned");
+        let (com, google, example) = (dns("com."), dns("google.com."), dns("example.com."));
+        let (template, ring) = (unsigned.clone(), unsigned.clone());
+        let (to_example, to_google) = (vec![dns("ns1.example.com.")], vec![dns("ns1.google.com.")]);
+        let plot = Plot::new(vec![unsigned]).deriving(move |zone, question| {
+            let inside = |apex: &Name<'_>| question.name.is_within(apex);
+            if *zone == com && inside(&google) {
+                return Some(referral(
+                    captured(&template, zone),
+                    question,
+                    &google,
+                    &to_example,
+                ));
+            }
+            if *zone == com && inside(&example) {
+                return Some(referral(
+                    captured(&template, zone),
+                    question,
+                    &example,
+                    &to_google,
+                ));
+            }
+            (zone.is_root() && inside(&com)).then(|| to(captured(&ring, zone), question))
+        });
+        let mut lab = lab(seed, plot);
+        let (resolver, heard) = (lab.world.resolver, Rc::clone(&lab.heard));
+        let counts = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&counts);
+        lab.world.client_direct(async move |client| {
+            let asked = question("google.com", RecordType::A);
+            for pause in [Duration::ZERO, SECOND, 2 * SECOND, 8 * SECOND] {
+                tokio::time::sleep(pause).await;
+                let (answer, elapsed) = ask(&client, resolver, &asked).await?;
+                assert_eq!(answer.rcode(), Rcode::SERVFAIL, "{answer:?}");
+                assert_eq!(ede(&answer), Some(InfoCode::NO_REACHABLE_AUTHORITY));
+                seen.borrow_mut().push((paid(&heard).len(), elapsed));
+            }
+            Ok(())
+        });
+        lab.run();
+        let counts = counts.borrow();
+        println!("tsuname seed {}: (queries so far, time) {counts:?}", seed.0);
+        let limits = Limits::default();
+        assert!(counts[0].0 <= limits.queries, "{counts:?}");
+        // Held: no query, an answer within the clients' own round trip.
+        assert_eq!(counts[1].0, counts[0].0, "{counts:?}");
+        assert_eq!(counts[2].0, counts[0].0, "{counts:?}");
+        assert!(counts[2].1 < Duration::from_millis(100), "{counts:?}");
+        // The hold ends at 5 s (`failure_min`): asked again, the walk is the same, not longer.
+        assert!(counts[3].0 > counts[0].0, "{counts:?}");
+        assert!(counts[3].0 <= 2 * counts[0].0, "{counts:?}");
+    });
+}
+
+/// The number in the label of a name the chain attacks draw: `c12` is 12.
+fn numbered(name: &Name<'_>) -> Option<usize> {
+    let label = name.labels().next()?;
+    std::str::from_utf8(label.get(1..)?).ok()?.parse().ok()
+}
+
+/// The answer of `zone`'s server to a name of the CNAME chain, `c0`, `c1`, ...: a record to the next, with no end.
+fn chained(
+    unsigned: &Resolution,
+    leaf: &Name<'static>,
+) -> impl Fn(&Name<'static>, &Question<'static>) -> Option<Message<'static>> + 'static {
+    let (unsigned, leaf) = (unsigned.clone(), leaf.clone());
+    move |zone, question| {
+        if *zone != leaf {
+            // The servers above answer the walk to the zone for any name in it, as they did for the capture's.
+            return question
+                .name
+                .is_within(&leaf)
+                .then(|| to(captured(&unsigned, zone), question));
+        }
+        if !drawn(&question.name, b'c', &leaf) {
+            return None;
+        }
+        let next = dns(&format!("c{}.google.com.", numbered(&question.name)? + 1));
+        let mut response = to(captured(&unsigned, zone), question);
+        response.authority.clear();
+        response.additional.clear();
+        let ttl = Ttl::new(300).expect("a TTL");
+        let link = Record::new(question.name.clone(), Class::IN, ttl, &RData::Cname(next));
+        response.answer = vec![link];
+        Some(response)
+    }
+}
+
+#[test]
+fn camp_a_chain_of_cname_records_without_end_stops_at_the_restarts_limit() {
+    // Each link is a query to the zone's server (D191: restarts 11); the walk to the zone is paid once. The attack
+    // of CAMP: one client question, as many upstream queries as the chain is long.
+    seed::each(SEEDS, |seed| {
+        let unsigned = Resolution::read("unsigned");
+        let leaf = dns("google.com.");
+        let leaf_servers = servers_of(&unsigned, &leaf);
+        let limits = Limits::default();
+        let plot = Plot::new(vec![unsigned.clone()]).deriving(chained(&unsigned, &leaf));
+        let mut lab = lab(seed, plot);
+        let resolver = lab.world.resolver;
+        let took = Rc::new(Cell::new(Duration::ZERO));
+        let slot = Rc::clone(&took);
+        lab.world.client_direct(async move |client| {
+            let (answer, elapsed) =
+                ask(&client, resolver, &question("c0.google.com", RecordType::A)).await?;
+            assert_eq!(answer.rcode(), Rcode::SERVFAIL, "{answer:?}");
+            slot.set(elapsed);
+            Ok(())
+        });
+        let Ran { heard, .. } = lab.run();
+        let paid = paid(&heard);
+        let at_leaf = (paid.iter())
+            .filter(|(server, _, _)| leaf_servers.contains(server))
+            .count();
+        println!(
+            "camp cname seed {}: {} queries ({at_leaf} to the zone), {:?}",
+            seed.0,
+            paid.len(),
+            took.get()
+        );
+        assert!(
+            at_leaf <= limits.restarts + 1,
+            "{at_leaf} queries to the zone"
+        );
+        assert!(paid.len() <= limits.queries, "{} queries", paid.len());
+        assert!(took.get() <= limits.time, "{:?}", took.get());
+    });
+}
+
+/// The labels of the name that the referral chain asks for, below the zone.
+const DEPTH: usize = 60;
+
+#[test]
+fn idns_a_chain_of_referrals_each_one_label_deeper_stops_at_the_referrals_limit() {
+    // iDNS: the zone's server refers the question to a zone one label closer to the name, whose server is itself,
+    // and again, for as many labels as the name has. Each referral is a query (D191: referrals 30, queries 32).
+    seed::each(SEEDS, |seed| {
+        let unsigned = Resolution::read("unsigned");
+        let (com, leaf) = (dns("com."), dns("google.com."));
+        let leaf_servers = servers_of(&unsigned, &leaf);
+        let limits = Limits::default();
+        let referrals = Cell::new(0);
+        let template = unsigned.clone();
+        let plot = Plot::new(vec![unsigned]).deriving({
+            let leaf = leaf.clone();
+            move |zone, question| {
+                let deep = leaf.label_count() + DEPTH;
+                if *zone != leaf {
+                    return question
+                        .name
+                        .is_within(&leaf)
+                        .then(|| to(captured(&template, zone), question));
+                }
+                if question.name.label_count() < deep {
+                    return None;
+                }
+                referrals.set(referrals.get() + 1);
+                let labels: Vec<&[u8]> = question.name.labels().collect();
+                let below = (leaf.label_count() + referrals.get()).min(deep);
+                let owner = Name::from_labels(labels[labels.len() - below..].iter().copied())
+                    .expect("a name");
+                let server = Name::from_labels(std::iter::once(&b"ns"[..]).chain(owner.labels()))
+                    .expect("a name");
+                let mut response = referral(
+                    captured(&template, &com),
+                    question,
+                    &owner,
+                    std::slice::from_ref(&server),
+                );
+                let ttl = response.authority[0].ttl;
+                response.additional = vec![Record::new(server, Class::IN, ttl, &RData::A(LEAF))];
+                Some(response)
+            }
+        });
+        let mut lab = lab(seed, plot);
+        let resolver = lab.world.resolver;
+        let took = Rc::new(Cell::new(Duration::ZERO));
+        let slot = Rc::clone(&took);
+        lab.world.client_direct(async move |client| {
+            let name = format!("{}google.com", "l.".repeat(DEPTH));
+            let (answer, elapsed) = ask(&client, resolver, &question(&name, RecordType::A)).await?;
+            assert_eq!(answer.rcode(), Rcode::SERVFAIL, "{answer:?}");
+            slot.set(elapsed);
+            Ok(())
+        });
+        let Ran { heard, .. } = lab.run();
+        let paid = paid(&heard);
+        let at_leaf = (paid.iter())
+            .filter(|(server, _, _)| leaf_servers.contains(server))
+            .count();
+        println!(
+            "idns seed {}: {} queries ({at_leaf} to the zone), {:?}",
+            seed.0,
+            paid.len(),
+            took.get()
+        );
+        assert!(
+            at_leaf <= limits.referrals + 1,
+            "{at_leaf} queries to the zone"
+        );
+        assert!(paid.len() <= limits.queries, "{} queries", paid.len());
+        assert!(took.get() <= limits.time, "{:?}", took.get());
+    });
+}
+
+/// What a network may spend a second, and at once, in the scenario of the budget (D117).
+const SHARE: Budget = Budget {
+    per_second: 1,
+    burst: 40,
+    table: 1 << 10,
+};
+
+#[test]
+fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
+    // D117: each query the resolver sends costs the asking network a unit. One network asks one chain after the
+    // other: past its burst it is refused (SERVFAIL, EDE 14) and nothing is sent for it; another /24 is served.
+    const ASKS: usize = 8;
+    seed::each(SEEDS, |seed| {
+        let unsigned = Resolution::read("unsigned");
+        let leaf = dns("google.com.");
+        let mut plot = Plot::new(vec![unsigned.clone()]).deriving(chained(&unsigned, &leaf));
+        plot.share = Some(SHARE);
+        let mut lab = lab(seed, plot);
+        let refused = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&refused);
+        lab.world.client_at(
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
+            async move |stub| {
+                for k in 0..ASKS {
+                    let asked = question(&format!("c{}.google.com", k * 100), RecordType::A);
+                    let Outcome::Answered(answer) = stub.ask(asked, Carrier::Udp).await? else {
+                        return Err("no answer".into());
+                    };
+                    assert_eq!(
+                        answer.message.rcode(),
+                        Rcode::SERVFAIL,
+                        "{:?}",
+                        answer.message
+                    );
+                    if ede(&answer.message) == Some(InfoCode::NOT_READY) {
+                        counted.set(counted.get() + 1);
+                    }
+                }
+                Ok(())
+            },
+        );
+        let served = Rc::new(Cell::new(Duration::MAX));
+        let slot = Rc::clone(&served);
+        lab.world.client_at(
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+            async move |stub| {
+                tokio::time::sleep(5 * SECOND).await;
+                let answer = stub
+                    .expect(question("google.com", RecordType::A), Carrier::Udp)
+                    .await?;
+                slot.set(answer.elapsed);
+                Ok(())
+            },
+        );
+        let Ran { heard, .. } = lab.run();
+        let mine = |name: &Name<'_>| drawn(name, b'c', &leaf);
+        let mine: Vec<_> = paid(&heard)
+            .into_iter()
+            .filter(|(_, q, _)| mine(&q.name))
+            .collect();
+        let last = mine.iter().map(|(_, _, at)| *at).max().unwrap_or_default();
+        println!(
+            "camp budget seed {}: {} queries for {ASKS} questions, {} refused, the other served in {:?}",
+            seed.0,
+            mine.len(),
+            refused.get(),
+            served.get()
+        );
+        let seconds = usize::try_from(last.as_secs()).expect("a few seconds");
+        let allowed = usize::try_from(SHARE.burst).expect("a count")
+            + seconds * usize::try_from(SHARE.per_second).expect("a count")
+            + 1;
+        assert!(
+            mine.len() <= allowed,
+            "{} queries, {allowed} allowed",
+            mine.len()
+        );
+        assert!(refused.get() >= 1, "none refused");
+    });
+}
+
+/// The keys of the tag of a zone's key that the `KeyTrap` adds to its set.
+const KEYS: usize = 60;
+
+/// `message` with `KEYS` keys more for each key of its set, each of the same tag and none that verifies (swapping two
+/// bytes two apart keeps the tag, RFC 4034 Appendix B).
+fn colliding(mut message: Message<'static>) -> Message<'static> {
+    let mut added = Vec::new();
+    for record in &message.answer {
+        let RData::Dnskey(key) = record.data() else {
+            continue;
+        };
+        for at in 0..KEYS {
+            let mut public = key.public_key().to_vec();
+            public.swap(at, at + 2);
+            let key = Dnskey::new(key.flags(), key.algorithm(), &public).expect("a key");
+            let rdata = RData::Dnskey(key);
+            added.push(Record::new(
+                record.name.clone(),
+                record.class,
+                record.ttl,
+                &rdata,
+            ));
+        }
+    }
+    message.answer.extend(added);
+    message
+}
+
+/// What a client of a validating resolver got, and what the run held.
+struct Validated {
+    message: Message<'static>,
+    paid: usize,
+    events: Vec<Event>,
+}
+
+/// One run of `plot`, validating at `at` with `limits`, a client asking the capture's own question.
+fn validated(seed: Seed, mut plot: Plot, (at, limits): (u64, dedens_dnssec::Limits)) -> Validated {
+    let capture = plot.captures[0].clone();
+    plot.validate = Some((at, limits));
+    let mut lab = lab(seed, plot);
+    let slot = Rc::new(RefCell::new(None));
+    let kept = Rc::clone(&slot);
+    lab.world.client(async move |mut stub| {
+        stub.rules.dnssec = true;
+        stub.rules.authentic = true;
+        let asked = Question::new(capture.name.clone(), capture.rtype);
+        let Outcome::Answered(answer) = stub.ask(asked, Carrier::Udp).await? else {
+            return Err("no answer".into());
+        };
+        *kept.borrow_mut() = Some(answer.message);
+        Ok(())
+    });
+    let Ran { heard, events, .. } = lab.run();
+    let message = slot.borrow_mut().take().expect("an answer");
+    let paid = paid(&heard).len();
+    Validated {
+        message,
+        paid,
+        events,
+    }
+}
+
+#[test]
+fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
+    // CVE-2023-50387: the DNSKEY set of sidn.nl holds `KEYS` keys more for each key, of its tag, none that verifies.
+    // The validator checks them up to its budget (D75, D197): with the default one the verdict is bogus (a bogus
+    // verdict is one the budget sufficed for), with a budget of 8 checks it is indeterminate; either way the keys
+    // are asked once and the answer is SERVFAIL.
+    seed::each(SEEDS, |seed| {
+        let capture = Resolution::read("signed-nl");
+        let at = capture.captured_at;
+        let (sidn, dnskeys) = (
+            dns("sidn.nl."),
+            Question::new(dns("sidn.nl."), RecordType::DNSKEY),
+        );
+        let trapped = |plot: Plot| {
+            let template = capture.clone();
+            let (sidn, dnskeys) = (sidn.clone(), dnskeys.clone());
+            plot.deriving(move |zone, question| {
+                let held = *zone == sidn
+                    && question.qtype == RecordType::DNSKEY
+                    && question.name == dnskeys.name;
+                held.then(|| {
+                    to(
+                        colliding(answer_of(&template, zone, &question.name, question.qtype)),
+                        question,
+                    )
+                })
+            })
+        };
+        let limits = dedens_dnssec::Limits::default();
+        let clean = validated(seed, Plot::new(vec![capture.clone()]), (at, limits.clone()));
+        assert_eq!(clean.message.rcode(), Rcode::NOERROR, "{:?}", clean.message);
+        assert!(
+            clean.message.header.flags.contains(Flags::AD),
+            "{:?}",
+            clean.message
+        );
+        {
+            let run = validated(
+                seed,
+                trapped(Plot::new(vec![capture.clone()])),
+                (at, limits),
+            );
+            // Over UDP the set is cut (TC) and asked again over TCP: one query, two transports.
+            let keys = (run.events.iter())
+                .filter(|event| {
+                    matches!(&event.what, What::Served { question, transport: Transport::Udp } if *question == dnskeys)
+                })
+                .count();
+            assert_eq!(run.message.rcode(), Rcode::SERVFAIL, "{:?}", run.message);
+            assert_eq!(
+                ede(&run.message),
+                Some(InfoCode::DNSSEC_BOGUS),
+                "{:?}",
+                run.message
+            );
+            assert_eq!(keys, 1, "the keys are asked once");
+            assert!(
+                run.paid <= clean.paid + 1,
+                "{} queries, {} clean",
+                run.paid,
+                clean.paid
+            );
+            println!(
+                "keytrap seed {}: {} queries, {keys} for the keys, clean {}",
+                seed.0, run.paid, clean.paid
+            );
+        }
+    });
+}
+
+/// The iterations the NSEC3 records of the proof claim: far over what a zone may (RFC 9276 §3.2).
+const ITERATIONS: u16 = 2500;
+
+#[test]
+fn cve_2023_50868_an_nsec3_proof_claiming_many_iterations_is_not_secure_and_is_bounded() {
+    // The proof of dedens-nxdomain.nl's absence with its NSEC3 records claiming `ITERATIONS` iterations, over the
+    // limit of D74. Nobody signs a changed record for the simulation, so the signatures fail and the verdict is bogus
+    // (SERVFAIL, never AD): what is measured is that a proof made to be costly ends, within the limits of the
+    // resolution (D197). The hashes a real zone's signed proof would cost are counted by
+    // `crates/dedens-dnssec/tests/validator.rs` (`nsec3_iterations_above_the_limit_are_insecure`, D74, D77).
+    seed::each(SEEDS, |seed| {
+        let capture = Resolution::read("nxdomain-nsec3");
+        let at = capture.captured_at;
+        let nl = dns("nl.");
+        let template = capture.clone();
+        let plot = Plot::new(vec![capture.clone()]).deriving(move |zone, question| {
+            if *zone != nl || *question != Question::new(template.name.clone(), template.rtype) {
+                return None;
+            }
+            let mut response = to(captured(&template, zone), question);
+            for record in &mut response.authority {
+                let RData::Nsec3(nsec3) = record.data() else {
+                    continue;
+                };
+                let (alg, flags) = (nsec3.hash_algorithm, nsec3.flags);
+                let (salt, next, types) =
+                    (nsec3.salt(), nsec3.next_hashed_owner(), nsec3.types.clone());
+                let changed =
+                    Nsec3::new(alg, flags, ITERATIONS, salt, next, types).expect("an NSEC3 record");
+                *record = Record::new(
+                    record.name.clone(),
+                    record.class,
+                    record.ttl,
+                    &RData::Nsec3(changed),
+                );
+            }
+            Some(response)
+        });
+        let limits = dedens_dnssec::Limits::default();
+        let clean = validated(seed, Plot::new(vec![capture]), (at, limits.clone()));
+        assert_eq!(
+            clean.message.rcode(),
+            Rcode::NXDOMAIN,
+            "{:?}",
+            clean.message
+        );
+        assert!(
+            clean.message.header.flags.contains(Flags::AD),
+            "{:?}",
+            clean.message
+        );
+        let run = validated(seed, plot, (at, limits));
+        println!(
+            "nsec3 seed {}: {:?} {:?}, {} queries, clean {}",
+            seed.0,
+            run.message.rcode(),
+            ede(&run.message),
+            run.paid,
+            clean.paid
+        );
+        assert!(
+            !run.message.header.flags.contains(Flags::AD),
+            "{:?}",
+            run.message
+        );
+        // The signatures of the changed records fail, so the proof is bogus; the validator's own questions (the DS of
+        // the name, asked of another server) are within the resolution's limits (D197).
+        let bound = Limits::default().queries;
+        assert!(
+            run.paid <= bound,
+            "{} queries, {} clean",
+            run.paid,
+            clean.paid
+        );
+    });
+}
+
+#[test]
+fn maginotdns_records_of_a_sibling_zone_in_an_answer_are_not_cached() {
+    // Li et al., USENIX Security 2023: the server of google.com adds to its answer an address of example.com's name
+    // and example.com's delegation with the poison for its server. None is in the zone of the answer (D192): the
+    // scrubber drops them, example.com is asked of its own servers, and the cache keeps nothing of the poison.
+    seed::each(SEEDS, |seed| {
+        let (unsigned, signed) = (Resolution::read("unsigned"), Resolution::read("signed-com"));
+        let (google, example) = (dns("google.com."), dns("example.com."));
+        let example_servers = servers_of(&signed, &example);
+        let (sibling, template) = (dns("ns1.example.com."), unsigned.clone());
+        let plot = Plot::new(vec![unsigned, signed]).deriving({
+            let (google, example) = (google.clone(), example.clone());
+            move |zone, question| {
+                if *zone != google
+                    || question.name != template.name
+                    || question.qtype != template.rtype
+                {
+                    return None;
+                }
+                let mut response = to(captured(&template, zone), question);
+                let ttl = Ttl::new(86_400).expect("a TTL");
+                let poison = RData::A(POISON);
+                response
+                    .answer
+                    .push(Record::new(example.clone(), Class::IN, ttl, &poison));
+                response.authority.push(Record::new(
+                    example.clone(),
+                    Class::IN,
+                    ttl,
+                    &RData::Ns(sibling.clone()),
+                ));
+                response
+                    .additional
+                    .push(Record::new(sibling.clone(), Class::IN, ttl, &poison));
+                Some(response)
+            }
+        });
+        let mut lab = lab(seed, plot);
+        lab.world.client(async move |stub| {
+            stub.expect(question("google.com", RecordType::A), Carrier::Udp)
+                .await?;
+            stub.expect(question("example.com", RecordType::A), Carrier::Udp)
+                .await?;
+            Ok(())
+        });
+        let Ran { heard, caches, .. } = lab.run();
+        let at_example = (paid(&heard).iter())
+            .filter(|(server, _, _)| example_servers.contains(server))
+            .count();
+        println!(
+            "maginot seed {}: {at_example} queries to example.com's servers",
+            seed.0
+        );
+        assert!(at_example >= 1, "example.com answered from the cache");
+        for (owner, rtype) in [(&example, RecordType::A), (&sibling_name(), RecordType::A)] {
+            assert!(!poisoned(&caches, owner, rtype), "{owner} {rtype:?}");
+        }
+        let delegation = caches.rrsets.get(&example, RecordType::NS, Class::IN, NOW);
+        assert!(delegation.is_none_or(|held| {
+            held.rrset
+                .rdatas()
+                .iter()
+                .all(|rdata| !matches!(rdata.data(), RData::Ns(name) if name == sibling_name()))
+        }));
+    });
+}
+
+fn sibling_name() -> Name<'static> {
+    dns("ns1.example.com.")
+}
+
+/// The datagrams that are no message but have the ID and the question of `genuine`: each cut short, counts that lie,
+/// a name that points at itself, bytes with nothing in them.
+fn malformed(genuine: &[u8]) -> Vec<Vec<u8>> {
+    let mut datagrams: Vec<Vec<u8>> = (0..genuine.len())
+        .step_by(5)
+        .map(|n| genuine[..n].to_vec())
+        .collect();
+    for count in [4, 6, 8, 10] {
+        let mut lying = genuine.to_vec();
+        lying[count..count + 2].copy_from_slice(&[0xff, 0xff]);
+        datagrams.push(lying);
+    }
+    let mut looping = genuine.to_vec();
+    looping[12..14].copy_from_slice(&[0xc0, 12]);
+    datagrams.push(looping);
+    let mut empty = genuine[..2].to_vec();
+    empty.extend([0xff; 30]);
+    datagrams.push(empty);
+    let mut long = genuine.to_vec();
+    long.extend([0xde, 0xad, 0xbe, 0xef]);
+    datagrams.push(long);
+    datagrams
+}
+
+#[test]
+fn tudoor_datagrams_that_are_no_message_on_the_query_port_with_its_id_do_not_end_the_exchange() {
+    // Li et al., IEEE S&P 2024: a datagram from the server's address to the query's port, with the query's ID and
+    // question, that does not parse. The exchange goes on waiting (D190, D111: a datagram that is no answer to the
+    // query is no answer), the real response is accepted and no query is asked again.
+    seed::each(SEEDS, |seed| {
+        let unsigned = Resolution::read("unsigned");
+        let plot = Plot::new(vec![unsigned]).attacked(|_| {
+            Some(Attacker::new(|seen| {
+                let Some(genuine) = seen.genuine else {
+                    return Reaction::beside(Vec::new());
+                };
+                let injections = (malformed(genuine).into_iter().enumerate())
+                    .map(|(i, wire)| Injection {
+                        after: Duration::from_micros(400 * i as u64),
+                        wire,
+                    })
+                    .collect();
+                Reaction::beside(injections)
+            }))
+        });
+        let mut lab = lab(seed, plot);
+        let took = Rc::new(Cell::new(Duration::ZERO));
+        let slot = Rc::clone(&took);
+        lab.world.client(async move |stub| {
+            let answer = stub
+                .expect(question("google.com", RecordType::A), Carrier::Udp)
+                .await?;
+            slot.set(answer.elapsed);
+            Ok(())
+        });
+        let Ran { events, heard, .. } = lab.run();
+        let paid = paid(&heard);
+        println!(
+            "tudoor seed {}: {} queries, {} datagrams, {:?}",
+            seed.0,
+            paid.len(),
+            injected(&events),
+            took.get()
+        );
+        // The root, .com and google.com's server, once each; and the answer within the 800 ms of a retry.
+        assert_eq!(paid.len(), 3, "{paid:?}");
+        assert!(
+            injected(&events) >= 3 * 40,
+            "{} datagrams",
+            injected(&events)
+        );
+        assert!(took.get() < Duration::from_millis(500), "{:?}", took.get());
+    });
+}
+
+#[test]
+fn ghost_domain_a_delegation_the_parent_revoked_is_gone_at_its_ns_ttl() {
+    // Jiang et al., NDSS 2012: google.com's NS set at .com lives 20 s; at 15 s .com revokes the delegation
+    // (NXDOMAIN). The zone's server answers each query with the NS set at 86 400 s and glue to match: asked for the
+    // NS set at 12 s it would renew the delegation for a day (D193: a set replacing an unexpired one lives no longer
+    // than it had left, glue pinned). Asked for the address at 25 s, the answer is the parent's, NXDOMAIN, and the
+    // zone's servers were not asked after the 20 s. The cache's floor on TTLs (60 s) is off, for the run to be short.
+    const NS_TTL: u32 = 20;
+    seed::each(SEEDS, |seed| {
+        let unsigned = Resolution::read("unsigned");
+        let (com, google) = (dns("com."), dns("google.com."));
+        let google_servers = servers_of(&unsigned, &google);
+        let revoked = Duration::from_secs(15);
+        let parent = living(captured(&unsigned, &com), NS_TTL);
+        let ghost = living(parent.clone(), 86_400);
+        let leaf = captured(&unsigned, &google);
+        let plot = {
+            let (com, google) = (com.clone(), google.clone());
+            let mut plot = Plot::new(vec![unsigned]).deriving(move |zone, question| {
+                if !question.name.is_within(&google) {
+                    return None;
+                }
+                if *zone == com {
+                    let mut response = to(parent.clone(), question);
+                    if turmoil::sim_elapsed().unwrap_or_default() >= revoked {
+                        response.header.rcode = Rcode::NXDOMAIN;
+                        response.header.flags = response.header.flags.with(Flags::AA);
+                        response.authority = vec![Record::new(
+                            com.clone(),
+                            Class::IN,
+                            Ttl::new(5).expect("a TTL"),
+                            &RData::Soa(Soa {
+                                mname: dns("a.gtld-servers.net."),
+                                rname: dns("nstld.verisign-grs.com."),
+                                serial: 1,
+                                refresh: 1800,
+                                retry: 900,
+                                expire: 604_800,
+                                minimum: 5,
+                            }),
+                        )];
+                        response.additional.clear();
+                    }
+                    return Some(response);
+                }
+                if *zone == google {
+                    let mut response = to(living(leaf.clone(), 2), question);
+                    if question.qtype == RecordType::NS {
+                        response.answer = ghost.authority.clone();
+                        response.authority.clear();
+                    } else {
+                        response.authority = ghost.authority.clone();
+                    }
+                    response.additional = ghost.additional.clone();
+                    return Some(response);
+                }
+                None
+            });
+            plot.duration = Some(Duration::from_secs(60));
+            plot.config.min_ttl = 0;
+            plot
+        };
+        let mut lab = lab(seed, plot);
+        let resolver = lab.world.resolver;
+        let rcodes = Rc::new(RefCell::new(Vec::new()));
+        let slot = Rc::clone(&rcodes);
+        lab.world.client_direct(async move |client| {
+            for (pause, rtype) in [
+                (0, RecordType::A),
+                (12, RecordType::NS),
+                (13, RecordType::A),
+            ] {
+                tokio::time::sleep(Duration::from_secs(pause)).await;
+                let (answer, _) = ask(&client, resolver, &question("google.com", rtype)).await?;
+                slot.borrow_mut().push(answer.rcode());
+            }
+            Ok(())
+        });
+        let Ran { heard, .. } = lab.run();
+        let late = (paid(&heard).iter())
+            .filter(|(server, _, at)| {
+                google_servers.contains(server) && *at > Duration::from_secs(u64::from(NS_TTL))
+            })
+            .count();
+        println!(
+            "ghost seed {}: {:?}, {late} queries to the zone after its NS TTL",
+            seed.0,
+            rcodes.borrow()
+        );
+        assert_eq!(
+            *rcodes.borrow(),
+            [Rcode::NOERROR, Rcode::NOERROR, Rcode::NXDOMAIN]
+        );
+        assert_eq!(late, 0);
+    });
+}
