@@ -1276,11 +1276,11 @@ fn sibling_name() -> Name<'static> {
     dns("ns1.example.com.")
 }
 
-/// The datagrams that are no message but have the ID and the question of `genuine`: each cut short, counts that lie,
-/// a name that points at itself, bytes with nothing in them.
+/// The datagrams that are no message but have the ID and the question of `genuine`: it cut short at 30 places, counts
+/// that lie, a name that points at itself, bytes with nothing in them. No more than the 64 a simulated socket queues.
 fn malformed(genuine: &[u8]) -> Vec<Vec<u8>> {
     let mut datagrams: Vec<Vec<u8>> = (0..genuine.len())
-        .step_by(5)
+        .step_by((genuine.len() / 30).max(1))
         .map(|n| genuine[..n].to_vec())
         .collect();
     for count in [4, 6, 8, 10] {
@@ -1303,8 +1303,9 @@ fn malformed(genuine: &[u8]) -> Vec<Vec<u8>> {
 #[test]
 fn tudoor_datagrams_that_are_no_message_on_the_query_port_with_its_id_do_not_end_the_exchange() {
     // Li et al., IEEE S&P 2024: a datagram from the server's address to the query's port, with the query's ID and
-    // question, that does not parse. The exchange goes on waiting (D190, D111: a datagram that is no answer to the
-    // query is no answer), the real response is accepted and no query is asked again.
+    // question, that does not parse. The attacker silences the server and sends its answer after them, so that the
+    // exchange reads each. It goes on waiting (D190, D111: a datagram that is no answer to the query is no answer),
+    // the real response is accepted and no query is asked again.
     seed::each(SEEDS, |seed| {
         let unsigned = Resolution::read("unsigned");
         let plot = Plot::new(vec![unsigned]).attacked(|_| {
@@ -1312,13 +1313,17 @@ fn tudoor_datagrams_that_are_no_message_on_the_query_port_with_its_id_do_not_end
                 let Some(genuine) = seen.genuine else {
                     return Reaction::beside(Vec::new());
                 };
-                let injections = (malformed(genuine).into_iter().enumerate())
-                    .map(|(i, wire)| Injection {
-                        after: Duration::from_micros(400 * i as u64),
+                let mut injections: Vec<Injection> = (malformed(genuine).into_iter())
+                    .map(|wire| Injection {
+                        after: Duration::ZERO,
                         wire,
                     })
                     .collect();
-                Reaction::beside(injections)
+                injections.push(Injection {
+                    after: TICK,
+                    wire: genuine.to_vec(),
+                });
+                Reaction::instead(injections)
             }))
         });
         let mut lab = lab(seed, plot);
@@ -1331,22 +1336,32 @@ fn tudoor_datagrams_that_are_no_message_on_the_query_port_with_its_id_do_not_end
             slot.set(answer.elapsed);
             Ok(())
         });
-        let Ran { events, heard, .. } = lab.run();
-        let paid = paid(&heard);
+        let Ran { events, .. } = lab.run();
+        // The queries are counted where they are sent, the servers being silenced: the client's, the priming's and
+        // the walk's to the root, .com's and google.com's, once each, over UDP, the answer within the 800 ms of a retry.
+        let sent: Vec<(Transport, u16)> = (events.iter())
+            .filter_map(|event| match &event.what {
+                What::Sent {
+                    transport, sends, ..
+                } => Some((*transport, *sends)),
+                _ => None,
+            })
+            .collect();
+        let arrived = (events.iter())
+            .filter(|event| matches!(event.what, What::Arrived { .. }))
+            .count();
         println!(
-            "tudoor seed {}: {} queries, {} datagrams, {:?}",
+            "tudoor seed {}: {} queries, {} datagrams sent, {arrived} read, {:?}",
             seed.0,
-            paid.len(),
+            sent.len(),
             injected(&events),
             took.get()
         );
-        // The root, .com and google.com's server, once each; and the answer within the 800 ms of a retry.
-        assert_eq!(paid.len(), 3, "{paid:?}");
-        assert!(
-            injected(&events) >= 3 * 40,
-            "{} datagrams",
-            injected(&events)
-        );
+        assert_eq!(sent, vec![(Transport::Udp, 1); 5]);
+        // The exchanges read the unreadable datagrams, 30 and more each, then the answer: all but those of an
+        // exchange the resolver gave up on before they came (the root's, asked twice at once) were read.
+        assert!(arrived >= 3 * 30, "{arrived} datagrams read");
+        assert!(arrived < injected(&events), "{arrived} datagrams read");
         assert!(took.get() < Duration::from_millis(500), "{:?}", took.get());
     });
 }
