@@ -17,8 +17,11 @@
 //!   failure hold of RFC 9520 §3.2 (D199) stops the next resolution.
 //! - CAMP and iDNS (Afek et al., "Amplification by chaining", 2023): a chain of CNAME records and one of
 //!   referrals, each link a query, and a client network that spends its budget on them (D117).
-//! - `KeyTrap` (CVE-2023-50387) and the NSEC3 iterations (CVE-2023-50868): signatures that fail, many; a proof that
-//!   hashes many times. What a validation does is bounded by its budget (D75, D77, D197).
+//! - `KeyTrap` (CVE-2023-50387): signatures that fail, many. What a validation does is bounded by its budget (D75,
+//!   D77, D197). The NSEC3 iterations (CVE-2023-50868) are not here: no capture is secure with more than 0
+//!   iterations (`ws`'s 10 are an opt-out span, insecure by itself), so no run isolates the limit's verdict, and a
+//!   changed record has no signature. `MaxIterations` is held by `crates/dedens-dnssec/tests/denial.rs` and
+//!   `validator.rs` (`nsec3_iterations_above_the_limit_are_insecure`), on captured proofs (D74).
 //! - `MaginotDNS` (Li et al., USENIX Security 2023): a zone's server answers with records of a sibling zone.
 //! - `TuDoor` (Li et al., IEEE S&P 2024): datagrams that are no message, with the query's ID, port and address.
 //! - The ghost domain (Jiang et al., NDSS 2012): a delegation that the parent revoked, kept alive by the child's
@@ -27,7 +30,8 @@
 //! RFC 9199 §3 is the operators' side of the same bounds: a resolver under stress retries and answers from its cache
 //! (C4, C5), so the queries one question may cost are bounded (the numbers asserted) and a cached delegation lives as
 //! long as the parent's and the child's TTLs say, never longer (C6, the ghost domain).
-//!//! The simulation cannot read a validation's cost, signature checks and hashes: the scenarios of the validator
+//!
+//! The simulation cannot read a validation's cost, signature checks and hashes: the scenarios of the validator
 //! judge by its verdict, and by the budget it is given (`crates/dedens-resolver/tests/validation.rs` counts).
 
 use std::cell::{Cell, RefCell};
@@ -41,7 +45,7 @@ use dedens_cache::{Cache, Config};
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_net::exchange::Options;
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::rdata::{Dnskey, Nsec3, RData, Soa};
+use dedens_proto::rdata::{Dnskey, RData, Soa};
 use dedens_proto::{
     Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport, Ttl,
 };
@@ -1125,83 +1129,6 @@ fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
                 seed.0, run.paid, clean.paid
             );
         }
-    });
-}
-
-/// The iterations the NSEC3 records of the proof claim: far over what a zone may (RFC 9276 §3.2).
-const ITERATIONS: u16 = 2500;
-
-#[test]
-fn cve_2023_50868_an_nsec3_proof_claiming_many_iterations_is_not_secure_and_is_bounded() {
-    // The proof of dedens-nxdomain.nl's absence with its NSEC3 records claiming `ITERATIONS` iterations, over the
-    // limit of D74. Nobody signs a changed record for the simulation, so the signatures fail and the verdict is bogus
-    // (SERVFAIL, never AD): what is measured is that a proof made to be costly ends, within the limits of the
-    // resolution (D197). The hashes a real zone's signed proof would cost are counted by
-    // `crates/dedens-dnssec/tests/validator.rs` (`nsec3_iterations_above_the_limit_are_insecure`, D74, D77).
-    seed::each(SEEDS, |seed| {
-        let capture = Resolution::read("nxdomain-nsec3");
-        let at = capture.captured_at;
-        let nl = dns("nl.");
-        let template = capture.clone();
-        let plot = Plot::new(vec![capture.clone()]).deriving(move |zone, question| {
-            if *zone != nl || *question != Question::new(template.name.clone(), template.rtype) {
-                return None;
-            }
-            let mut response = to(captured(&template, zone), question);
-            for record in &mut response.authority {
-                let RData::Nsec3(nsec3) = record.data() else {
-                    continue;
-                };
-                let (alg, flags) = (nsec3.hash_algorithm, nsec3.flags);
-                let (salt, next, types) =
-                    (nsec3.salt(), nsec3.next_hashed_owner(), nsec3.types.clone());
-                let changed =
-                    Nsec3::new(alg, flags, ITERATIONS, salt, next, types).expect("an NSEC3 record");
-                *record = Record::new(
-                    record.name.clone(),
-                    record.class,
-                    record.ttl,
-                    &RData::Nsec3(changed),
-                );
-            }
-            Some(response)
-        });
-        let limits = dedens_dnssec::Limits::default();
-        let clean = validated(seed, Plot::new(vec![capture]), (at, limits.clone()));
-        assert_eq!(
-            clean.message.rcode(),
-            Rcode::NXDOMAIN,
-            "{:?}",
-            clean.message
-        );
-        assert!(
-            clean.message.header.flags.contains(Flags::AD),
-            "{:?}",
-            clean.message
-        );
-        let run = validated(seed, plot, (at, limits));
-        println!(
-            "nsec3 seed {}: {:?} {:?}, {} queries, clean {}",
-            seed.0,
-            run.message.rcode(),
-            ede(&run.message),
-            run.paid,
-            clean.paid
-        );
-        assert!(
-            !run.message.header.flags.contains(Flags::AD),
-            "{:?}",
-            run.message
-        );
-        // The signatures of the changed records fail, so the proof is bogus; the validator's own questions (the DS of
-        // the name, asked of another server) are within the resolution's limits (D197).
-        let bound = Limits::default().queries;
-        assert!(
-            run.paid <= bound,
-            "{} queries, {} clean",
-            run.paid,
-            clean.paid
-        );
     });
 }
 

@@ -38,8 +38,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     stream), `silent`, `tcp(Behaviour::{Answer, Silent, Close(n)})`, the same over TCP and over TLS (`World::dot_server`
     for a client, `Topology::dot_upstream` for the resolver, its own seeded stream, the queries of a connection
     pipelined, the fixed certificates of `dot::certificates`); an attacker on a server's socket that sends
-    what the scenario gives it and may silence the server (`Reaction`). Turmoil's loss is a link going down and
-    coming back, not a per-packet rate; its latency range is what reorders. A validating stage runs on the run's
+    what the scenario gives it and may silence the server (`Reaction`): it is given the port of the query and
+    its ID, which a real off-path attacker must guess (RFC 5452 §4.2), so a bound that holds against it is
+    stronger than the attack. A forgery races the server's answer only with `Reaction::beside`; to be read by the
+    exchange, it is sent with `Reaction::instead` and the answer after it (`What::Arrived` is a datagram a
+    connected UDP socket read), no more than 64 of them, a simulated socket's queue. Turmoil's loss is a link going
+    down and coming back, not a per-packet rate; its latency range is what reorders. A validating stage runs on the run's
     clock (`resolver::wall_clock`) from a start date `Topology::epoch` sets, so the captures of `dedens-dnssec`
     validate at the time they were made (`dedens-dnssec` is a dev-dependency of the crate).
   - Seeds: one seed drives turmoil's network, the faults a scenario has it pick, and the IDs and cookies of each
@@ -223,8 +227,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Attacks: `crates/dedens-sim/tests/attacks.rs` (recursive step 14) runs each named attack of the recursive
     resolver on D196's Internet with captures changed as the attack changes them, asserting the bound of the decision
     that holds it: Kaminsky's flood (D190, D192), NXNSAttack (D191), TsuNAME (D191, D199), CAMP and iDNS (D191,
-    D117), KeyTrap and NSEC3 iterations (D75, D77, D197), MaginotDNS (D192), TuDoor (D190, D191), the ghost domain
-    (D193). Its fuzz target is `resolve_replay` (D181).
+    D117), KeyTrap (D75, D77, D197), MaginotDNS (D192), TuDoor (D190, D191), the ghost domain (D193). The NSEC3
+    iterations (D74) are held by `dedens-dnssec`'s tests: no capture is secure with iterations, so a run cannot
+    isolate the limit. Its fuzz target is `resolve_replay` (D181).
 - D196 (amends D190, D191; builds on D133, D164, D182, D189, D194, D195) Recursion in the simulator (recursive step
   09): `crates/dedens-sim/tests/recursion.rs` runs `dedensd`'s own loop (D182) with a cache stage then a recurse stage
   (D195) on D189's Internet, every capture's servers hosted, and a client asks each capture's question in turn. The
