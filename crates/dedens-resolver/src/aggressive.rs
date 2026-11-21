@@ -118,7 +118,9 @@ fn secure(
     });
     if sound.is_none() {
         // The index names an owner the cache cannot back any more (expired, evicted, replaced): drop it, so that it
-        // does not shadow the range it was found for. It comes back when a record of it is stored again.
+        // does not shadow the range it was found for. It comes back when a record of it is stored again. A store
+        // racing this (its insert found the owner still indexed, this drops it) leaves a fresh record unindexed until
+        // it is stored again: a miss, not a wrong answer (D199).
         match rtype {
             RecordType::NSEC => rrsets.spans().forget_nsec(apex, owner),
             RecordType::NSEC3 => {

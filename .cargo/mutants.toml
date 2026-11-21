@@ -252,8 +252,9 @@ exclude_re = [
   # found no hold, so a resolution begun before another's failure started the hold is the only way in, and the
   # harness steps one resolution at a time.
   'negative\.rs:\d+:\d+: replace (<|-) with [>+] in Hold::again$',
-  # Which shard a zone is in: a keyed hash, so no name is in a given one (D199).
-  'spans\.rs:\d+:\d+: replace .* in Spans::shard$',
+  # Which shard a zone is in: a keyed hash, so no name is in a given one (D199). The other mutants of it, an index out
+  # of bounds or one lost, are caught.
+  'spans\.rs:\d+:\d+: replace (>> with <<|- with /) in Spans::shard$',
   # The share's boundary: a zone of exactly the share's bytes is evicted by `>=`, kept by `>`, and no test builds a
   # zone of exactly the share (the figure is an estimate of the heap, D199).
   'spans\.rs:\d+:\d+: replace > with >= in Spans::add$',
