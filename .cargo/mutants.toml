@@ -231,17 +231,19 @@ exclude_re = [
   # Held back by the filters of `cached_denial`, which skip a NODATA for ANY (one entry of the key of an NXDOMAIN)
   # whether or not `denial_key` stores it.
   'resolution/mod\.rs:\d+:\d+: replace match guard question\.qtype != RecordType::ANY with true in denial_key$',
-  # A failure after a limit reached in an address lookup, or after a bogus verdict made the resolution shun the servers
-  # that answered: the two cases `advance` does not hold. Neither is in a capture: a lookup that runs out of queries
-  # after the servers failed, and a bogus answer with servers left to shun (the validation tests' captures are
-  # secure or insecure), and test data is real.
+  # `advance` holds no failure after a limit was reached in an address lookup (`self.limit`) nor after a bogus
+  # verdict made the resolution shun the servers that answered (`self.retries`). A failure of the kinds it holds
+  # (unreachable, network, unusable) with either set is in no capture: a lookup that runs out of queries ends with
+  # `Failure::Limit` and not after the servers failed, whatever the depth, targets and query bounds, a bogus retry ends
+  # through `self.bogus`, and test data is real. (The third operand, a failure on our side, is tested.)
   'resolution/mod\.rs:\d+:\d+: replace && with \|\| in Resolution::advance$',
-  # A set of an NSEC3 hash other than SHA-1, or of more than 150 iterations (RFC 9276 §3.2), or a signature over an NSEC
-  # set of another type, or two signers over one set: no capture has one, and test data is real.
-  'rrset_cache\.rs:\d+:\d+: replace (\|\| with &&|!= with ==|&& with \|\||match guard sig\.type_covered == set\.rtype\(\) with true) in RrsetCache::index$',
+  # A set of an NSEC3 hash other than SHA-1, or of more than 150 iterations (RFC 9276 §3.2), or a set with two signers:
+  # no capture has one, and test data is real.
+  'rrset_cache\.rs:\d+:\d+: replace (\|\| with &&|!= with ==|&& with \|\|) in RrsetCache::index$',
   # An entry whose size is exactly the limit: one byte more is refused, one less is stored, as the test reads it.
   'rrset_cache\.rs:\d+:\d+: replace > with >= in RrsetCache::insert_negative$',
-  # A key longer than the longest: only a name over 255 octets would fill it, which no name is.
+  # A key longer than the longest: only a name over 255 octets would fill it, which no name is. The `$` anchors it to
+  # the module scope, where only the arithmetic of `KEY_LEN` is: a function's mutants end in ` in <fn>`.
   'rrset_cache\.rs:\d+:\d+: replace \+ with [-*]$',
   # `BTreeSet` orders by `Ord`, never by `PartialEq`, which exist to satisfy `Ord`'s supertraits.
   'spans\.rs:\d+:\d+: replace .* in <impl PartialEq for Owner>::eq$',
@@ -250,12 +252,11 @@ exclude_re = [
   # found no hold, so a resolution begun before another's failure started the hold is the only way in, and the
   # harness steps one resolution at a time.
   'negative\.rs:\d+:\d+: replace (<|-) with [>+] in Hold::again$',
-  # Which shard a zone is in, and the bytes the index counts for it: an estimate of the heap (D199), with no byte a
-  # test could compare it to; the tests read that it is counted, bounded and evicted, not its exact figure.
-  'spans\.rs:\d+:\d+: replace .* in Spans::(shard|add_nsec|add)$',
-  # A zone whose NSEC3 salt or iterations changed, or that switched from NSEC: no capture has a zone that did.
-  'spans\.rs:\d+:\d+: replace .* in is_chained$',
-  'spans\.rs:\d+:\d+: replace is_chained -> bool with true$',
+  # Which shard a zone is in: a keyed hash, so no name is in a given one (D199).
+  'spans\.rs:\d+:\d+: replace .* in Spans::shard$',
+  # The share's boundary: a zone of exactly the share's bytes is evicted by `>=`, kept by `>`, and no test builds a
+  # zone of exactly the share (the figure is an estimate of the heap, D199).
+  'spans\.rs:\d+:\d+: replace > with >= in Spans::add$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
