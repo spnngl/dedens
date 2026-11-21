@@ -32,6 +32,8 @@ mod nsec3;
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::TypeBitmap;
 use dedens_proto::{Name, NameError, Question, Record, RecordType, Ttl};
+pub use names::canonical_cmp;
+pub use nsec3::{hashed_owner, owner_hash};
 
 use crate::crypto::{Budget, BudgetExhausted};
 

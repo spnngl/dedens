@@ -1,7 +1,7 @@
 //! Denial by NSEC3 records (RFC 5155 §8, RFC 6840 §4.1): a chain of the hashes of the names of the zone.
 
 use dedens_proto::rdata::{Nsec3, RData, TypeBitmap};
-use dedens_proto::{Class, Name, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
+use dedens_proto::{Class, Name, NameError, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
 
 use super::names::{covers, wildcard};
 use super::{Fact, MaxIterations, Proof, Unproven, at_name, least, wildcard_lacks};
@@ -31,8 +31,36 @@ pub(super) struct Chain<'r> {
     salt: Vec<u8>,
 }
 
-/// The hash a label of 32 characters of base32hex spells, in either case (RFC 5155 §3.3, RFC 4648 §7).
-fn owner_hash(label: &[u8]) -> Option<Hash> {
+/// The digits of base32hex, lowercase (RFC 4648 §7).
+const BASE32HEX: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+
+/// The name an NSEC3 record of the zone `apex` has for `hash`: one label of 32 characters of base32hex, lowercase,
+/// above the apex (RFC 5155 §3.3).
+///
+/// # Errors
+///
+/// [`NameError`] when the apex leaves no room for the label.
+pub fn hashed_owner(apex: &Name<'_>, hash: &[u8; HASH_LEN]) -> Result<Name<'static>, NameError> {
+    let mut label = [0; HASH_LEN * 8 / 5];
+    let (mut digits, mut acc, mut bits) = (label.iter_mut(), 0_u16, 0_u8);
+    for &byte in hash {
+        acc = acc << 8 | u16::from(byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            if let Some(digit) = digits.next() {
+                *digit = BASE32HEX[usize::from(acc >> bits & 31)];
+            }
+        }
+        acc &= (1 << bits) - 1;
+    }
+    Name::from_labels(std::iter::once(label.as_slice()).chain(apex.labels()))
+}
+
+/// The hash a label of 32 characters of base32hex spells, in either case (RFC 5155 §3.3, RFC 4648 §7); `None` for
+/// a label of another length or alphabet.
+#[must_use]
+pub fn owner_hash(label: &[u8]) -> Option<[u8; HASH_LEN]> {
     if label.len() != HASH_LEN * 8 / 5 {
         return None;
     }
@@ -237,6 +265,19 @@ mod tests {
         assert_eq!(owner_hash(b"0P9MHAVEQVM6T7VBL5LOP2U3T2RP3TOM"), Some(hash));
         assert_eq!(owner_hash(b"0p9mhaveqvm6t7vbl5lop2u3t2rp3to"), None);
         assert_eq!(owner_hash(b"0p9mhaveqvm6t7vbl5lop2u3t2rp3tow"), None);
+    }
+
+    /// The label of a hash is the base32hex RFC 5155 Appendix A gives, and reads back to the hash.
+    #[test]
+    fn a_hashed_owner_spells_its_hash_in_base32hex() {
+        let apex: Name<'static> = "example.".parse().expect("a name");
+        let hash = owner_hash(b"0p9mhaveqvm6t7vbl5lop2u3t2rp3tom").unwrap();
+        let owner = hashed_owner(&apex, &hash).expect("a name");
+        assert_eq!(
+            owner.to_string(),
+            "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example."
+        );
+        assert_eq!(owner.labels().next().and_then(owner_hash), Some(hash));
     }
 
     proptest! {
