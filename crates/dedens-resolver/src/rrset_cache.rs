@@ -631,16 +631,18 @@ const HOLD: u8 = 0x81;
 /// hash of the child's name (D199, as Unbound's `PACKED_RRSET_NSEC_AT_APEX`).
 const APEX_NSEC: u8 = 0x82;
 
-/// Whether `rrset` is an NSEC or NSEC3 at the apex of the zone that signed it: the owner is the signer. The record of
-/// the other zone at the same name has the same key but for this, so that a child cannot replace its parent's
-/// record, by its apex NSEC or by an NSEC3 at a hash the parent uses (anyone may register such a name, which makes
-/// every proof under the parent a miss): the parent's chain stays, and the records of the two zones are never taken
-/// for each other's.
+/// Whether `rrset` is an NSEC or NSEC3 at the apex of the zone that signed it: a signature has the owner for signer.
+/// Any one does, not only a set of one signer (`Rrset::signer`): a child that adds another zone's signature to its
+/// apex record must not get it under the key of its parent's. The record of the other zone at the same name has the
+/// same key but for this, so that a child cannot replace its parent's record, by its apex NSEC or by an NSEC3 at a
+/// hash the parent uses (anyone may register such a name, which makes every proof under the parent a miss): the
+/// parent's chain stays, and the records of the two zones are never taken for each other's.
 fn at_apex(rrset: &Rrset) -> bool {
     matches!(rrset.rtype(), RecordType::NSEC | RecordType::NSEC3)
         && rrset
-            .signer()
-            .is_some_and(|signer| signer == *rrset.owner())
+            .rrsigs()
+            .iter()
+            .any(|rdata| matches!(rdata.data(), RData::Rrsig(sig) if sig.signer == *rrset.owner()))
 }
 
 /// The longest key: a tag, a name, a type and the 8 bytes of a server set.
