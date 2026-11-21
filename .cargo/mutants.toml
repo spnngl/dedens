@@ -214,6 +214,9 @@ exclude_re = [
   # downloaded anchors, trusted either way. The conditions that feed it are in `Kept::anchors` and `newly_full`,
   # whose tests catch their mutants.
   'rollover\.rs:\d+:\d+: replace say with \(\)$',
+  # The state read at exactly `Rollover::MAX_LEN` bytes: lossy rather than strict UTF-8, which only changes the
+  # message of a state set aside either way (a replacement character is no state, and the text outgrows the bound).
+  'dedensd/src/rollover\.rs:\d+:\d+: replace > with >= in read$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
