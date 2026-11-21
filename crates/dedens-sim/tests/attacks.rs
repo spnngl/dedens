@@ -529,7 +529,11 @@ fn flood(rng: Rc<RefCell<Rng>>) -> Attacker {
                 after: Duration::ZERO,
                 wire: kaminsky(
                     genuine,
-                    if i % 2 == 0 { Guess::Neither } else { Guess::Case },
+                    if i % 2 == 0 {
+                        Guess::Neither
+                    } else {
+                        Guess::Case
+                    },
                     &mut rng,
                 ),
             })
@@ -629,10 +633,7 @@ fn rfc5452_9_2_a_kaminsky_flood_of_guessed_ids_and_cases_poisons_nothing() {
             slowest.get()
         );
         assert_eq!(udp, DRAWS, "one try each: the answer came in time");
-        assert!(
-            sent.iter().all(|(_, sends)| *sends <= 2),
-            "{sent:?}"
-        );
+        assert!(sent.iter().all(|(_, sends)| *sends <= 2), "{sent:?}");
         assert_eq!(tcp, DRAWS / 2, "the odd names, whose forgery had the ID");
         assert_eq!(injected(&events), DRAWS * (FLOOD + 1) + DRAWS / 2);
         // The forgeries reached the exchanges: every datagram sent was read, but for the answers of the odd names,
@@ -663,10 +664,9 @@ fn nxnsattack_a_referral_of_a_thousand_servers_without_address_costs_the_targets
         let servers: Vec<Name<'static>> = (0..NAMES)
             .map(|i| dns(&format!("ns{i}.dedens-nxdomain.nl.")))
             .collect();
-        let limits = Limits::default();
         let denying = servers_of(&nx, &nl);
         let (template, denial) = (unsigned.clone(), nx.clone());
-        let mut plot = Plot::new(vec![unsigned, nx]).deriving(move |zone, question| {
+        let plot = Plot::new(vec![unsigned, nx]).deriving(move |zone, question| {
             if *zone == com && question.name.is_within(&google) {
                 return Some(referral(
                     captured(&template, zone),
@@ -679,7 +679,6 @@ fn nxnsattack_a_referral_of_a_thousand_servers_without_address_costs_the_targets
             (above && question.name.is_within(&victim))
                 .then(|| to(captured(&denial, zone), question))
         });
-        plot.limits = limits;
         let mut lab = lab(seed, plot);
         let slowest = Rc::new(Cell::new(Duration::ZERO));
         let (resolver, slow) = (lab.world.resolver, Rc::clone(&slowest));
@@ -702,9 +701,16 @@ fn nxnsattack_a_referral_of_a_thousand_servers_without_address_costs_the_targets
             paid.len(),
             slowest.get()
         );
-        assert!(lookups <= limits.targets, "{lookups} lookups");
-        assert!(paid.len() <= limits.queries, "{} queries", paid.len());
-        assert!(slowest.get() <= limits.time, "{:?}", slowest.get());
+        // The numbers of D191's defaults, written out: a limit changed must change them here too. 5 lookups
+        // (`Limits::targets`, Unbound's `MAX_TARGET_NX`), the walk of 4 queries, none of the 32 of `queries`, and
+        // the 4.5 s of `time` not reached.
+        assert_eq!(lookups, 5, "lookups");
+        assert_eq!(paid.len(), 9, "queries");
+        assert!(
+            slowest.get() <= Duration::from_millis(4500),
+            "{:?}",
+            slowest.get()
+        );
     });
 }
 
@@ -756,8 +762,8 @@ fn rfc9520_3_tsuname_servers_named_in_each_others_zones_end_once_and_are_held() 
         lab.run();
         let counts = counts.borrow();
         println!("tsuname seed {}: (queries so far, time) {counts:?}", seed.0);
-        let limits = Limits::default();
-        assert!(counts[0].0 <= limits.queries, "{counts:?}");
+        // The walk to the zone, the two zones' servers asked for once each, and the end of the loop: 5 queries.
+        assert_eq!(counts[0].0, 5, "{counts:?}");
         // Held: no query, an answer within the clients' own round trip.
         assert_eq!(counts[1].0, counts[0].0, "{counts:?}");
         assert_eq!(counts[2].0, counts[0].0, "{counts:?}");
@@ -810,7 +816,6 @@ fn camp_a_chain_of_cname_records_without_end_stops_at_the_restarts_limit() {
         let unsigned = Resolution::read("unsigned");
         let leaf = dns("google.com.");
         let leaf_servers = servers_of(&unsigned, &leaf);
-        let limits = Limits::default();
         let plot = Plot::new(vec![unsigned.clone()]).deriving(chained(&unsigned, &leaf));
         let mut lab = lab(seed, plot);
         let resolver = lab.world.resolver;
@@ -834,12 +839,15 @@ fn camp_a_chain_of_cname_records_without_end_stops_at_the_restarts_limit() {
             paid.len(),
             took.get()
         );
+        // The first name and 11 restarts (`Limits::restarts`, Unbound's `max-query-restarts` 11, plus its first
+        // query) at the zone, 2 queries for the walk: 14 of the 32 of `queries`.
+        assert_eq!(at_leaf, 12, "queries to the zone");
+        assert_eq!(paid.len(), 14, "queries");
         assert!(
-            at_leaf <= limits.restarts + 1,
-            "{at_leaf} queries to the zone"
+            took.get() <= Duration::from_millis(4500),
+            "{:?}",
+            took.get()
         );
-        assert!(paid.len() <= limits.queries, "{} queries", paid.len());
-        assert!(took.get() <= limits.time, "{:?}", took.get());
     });
 }
 
@@ -850,73 +858,88 @@ const DEPTH: usize = 60;
 fn idns_a_chain_of_referrals_each_one_label_deeper_stops_at_the_referrals_limit() {
     // iDNS: the zone's server refers the question to a zone one label closer to the name, whose server is itself,
     // and again, for as many labels as the name has. Each referral is a query (D191: referrals 30, queries 32).
-    seed::each(SEEDS, |seed| {
-        let unsigned = Resolution::read("unsigned");
-        let (com, leaf) = (dns("com."), dns("google.com."));
-        let leaf_servers = servers_of(&unsigned, &leaf);
-        let limits = Limits::default();
-        let referrals = Cell::new(0);
-        let template = unsigned.clone();
-        let plot = Plot::new(vec![unsigned]).deriving({
-            let leaf = leaf.clone();
-            move |zone, question| {
-                let deep = leaf.label_count() + DEPTH;
-                if *zone != leaf {
-                    return question
-                        .name
-                        .is_within(&leaf)
-                        .then(|| to(captured(&template, zone), question));
+    // A second leg lifts the referrals' limit so that the queries' alone stops the chain.
+    let default = Limits::default();
+    let lifted = Limits {
+        referrals: 1000,
+        ..default.clone()
+    };
+    for (limits, at_leaf_is, paid_is) in [(default, 29, 31), (lifted, 30, 32)] {
+        seed::each(SEEDS, |seed| {
+            let unsigned = Resolution::read("unsigned");
+            let (com, leaf) = (dns("com."), dns("google.com."));
+            let leaf_servers = servers_of(&unsigned, &leaf);
+            let referrals = Cell::new(0);
+            let template = unsigned.clone();
+            let mut plot = Plot::new(vec![unsigned]).deriving({
+                let leaf = leaf.clone();
+                move |zone, question| {
+                    let deep = leaf.label_count() + DEPTH;
+                    if *zone != leaf {
+                        return question
+                            .name
+                            .is_within(&leaf)
+                            .then(|| to(captured(&template, zone), question));
+                    }
+                    if question.name.label_count() < deep {
+                        return None;
+                    }
+                    referrals.set(referrals.get() + 1);
+                    let labels: Vec<&[u8]> = question.name.labels().collect();
+                    let below = (leaf.label_count() + referrals.get()).min(deep);
+                    let owner = Name::from_labels(labels[labels.len() - below..].iter().copied())
+                        .expect("a name");
+                    let server =
+                        Name::from_labels(std::iter::once(&b"ns"[..]).chain(owner.labels()))
+                            .expect("a name");
+                    let mut response = referral(
+                        captured(&template, &com),
+                        question,
+                        &owner,
+                        std::slice::from_ref(&server),
+                    );
+                    let ttl = response.authority[0].ttl;
+                    response.additional =
+                        vec![Record::new(server, Class::IN, ttl, &RData::A(LEAF))];
+                    Some(response)
                 }
-                if question.name.label_count() < deep {
-                    return None;
-                }
-                referrals.set(referrals.get() + 1);
-                let labels: Vec<&[u8]> = question.name.labels().collect();
-                let below = (leaf.label_count() + referrals.get()).min(deep);
-                let owner = Name::from_labels(labels[labels.len() - below..].iter().copied())
-                    .expect("a name");
-                let server = Name::from_labels(std::iter::once(&b"ns"[..]).chain(owner.labels()))
-                    .expect("a name");
-                let mut response = referral(
-                    captured(&template, &com),
-                    question,
-                    &owner,
-                    std::slice::from_ref(&server),
-                );
-                let ttl = response.authority[0].ttl;
-                response.additional = vec![Record::new(server, Class::IN, ttl, &RData::A(LEAF))];
-                Some(response)
-            }
+            });
+            plot.limits = limits.clone();
+            let mut lab = lab(seed, plot);
+            let resolver = lab.world.resolver;
+            let took = Rc::new(Cell::new(Duration::ZERO));
+            let slot = Rc::clone(&took);
+            lab.world.client_direct(async move |client| {
+                let name = format!("{}google.com", "l.".repeat(DEPTH));
+                let (answer, elapsed) =
+                    ask(&client, resolver, &question(&name, RecordType::A)).await?;
+                assert_eq!(answer.rcode(), Rcode::SERVFAIL, "{answer:?}");
+                slot.set(elapsed);
+                Ok(())
+            });
+            let Ran { heard, .. } = lab.run();
+            let paid = paid(&heard);
+            let at_leaf = (paid.iter())
+                .filter(|(server, _, _)| leaf_servers.contains(server))
+                .count();
+            println!(
+                "idns seed {}: {} queries ({at_leaf} to the zone), {:?}",
+                seed.0,
+                paid.len(),
+                took.get()
+            );
+            // By default 29 queries to the zone at the 30 referrals of `Limits::referrals` (the first question is no
+            // referral to follow), 2 for the walk: 31 of the 32 of `queries`, which the referrals' limit reaches first;
+            // lifted, the 32 of `queries`: 30 to the zone.
+            assert_eq!(at_leaf, at_leaf_is, "queries to the zone");
+            assert_eq!(paid.len(), paid_is, "queries");
+            assert!(
+                took.get() <= Duration::from_millis(4500),
+                "{:?}",
+                took.get()
+            );
         });
-        let mut lab = lab(seed, plot);
-        let resolver = lab.world.resolver;
-        let took = Rc::new(Cell::new(Duration::ZERO));
-        let slot = Rc::clone(&took);
-        lab.world.client_direct(async move |client| {
-            let name = format!("{}google.com", "l.".repeat(DEPTH));
-            let (answer, elapsed) = ask(&client, resolver, &question(&name, RecordType::A)).await?;
-            assert_eq!(answer.rcode(), Rcode::SERVFAIL, "{answer:?}");
-            slot.set(elapsed);
-            Ok(())
-        });
-        let Ran { heard, .. } = lab.run();
-        let paid = paid(&heard);
-        let at_leaf = (paid.iter())
-            .filter(|(server, _, _)| leaf_servers.contains(server))
-            .count();
-        println!(
-            "idns seed {}: {} queries ({at_leaf} to the zone), {:?}",
-            seed.0,
-            paid.len(),
-            took.get()
-        );
-        assert!(
-            at_leaf <= limits.referrals + 1,
-            "{at_leaf} queries to the zone"
-        );
-        assert!(paid.len() <= limits.queries, "{} queries", paid.len());
-        assert!(took.get() <= limits.time, "{:?}", took.get());
-    });
+    }
 }
 
 /// What a network may spend a second, and at once, in the scenario of the budget (D117).
