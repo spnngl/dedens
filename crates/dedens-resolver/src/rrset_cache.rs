@@ -610,10 +610,12 @@ impl RrsetCache {
 }
 
 /// The first byte of the key of a negative answer: past 63, the greatest length of a label, so that no name's wire
-/// form starts with it.
+/// form starts with it. The key has no class, unlike an `RRset`'s: only `IN` is resolved, so one class is cached
+/// (D199); a second class would need it in the key.
 const NEGATIVE: u8 = 0x80;
 
-/// The first byte of the key of a failure held, apart from [`NEGATIVE`].
+/// The first byte of the key of a failure held, apart from [`NEGATIVE`]. It has no class either, for the same
+/// reason.
 const HOLD: u8 = 0x81;
 
 /// The first byte of the key of an NSEC `RRset` at the apex of its signer ([`at_apex`]), apart from the NSEC of the
@@ -633,10 +635,10 @@ fn at_apex(rrset: &Rrset) -> bool {
 /// The longest key: a tag, a name, a type and the 8 bytes of a server set.
 const KEY_LEN: usize = 1 + MAX_NAME_LEN + 2 + 8;
 
-/// The key of `owner` in `buf`: the `tag` byte of a kind of entry other than an `RRset` (or [`APEX_NSEC`]), then the name's wire form,
-/// ASCII letters lowered (RFC 4343; the length octets, at most 63, have none), then the `tail` parts: for an
-/// `RRset`, its type and class; for a negative answer, its type, `ANY` for a name that does not exist; for a
-/// failure held, the type and the server set.
+/// The key of `owner` in `buf`: the `tag` byte of a kind of entry other than an `RRset` (or [`APEX_NSEC`]), then the
+/// name's wire form, ASCII letters lowered (RFC 4343; the length octets, at most 63, have none), then the `tail`
+/// parts: for an `RRset`, its type and class; for a negative answer, its type, `ANY` for a name that does not exist;
+/// for a failure held, the type and the server set.
 fn key_of<'b>(
     buf: &'b mut [u8; KEY_LEN],
     tag: Option<u8>,

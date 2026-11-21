@@ -1801,6 +1801,8 @@ impl Resolution {
             let sound = match checked {
                 Checked::Secure | Checked::Insecure => true,
                 Checked::Unchecked => self.validator.is_none(),
+                // Not reached: `judged` turns a bogus verdict into `Failed`, which has no denial to keep. The arm
+                // stays so that a new verdict has to be decided here.
                 Checked::Bogus(_) => false,
             };
             if let (
