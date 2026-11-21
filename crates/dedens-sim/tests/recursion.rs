@@ -35,11 +35,12 @@ use crate::util::{SECOND, TIMEOUT};
 const SEEDS: &[u64] = &[1, 42];
 
 /// The step of the simulation: the latencies of its links are tens of milliseconds.
-const TICK: Duration = Duration::from_millis(10);
+pub(crate) const TICK: Duration = Duration::from_millis(10);
 
 /// The least and the most a message takes. Turmoil's 0 to 100 ms spreads a round trip past the RTO the infra cache
 /// derives from its samples (D194), from 50 ms, and live servers timed out (D196).
-const LATENCY: (Duration, Duration) = (Duration::from_millis(20), Duration::from_millis(30));
+pub(crate) const LATENCY: (Duration, Duration) =
+    (Duration::from_millis(20), Duration::from_millis(30));
 
 /// One UDP response in `LOSS` a server loses (D196).
 const LOSS: NonZeroU64 = NonZeroU64::new(10).expect("not zero");
@@ -75,11 +76,11 @@ fn questions(captures: &[Resolution]) -> Vec<Question<'static>> {
 }
 
 /// Each zone and the servers it was asked at.
-type Zones = Vec<(Name<'static>, BTreeSet<IpAddr>)>;
+pub(crate) type Zones = Vec<(Name<'static>, BTreeSet<IpAddr>)>;
 
 /// The zones of `captures`, in the order first asked, each asked of one server of each family
 /// (testdata/recursion/README.md).
-fn zones(captures: &[Resolution]) -> Zones {
+pub(crate) fn zones(captures: &[Resolution]) -> Zones {
     let mut zones: Zones = Vec::new();
     for exchange in captures.iter().flat_map(|capture| &capture.exchanges) {
         match zones.iter_mut().find(|(zone, _)| *zone == exchange.zone) {
@@ -125,7 +126,7 @@ fn pipeline(zones: &Zones, captures: &[Resolution], clock: Option<u64>) -> Pipel
 /// the first, until the probe is `MAX_TIMEOUT` on, the run's length. The resolver draws among the hosts of the run
 /// alone, the others being none. Marked lame instead, they would be asked once the zone's hosts are, as lame servers
 /// are when no other is left (RFC 4697 §2.2.1).
-fn steer(caches: &Caches, zones: &Zones, captures: &[Resolution]) {
+pub(crate) fn steer(caches: &Caches, zones: &Zones, captures: &[Resolution]) {
     let mut known: HashSet<IpAddr> = (caches.roots.servers().iter())
         .flat_map(dedens_roots::Server::addresses)
         .collect();
