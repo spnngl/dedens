@@ -466,6 +466,9 @@ pub struct Resolution {
     shunned: Vec<(IpAddr, Name<'static>)>,
     /// The client's question asked again after a bogus verdict, at most [`RETRIES`].
     retries: usize,
+    /// Whether an exchange with any server failed on our side ([`Reply::LocalError`]), in an address lookup too:
+    /// nothing then says the servers fail, so no failure is held (RFC 9520 §3.2, D199).
+    failed_here: bool,
     /// The extended error of the first bogus verdict, which stands unless a retry does better.
     bogus: Option<InfoCode>,
     /// The query awaiting its reply, or the outcome; `None` while working out the next query.
@@ -778,9 +781,6 @@ struct Delegation {
     /// Address lookups started.
     looked_up: usize,
     heard: Heard,
-    /// Whether an exchange with one of its servers failed on our side ([`Reply::LocalError`]): nothing then says the
-    /// servers fail, so their failure is not held (RFC 9520 §3.2, D199).
-    failed_here: bool,
     /// Whether its servers at local addresses are asked ([`Resolution::asking_local_addresses`]).
     local: bool,
 }
@@ -807,7 +807,6 @@ impl Delegation {
             aaaa: None,
             looked_up: 0,
             heard: Heard::Nothing,
-            failed_here: false,
             local,
         };
         delegation.add(addresses);
@@ -901,6 +900,7 @@ impl Resolution {
             answered_by: Vec::new(),
             shunned: Vec::new(),
             retries: 0,
+            failed_here: false,
             bogus: None,
             found: HashMap::new(),
             settled: None,
@@ -1011,9 +1011,7 @@ impl Resolution {
             }
             Sent::Undecodable => self.heard(Heard::Responses),
             Sent::LocalError => {
-                if let Some(delegation) = self.tasks.asking() {
-                    delegation.failed_here = true;
-                }
+                self.failed_here = true;
                 self.heard(Heard::Errors);
             }
             _ => self.heard(Heard::Errors),
@@ -1248,7 +1246,7 @@ impl Resolution {
                 }
                 if self.limit.is_none()
                     && self.retries == 0
-                    && !delegation.failed_here
+                    && !self.failed_here
                     && matches!(
                         failure,
                         Failure::Unreachable | Failure::Network | Failure::Unusable

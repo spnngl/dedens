@@ -16,12 +16,14 @@ use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec3, RData};
 use dedens_proto::{Class, Message, Name, Question, Record, RecordType, Ttl};
 use dedens_resolver::{
-    Caches, Failure, Kind, Limits, Minimisation, NotCached, Rank, Ranked, Resolution, Resolved,
-    Rrset, RrsetCache,
+    Caches, Failure, Kind, Limits, Minimisation, NotCached, Query, Rank, Ranked, Resolution,
+    Resolved, Rrset, RrsetCache,
 };
-use dedens_testkit::recursion;
+use dedens_testkit::recursion::{self, Authorities};
 
-use crate::iteration::{Answered, at, configured, name, response, run, served, sized, start};
+use crate::iteration::{
+    Answered, at, captured, configured, is, name, response, run, served, sized, start, steer,
+};
 
 /// The captured resolution `id`.
 fn capture(id: &str) -> recursion::Resolution {
@@ -1512,6 +1514,46 @@ fn rfc9520_3_2_a_local_send_error_is_no_failure_of_the_servers_and_holds_nothing
     let mut asking = resolution(&caches, question, now, false);
     let (_, sent) = run(&mut asking, &|_| Answered::Timeout, now);
     assert!(!sent.is_empty(), "held after a local error");
+}
+
+#[test]
+fn rfc9520_3_2_a_local_send_error_in_an_address_lookup_holds_nothing_of_the_zone_waiting_for_it() {
+    // `glueless`: org gives the servers of netmeister.org, named under gandi.net, without an address. Our sockets
+    // fail when gandi.net's servers are asked for one: that lookup fails here, and netmeister.org's servers, which
+    // no address was found for, were never heard failing. Once an address is known, they are asked at once.
+    let capture = capture("glueless");
+    let caches = configured(false, Config::default());
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let server = |query: &Query| {
+        if is(&query.zone, "gandi.net.") {
+            Answered::LocalError
+        } else {
+            Answered::Response(captured(&authorities, query))
+        }
+    };
+    // Every server of gandi.net fails: more queries and servers than the default bounds allow, which would end it as
+    // a limit, and a limit is not held either.
+    let limits = Limits {
+        queries: 1000,
+        servers: 1000,
+        targets: 1000,
+        ..Limits::default()
+    };
+    let mut asking = start(&capture, &caches, limits);
+    let (resolved, _) = run(&mut asking, &server, at(&capture));
+    assert_eq!(resolved, Resolved::Failed(Failure::Unreachable));
+    // The address of one of the servers comes from elsewhere: the delegation is known, and held if it was failed.
+    let address = response(&capture, "gandi.net.", "ns-143-b.gandi.net.");
+    let now = u32::try_from(at(&capture).as_secs()).expect("a time in 32 bits");
+    for set in Rrset::group(&address.answer) {
+        let rank = Rank::AnswerAuthoritative;
+        let stored = caches.rrsets.insert(set, rank, Checked::Unchecked, now);
+        stored.expect("stored");
+    }
+    let mut asking = start(&capture, &caches, limits);
+    let (_, sent) = run(&mut asking, &server, at(&capture));
+    assert!(!sent.is_empty(), "held");
 }
 
 #[test]
