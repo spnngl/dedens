@@ -242,9 +242,19 @@ exclude_re = [
   # An entry whose size is exactly the limit: one byte more is refused, one less is stored, as the test reads it.
   'rrset_cache\.rs:\d+:\d+: replace > with >= in RrsetCache::insert_negative$',
   # A key longer than the longest: only a name over 255 octets would fill it, which no name is.
-  'rrset_cache\.rs:\d+:\d+: replace \+ with \* *$',
-  # `BTreeSet` orders by `Ord`, never by `PartialEq` or `PartialOrd`, which exist to satisfy `Ord`'s supertraits.
-  'spans\.rs:\d+:\d+: replace <impl (PartialEq|PartialOrd) for Owner>::(eq|partial_cmp) .*$',
+  'rrset_cache\.rs:\d+:\d+: replace \+ with [-*]$',
+  # `BTreeSet` orders by `Ord`, never by `PartialEq`, which exists to satisfy `Ord`'s supertraits.
+  'spans\.rs:\d+:\d+: replace .* in <impl PartialEq for Owner>::eq$',
+  # The guard of `Hold::again` against a failure heard before the hold began: `again` is called only after `active`
+  # found no hold, so a resolution begun before another's failure started the hold is the only way in, and the
+  # harness steps one resolution at a time.
+  'negative\.rs:\d+:\d+: replace (<|-) with [>+] in Hold::again$',
+  # Which shard a zone is in, and the bytes the index counts for it: an estimate of the heap (D199), with no byte a
+  # test could compare it to; the tests read that it is counted, bounded and evicted, not its exact figure.
+  'spans\.rs:\d+:\d+: replace .* in Spans::(shard|add_nsec|add)$',
+  # A zone whose NSEC3 salt or iterations changed, or that switched from NSEC: no capture has a zone that did.
+  'spans\.rs:\d+:\d+: replace .* in is_chained$',
+  'spans\.rs:\d+:\d+: replace is_chained -> bool with true$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
