@@ -43,6 +43,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dedens_cache::{Cache, Config};
+use dedens_dnssec::crypto::Verifications;
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_net::exchange::Options;
 use dedens_proto::edns::{EdnsOption, InfoCode};
@@ -950,6 +951,32 @@ const SHARE: Budget = Budget {
     table: 1 << 10,
 };
 
+/// A client of another /24 than the attacker of the budget scenario, asking after it has spent its burst: the time
+/// its answer took.
+fn other_network(lab: &mut Lab) -> Rc<Cell<Duration>> {
+    let served = Rc::new(Cell::new(Duration::MAX));
+    let slot = Rc::clone(&served);
+    lab.world.client_at(
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+        async move |stub| {
+            tokio::time::sleep(5 * SECOND).await;
+            let answer = stub
+                .expect(question("google.com", RecordType::A), Carrier::Udp)
+                .await?;
+            slot.set(answer.elapsed);
+            Ok(())
+        },
+    );
+    served
+}
+
+/// The lab of the budget scenario: chains of CNAME records under `leaf`, a budget of `SHARE` for each network.
+fn lab_of_the_budget(seed: Seed, unsigned: &Resolution, leaf: &Name<'static>) -> Lab {
+    let mut plot = Plot::new(vec![unsigned.clone()]).deriving(chained(unsigned, leaf));
+    plot.share = Some(SHARE);
+    lab(seed, plot)
+}
+
 #[test]
 fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
     // D117: each query the resolver sends costs the asking network a unit. One network asks one chain after the
@@ -958,9 +985,7 @@ fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
     seed::each(SEEDS, |seed| {
         let unsigned = Resolution::read("unsigned");
         let leaf = dns("google.com.");
-        let mut plot = Plot::new(vec![unsigned.clone()]).deriving(chained(&unsigned, &leaf));
-        plot.share = Some(SHARE);
-        let mut lab = lab(seed, plot);
+        let mut lab = lab_of_the_budget(seed, &unsigned, &leaf);
         let refused = Rc::new(Cell::new(0));
         let counted = Rc::clone(&refused);
         lab.world.client_at(
@@ -984,20 +1009,12 @@ fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
                 Ok(())
             },
         );
-        let served = Rc::new(Cell::new(Duration::MAX));
-        let slot = Rc::clone(&served);
-        lab.world.client_at(
-            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
-            async move |stub| {
-                tokio::time::sleep(5 * SECOND).await;
-                let answer = stub
-                    .expect(question("google.com", RecordType::A), Carrier::Udp)
-                    .await?;
-                slot.set(answer.elapsed);
-                Ok(())
-            },
-        );
+        let served = other_network(&mut lab);
         let Ran { heard, .. } = lab.run();
+        // The same run without the attacker: what the other network is served in.
+        let mut alone = lab_of_the_budget(seed, &unsigned, &leaf);
+        let unattacked = other_network(&mut alone);
+        alone.run();
         let mine = |name: &Name<'_>| drawn(name, b'c', &leaf);
         let mine: Vec<_> = paid(&heard)
             .into_iter()
@@ -1005,11 +1022,12 @@ fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
             .collect();
         let last = mine.iter().map(|(_, _, at)| *at).max().unwrap_or_default();
         println!(
-            "camp budget seed {}: {} queries for {ASKS} questions, {} refused, the other served in {:?}",
+            "camp budget seed {}: {} queries for {ASKS} questions, {} refused, the other served in {:?} ({:?} alone)",
             seed.0,
             mine.len(),
             refused.get(),
-            served.get()
+            served.get(),
+            unattacked.get()
         );
         let seconds = usize::try_from(last.as_secs()).expect("a few seconds");
         let allowed = usize::try_from(SHARE.burst).expect("a count")
@@ -1020,7 +1038,17 @@ fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
             "{} queries, {allowed} allowed",
             mine.len()
         );
-        assert!(refused.get() >= 1, "none refused");
+        // 41 queries are paid: the burst of 40 and the one the bucket's refill gives; a chain costs about 13, so 3 are
+        // answered and the other 5 of the 8 questions are refused.
+        assert_eq!(refused.get(), 5, "refused");
+        // The attacker's refusals cost the other network nothing: it is served no slower than with no attacker (faster in fact,
+        // the attacker's walks having warmed the cache).
+        assert!(
+            served.get() <= unattacked.get(),
+            "{:?} served, {:?} alone",
+            served.get(),
+            unattacked.get()
+        );
     });
 }
 
@@ -1089,9 +1117,9 @@ fn validated(seed: Seed, mut plot: Plot, (at, limits): (u64, dedens_dnssec::Limi
 #[test]
 fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
     // CVE-2023-50387: the DNSKEY set of sidn.nl holds `KEYS` keys more for each key, of its tag, none that verifies.
-    // The validator checks them up to its budget (D75, D197): with the default one the verdict is bogus (a bogus
-    // verdict is one the budget sufficed for), with a budget of 8 checks it is indeterminate; either way the keys
-    // are asked once and the answer is SERVFAIL.
+    // The validator refuses the set at its digest check (D77) before any signature check: the verdict is bogus, and
+    // costs no budget (D75, D197). A budget too small for the walk makes it indeterminate; either way the keys are
+    // asked once and the answer is SERVFAIL.
     seed::each(SEEDS, |seed| {
         let capture = Resolution::read("signed-nl");
         let at = capture.captured_at;
@@ -1151,6 +1179,72 @@ fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
             println!(
                 "keytrap seed {}: {} queries, {keys} for the keys, clean {}",
                 seed.0, run.paid, clean.paid
+            );
+        }
+        {
+            // The budget's leg. The chain of trust to the keys of sidn.nl costs 4 signature checks and the answer's
+            // 2 more (the clean run is secure at 6, indeterminate at 5: the budget says nothing of the data, D75).
+            // The trapped keys cost none: at the walk's 4 the verdict is bogus, for the digest check of D77 refuses
+            // the set before any signature is checked, and at 3 it is the walk that the budget stops.
+            let walk = |checks| dedens_dnssec::Limits {
+                budget: dedens_dnssec::crypto::Budget::new(
+                    Verifications(checks),
+                    dedens_dnssec::crypto::Budget::DEFAULT_NSEC3_BLOCKS,
+                ),
+                ..dedens_dnssec::Limits::default()
+            };
+            let fresh =
+                |checks| validated(seed, Plot::new(vec![capture.clone()]), (at, walk(checks)));
+            let trap = |checks| {
+                validated(
+                    seed,
+                    trapped(Plot::new(vec![capture.clone()])),
+                    (at, walk(checks)),
+                )
+            };
+            let (secure, starved) = (fresh(6), fresh(5));
+            assert_eq!(
+                secure.message.rcode(),
+                Rcode::NOERROR,
+                "{:?}",
+                secure.message
+            );
+            assert!(
+                secure.message.header.flags.contains(Flags::AD),
+                "{:?}",
+                secure.message
+            );
+            assert_eq!(
+                starved.message.rcode(),
+                Rcode::SERVFAIL,
+                "{:?}",
+                starved.message
+            );
+            assert_eq!(ede(&starved.message), Some(InfoCode::DNSSEC_INDETERMINATE));
+            let (bogus, indeterminate) = (trap(4), trap(3));
+            assert_eq!(
+                bogus.message.rcode(),
+                Rcode::SERVFAIL,
+                "{:?}",
+                bogus.message
+            );
+            assert_eq!(ede(&bogus.message), Some(InfoCode::DNSSEC_BOGUS));
+            assert_eq!(indeterminate.message.rcode(), Rcode::SERVFAIL);
+            assert_eq!(
+                ede(&indeterminate.message),
+                Some(InfoCode::DNSSEC_INDETERMINATE)
+            );
+            for run in [&bogus, &indeterminate] {
+                assert!(
+                    run.paid <= clean.paid + 1,
+                    "{} queries, {} clean",
+                    run.paid,
+                    clean.paid
+                );
+            }
+            println!(
+                "keytrap seed {}: trap with a budget of 4 {} queries bogus, of 3 {} queries indeterminate",
+                seed.0, bogus.paid, indeterminate.paid
             );
         }
     });
