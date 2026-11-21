@@ -1500,7 +1500,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     touched.
   - Caching: every `RRset` of `Scrubbed::ranked` at the scrubber's rank (D192, D193); the referral's NS as of the
     resolution's start when the delegation asked came from the cache, else now (Unbound's `store_rrsets`, D193).
-    Negative answers are not cached (step 12). An address that came as glue keeps the glue's rank when answered
+    Negative answers are cached by D199's entries. An address that came as glue keeps the glue's rank when answered
     (D193's pin), so a later client question for it is asked again.
   - Servers: the first `servers` names of a referral's NS `RRset`; each name's addresses are its glue, else those
     cached; `InfraCache::select` draws among those not tried (and those timed out, D196). When none is left, a
@@ -1564,7 +1564,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     referrals built from the captured ones, every query timing out, or captured responses changed; each change is
     written in its test.
   - Not here: the stage and its transport binding (08), DNSSEC (10), QNAME minimisation (11, D198), negative
-    caching (12), a last resort to the root when a cached delegation fails.
+    caching (D199), a last resort to the root when a cached delegation fails.
 - D192 (builds on D188) The recursive resolver scrubs each response before anything reads it:
   `dedens_resolver::scrub(response, question, zone)`, a pure function, keeps what a server asked as authoritative for
   `zone` may say (RFC 2181 §6.1, RFC 5452 §6) and sorts it into an `Outcome`: `Answer`, `Signatures` (the answer
@@ -1649,12 +1649,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   trusting the server's CNAME beside a DNAME; following a chain out of the zone (Kaminsky, RFC 5452 §6); keeping an
   answer without AA ranked lower, as Unbound (a cache would hold data no zone's server vouched for; reopened if real
   captures show servers answering their zones without AA, `docs/TODECIDE.md`).
-- D193 (amends D116; builds on D22, D124) The recursive resolver's `RRset` cache, `dedens_resolver::RrsetCache`
+- D193 (amends D116; amended by D199; builds on D22, D124) The recursive resolver's `RRset` cache, `dedens_resolver::RrsetCache`
   (recursive step 06), in the new crate `dedens-resolver`:
   - Key and value. An `RRset` (RFC 2181 §5) under its owner name lowered (RFC 4343), type and class; the value an
     `Arc<Rrset>` (records and the RRSIGs covering them, owned), its rank, the validator's verdict
-    (`dedens_cache::Checked`: unchecked, secure, insecure, bogus) and its expiry. The value is an enum of one variant,
-    so the negative entries of step 12 share the key space. `Rrset::group` builds the `RRsets` of a section, each
+    (`dedens_cache::Checked`: unchecked, secure, insecure, bogus) and its expiry. The value is an enum (D199 adds negative
+    answers and failures held), so every kind of entry shares the key space. `Rrset::group` builds the `RRsets` of a section, each
     record finding its `RRset` by hash and each RDATA its duplicate by hash (work linear in the records but for the
     sort of each `RRset`, memory linear): the QTYPEs, meta types and QCLASSes dropped (RFC 6895 §3.1, §3.2),
     duplicates dropped, names in RDATA compared in any case, the RDATA sorted by its bytes with ASCII letters folded
@@ -1802,7 +1802,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     always (RFC 5452 §4.4); a `480 s` blacklist, which Unbound's `BLACKLIST_PENALTY` is not: 480,000 ms added to a
     server's RTT for one query (`iterator/iterator.c`), the iterator's (step 04) to apply.
     Open: times per (address, zone) if a server is measured slow for one zone only (TODECIDE).
-- D195 (amended by D197, D200, D201; builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
+- D195 (amended by D197, D199, D200, D201; builds on D41, D86, D117, D190, D191, D193, D194) The recurse stage (recursive step 08): `dedensd` resolves
   from the root, `Stage::Recurse` behind the cache stage where a forwarder has a forward stage.
   - Shape: `dedens_server::Recurse` holds the resolver's caches (`Arc<Caches>`: RRsets D193, servers D194, the root
     and TLD hints D126), `Limits` (D191), the locally served zones and the client budget. Sans-IO as the rest of the
@@ -1901,8 +1901,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `dedensd_recurse_shed_total`; gauges `dedensd_recurse_{rrset,infra}_cache_{entries,bytes}`, set after
     each resolution; D191's `dedens_resolver_limits_total{limit}`.
   - Left to later steps or open: no prefetch nor stale refresh with a recurse stage (the cache stage's refresh
-    finds no forward stage and only replies), and `prewarm` needs a forward stage (TODECIDE); validation (step 10),
-    negative caching (12); QNAME minimisation is D198's.
+    finds no forward stage and only replies), and `prewarm` needs a forward stage (TODECIDE); validation (step 10) is D197's, QNAME
+    minimisation D198's, negative caching D199's; D199 adds the `aggressive_nsec` setting (default true).
   - Tests: `crates/dedens-server/tests/recurse.rs` (each capture of `testdata/recursion` through the pipeline, the
     cache stage answering it again; TTL bounds; DO; priming; the local zones; the budget),
     `crates/dedens-sim/tests/recurse.rs` (`dedensd`'s loop on the captured servers' simulated Internet: priming
@@ -2053,7 +2053,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     machines, limits per question: a client question could cost 64 resolutions); Unbound's quota per validator
     fetch (64 questions of 32 queries); judging cached verdicts again (the signature memo, D86, makes it cheap, but
     the verdict is held already); stale data for a bogus answer (the data is what failed).
-- D198 (builds on D191, D195) The recursive resolver minimises its questions (recursive step 11, RFC 9156),
+- D198 (amended by D199; builds on D191, D195) The recursive resolver minimises its questions (recursive step 11, RFC 9156),
   relaxed by default: privacy without the failures strict mode meets on servers that deny empty non-terminals.
   - Shape: `dedens_resolver::Minimisation { Off, Relaxed, Strict }`, the fifth argument of `Resolution::start`;
     `Recurse::with_minimisation` (default `Relaxed`); `dedensd`'s `recurse` stage `qname_minimisation: relaxed |
@@ -2080,7 +2080,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     minimised one: a resolution waiting on another's minimised query reads the reply against its own question.
   - Deviations from Unbound and from the step: relaxed NXDOMAIN asks the full name where Unbound ends on a name it
     expects signed (no validation yet, step 10); a minimised name answered from the cache is asked again where
-    Unbound skips cached NOERROR, left to negative caching (step 12, which also brings RFC 8020's NXDOMAIN cut);
+    Unbound skips cached NOERROR, negative caching (D199) skips it for a NODATA cached by name and type, and RFC 8020's NXDOMAIN cut for a secure NXDOMAIN;
     no shortcut for underscore labels (§2.3 MAY); the full name's QTYPE is the client's where Unbound asks A first
     for other types; the step asked NXDOMAIN on a minimised name to end the resolution in every mode, which only
     strict does, the relaxed mode's point being the servers that deny empty non-terminals.
@@ -2096,6 +2096,80 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: strict by default (RFC 9156 §1 reports relaxed causes almost no failures, strict some); a bound per
     zone (the per-name count with `Limits::queries` bounds the whole); `Limits` fields for the counts (RFC 9156
     and Unbound fix them; nobody tunes them).
+- D199 (amends D193, D195, D198; builds on D22, D74, D77, D124, D191, D197) The recursive resolver caches negative
+  answers and resolution failures (recursive step 12): RFC 2308 §5, RFC 8020 §2, RFC 8198 §4-§5, RFC 9520 §3.2.
+  - Entries. `Entry` of D193 gains two variants in the same `Store`, so the byte budget (D116) and the eviction
+    stay one. `Absent`: the SOA and the denial records (NSEC, NSEC3) of one negative answer, their ranks, the
+    verdict and the expiry, under a key of `0x80` (no wire name starts above 63), the name lowered, and the type
+    asked for a NODATA, ANY for an NXDOMAIN. `Held`: a failure, under `0x81`, the name, the type and a server set.
+    `KEY_LEN` is 1 + 255 + 2 + 8. A positive lookup ignores both; an entry over `entry_limit` is not cached; the
+    cost is the `Rrset`s' (`tests/memory.rs`). A new entry replaces a held one that expired, that is less trusted (secure over
+    not secure) or of the same trust with other data; a less trusted one is dropped.
+  - What is stored, when. The client's question only, when its resolution settles: a NODATA or an NXDOMAIN judged
+    secure or insecure (D197), or, with no validator, unchecked. Never bogus, failed, without SOA (D192), YXDOMAIN
+    or the answer to a lookup of the resolution's own (an address, a cut). The validator's own questions' negative
+    answers (a DS's NODATA) are not stored: their verdict is the validator's end, and it reads no entry (to
+    decide, TODECIDE). With a validator an unchecked entry is ignored. The name is the end of the CNAME chain
+    (the chain itself is the cache's), so a chain's NXDOMAIN is cached under the last target.
+  - TTL (RFC 2308 §5): the least of the SOA's TTL, its MINIMUM field and the sets' TTLs, as `Config::negative_lifetime`
+    bounds it: `min_ttl` raised to for unchecked or insecure, none for secure, `max_negative_ttl` (3 hours,
+    D124) at most, and `bogus_ttl` and `max_insecure_ttl` as for any set. An entry's sets are all served with the
+    time it has left. Unbound: `max_negative_ttl` 1 hour by default, the same least of two (`dns_cache_store`).
+  - Lookup (`Resolution::begin`, after the positive entry and a CNAME, before `closest`): the NODATA under (name,
+    type), the NXDOMAIN under (name, ANY), RFC 8020 §2: the NXDOMAIN of an ancestor (not the root's), then RFC 8198:
+    the spans. Every hit is logged at `debug!` and counted: `dedens_resolver_denials_total{source=exact |
+    below_nxdomain | aggressive}`. The answer is the entry's SOA and denial records, with the chain the resolution
+    held.
+  - RFC 8020 §2: only a secure NXDOMAIN denies the names below it. Unbound's `harden-below-nxdomain` (default yes,
+    `services/cache/dns.c`) does too, from the secure message only, not above the stub's or a forward zone's
+    cut, and marks the synthesised answer unchecked so the validator runs again; here the entry's proof stays
+    attached and is served as it was, not validated again, within its TTL. An insecure NXDOMAIN (an unsigned
+    zone, or a signed one under an opt-out span) denies the one name: no proof says its server answers as RFC 8020
+    asks, and a wrong cached NXDOMAIN would deny a whole subtree.
+  - RFC 8198: `Spans`, an index kept by `RrsetCache::insert` for each secure NSEC or NSEC3 `RRset` whose signer is
+    above its owner (the apex): per apex, the NSEC owners in canonical order (RFC 4034 §6.1) or the NSEC3 hashes
+    (one salt and iteration count, SHA-1 only, at most 150, as D74's `MaxIterations`; a zone whose parameters
+    change starts again). It holds names only: `aggressive::synthesise` fetches the neighbours' `RRset`s, each fresh
+    and secure, and the zone's SOA (secure), and hands them to `dedens_dnssec::denial::prove`, the validator's own
+    proof (D74), for the name and type: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN
+    (not the compact form, which has no NXDOMAIN), NODATA and wildcard NODATA are synthesised. Not synthesised: a proof
+    with the opt-out flag (an unsigned delegation may be there, RFC 5155 §6: it never enters the index in practice,
+    an opt-out answer being insecure, but the proof is refused too); a DS, ANY, RRSIG or NXNAME question; a name
+    whose proof needs an NSEC3 hash beyond `NSEC3_BLOCKS` (2048 SHA-1 blocks a lookup, D77's idea); a wildcard
+    that matches (§5.1: the cache does not synthesise the positive answer). The index's bytes (an estimate per name,
+    `Owner` plus its wire length plus a node) are 1/32 of the cache's capacity (`SPANS_SHARE`), taken out of the
+    store's, in shards by apex; over it, the oldest zone of the shard goes whole. A synthesised answer's TTL is the
+    least of the sets', the SOA's MINIMUM included (§5.4).
+  - Switch: `aggressive_nsec: true` by default in the `recurse` stage (`Recurse::aggressive_nsec`,
+    `Resolution::aggressive_nsec`): it is the owner's choice (plan README, choice 5), RFC 8198 being a SHOULD,
+    Unbound's `aggressive-nsec` being on by default as well. Off, only the exact entries and RFC 8020 act.
+  - Unbound (`validator/val_neg.c`) differs: its negative cache (`neg_cache_size`, 1 MiB by default) is a separate
+    store of names and the NSEC `RRset`s stay in the rrset cache, as here, but it reads NSEC3 for DS questions only
+    ("no aggressive use of NSEC3 for now"), accepts an NSEC set that is unchecked with a signature, and
+    synthesises the positive answer from a cached wildcard set. Here NSEC3 serves every type, only a secure set
+    counts, a DS never uses a span (the opt-out insecure delegation of `neg_nsec3_proof_ds` needs the trust
+    anchor's name, `topname`, which a cache has not), and a wildcard answer is not synthesised.
+  - RFC 9520 §3.2: a resolution that ends `Unreachable`, `Network` or `Unusable` (every server of the delegation
+    asked, nothing usable: `Heard::failure`) holds the failure under (name, type, server set): the zone and the first
+    `Limits::servers` of its NS names, hashed in any order with a keyed hash, the delegation the resolution would ask. The next resolution of the same question to the same set ends at once with that failure,
+    logged and counted (`dedens_resolver_failure_holds_total{outcome=recorded | served}`), until the hold expires.
+    The hold is `failure_min` (5 s by default, 1 s at least, §3.2) and doubles for each failure after one expired,
+    to `failure_max` (5 minutes at most, §3.2); a failure during a hold is not counted; a quiet spell longer than
+    `failure_max` starts again (D43's schedule, one rule in two caches). `Limit`, `Bogus` and `Indeterminate` are
+    not held: a limit is the question's own, and a bogus answer is asked again of other servers (D197). The
+    server set is part of the key so that a delegation that changed, or another name's servers, is asked. Unbound
+    holds nothing per question: its infra cache backs each server off (D194) and `serve-expired` is another matter.
+  - Rejected: a separate negative cache (a second budget; Unbound's); RFC 8020 from an insecure NXDOMAIN (Unbound
+    does not either); validating the synthesised answer again (the proof is already secure and attached, a second
+    validation spends the budget of D117 for the same verdict); synthesising from unchecked NSEC records
+    (Unbound does: a record whose signature nobody checked proves nothing); the hold per server (D194's) or per
+    name alone (a failing server set would be asked for each other type).
+  - Tests: `crates/dedens-resolver/tests/negative.rs` (the captured NXDOMAIN of sidn.nl with NSEC, of nl with NSEC3,
+    an opt-out zone's insecure answer, NODATA of signed and unsigned zones): an entry per name and type, the TTL
+    bounds, a name below a secure NXDOMAIN not asked and below an insecure one asked, a second name in a span
+    answered without a query (NSEC and NSEC3, any type, with the switch off asked, a name not covered asked), a
+    failing set held, backing off to `failure_max`, not held for another type, a limit not held;
+    `tests/memory.rs` with the spans and negative entries; `apps/dedensd/src/config/recurse.rs` the setting.
 - D200 (amends D72, D73, D127, D128, D195) The recursive resolver follows the root's trust anchors through a key
   rollover by RFC 5011 (recursive step 13), from the root's DNSKEY `RRset` it asks itself; the signed download
   (D127, D128) seeds it. A server that missed a rollover's download (IANA unreachable, a file refused) follows
