@@ -28,8 +28,10 @@ use rand_core::CryptoRng;
 use thiserror::Error;
 use tracing::debug;
 
+use crate::aggressive;
 use crate::infra_cache::{self, Choice, InfraCache, Marks};
-use crate::metrics::Sent;
+use crate::metrics::{self, Denial, Hold, Sent};
+use crate::negative::{Denied, Kind, ServerSet};
 use crate::rank::Rank;
 use crate::rrset::{self, Rrset};
 use crate::rrset_cache::{Ranked, RrsetCache};
@@ -431,6 +433,9 @@ pub struct Resolution {
     limits: Limits,
     /// Whether a server at a special-purpose address is asked ([`Resolution::asking_local_addresses`]).
     local: bool,
+    /// Whether a name the secure NSEC and NSEC3 records held prove absent is answered without a query
+    /// ([`Resolution::aggressive_nsec`]).
+    aggressive: bool,
     minimisation: Minimisation,
     /// When it started, for [`Limits::time`].
     started: Duration,
@@ -754,6 +759,8 @@ impl Heard {
 struct Delegation {
     zone: Name<'static>,
     source: Source,
+    /// Which servers these are, for holding their failure (D199).
+    set: ServerSet,
     /// The addresses known, asked or not, the shunned ones too so that none comes back.
     known: HashSet<IpAddr>,
     /// The addresses known that are shunned (D197): they stay out of the [`MAX_ADDRESSES`].
@@ -779,6 +786,7 @@ impl Delegation {
     fn new(
         zone: Name<'static>,
         source: Source,
+        set: ServerSet,
         addresses: impl IntoIterator<Item = IpAddr>,
         missing: Vec<Name<'static>>,
         local: bool,
@@ -786,6 +794,7 @@ impl Delegation {
         let mut delegation = Self {
             zone,
             source,
+            set,
             known: HashSet::new(),
             shunned: HashSet::new(),
             untried: Vec::new(),
@@ -869,6 +878,7 @@ impl Resolution {
             caches,
             limits,
             local: false,
+            aggressive: true,
             minimisation,
             started: now,
             started_secs: secs(now),
@@ -902,6 +912,16 @@ impl Resolution {
     #[must_use]
     pub const fn asking_local_addresses(mut self, ask: bool) -> Self {
         self.local = ask;
+        self
+    }
+
+    /// Has it answer from the secure NSEC and NSEC3 records the cache holds, if `on`, a name they prove absent, or
+    /// without the type asked, without a query (RFC 8198, D199). On by default, as Unbound's `aggressive-nsec` and
+    /// BIND's `synth-from-dnssec`. Like [`Resolution::asking_local_addresses`] it is the resolution's, not the
+    /// caches': a reload that changes it keeps them.
+    #[must_use]
+    pub const fn aggressive_nsec(mut self, on: bool) -> Self {
+        self.aggressive = on;
         self
     }
 
@@ -1216,6 +1236,17 @@ impl Resolution {
                     crate::metrics::limit(limit);
                     self.limit.get_or_insert(limit);
                 }
+                if matches!(
+                    failure,
+                    Failure::Unreachable | Failure::Network | Failure::Unusable
+                ) {
+                    // The servers failed this question, not a bound of ours: it is not asked of them again
+                    // at once (RFC 9520 §3.2, D199).
+                    debug!(name = %asked.name, rtype = %asked.qtype, ?failure, "failure held");
+                    metrics::hold(Hold::Recorded);
+                    let (name, qtype, set) = (&asked.name, asked.qtype, delegation.set);
+                    self.caches.rrsets.hold(name, qtype, set, failure, now_secs);
+                }
                 self.finish(Resolved::Failed(failure), now_secs);
             }
         }
@@ -1270,8 +1301,44 @@ impl Resolution {
         {
             return self.restart(vec![cname], target);
         }
+        let aggressive = self.aggressive;
+        let denial = cached_denial(rrsets, name, qtype, validating, now).or_else(|| {
+            let (kind, denied) =
+                aggressive.then(|| aggressive::synthesise(rrsets, name, qtype, now))??;
+            Some((Denial::Aggressive, kind, denied))
+        });
+        if let Some((source, kind, denied)) = denial {
+            debug!(%name, rtype = %qtype, ?source, "negative answer from the cache");
+            metrics::denial(source);
+            let task = self.tasks.active();
+            let chain = std::mem::take(&mut task.chain);
+            let mut denials = std::mem::take(&mut task.denials);
+            let Denied {
+                soa,
+                denials: proof,
+            } = denied;
+            denials.extend(proof);
+            let answer = match kind {
+                Kind::NxDomain => Resolved::NxDomain {
+                    chain,
+                    soa,
+                    denials,
+                },
+                Kind::NoData(_) => Resolved::NoData {
+                    chain,
+                    soa,
+                    denials,
+                },
+            };
+            return self.finish(answer, now);
+        }
         let parent = qtype == RecordType::DS;
         let delegation = closest(&caches, name, parent, &self.limits, self.local, now);
+        if let Some(failure) = rrsets.held(name, qtype, delegation.set, now) {
+            debug!(%name, rtype = %qtype, ?failure, "asked of these servers a moment ago, which failed");
+            metrics::hold(Hold::Served);
+            return self.finish(Resolved::Failed(failure), now);
+        }
         if let Some(task) = self.tasks.looping(&delegation.zone) {
             return self.abandon(&task);
         }
@@ -1458,7 +1525,9 @@ impl Resolution {
     ) -> Delegation {
         let mut known = Vec::new();
         let mut missing = Vec::new();
-        for name in servers(&ns.rrset, self.limits.servers) {
+        let names: Vec<Name<'static>> = servers(&ns.rrset, self.limits.servers).collect();
+        let set = self.caches.rrsets.server_set(&zone, &names);
+        for name in names {
             let glued = glue.iter().filter(|set| *set.rrset.owner() == name);
             let mut at: Vec<IpAddr> = glued.flat_map(|set| addresses(&set.rrset)).collect();
             if at.is_empty() {
@@ -1469,7 +1538,7 @@ impl Resolution {
             }
             known.extend(at);
         }
-        Delegation::new(zone, Source::Parent, known, missing, self.local)
+        Delegation::new(zone, Source::Parent, set, known, missing, self.local)
     }
 
     /// Records what the server asked did, for the failure of its delegation.
@@ -1703,6 +1772,34 @@ impl Resolution {
                 Checked::Secure | Checked::Insecure => {}
             }
         }
+        let key = denial_key(&self.tasks.client.question, &outcome);
+        self.settle(outcome, key, now);
+    }
+
+    /// Ends the resolution with `outcome`, which the cache keeps if it is a negative answer stored under `key`
+    /// ([`denial_key`]) that nothing doubts: judged secure or insecure, or, without a validator, as received. Never
+    /// one judged bogus, which is not an outcome by then, nor one the validator was not asked to judge; the
+    /// validator's own questions end in [`Resolution::answered`] before this, so their denials are not kept (D199).
+    fn settle(&mut self, outcome: Resolved, key: Option<(Name<'static>, Kind)>, now: u32) {
+        if let Some((name, kind)) = key {
+            let checked = outcome.checked();
+            let sound = match checked {
+                Checked::Secure | Checked::Insecure => true,
+                Checked::Unchecked => self.validator.is_none(),
+                Checked::Bogus(_) => false,
+            };
+            if let (
+                true,
+                Resolved::NxDomain { soa, denials, .. } | Resolved::NoData { soa, denials, .. },
+            ) = (sound, &outcome)
+            {
+                let stored = self
+                    .caches
+                    .rrsets
+                    .insert_negative(&name, kind, soa, denials, checked, now);
+                debug!(%name, ?kind, ?checked, ?stored, "negative answer stored");
+            }
+        }
         debug!(?outcome, "resolution done");
         self.settled = Some(Settled::Done(outcome));
     }
@@ -1731,6 +1828,7 @@ impl Resolution {
                 self.spent = Some(validation.cost());
                 let answer = bogus(&validation, outcome.rrsets());
                 let proofs = bogus(&validation, fetched.iter());
+                let key = denial_key(&question, &outcome);
                 self.record(fetched.iter(), &validation, now);
                 let outcome = match self.judged(outcome, verdict, &validation, now) {
                     Resolved::Failed(Failure::Bogus(code))
@@ -1747,8 +1845,7 @@ impl Resolution {
                     }
                     outcome => outcome,
                 };
-                debug!(?outcome, "resolution done");
-                self.settled = Some(Settled::Done(outcome));
+                self.settle(outcome, key, now);
             }
         }
     }
@@ -2115,7 +2212,9 @@ fn closest(
         if let Some(ns) = caches.rrsets.get(&zone, RecordType::NS, Class::IN, now) {
             let mut addresses = Vec::new();
             let mut missing = Vec::new();
-            for server in servers(&ns.rrset, limits.servers) {
+            let names: Vec<Name<'static>> = servers(&ns.rrset, limits.servers).collect();
+            let set = caches.rrsets.server_set(&zone, &names);
+            for server in names {
                 let known = cached_addresses(&caches.rrsets, &server, now);
                 if known.is_empty() {
                     missing.push(server);
@@ -2125,18 +2224,18 @@ fn closest(
             if addresses.iter().any(|&address| local || askable(address)) {
                 debug!(%zone, "delegation from the cache");
                 let zone = zone.into_owned();
-                return Delegation::new(zone, Source::Cache, addresses, missing, local);
+                return Delegation::new(zone, Source::Cache, set, addresses, missing, local);
             }
         }
         if zone.label_count() == 1
             && let Some(tld) = caches.tlds.as_ref().and_then(|tlds| tlds.get(&zone))
         {
             debug!(%zone, "delegation from the TLD hints");
-            return hinted(zone.into_owned(), tld.servers(), local);
+            return hinted(&caches.rrsets, zone.into_owned(), tld.servers(), local);
         }
     }
     debug!("delegation from the root hints");
-    hinted(Name::root(), caches.roots.servers(), local)
+    hinted(&caches.rrsets, Name::root(), caches.roots.servers(), local)
 }
 
 /// Whether a server at `address` may be asked unless [`Resolution::asking_local_addresses`] is set, which asks any: one
@@ -2207,6 +2306,68 @@ fn sets(records: &[Record<'_>], kept: &[Ranked]) -> Vec<Ranked> {
     sets
 }
 
+/// The negative answer the cache holds for `name` and `qtype`, and where it comes from: its own (RFC 2308 §5), or a
+/// name above it that does not exist, below which nothing does (RFC 8020 §2). The first is taken if it was judged as
+/// the resolution needs, that is secure or insecure when it validates; the second only if secure, for a name
+/// whose nonexistence a signature proves says as much of every name below it (D199), whether or not it validates.
+fn cached_denial(
+    rrsets: &RrsetCache,
+    name: &Name<'_>,
+    qtype: RecordType,
+    validating: bool,
+    now: u32,
+) -> Option<(Denial, Kind, Denied)> {
+    let sound = |denied: &Denied| match denied.soa.checked {
+        Checked::Secure | Checked::Insecure => true,
+        Checked::Unchecked => !validating,
+        Checked::Bogus(_) => false,
+    };
+    let exact = [Kind::NoData(qtype), Kind::NxDomain]
+        .into_iter()
+        .filter(|kind| *kind != Kind::NoData(RecordType::ANY))
+        .find_map(|kind| {
+            let denied = rrsets.negative(name, kind, now).filter(sound)?;
+            Some((Denial::Exact, kind, denied))
+        });
+    if exact.is_some() {
+        return exact;
+    }
+    let mut buf = [0; MAX_NAME_LEN];
+    let wire = name.to_wire(&mut buf);
+    // Each name above, nearest first, the root excluded, borrowed from the wire form as `closest` does.
+    let mut at = wire.first().map(|&length| 1 + usize::from(length))?;
+    while let Some(&length) = wire.get(at).filter(|&&length| length != 0) {
+        let above = wire.get(at..).map(Name::from_uncompressed);
+        at += 1 + usize::from(length);
+        if let Some(Ok(above)) = above
+            && let Some(denied) = rrsets
+                .negative(&above, Kind::NxDomain, now)
+                .filter(|denied| denied.soa.checked == Checked::Secure)
+        {
+            return Some((Denial::BelowNxdomain, Kind::NxDomain, denied));
+        }
+    }
+    None
+}
+
+/// The name and kind a negative `outcome` to `question` is stored under: the name the chain of CNAMEs leads to,
+/// which is the one the zone denied; none for a chain that ends otherwise (a DNAME's), or an answer that is not
+/// negative, or a denial of ANY, which is not one type's.
+fn denial_key(question: &Question<'_>, outcome: &Resolved) -> Option<(Name<'static>, Kind)> {
+    let (chain, kind) = match outcome {
+        Resolved::NxDomain { chain, .. } => (chain, Kind::NxDomain),
+        Resolved::NoData { chain, .. } if question.qtype != RecordType::ANY => {
+            (chain, Kind::NoData(question.qtype))
+        }
+        _ => return None,
+    };
+    let name = match chain.last() {
+        None => question.name.clone().into_owned(),
+        Some(last) => target(&last.rrset)?,
+    };
+    Some((name, kind))
+}
+
 /// The name a CNAME `RRset` of one record leads to.
 fn target(cname: &Rrset) -> Option<Name<'static>> {
     match cname.rdatas() {
@@ -2226,7 +2387,8 @@ fn parent(name: &Name<'_>) -> Option<Name<'static>> {
 }
 
 /// The delegation to `zone` that hints give.
-fn hinted(zone: Name<'static>, servers: &[Server], local: bool) -> Delegation {
+fn hinted(rrsets: &RrsetCache, zone: Name<'static>, servers: &[Server], local: bool) -> Delegation {
     let addresses = servers.iter().flat_map(Server::addresses);
-    Delegation::new(zone, Source::Parent, addresses, Vec::new(), local)
+    let set = rrsets.server_set(&zone, std::iter::empty());
+    Delegation::new(zone, Source::Parent, set, addresses, Vec::new(), local)
 }

@@ -1,5 +1,6 @@
 //! A `recurse` stage, as written and built (D195): the resolution's limits (D191) and whether it asks servers at
-//! special-purpose addresses (`query_local_addresses`, D191), its QNAME minimisation (D198),
+//! special-purpose addresses (`query_local_addresses`, D191), its QNAME minimisation (D198), whether it answers
+//! from the NSEC and NSEC3 records cached (`aggressive_nsec`, D199),
 //! the zones served locally to resolve instead (RFC 6303 §3), a client network's share of the queries (D117), the
 //! sizes of its caches (D193, D194), and its validation (D197), set as a forward stage's (D77). A reload keeps its
 //! caches while their sizes, the cache stage's settings and the validation stay, and the share's buckets while its
@@ -38,6 +39,9 @@ pub(super) struct RecurseFile {
     /// `Recurse::asking_local_addresses`.
     #[serde(default)]
     query_local_addresses: bool,
+    /// Whether the secure NSEC and NSEC3 records cached answer the names they prove absent, on unless `false`:
+    /// `Recurse::aggressive_nsec` (RFC 8198, D199).
+    aggressive_nsec: Option<bool>,
     client_share: Option<BudgetFile>,
     rrset_cache_bytes: Option<NonZeroUsize>,
     infra_cache_bytes: Option<NonZeroUsize>,
@@ -224,6 +228,7 @@ pub(super) fn recurse(
     let mut stage = Recurse::new(caches)
         .with_limits(limits)
         .asking_local_addresses(file.query_local_addresses)
+        .aggressive_nsec(file.aggressive_nsec.unwrap_or(true))
         .with_minimisation(file.qname_minimisation.into())
         .with_share(share);
     if let Some(validating) = validating {
@@ -504,6 +509,22 @@ mod tests {
                 panic!("a cache stage, then a recurse stage")
             };
             assert_eq!(recurse.local_addresses(), set, "{written}");
+        }
+    }
+
+    #[test]
+    fn d199_aggressive_nsec_reads_on_by_default() {
+        for (written, set) in [
+            ("", true),
+            ("    aggressive_nsec: true\n", true),
+            ("    aggressive_nsec: false\n", false),
+        ] {
+            let config = format!("{RECURSIVE}{written}");
+            let config = read(&config, env, &Pipeline::default()).expect("valid");
+            let [_, Stage::Recurse(recurse)] = config.pipeline.stages() else {
+                panic!("a cache stage, then a recurse stage")
+            };
+            assert_eq!(recurse.aggressive(), set, "{written}");
         }
     }
 
