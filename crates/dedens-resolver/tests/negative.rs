@@ -1662,6 +1662,39 @@ fn rfc9520_3_2_a_local_send_error_in_an_address_lookup_holds_nothing_of_the_zone
 }
 
 #[test]
+fn rfc9520_3_2_a_delegation_without_an_address_that_failed_is_held_before_its_parent_is_asked() {
+    // `glueless`: org gives the servers of netmeister.org, named under gandi.net, without an address, and gandi.net's
+    // servers time out: netmeister.org fails and its servers are held. The cached delegation has no address, so the
+    // walk from the cache skips it for org's, which would ask org again; the hold is of the servers it names (TsuNAME,
+    // NXNSAttack: a zone whose servers have no address is the attacker's).
+    let capture = capture("glueless");
+    let caches = configured(false, Config::default());
+    steer(&caches, &capture);
+    let authorities = Authorities::new([&capture]);
+    let server = |query: &Query| {
+        if is(&query.zone, "gandi.net.") {
+            Answered::Timeout
+        } else {
+            Answered::Response(captured(&authorities, query))
+        }
+    };
+    let limits = Limits {
+        queries: 1000,
+        servers: 1000,
+        targets: 1000,
+        ..Limits::default()
+    };
+    let mut asking = start(&capture, &caches, limits);
+    let (resolved, sent) = run(&mut asking, &server, at(&capture));
+    assert_eq!(resolved, Resolved::Failed(Failure::Unreachable));
+    assert!(sent.len() > 1, "{sent:?}");
+    let mut asking = start(&capture, &caches, limits);
+    let (resolved, sent) = run(&mut asking, &server, at(&capture));
+    assert_eq!(resolved, Resolved::Failed(Failure::Unreachable));
+    assert_eq!(sent.len(), 0, "{sent:?}");
+}
+
+#[test]
 fn rfc9520_3_2_a_hold_is_never_longer_than_failure_max() {
     let capture = capture("unsigned");
     let config = Config {
