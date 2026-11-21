@@ -1346,7 +1346,21 @@ impl Resolution {
             return self.finish(answer, now);
         }
         let parent = qtype == RecordType::DS;
-        let delegation = closest(&caches, name, parent, &self.limits, self.local, now);
+        let delegation = match closest(
+            &caches,
+            (name, qtype),
+            parent,
+            &self.limits,
+            self.local,
+            now,
+        ) {
+            Ok(delegation) => delegation,
+            Err(failure) => {
+                debug!(%name, rtype = %qtype, ?failure, "asked of the servers of a delegation without an address a moment ago, which failed");
+                metrics::hold(Hold::Served);
+                return self.finish(Resolved::Failed(failure), now);
+            }
+        };
         if let Some(failure) = rrsets.held(name, qtype, delegation.set, now) {
             debug!(%name, rtype = %qtype, ?failure, "asked of these servers a moment ago, which failed");
             metrics::hold(Hold::Served);
@@ -2202,14 +2216,19 @@ fn cached_addresses(rrsets: &RrsetCache, name: &Name<'_>, now: u32) -> Vec<IpAdd
 /// The closest delegation above `name` the caches know, strictly above it if `parent` (the root's hints for the
 /// root): an NS `RRset` with an address that may be asked ([`askable`], any if `local`) for one of its first
 /// [`Limits::servers`] servers, else a TLD's hints, else the root's (RFC 1034 §5.3.3 step 2).
+///
+/// # Errors
+///
+/// The failure held for `question` to the servers of an NS `RRset` closer than that, one with no address that may be
+/// asked, which the walk goes by: the resolution would have asked them, had it an address (D199).
 fn closest(
     caches: &Caches,
-    name: &Name<'_>,
+    (name, qtype): (&Name<'_>, RecordType),
     parent: bool,
     limits: &Limits,
     local: bool,
     now: u32,
-) -> Delegation {
+) -> Result<Delegation, Failure> {
     let mut buf = [0; MAX_NAME_LEN];
     let wire = name.to_wire(&mut buf);
     // Each suffix of the name, longest first and the root last, borrowed from its wire form: a label is its
@@ -2239,18 +2258,38 @@ fn closest(
             if addresses.iter().any(|&address| local || askable(address)) {
                 debug!(%zone, "delegation from the cache");
                 let zone = zone.into_owned();
-                return Delegation::new(zone, Source::Cache, set, addresses, missing, local);
+                return Ok(Delegation::new(
+                    zone,
+                    Source::Cache,
+                    set,
+                    addresses,
+                    missing,
+                    local,
+                ));
+            }
+            if let Some(failure) = caches.rrsets.held(name, qtype, set, now) {
+                return Err(failure);
             }
         }
         if zone.label_count() == 1
             && let Some(tld) = caches.tlds.as_ref().and_then(|tlds| tlds.get(&zone))
         {
             debug!(%zone, "delegation from the TLD hints");
-            return hinted(&caches.rrsets, zone.into_owned(), tld.servers(), local);
+            return Ok(hinted(
+                &caches.rrsets,
+                zone.into_owned(),
+                tld.servers(),
+                local,
+            ));
         }
     }
     debug!("delegation from the root hints");
-    hinted(&caches.rrsets, Name::root(), caches.roots.servers(), local)
+    Ok(hinted(
+        &caches.rrsets,
+        Name::root(),
+        caches.roots.servers(),
+        local,
+    ))
 }
 
 /// Whether a server at `address` may be asked unless [`Resolution::asking_local_addresses`] is set, which asks any: one
