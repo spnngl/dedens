@@ -243,8 +243,9 @@ exclude_re = [
   'rrset_cache\.rs:\d+:\d+: replace > with >= in RrsetCache::insert_negative$',
   # A key longer than the longest: only a name over 255 octets would fill it, which no name is.
   'rrset_cache\.rs:\d+:\d+: replace \+ with [-*]$',
-  # `BTreeSet` orders by `Ord`, never by `PartialEq`, which exists to satisfy `Ord`'s supertraits.
+  # `BTreeSet` orders by `Ord`, never by `PartialEq`, which exist to satisfy `Ord`'s supertraits.
   'spans\.rs:\d+:\d+: replace .* in <impl PartialEq for Owner>::eq$',
+  'spans\.rs:\d+:\d+: replace <impl (PartialEq|PartialOrd) for Owner>::(eq|partial_cmp) -> .*$',
   # The guard of `Hold::again` against a failure heard before the hold began: `again` is called only after `active`
   # found no hold, so a resolution begun before another's failure started the hold is the only way in, and the
   # harness steps one resolution at a time.
