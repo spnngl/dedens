@@ -11,7 +11,7 @@
 //! serve then, or seed a new state; a state whose keys sign the root's no more, where those anchors do, is replaced
 //! by them, its revoked keys kept.
 
-use std::io;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, mpsc};
 
@@ -20,7 +20,7 @@ use dedens_proto::Record;
 
 use crate::config::unix_seconds;
 use crate::download;
-use crate::roots::{open, read_capped};
+use crate::roots::open;
 use crate::sync::{AtomicU64, Ordering};
 
 /// The state of the rollover followed, in `state_dir`.
@@ -417,8 +417,8 @@ enum Fault {
 }
 
 impl Fault {
-    /// `error` of opening or reading the file: its content when `roots::open` and `roots::read_capped` refuse it
-    /// (`InvalidData`, a symbolic link), the system else.
+    /// `error` of opening or reading the file: its content when `roots::open` refuses it (`InvalidData`, a symbolic
+    /// link), the system else.
     fn of(error: io::Error) -> Self {
         // `O_NOFOLLOW` refuses a symbolic link with ELOOP, which `io::ErrorKind` names only on nightly.
         #[cfg(unix)]
@@ -443,8 +443,18 @@ fn read(state_dir: &Path) -> Stored {
         let Some((file, _)) = open(&path).map_err(Fault::of)? else {
             return Ok(None);
         };
-        let bytes = read_capped(file, max).map_err(Fault::of)?;
-        let text = String::from_utf8(bytes).map_err(|error| Fault::Content(error.into()))?;
+        // One byte past the bound: `Rollover::read` judges the length after the header, which tells a newer
+        // version's state, kept whatever its length, from a damaged one.
+        let mut bytes = Vec::new();
+        file.take(max.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(Fault::of)?;
+        let text = if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max {
+            // A cut may split a UTF-8 sequence; `Rollover::read` refuses the text on its header or length alone.
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            String::from_utf8(bytes).map_err(|error| Fault::Content(error.into()))?
+        };
         Rollover::read(&text).map(Some).map_err(|error| {
             if error.unknown_version() {
                 // A newer build's state, kept for it: not damaged.
@@ -771,6 +781,47 @@ pub(crate) mod tests {
                 .wait
                 > RETRY
         );
+    }
+
+    /// D200, RFC 5011 §2.1: the header says a state is of a newer version whatever its length, which a newer build
+    /// may outgrow [`Rollover::MAX_LEN`] with: such a state is kept, not set aside and seeded over, while one of this
+    /// build's version that long is damaged and set aside.
+    #[test]
+    fn a_state_of_an_unknown_version_over_the_length_is_kept_not_seeded_over() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        let path = dir.join(STATE);
+        let padding = "valid\n".repeat(2 * Rollover::MAX_LEN / 6);
+        let newer = format!("dedens rfc5011 2\n{padding}end\n");
+        assert!(newer.len() > 2 * Rollover::MAX_LEN - 6);
+        fs::write(&path, &newer).unwrap();
+
+        let mut kept = Kept::default();
+        assert_eq!(kept.anchors(dir, &seed), seed);
+        let failed = kept.observe(&snapshot("20170716113230"), &seed, dir, JULY_2017);
+        assert_eq!(
+            failed,
+            Observed {
+                wait: RETRY,
+                changed: false
+            }
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), newer);
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1, "nothing set aside");
+
+        // Cut in a multi-byte character (the `x` puts the cut inside one), it is the header that tells.
+        let cut = format!("dedens rfc5011 2\nx{}", "é".repeat(Rollover::MAX_LEN));
+        fs::write(&path, &cut).unwrap();
+        let mut kept = Kept::default();
+        assert_eq!(kept.anchors(dir, &seed), seed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), cut);
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1, "nothing set aside");
+
+        // This build's version, as long, is damaged.
+        fs::write(&path, format!("dedens rfc5011 1\n{padding}end\n")).unwrap();
+        assert_eq!(Kept::default().anchors(dir, &seed), seed);
+        assert!(!path.exists(), "set aside");
+        assert_eq!(set_aside(dir).len(), 1);
     }
 
     /// D200, D122: a state that is a symbolic link is no state: `O_NOFOLLOW` refuses it with ELOOP, which is a
