@@ -79,8 +79,9 @@ const LAG: (Duration, Duration) = (Duration::from_millis(15), Duration::from_mil
 /// minutes and the days of the captures.
 const NOW: u32 = 1;
 
-/// Forgeries per query of the Kaminsky flood.
-const FLOOD: usize = 200;
+/// Forgeries per query of the Kaminsky flood: with the query's answer and the one of the ID, fewer than the 64
+/// datagrams a simulated socket queues (turmoil's `udp_capacity`), so that none is lost before the exchange reads it.
+const FLOOD: usize = 60;
 
 /// The names a Kaminsky attacker draws, one a question.
 const DRAWS: usize = 10;
@@ -438,13 +439,34 @@ fn guess_case(name: &Name<'_>, rng: &mut Rng) -> Name<'static> {
     Name::from_labels(labels.iter().map(Vec::as_slice)).expect("a name")
 }
 
-/// The forgery of Kaminsky's: `genuine`'s question in a guessed case, a guessed ID, the poison as its answer and as
-/// the glue of the zone's server.
-fn kaminsky(genuine: &[u8], rng: &mut Rng) -> Vec<u8> {
+/// What a forgery of Kaminsky's gets right of the query, of what it must match (RFC 5452 §9.1, `0x20`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Guess {
+    /// Neither: a random ID and a random case.
+    Neither,
+    /// The case, which `0x20` hides, not the ID: only the ID check drops it.
+    Case,
+    /// The ID, not the case: only the case check drops it, and the exchange asks again over TCP (D190).
+    Id,
+}
+
+/// The forgery of Kaminsky's: `genuine`'s question, its ID and its case as `guess` says (what is not right is
+/// guessed), the poison as its answer and as the glue of the zone's server.
+fn kaminsky(genuine: &[u8], guess: Guess, rng: &mut Rng) -> Vec<u8> {
     let mut message = decode(genuine);
     let asked = message.questions.first().expect("a question").clone();
-    let name = guess_case(&asked.name, rng);
-    message.header.id = rng.next_u16();
+    let name = match guess {
+        Guess::Neither => guess_case(&asked.name, rng),
+        Guess::Case => asked.name.clone(),
+        Guess::Id => flip_case(&asked.name),
+    };
+    if guess != Guess::Id {
+        // Never the ID of the query: a wrong guess is the point.
+        let right = message.header.id;
+        message.header.id = std::iter::repeat_with(|| rng.next_u16())
+            .find(|id| *id != right)
+            .expect("an ID that is not the query's");
+    }
     message.header.flags = (message.header.flags.with(Flags::AA)).without(Flags::TC);
     message.header.rcode = Rcode::NOERROR;
     message.questions = vec![Question::new(name.clone(), asked.qtype)];
@@ -457,20 +479,68 @@ fn kaminsky(genuine: &[u8], rng: &mut Rng) -> Vec<u8> {
     encode(&message)
 }
 
-/// An attacker that sends `FLOOD` forgeries a query, each within 30 ms of it, racing the real answer.
+/// The name `name` with the case of its first letter flipped: not the case it was sent in.
+fn flip_case(name: &Name<'_>) -> Name<'static> {
+    let mut flipped = false;
+    let labels: Vec<Vec<u8>> = (name.labels())
+        .map(|label| {
+            (label.iter())
+                .map(|byte| {
+                    if !flipped && byte.is_ascii_alphabetic() {
+                        flipped = true;
+                        byte ^ 0x20
+                    } else {
+                        *byte
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    Name::from_labels(labels.iter().map(Vec::as_slice)).expect("a name")
+}
+
+/// Whether the attacker also guesses the ID of the query: it does for the odd names of the draws (`k1`, `k3`...).
+fn lucky(query: &[u8]) -> bool {
+    let asked = decode(query).questions.first().expect("a question").clone();
+    asked
+        .name
+        .labels()
+        .next()
+        .and_then(|label| label.last())
+        .is_some_and(|digit| (digit - b'0') % 2 == 1)
+}
+
+/// The attacker of Kaminsky's on the servers of a zone, which has silenced them: `FLOOD` forgeries a query, of a
+/// random ID with the case of the query or not, and for the odd names one of the query's ID in another case, all
+/// before the real answer, which it sends itself last. Each forgery reaches the exchange waiting for the answer, the
+/// port of the query being given it (RFC 5452 §4.2 has it guess it: stronger than the attack).
 fn flood(rng: Rc<RefCell<Rng>>) -> Attacker {
     Attacker::new(move |seen| {
         let Some(genuine) = seen.genuine else {
             return Reaction::beside(Vec::new());
         };
         let mut rng = rng.borrow_mut();
-        let injections = (0..FLOOD)
-            .map(|_| Injection {
-                after: Duration::from_millis(rng.below(30)),
-                wire: kaminsky(genuine, &mut rng),
+        let mut injections: Vec<Injection> = (0..FLOOD)
+            .map(|i| Injection {
+                after: Duration::ZERO,
+                wire: kaminsky(
+                    genuine,
+                    if i % 2 == 0 { Guess::Neither } else { Guess::Case },
+                    &mut rng,
+                ),
             })
             .collect();
-        Reaction::beside(injections)
+        if lucky(seen.query) {
+            injections.push(Injection {
+                after: Duration::ZERO,
+                wire: kaminsky(genuine, Guess::Id, &mut rng),
+            });
+        }
+        injections.push(Injection {
+            after: TICK,
+            wire: genuine.to_vec(),
+        });
+        Reaction::instead(injections)
     })
 }
 
@@ -522,20 +592,48 @@ fn rfc5452_9_2_a_kaminsky_flood_of_guessed_ids_and_cases_poisons_nothing() {
                 .get(&leaf, RecordType::NS, Class::IN, NOW)
                 .is_some()
         );
-        // The walk from the root once, then a query a name to the zone's server: the flood costs no query.
-        let paid = paid(&heard);
-        let at_leaf = (paid.iter())
-            .filter(|(server, _, _)| leaf_servers.contains(server))
+        // The walk from the root once, then a query a name to the zone's servers, which the attacker silences: they
+        // are counted where the resolver sends them. The flood costs no query, but for the odd names, which have the
+        // exchange ask again over TCP, the one defence left to a forgery with the ID (D190).
+        let walk = (paid(&heard).iter())
+            .filter(|(server, _, _)| !leaf_servers.contains(server))
+            .count();
+        assert_eq!(walk, 2, "the walk to the zone");
+        let sent: Vec<(Transport, u16)> = (events.iter())
+            .filter_map(|event| match &event.what {
+                What::Sent {
+                    server,
+                    transport,
+                    sends,
+                    ..
+                } if leaf_servers.contains(&server.ip()) => Some((*transport, *sends)),
+                _ => None,
+            })
+            .collect();
+        let udp = sent.iter().filter(|(t, _)| *t == Transport::Udp).count();
+        let tcp = sent.iter().filter(|(t, _)| *t == Transport::Tcp).count();
+        // Forgeries and the answer read by each exchange: what the flood did to the waiting exchanges.
+        let arrived = (events.iter())
+            .filter(|event| {
+                matches!(&event.what, What::Arrived { from } if leaf_servers.contains(&from.ip()))
+            })
             .count();
         println!(
-            "kaminsky seed {}: {} queries for {DRAWS} questions, {} forgeries, slowest {:?}",
+            "kaminsky seed {}: {udp} UDP and {tcp} TCP queries for {DRAWS} questions, {} forgeries sent, {arrived} datagrams read, slowest {:?}",
             seed.0,
-            paid.len(),
             injected(&events),
             slowest.get()
         );
-        assert_eq!(paid.len(), DRAWS + 2);
-        assert_eq!(injected(&events), at_leaf * FLOOD);
+        assert_eq!(udp, DRAWS, "one try each: the answer came in time");
+        assert!(
+            sent.iter().all(|(_, sends)| *sends <= 2),
+            "{sent:?}"
+        );
+        assert_eq!(tcp, DRAWS / 2, "the odd names, whose forgery had the ID");
+        assert_eq!(injected(&events), DRAWS * (FLOOD + 1) + DRAWS / 2);
+        // The forgeries reached the exchanges: every datagram sent was read, but for the answers of the odd names,
+        // which the exchange no longer waited for over UDP.
+        assert_eq!(arrived, injected(&events) - DRAWS / 2);
         assert!(
             slowest.get() < Duration::from_millis(500),
             "{:?}",

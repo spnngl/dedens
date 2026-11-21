@@ -186,6 +186,8 @@ impl Io for Sim {
             socket: UdpSocket::bind(addr).await?,
             peer: Cell::new(None),
             glitches: Rc::clone(&self.glitches),
+            host: self.host,
+            trace: self.trace.clone(),
         })
     }
 
@@ -211,6 +213,17 @@ pub struct SimUdp {
     socket: UdpSocket,
     peer: Cell<Option<SocketAddr>>,
     glitches: Rc<Glitches>,
+    host: IpAddr,
+    trace: Trace,
+}
+
+impl SimUdp {
+    /// Records that a datagram of the connected peer was read.
+    fn arrived(&self) {
+        if let Some(from) = self.peer.get() {
+            self.trace.record(self.host, What::Arrived { from });
+        }
+    }
 }
 
 impl Udp for SimUdp {
@@ -231,7 +244,10 @@ impl Udp for SimUdp {
             return BufResult(Err(io::ErrorKind::ConnectionRefused.into()), buffer);
         }
         match received {
-            Ok((len, _)) => fill(buffer, scratch.get(..len).unwrap_or_default()),
+            Ok((len, _)) => {
+                self.arrived();
+                fill(buffer, scratch.get(..len).unwrap_or_default())
+            }
             Err(error) => BufResult(Err(error), buffer),
         }
     }
@@ -246,6 +262,7 @@ impl Udp for SimUdp {
         if Glitches::take(&self.glitches.receives) {
             return Err(io::ErrorKind::ConnectionRefused.into());
         }
+        self.arrived();
         Ok(len)
     }
 

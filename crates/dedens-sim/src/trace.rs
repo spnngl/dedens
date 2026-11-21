@@ -112,6 +112,13 @@ pub enum What {
         /// The delay the attacker was given.
         after: Duration,
     },
+    /// A host read a datagram off a connected UDP socket, a query's, from the server it is connected to: what
+    /// reached the exchange waiting on it, genuine or forged, readable or not. Its length is not recorded (see
+    /// the module docs).
+    Arrived {
+        /// The server the socket is connected to, and the datagram's sender.
+        from: SocketAddr,
+    },
     /// The scenario changed the network or a host. Recorded on the unspecified address: the network.
     Fault(Fault),
 }
