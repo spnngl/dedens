@@ -7,13 +7,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dedens_cache::Config;
+use dedens_cache::{Checked, Config, Cost};
 use dedens_dnssec::crypto::Budget;
 use dedens_dnssec::denial::{canonical_cmp, owner_hash};
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::rdata::{Nsec3, RData};
-use dedens_proto::{Message, Name, Question, RecordType};
-use dedens_resolver::{Caches, Failure, Limits, Minimisation, Resolution, Resolved};
+use dedens_proto::{Class, Message, Name, Question, Record, RecordType, Ttl};
+use dedens_resolver::{
+    Caches, Failure, Kind, Limits, Minimisation, Rank, Ranked, Resolution, Resolved, Rrset,
+    RrsetCache,
+};
 use dedens_testkit::recursion;
 
 use crate::iteration::{Answered, at, configured, name, response, run, served, start};
@@ -165,6 +168,183 @@ fn denial(id: &str, zone: &str, asked: &str) -> Message<'static> {
     response(&capture(id), zone, asked)
 }
 
+/// The SOA of the negative answer of `zone`'s server to `asked` in capture `id`, as a cache holds it for `ttl`.
+fn ranked_soa(id: &str, zone: &str, asked: &str, ttl: u32) -> Ranked {
+    let soa = Rrset::group(&denial(id, zone, asked).authority)
+        .into_iter()
+        .find(|set| set.rtype() == RecordType::SOA)
+        .expect("an SOA RRset");
+    Ranked {
+        rrset: Arc::new(soa),
+        rank: Rank::AuthorityAuthoritative,
+        checked: Checked::Unchecked,
+        ttl: Ttl::from_wire(ttl),
+    }
+}
+
+/// The least TTL a negative answer in `cache` under `owner` has at `now`, `None` if it holds none.
+fn left(cache: &RrsetCache, owner: &Name<'_>, now: u32) -> Option<(u32, String)> {
+    let held = cache.negative(owner, Kind::NxDomain, now)?;
+    Some((held.soa.ttl.get(), held.soa.rrset.owner().to_string()))
+}
+
+#[test]
+fn d199_a_negative_answer_judged_secure_gives_way_to_nothing_less() {
+    let cache = RrsetCache::new(1 << 20, Config::default()).expect("a cache");
+    let owner = name("dedens-nxdomain.google.com.");
+    let google = ranked_soa(
+        "nxdomain-unsigned",
+        "google.com.",
+        "dedens-nxdomain.google.com.",
+        60,
+    );
+    let sidn = ranked_soa(
+        "nxdomain-signed",
+        "sidn.nl.",
+        "dedens-nxdomain.sidn.nl.",
+        60,
+    );
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &google, &[], Checked::Secure, 0)
+        .expect("stored");
+    for checked in [Checked::Insecure, Checked::Unchecked] {
+        cache
+            .insert_negative(&owner, Kind::NxDomain, &sidn, &[], checked, 0)
+            .expect("stored");
+        assert_eq!(
+            left(&cache, &owner, 0),
+            Some((60, "google.com.".into())),
+            "{checked:?} replaced secure"
+        );
+    }
+    // Secure data replaces secure data of another content, the latest heard of.
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &sidn, &[], Checked::Secure, 0)
+        .expect("stored");
+    assert_eq!(left(&cache, &owner, 0), Some((60, "sidn.nl.".into())));
+}
+
+#[test]
+fn d199_an_unchecked_negative_answer_gives_way_to_a_verdict_and_the_same_data_does_not_renew() {
+    let cache = RrsetCache::new(1 << 20, Config::default()).expect("a cache");
+    let owner = name("dedens-nxdomain.google.com.");
+    let google = ranked_soa(
+        "nxdomain-unsigned",
+        "google.com.",
+        "dedens-nxdomain.google.com.",
+        60,
+    );
+    let sidn = ranked_soa(
+        "nxdomain-signed",
+        "sidn.nl.",
+        "dedens-nxdomain.sidn.nl.",
+        60,
+    );
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &google, &[], Checked::Unchecked, 0)
+        .expect("stored");
+    // Another unchecked answer replaces it: the last heard of.
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &sidn, &[], Checked::Unchecked, 0)
+        .expect("stored");
+    assert_eq!(left(&cache, &owner, 0), Some((60, "sidn.nl.".into())));
+    // The same data, judged insecure, replaces it...
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &sidn, &[], Checked::Insecure, 10)
+        .expect("stored");
+    assert_eq!(
+        left(&cache, &owner, 10),
+        Some((60, "sidn.nl.".into())),
+        "the verdict gave way to nothing"
+    );
+    // ... and the same data again, with the same verdict, does not renew it.
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &sidn, &[], Checked::Insecure, 30)
+        .expect("stored");
+    assert_eq!(
+        left(&cache, &owner, 30),
+        Some((40, "sidn.nl.".into())),
+        "renewed"
+    );
+    // Another verdict's data of the same kind: Insecure replaces by another Insecure, not by Unchecked.
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &google, &[], Checked::Unchecked, 30)
+        .expect("stored");
+    assert_eq!(left(&cache, &owner, 30), Some((40, "sidn.nl.".into())));
+    // Once expired, anything replaces it.
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &google, &[], Checked::Unchecked, 71)
+        .expect("stored");
+    assert_eq!(left(&cache, &owner, 71), Some((60, "google.com.".into())));
+}
+
+#[test]
+fn d199_a_negative_answer_costs_what_its_sets_do() {
+    let owner = name("dedens-nxdomain.google.com.");
+    let soa = ranked_soa(
+        "nxdomain-unsigned",
+        "google.com.",
+        "dedens-nxdomain.google.com.",
+        60,
+    );
+    let sets = soa.rrset.cost();
+    let cache = RrsetCache::new(1 << 20, Config::default()).expect("a cache");
+    let before = cache.used();
+    cache
+        .insert_negative(&owner, Kind::NxDomain, &soa, &[], Checked::Secure, 0)
+        .expect("stored");
+    // The sets, and the entry's own bytes, its key and slot: some hundreds.
+    let held = cache.used() - before;
+    assert!(
+        (sets..sets + 600).contains(&held),
+        "{held} bytes for sets of {sets}"
+    );
+}
+
+#[cfg(feature = "metrics")]
+#[test]
+fn d199_the_denials_and_the_holds_are_counted() {
+    use metrics_util::debugging::DebuggingRecorder;
+
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, || {
+        let caches = configured(false, Config::default());
+        let capture = capture("nxdomain-signed");
+        let denial = denial("nxdomain-signed", "sidn.nl.", &capture.name.to_string());
+        let second = nsec_spanned(&denial, &capture.name.to_string());
+        first("nxdomain-signed", &caches, true);
+        let text = capture.name.to_string();
+        silent(&caches, (&text, capture.rtype), at(&capture), true);
+        silent(
+            &caches,
+            (&format!("www.{text}"), capture.rtype),
+            at(&capture),
+            true,
+        );
+        silent(&caches, (&second, capture.rtype), at(&capture), true);
+        let unsigned = self::capture("unsigned");
+        let caches = configured(false, Config::default());
+        let name = unsigned.name.to_string();
+        for _ in 0..2 {
+            let mut failing = resolution(&caches, (&name, unsigned.rtype), at(&unsigned), false);
+            run(&mut failing, &|_| Answered::ServerError, at(&unsigned));
+        }
+    });
+    let counters = crate::metrics::counters(&snapshotter);
+    let count = |name: &str| {
+        counters
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(0, |(_, n)| *n)
+    };
+    assert_eq!(count("dedens_resolver_denials_total exact"), 1);
+    assert_eq!(count("dedens_resolver_denials_total below_nxdomain"), 1);
+    assert_eq!(count("dedens_resolver_denials_total aggressive"), 1);
+    assert_eq!(count("dedens_resolver_failure_holds_total recorded"), 1);
+    assert_eq!(count("dedens_resolver_failure_holds_total served"), 1);
+}
+
 #[test]
 fn rfc2308_5_a_negative_answer_is_cached_for_its_name_and_type() {
     for (id, validating) in [("nodata-signed", true), ("nodata-unsigned", false)] {
@@ -237,8 +417,11 @@ fn rfc8020_2_no_name_exists_below_a_secure_nxdomain() {
         (format!("a.b.{base}"), RecordType::TXT),
         (format!("_dmarc.{base}"), RecordType::MX),
     ] {
-        let (resolved, sent) = silent(&caches, (&below, rtype), at(&capture), true);
-        assert_eq!(sent, 0, "{below} asked");
+        // Without the aggressive use of the NSEC records the zone's span would answer these as well.
+        let mut resolution =
+            resolution(&caches, (&below, rtype), at(&capture), true).aggressive_nsec(false);
+        let (resolved, sent) = run(&mut resolution, &|_| Answered::Timeout, at(&capture));
+        assert!(sent.is_empty(), "{below} asked");
         let Resolved::NxDomain { soa, denials, .. } = resolved else {
             panic!("{below}: {resolved:?}")
         };
@@ -413,6 +596,45 @@ fn rfc9520_3_2_a_hold_is_never_longer_than_failure_max() {
     // The second hold, 200 s doubled, is 150 s: until 250.
     assert_eq!(fails(base + Duration::from_secs(249)), 0, "held until 250");
     assert!(fails(base + Duration::from_secs(250)) > 0, "asked at 250");
+}
+
+#[test]
+fn rfc9520_3_2_a_hold_is_of_the_servers_that_failed_not_of_the_next_delegation() {
+    let capture = capture("unsigned");
+    let caches = configured(false, Config::default());
+    let text = capture.name.to_string();
+    let question = (text.as_str(), capture.rtype);
+    let base = at(&capture);
+    let fails = |now: Duration| {
+        let mut resolution = resolution(&caches, question, now, false);
+        let (resolved, sent) = run(&mut resolution, &|_| Answered::ServerError, now);
+        (resolved, sent.len())
+    };
+    assert!(fails(base).1 > 0);
+    assert_eq!(fails(base).1, 0, "held");
+    // The servers asked, the root's, are other ones: asked again, though the hold has not ended.
+    let zone = Name::root();
+    let moved = Record {
+        name: zone.clone(),
+        class: Class::IN,
+        ttl: Ttl::from_wire(3600),
+        rdata: (&RData::Ns(name("ns.other.example."))).into(),
+    };
+    let address = Record {
+        name: name("ns.other.example."),
+        class: Class::IN,
+        ttl: Ttl::from_wire(3600),
+        rdata: (&RData::A(std::net::Ipv4Addr::new(9, 9, 9, 9))).into(),
+    };
+    let now = u32::try_from(base.as_secs()).expect("a time in 32 bits");
+    for set in Rrset::group(&[moved, address]) {
+        let rank = Rank::AnswerAuthoritative;
+        caches
+            .rrsets
+            .insert(set, rank, Checked::Unchecked, now)
+            .expect("stored");
+    }
+    assert!(fails(base).1 > 0, "held across a delegation");
 }
 
 #[test]
