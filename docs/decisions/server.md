@@ -2137,23 +2137,29 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     6840 §4.1, as the index requires on insert): a `RRset` is keyed by owner, type and class, so a child zone's NSEC
     at its apex, or an NSEC3 of a child named like one of the parent's hashes, may have replaced the parent's
     record the index still names, and the child's span proves nothing for the parent's names. An NSEC or NSEC3 at the
-    apex of its signer is kept under its own key (`0x82`), apart from the one of the same name that another zone
-    signs (the parent's NSEC for a delegation, the parent's NSEC3 at the hash of a child's name), so neither evicts
-    the other and a lookup of one of the two types prefers the apex's (Unbound's `PACKED_RRSET_NSEC_AT_APEX`,
-    `validator/val_neg.c`, which sets it for both). Without it anyone could register `<hash of nl.>.nl`, sign an NSEC3
-    at its apex and ask for it: the answer is secure, replaces the TLD's record at the hash of its apex, which every
-    closest encloser proof under it needs, and the proofs fail until the record is stored again (78 queries for a name
-    under nl., measured, repeatable at will). The proof: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN (not the compact form, which has no
-    NXDOMAIN), NODATA and wildcard NODATA are synthesised. Not synthesised: a proof with the opt-out flag (an unsigned
+    apex of its signer (a signature of it has the owner for signer, whoever else signed it) is kept under its own
+    key (`0x82`), apart from the one of the same name that another zone signs (the parent's NSEC for a delegation,
+    the parent's NSEC3 at the hash of a child's name), so neither evicts the other and a lookup of one of the two
+    types prefers the apex's (Unbound's `PACKED_RRSET_NSEC_AT_APEX`, `validator/val_neg.c`, which sets it for both,
+    from the data's SOA bit, `util/data/msgparse.c`). Without it anyone could register `<hash of nl.>.nl`, sign an
+    NSEC3 at its apex and ask for it: the answer is secure, replaces the TLD's record at the hash of its apex, which
+    every closest encloser proof under it needs, and the proofs fail until the record is stored again (78 queries
+    for a name under nl., measured, repeatable at will). The proof: the closest encloser and the wildcard are
+    proved, §5.3 and §5.4. NXDOMAIN (not the compact form, which has no NXDOMAIN), NODATA and wildcard NODATA are
+    synthesised. Not synthesised: a proof with the opt-out flag (an unsigned
     delegation may be there, RFC 5155 §6: an opt-out answer is insecure, so a captured one never enters the index, but
     a record inserted secure does, and the proof is refused: tested); a DS, ANY, RRSIG or NXNAME question; a name
     whose proof needs an NSEC3 hash beyond `NSEC3_BLOCKS` (2048 SHA-1 blocks a lookup, D77's idea); a wildcard
     that matches (§5.1: the cache does not synthesise the positive answer). The index's bytes (an estimate per name,
     `Owner` plus its wire length plus a node) are 1/32 of the cache's capacity (`SPANS_SHARE`), taken out of the
     store's, in shards by apex; over it, the zone of the shard used least recently goes whole (a lookup that finds
-    the zone is a use, as Unbound's negative cache is an LRU, so a busy zone stays). An owner or hash whose record the
-    cache does not hold fresh, secure and signed by the apex any more (expired, evicted, replaced) is dropped when a
-    lookup misses it: it would shadow its range until its zone went. A synthesised answer's TTL is the least of
+    the zone is a use, as Unbound's negative cache is an LRU, so a busy zone stays; the least recent is found by
+    a scan of the shard's zones, once per eviction under its lock, which costs nothing at 1/32 of the capacity but
+    is quadratic if one insert evicts many tiny zones). An owner or hash whose record the cache does not hold fresh,
+    secure and signed by the apex any more (expired, evicted, replaced) is dropped when a lookup misses it: it would
+    shadow its range until its zone went. The drop races a store of the record: the insert may find the owner still
+    indexed (nothing to add), then the drop removes it, and the fresh record is not indexed until it is stored again,
+    a miss and no more. A synthesised answer's TTL is the least of
     the sets', the SOA's MINIMUM included (§5.4).
   - Switch: `aggressive_nsec: true` by default in the `recurse` stage (`Recurse::aggressive_nsec`,
     `Resolution::aggressive_nsec`): it is the owner's choice (plan README, choice 5), RFC 8198 being a SHOULD,

@@ -102,8 +102,9 @@ impl Absent {
     }
 
     /// Whether `new` replaces this answer at `now`, as an `RRset` does (`Cached::merge`): an expired one gives way to
-    /// anything; one judged secure to nothing less, and an unchecked one to nothing but a verdict; the same data does not renew it, which would lengthen its
-    /// life; other data of equal trust, the last heard of, does.
+    /// anything. Else the verdicts are ranked, secure over insecure over the rest (unchecked and bogus rank alike):
+    /// a higher one replaces it, a lower one never does, and an equal one does only with other data, the last heard
+    /// of; the same data does not renew it, which would lengthen its life.
     pub(crate) fn replaced_by(&self, new: &Self, now: u32) -> bool {
         if self.left(now) == 0 {
             return true;
