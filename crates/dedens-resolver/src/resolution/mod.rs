@@ -2038,15 +2038,15 @@ fn recorded(verdict: &Verdict) -> Option<(Checked, Option<Ttl>)> {
     }
 }
 
-/// Whether `held` may answer a question (RFC 2181 §5.4.1, D193): an `RRset` of an answer section, or a DS proved
-/// secure, which Unbound's rrset path serves from an authority section too. The authority and additional sections
-/// serve the resolution, not the client, whatever their verdict: the parent's NSEC or NSEC3 at a cut, even proved
-/// secure, is no answer to `child. NSEC`.
+/// Whether `held` may answer a question (RFC 2181 §5.4.1, D193): an `RRset` of an answer section. The authority
+/// and additional sections serve the resolution, not the client, whatever their verdict: the parent's NSEC or NSEC3
+/// at a cut, even proved secure, is no answer to `child. NSEC`. A DS answers at the answer rank only: a referral's
+/// to the name asked has it (D193), and the DS the validator judges is asked for, so is held at it.
 fn answers(held: &Ranked) -> bool {
     matches!(
         held.rank,
         Rank::AnswerNonAuthoritative | Rank::AnswerAuthoritative
-    ) || (held.checked == Checked::Secure && held.rrset.rtype() == RecordType::DS)
+    )
 }
 
 /// `held` as served from the cache without a validator: a secure wildcard expansion goes without the proof that

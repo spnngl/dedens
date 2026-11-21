@@ -19,8 +19,8 @@ pub const DEFAULT_CAPACITY: usize = 128 << 20;
 
 /// An `RRset` and its trust: as the cache holds it, fresh, or as a resolution read it from a response.
 ///
-/// Only an `RRset` of an answer section ([`Rank::AnswerNonAuthoritative`] or [`Rank::AnswerAuthoritative`]), or
-/// proved [`Checked::Secure`], may answer a client's question: the other ranks are the authority and additional
+/// Only an `RRset` of an answer section ([`Rank::AnswerNonAuthoritative`] or [`Rank::AnswerAuthoritative`]) may
+/// answer a client's question, proved [`Checked::Secure`] or not: the other ranks are the authority and additional
 /// sections, which RFC 2181 §5.4.1 keeps from ever being returned as answers ("Ignoring this would
 /// allow the trustworthiness of relatively untrustworthy data to be increased without cause or excuse"). They
 /// serve the resolution: the glue of a referral to reach its servers, its NS records to know them. An A or AAAA

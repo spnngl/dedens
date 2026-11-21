@@ -1167,7 +1167,7 @@ fn d197_the_validation_tells_its_cost() {
 fn d193_a_secure_nsec_of_an_authority_section_answers_no_question() {
     // `nodata-signed` validated: the validator proves sidn.nl's NSEC secure, held at the rank of an authority
     // section. A later NSEC question for sidn.nl is asked again, not answered with it, AD set, whatever its verdict:
-    // only a DS may be served from an authority section (Unbound's rrset path, `dns_cache_lookup`).
+    // no authority section answers a client (RFC 2181 §5.4.1).
     let capture = recursion::Resolution::read("nodata-signed");
     let caches = caches(false);
     let defaults = (
