@@ -693,6 +693,158 @@ fn rfc8198_5_an_opt_out_span_proves_no_name_absent() {
     assert!(sent > 0, "{second} answered from an opt-out span");
 }
 
+/// The records of `response`'s authority section at `owner` of type `rtype`, with the signatures over them, as
+/// `RRset`s moved to the name `to` and signed by `signer`: the data stays as the zone served it, its place and its
+/// signer are another zone's.
+fn relocated(
+    response: &Message<'_>,
+    (owner, rtype): (&Name<'_>, RecordType),
+    (to, signer): (&Name<'static>, &Name<'static>),
+) -> Vec<Rrset> {
+    let moved: Vec<_> = response
+        .authority
+        .iter()
+        .filter(|record| record.name == *owner)
+        .filter_map(|record| {
+            let rdata = match record.data() {
+                RData::Rrsig(mut sig) if sig.type_covered == rtype => {
+                    sig.signer = signer.clone();
+                    (&RData::Rrsig(sig)).into()
+                }
+                _ if record.rtype() == rtype => record.rdata.clone().into_owned(),
+                _ => return None,
+            };
+            Some(Record {
+                name: to.clone(),
+                class: Class::IN,
+                ttl: record.ttl,
+                rdata,
+            })
+        })
+        .collect();
+    Rrset::group(&moved)
+}
+
+/// Stores `sets` as the validator leaves them, secure, at the rank of an authority section, at `now`.
+fn store_secure(cache: &RrsetCache, sets: Vec<Rrset>, now: Duration) {
+    let now = u32::try_from(now.as_secs()).expect("a time in 32 bits");
+    for set in sets {
+        let rank = Rank::AuthorityAuthoritative;
+        cache
+            .insert(set, rank, Checked::Secure, now)
+            .expect("stored");
+    }
+}
+
+#[test]
+fn d199_the_nsec_at_the_apex_of_a_child_is_not_its_parents_proof_and_does_not_replace_it() {
+    // sidn.nl's records of the denial: sidn.nl NSEC _amazonses.sidn.nl and cybersterk.sidn.nl NSEC dev.sidn.nl. A
+    // child zone cybersterk.sidn.nl has an NSEC at its own apex, the apex record of sidn.nl moved there: its chain
+    // runs round the whole zone, past m.sidn.nl, which the parent's records leave open.
+    let capture = capture("nxdomain-signed");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-signed", "sidn.nl.", &asked);
+    let covered = nsec_spanned(&response, &asked);
+    let caches = configured(false, Config::default());
+    store_secure(
+        &caches.rrsets,
+        Rrset::group(&response.authority),
+        at(&capture),
+    );
+    let child = name("cybersterk.sidn.nl.");
+    let apex = relocated(
+        &response,
+        (&name("sidn.nl."), RecordType::NSEC),
+        (&child, &child),
+    );
+    assert_eq!(apex.len(), 1);
+    store_secure(&caches.rrsets, apex, at(&capture));
+    // The parent's record still proves what it did.
+    let (resolved, sent) = silent(&caches, (&covered, RecordType::A), at(&capture), true);
+    assert_eq!(sent, 0, "{covered} asked");
+    assert!(
+        matches!(resolved, Resolved::NxDomain { .. }),
+        "{resolved:?}"
+    );
+    // The child's does not prove what the parent's leaves open: the name is asked.
+    let (resolved, sent) = silent(&caches, ("m.sidn.nl.", RecordType::A), at(&capture), true);
+    assert!(
+        sent > 0 && !matches!(resolved, Resolved::NxDomain { .. }),
+        "{sent} asked, {resolved:?}"
+    );
+}
+
+#[test]
+fn d199_an_nsec3_signed_by_a_child_at_the_name_of_a_hash_of_its_parent_is_not_its_proof() {
+    // nl.'s NSEC3 records of the denial of dedens-nxdomain.nl: the cover of its hash is `cover`. A child zone named
+    // like that hash signs an NSEC3 at its own apex, another record of nl. moved there, whose span is the widest of
+    // those held: it replaces the parent's record, and a hash between the cover and the next owner held, which the
+    // parent's span leaves open, falls in it.
+    let capture = capture("nxdomain-nsec3");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-nsec3", "nl.", &asked);
+    let records = nsec3s(&response);
+    let mut budget = Budget::default();
+    let mut hash = |text: &str| {
+        let (_, any) = records.first().expect("an NSEC3 record");
+        budget
+            .nsec3_hash(any.salt(), any.iterations, &name(text))
+            .expect("a hash")
+    };
+    let wanted = hash(&asked);
+    let (cover, _) = records
+        .iter()
+        .find(|(owner, nsec3)| covers(owner, nsec3.next_hashed_owner(), &wanted))
+        .expect("a record covering the name");
+    let (wide, widest) = records
+        .iter()
+        .max_by_key(|(_, nsec3)| nsec3.next_hashed_owner().to_vec())
+        .expect("a record");
+    // The next owner held after the cover's: the hashes between are those the index sends to the cover's record.
+    let after = records
+        .iter()
+        .map(|(owner, _)| owner)
+        .filter(|owner| *owner > cover)
+        .min()
+        .expect("an owner after the cover");
+    assert!(
+        after.as_slice() < widest.next_hashed_owner(),
+        "the widest span runs past it"
+    );
+    let outside = (0..100_000)
+        .map(|n| format!("dedens-{n}.nl."))
+        .find(|text| {
+            let hash = hash(text);
+            cover < &hash
+                && &hash < after
+                && !records
+                    .iter()
+                    .any(|(owner, nsec3)| covers(owner, nsec3.next_hashed_owner(), &hash))
+        })
+        .expect("a name the parent's records leave open");
+    let nl = name("nl.");
+    let moved = |hash: &[u8; 20]| hashed_owner(&nl, hash).expect("a name");
+    let child = moved(cover);
+    let forged = relocated(
+        &response,
+        (&moved(wide), RecordType::NSEC3),
+        (&child, &child),
+    );
+    assert_eq!(forged.len(), 1);
+    let caches = configured(false, Config::default());
+    store_secure(
+        &caches.rrsets,
+        Rrset::group(&response.authority),
+        at(&capture),
+    );
+    store_secure(&caches.rrsets, forged, at(&capture));
+    let (resolved, sent) = silent(&caches, (&outside, RecordType::A), at(&capture), true);
+    assert!(
+        sent > 0 && !matches!(resolved, Resolved::NxDomain { .. }),
+        "{outside}: {sent} asked, {resolved:?}"
+    );
+}
+
 #[test]
 fn rfc9520_3_2_a_failing_set_of_servers_is_not_asked_again_at_once_and_backs_off() {
     let capture = capture("unsigned");

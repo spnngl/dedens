@@ -296,7 +296,7 @@ impl RrsetCache {
         let mut key = [0; KEY_LEN];
         let key = key_of(
             &mut key,
-            None,
+            at_apex(&rrset).then_some(APEX_NSEC),
             rrset.owner(),
             &[
                 &u16::from(rrset.rtype()).to_be_bytes(),
@@ -365,18 +365,10 @@ impl RrsetCache {
         if held.checked != Checked::Secure || set.class() != Class::IN {
             return;
         }
-        // The signer of every signature covering the set is the same: one that is not may be the extra signature of
-        // a server, and the validator's verdict does not say which one it checked.
-        let mut signers = set.rrsigs().iter().filter_map(|rdata| match rdata.data() {
-            RData::Rrsig(sig) if sig.type_covered == set.rtype() => {
-                Some(sig.signer.clone().into_owned())
-            }
-            _ => None,
-        });
-        let Some(apex) = signers.next() else {
+        let Some(apex) = set.signer() else {
             return;
         };
-        if !set.owner().is_within(&apex) || signers.any(|other| other != apex) {
+        if !set.owner().is_within(&apex) {
             return;
         }
         match set.rtype() {
@@ -536,7 +528,8 @@ impl RrsetCache {
     }
 
     /// The fresh `RRset` of `owner`, any case, `rtype` and `class` at `now`, whatever its rank: see [`Ranked`] for
-    /// the ranks that may answer a client.
+    /// the ranks that may answer a client. Of an NSEC at the apex of its signer and one at the same name signed by
+    /// its parent zone, which are kept apart, the apex's: it is what the zone's own servers answer for the name.
     #[must_use]
     pub fn get(
         &self,
@@ -545,22 +538,44 @@ impl RrsetCache {
         class: Class,
         now: u32,
     ) -> Option<Ranked> {
+        let hit = (rtype == RecordType::NSEC)
+            .then(|| self.fetch(true, owner, rtype, class, now))
+            .flatten()
+            .or_else(|| self.fetch(false, owner, rtype, class, now));
+        self.metrics.lookup(hit.is_some());
+        hit
+    }
+
+    /// As [`RrsetCache::get`], of the NSEC at the apex of its signer if `apex`, else of the other one (D199).
+    pub(crate) fn get_nsec(&self, owner: &Name<'_>, apex: bool, now: u32) -> Option<Ranked> {
+        let hit = self.fetch(apex, owner, RecordType::NSEC, Class::IN, now);
+        self.metrics.lookup(hit.is_some());
+        hit
+    }
+
+    /// The fresh `RRset` under the key of `apex` or not, as [`at_apex`] says.
+    fn fetch(
+        &self,
+        apex: bool,
+        owner: &Name<'_>,
+        rtype: RecordType,
+        class: Class,
+        now: u32,
+    ) -> Option<Ranked> {
         let mut key = [0; KEY_LEN];
         let key = key_of(
             &mut key,
-            None,
+            apex.then_some(APEX_NSEC),
             owner,
             &[
                 &u16::from(rtype).to_be_bytes(),
                 &u16::from(class).to_be_bytes(),
             ],
         );
-        let hit = self.store.get(key, |held| match held {
+        self.store.get(key, |held| match held {
             Entry::Rrset(cached) => cached.hit(now),
             Entry::Absent(_) | Entry::Held(_) => None,
-        });
-        self.metrics.lookup(hit.is_some());
-        hit
+        })
     }
 
     /// Number of entries, expired ones included until evicted or replaced.
@@ -601,10 +616,24 @@ const NEGATIVE: u8 = 0x80;
 /// The first byte of the key of a failure held, apart from [`NEGATIVE`].
 const HOLD: u8 = 0x81;
 
+/// The first byte of the key of an NSEC `RRset` at the apex of its signer ([`at_apex`]), apart from the NSEC of the
+/// same name that its parent zone signs, a delegation's (D199, as Unbound's `PACKED_RRSET_NSEC_AT_APEX`).
+const APEX_NSEC: u8 = 0x82;
+
+/// Whether `rrset` is an NSEC at the apex of the zone that signed it: the owner is the signer. Its parent zone's NSEC
+/// at the same name, which marks a delegation, has the same key but for this, so that a child cannot replace its
+/// parent's record: the parent's chain stays, and the records of the two zones are never taken for each other's.
+fn at_apex(rrset: &Rrset) -> bool {
+    rrset.rtype() == RecordType::NSEC
+        && rrset
+            .signer()
+            .is_some_and(|signer| signer == *rrset.owner())
+}
+
 /// The longest key: a tag, a name, a type and the 8 bytes of a server set.
 const KEY_LEN: usize = 1 + MAX_NAME_LEN + 2 + 8;
 
-/// The key of `owner` in `buf`: the `tag` byte of a kind of entry other than an `RRset`, then the name's wire form,
+/// The key of `owner` in `buf`: the `tag` byte of a kind of entry other than an `RRset` (or [`APEX_NSEC`]), then the name's wire form,
 /// ASCII letters lowered (RFC 4343; the length octets, at most 63, have none), then the `tail` parts: for an
 /// `RRset`, its type and class; for a negative answer, its type, `ANY` for a name that does not exist; for a
 /// failure held, the type and the server set.

@@ -2132,7 +2132,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     one salt and iteration count, SHA-1 only, at most 150, as D74's `MaxIterations`; a zone whose parameters
     change starts again). It holds names only: `aggressive::synthesise` fetches the neighbours' `RRset`s, each fresh
     and secure, and the zone's SOA (secure), and hands them to `dedens_dnssec::denial::prove`, the validator's own
-    proof (D74), for the name and type: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN
+    proof (D74), for the name and type. A set counts only if every signature on it has the apex for signer (RFC
+    6840 §4.1, as the index requires on insert): a `RRset` is keyed by owner, type and class, so a child zone's NSEC
+    at its apex, or an NSEC3 of a child named like one of the parent's hashes, may have replaced the parent's
+    record the index still names, and the child's span proves nothing for the parent's names. An NSEC at the apex of
+    its signer is kept under its own key (`0x82`), apart from the NSEC of the same name that the parent signs for a
+    delegation, so neither evicts the other and a lookup of an NSEC prefers the apex's (Unbound's
+    `PACKED_RRSET_NSEC_AT_APEX`, `validator/val_neg.c`). A child's NSEC3 at the name of a parent's hash is not
+    kept apart: it may still replace the parent's record (a miss, not a forged proof). The proof: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN
     (not the compact form, which has no NXDOMAIN), NODATA and wildcard NODATA are synthesised. Not synthesised: a proof
     with the opt-out flag (an unsigned delegation may be there, RFC 5155 §6: it never enters the index in practice,
     an opt-out answer being insecure, but the proof is refused too); a DS, ANY, RRSIG or NXNAME question; a name

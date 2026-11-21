@@ -129,6 +129,19 @@ impl Rrset {
         &self.rrsigs
     }
 
+    /// The signer of the signatures: the one name every signature has, `None` if there is no signature or they
+    /// differ. A validator's verdict does not say which signature it checked, so an `RRset` of two signers is no
+    /// proof of either (RFC 6840 §4.1).
+    #[must_use]
+    pub fn signer(&self) -> Option<Name<'static>> {
+        let mut signers = self.rrsigs.iter().filter_map(|rdata| match rdata.data() {
+            RData::Rrsig(sig) => Some(sig.signer.into_owned()),
+            _ => None,
+        });
+        let first = signers.next()?;
+        signers.all(|other| other == first).then_some(first)
+    }
+
     /// Whether a signature counts fewer labels than the owner name, a leading `*` not counted: the `RRset` is a
     /// wildcard expansion (RFC 4035 §5.3.4), whose proof that no closer name exists is in another `RRset`, as
     /// Unbound's `val_rrset_wildcard` tells. A junk signature makes a set of the name itself one, which costs a
