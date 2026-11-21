@@ -1004,6 +1004,30 @@ fn relocated(
     Rrset::group(&moved)
 }
 
+/// The `RRset`s of `response`'s authority section, the NSEC at `owner` with a second signature over it (the first's
+/// but for its key tag) signed by `signer`.
+fn doubly_signed(response: &Message<'_>, owner: &Name<'_>, signer: &Name<'static>) -> Vec<Rrset> {
+    let mut records = Vec::new();
+    for record in &response.authority {
+        let own = |rdata| Record {
+            name: record.name.clone().into_owned(),
+            class: Class::IN,
+            ttl: record.ttl,
+            rdata,
+        };
+        records.push(own(record.rdata.clone().into_owned()));
+        if record.name == *owner
+            && let RData::Rrsig(mut sig) = record.data()
+            && sig.type_covered == RecordType::NSEC
+        {
+            sig.key_tag = sig.key_tag.wrapping_add(1);
+            sig.signer = signer.clone();
+            records.push(own((&RData::Rrsig(sig)).into()));
+        }
+    }
+    Rrset::group(&records)
+}
+
 /// Stores `sets` as `checked`, at the rank of an authority section, at `now`.
 fn store(cache: &RrsetCache, sets: Vec<Rrset>, checked: Checked, now: Duration) {
     let now = u32::try_from(now.as_secs()).expect("a time in 32 bits");
@@ -1054,6 +1078,28 @@ fn d199_the_nsec_at_the_apex_of_a_child_is_not_its_parents_proof_and_does_not_re
         sent > 0 && !matches!(resolved, Resolved::NxDomain { .. }),
         "{sent} asked, {resolved:?}"
     );
+}
+
+#[test]
+fn d199_a_set_with_two_signers_proves_only_when_they_are_the_same_zone() {
+    // RFC 6840 §4.1: a verdict does not say which signature it checked. A second signature by the zone is its own
+    // proof still; one by another zone makes the set the proof of neither.
+    let capture = capture("nxdomain-signed");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-signed", "sidn.nl.", &asked);
+    let owner = name("cybersterk.sidn.nl.");
+    for (signer, proves) in [("sidn.nl.", true), ("nl.", false)] {
+        let caches = configured(false, Config::default());
+        let sets = doubly_signed(&response, &owner, &name(signer));
+        assert!(sets.iter().any(|set| set.rrsigs().len() == 2));
+        store_secure(&caches.rrsets, sets, at(&capture));
+        let (resolved, sent) = silent(&caches, (&asked, RecordType::A), at(&capture), true);
+        assert_eq!(
+            matches!(resolved, Resolved::NxDomain { .. }) && sent == 0,
+            proves,
+            "{signer}: {sent} asked, {resolved:?}"
+        );
+    }
 }
 
 #[test]
