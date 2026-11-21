@@ -1030,6 +1030,29 @@ fn doubly_signed(response: &Message<'_>, owner: &Name<'_>, signer: &Name<'static
     Rrset::group(&records)
 }
 
+/// `sets` with a second signature over each, the first's but for its key tag, signed by `signer`.
+fn also_signed(sets: &[Rrset], signer: &Name<'static>) -> Vec<Rrset> {
+    let mut records = Vec::new();
+    for set in sets {
+        let own = |rdata| Record {
+            name: set.owner().clone(),
+            class: set.class(),
+            ttl: set.ttl(),
+            rdata,
+        };
+        records.extend(set.rdatas().iter().map(|rdata| own(rdata.clone())));
+        for rdata in set.rrsigs() {
+            records.push(own(rdata.clone()));
+            if let RData::Rrsig(mut sig) = rdata.data() {
+                sig.key_tag = sig.key_tag.wrapping_add(1);
+                sig.signer = signer.clone();
+                records.push(own((&RData::Rrsig(sig)).into()));
+            }
+        }
+    }
+    Rrset::group(&records)
+}
+
 /// Stores `sets` as `checked`, at the rank of an authority section, at `now`.
 fn store(cache: &RrsetCache, sets: Vec<Rrset>, checked: Checked, now: Duration) {
     let now = u32::try_from(now.as_secs()).expect("a time in 32 bits");
@@ -1079,6 +1102,38 @@ fn d199_the_nsec_at_the_apex_of_a_child_is_not_its_parents_proof_and_does_not_re
     assert!(
         sent > 0 && !matches!(resolved, Resolved::NxDomain { .. }),
         "{sent} asked, {resolved:?}"
+    );
+}
+
+#[test]
+fn d199_an_apex_nsec_a_foreign_zone_signed_too_does_not_replace_the_delegation_record() {
+    // The child zone's apex NSEC has a second signature, another zone's: the set has no one signer, but it is the
+    // child's apex NSEC still (Unbound tells it by the data, not by who signed), and the parent's NSEC of the
+    // delegation, at the same name, stays.
+    let capture = capture("nxdomain-signed");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-signed", "sidn.nl.", &asked);
+    let covered = nsec_spanned(&response, &asked);
+    let caches = configured(false, Config::default());
+    store_secure(
+        &caches.rrsets,
+        Rrset::group(&response.authority),
+        at(&capture),
+    );
+    let child = name("cybersterk.sidn.nl.");
+    let apex = relocated(
+        &response,
+        (&name("sidn.nl."), RecordType::NSEC),
+        (&child, &child),
+    );
+    let apex = also_signed(&apex, &name("nl."));
+    assert!(apex.iter().all(|set| set.rrsigs().len() == 2));
+    store_secure(&caches.rrsets, apex, at(&capture));
+    let (resolved, sent) = silent(&caches, (&covered, RecordType::A), at(&capture), true);
+    assert_eq!(sent, 0, "{covered} asked");
+    assert!(
+        matches!(resolved, Resolved::NxDomain { .. }),
+        "{resolved:?}"
     );
 }
 
