@@ -168,7 +168,7 @@ fn nsec_spanned(response: &Message<'_>, exclude: &str) -> String {
 }
 
 /// The response from `zone`'s server to `asked` in capture `id`.
-fn denial(id: &str, zone: &str, asked: &str) -> Message<'static> {
+pub(crate) fn denial(id: &str, zone: &str, asked: &str) -> Message<'static> {
     response(&capture(id), zone, asked)
 }
 
@@ -539,6 +539,24 @@ fn d199_the_index_of_spans_counts_its_zone_and_each_hash_it_holds() {
     let two = spans_used(1 << 20, 2);
     assert!((60..300).contains(&one), "{one}");
     assert!((two - one) >= 44 && (two - one) < 100, "{one} then {two}");
+}
+
+#[test]
+fn rfc5155_3_an_nsec3_at_the_apex_of_its_signer_is_not_indexed() {
+    // An NSEC3 record of a zone is a hash one label below its apex. One at the apex itself, a child's signed by its
+    // owner, is no record of the zone: indexed under the hash its first label spells, it would take room until a
+    // lookup finds it missing. The same record one label below the apex is indexed.
+    let response = denial(
+        "nxdomain-nsec3",
+        "nl.",
+        &capture("nxdomain-nsec3").name.to_string(),
+    );
+    let (own, _) = nsec3s(&response).into_iter().next().expect("a record");
+    let owner = hashed_owner(&name("nl."), &own).expect("a name");
+    let at_apex = relocated(&response, (&owner, RecordType::NSEC3), (&owner, &owner));
+    assert_eq!(at_apex.len(), 1);
+    assert_eq!(index_bytes(1 << 20, [at_apex]), 0);
+    assert!(index_bytes(1 << 20, [nsec3_in("zzz0000.nl.")]) > 0);
 }
 
 #[test]
@@ -977,7 +995,7 @@ fn d199_a_validating_resolution_does_not_take_an_answer_cached_unchecked() {
 /// The records of `response`'s authority section at `owner` of type `rtype`, with the signatures over them, as
 /// `RRset`s moved to the name `to` and signed by `signer`: the data stays as the zone served it, its place and its
 /// signer are another zone's.
-fn relocated(
+pub(crate) fn relocated(
     response: &Message<'_>,
     (owner, rtype): (&Name<'_>, RecordType),
     (to, signer): (&Name<'static>, &Name<'static>),

@@ -8,7 +8,9 @@ use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Opaque, RData, Rrsig, Txt};
 use dedens_proto::{Class, Message, Record, RecordType, Section, Ttl};
 use dedens_resolver::{DEFAULT_CAPACITY, Inserted, NotCached, Rank, Ranked, Rrset, RrsetCache};
-use dedens_testkit::{captured, dns, dnssec, message};
+use dedens_testkit::{captured, dns, dnssec, message, recursion};
+
+use crate::negative::{denial, relocated};
 
 const RANKS: [Rank; 6] = [
     Rank::AdditionalNonAuthoritative,
@@ -361,6 +363,61 @@ fn rfc4343_lookups_ignore_case() {
         cache.get(&dns("example.com."), RecordType::AAAA, Class::IN, 0),
         None
     );
+}
+
+#[test]
+fn d199_a_lookup_of_an_nsec_or_nsec3_prefers_the_one_signed_by_its_owner() {
+    // The NSEC or NSEC3 at the apex of its signer is what the zone's own servers answer for the name; one signed by
+    // the parent at the same name is kept apart from it, and `get` returns the apex's whichever was stored first.
+    // The first is cybersterk.sidn.nl's NSEC in sidn.nl's capture (signed by sidn.nl, its parent) and the same data
+    // signed by the name itself; the second a record of nl.'s NSEC3 chain, the same.
+    for (id, zone, rtype) in [
+        ("nxdomain-signed", "sidn.nl.", RecordType::NSEC),
+        ("nxdomain-nsec3", "nl.", RecordType::NSEC3),
+    ] {
+        let capture = recursion::Resolution::read(id);
+        let response = denial(id, zone, &capture.name.to_string());
+        let owner = response
+            .authority
+            .iter()
+            .find(|record| record.rtype() == rtype && record.name != dns(zone))
+            .map(|record| record.name.clone().into_owned())
+            .expect("a record of the chain");
+        let parents = || {
+            let held: Vec<_> = (response.authority.iter())
+                .filter(|record| record.name == owner)
+                .cloned()
+                .collect();
+            let [set] = <[Rrset; 1]>::try_from(Rrset::group(&held)).expect("one RRset");
+            set
+        };
+        let own = || {
+            let [set] =
+                <[Rrset; 1]>::try_from(relocated(&response, (&owner, rtype), (&owner, &owner)))
+                    .expect("one RRset");
+            set
+        };
+        assert_eq!(parents().signer().as_ref(), Some(&dns(zone)));
+        assert_eq!(own().signer().as_ref(), Some(&owner));
+        for apex_first in [true, false] {
+            let cache = cache();
+            let sets = if apex_first {
+                [own(), parents()]
+            } else {
+                [parents(), own()]
+            };
+            for set in sets {
+                let rank = Rank::AuthorityAuthoritative;
+                stored(cache.insert(set, rank, Checked::Secure, 0));
+            }
+            let hit = cache.get(&owner, rtype, Class::IN, 0).expect("a hit");
+            assert_eq!(
+                hit.rrset.signer().as_ref(),
+                Some(&owner),
+                "{rtype}, apex first: {apex_first}"
+            );
+        }
+    }
 }
 
 #[test]
