@@ -17,6 +17,9 @@ use crate::{Entry, TARGETS};
 const FLIPS: usize = 512;
 /// Truncation points tried per seed.
 const CUTS: usize = 200;
+/// Targets that run a whole resolution on an input (30 s for all the variants), which try every
+/// n-th variant only, so that the test stays under ten seconds: the fuzz run does the rest.
+const THINNED: &[(&str, usize)] = &[("resolve_replay", 4)];
 
 fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -209,6 +212,17 @@ impl Rng {
     }
 }
 
+/// `messages` each behind its length in two octets, the input of `resolve_replay`.
+fn framed(messages: &[&[u8]]) -> Vec<u8> {
+    messages
+        .iter()
+        .flat_map(|message| {
+            let length = u16::try_from(message.len()).expect("a datagram");
+            [&length.to_be_bytes()[..], message].concat()
+        })
+        .collect()
+}
+
 /// Inputs that are not derived from a seed: empty, binary, huge counts and pointer loops.
 fn edge_cases() -> Vec<(String, Vec<u8>)> {
     let header = |counts: [u8; 8]| [&[0, 1, 0, 0][..], &counts].concat();
@@ -233,6 +247,12 @@ fn edge_cases() -> Vec<(String, Vec<u8>)> {
             "long name".into(),
             [header([0, 1, 0, 0, 0, 0, 0, 0]), vec![63; 300]].concat(),
         ),
+        // `resolve_replay`: responses each behind its length, the n-th for the n-th query, the middle one cut short.
+        ("framed responses".into(), framed(&[
+            include_bytes!("../../testdata/proto/cname_chain.bin"),
+            &include_bytes!("../../testdata/proto/nodata.bin")[..20],
+            include_bytes!("../../testdata/proto/a.bin"),
+        ])),
         // Blocklists: names that are parents of each other, the blocked first, the allowed second, in mixed case.
         (
             "blocklist names".into(),
@@ -344,9 +364,13 @@ pub(crate) fn survives(target: &str, entry: Entry) {
     static SEEDS: LazyLock<Vec<(String, Vec<u8>)>> = LazyLock::new(seeds);
     assert!(!SEEDS.is_empty(), "no seeds, run just capture");
     let started = Instant::now();
+    let every = THINNED
+        .iter()
+        .find_map(|(thinned, every)| (*thinned == target).then_some(*every))
+        .unwrap_or(1);
     for (name, seed) in SEEDS.iter() {
-        for (label, input) in variants(name, seed) {
-            run(target, entry, &label, &input);
+        for (label, input) in variants(name, seed).iter().step_by(every) {
+            run(target, entry, label, input);
         }
     }
     for (label, input) in edge_cases() {
