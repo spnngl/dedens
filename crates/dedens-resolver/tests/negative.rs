@@ -1173,6 +1173,50 @@ fn d199_an_nsec3_signed_by_a_child_at_the_name_of_a_hash_of_its_parent_is_not_it
     );
 }
 
+#[test]
+fn d199_an_nsec3_at_the_name_of_the_hash_of_the_apex_does_not_replace_the_apex_record() {
+    // Anyone may register `<hash of nl.>.nl` and sign an NSEC3 at its own apex: the record of nl. at the hash of nl.
+    // itself, which every closest encloser proof under nl. needs, must not be replaced by it, nor pruned for it.
+    let capture = capture("nxdomain-nsec3");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-nsec3", "nl.", &asked);
+    let records = nsec3s(&response);
+    let (_, any) = records.first().expect("an NSEC3 record");
+    let nl = name("nl.");
+    let apex_hash = Budget::default()
+        .nsec3_hash(any.salt(), any.iterations, &nl)
+        .expect("a hash");
+    assert!(
+        records.iter().any(|(owner, _)| *owner == apex_hash),
+        "the capture holds the record of the apex"
+    );
+    let (other, _) = records
+        .iter()
+        .find(|(owner, _)| *owner != apex_hash)
+        .expect("another record");
+    let moved = |hash: &[u8; 20]| hashed_owner(&nl, hash).expect("a name");
+    let child = moved(&apex_hash);
+    let forged = relocated(
+        &response,
+        (&moved(other), RecordType::NSEC3),
+        (&child, &child),
+    );
+    assert_eq!(forged.len(), 1);
+    let caches = configured(false, Config::default());
+    store_secure(
+        &caches.rrsets,
+        Rrset::group(&response.authority),
+        at(&capture),
+    );
+    store_secure(&caches.rrsets, forged, at(&capture));
+    let (resolved, sent) = silent(&caches, (&asked, RecordType::A), at(&capture), true);
+    assert_eq!(sent, 0, "{asked} asked");
+    assert!(
+        matches!(resolved, Resolved::NxDomain { .. }),
+        "{resolved:?}"
+    );
+}
+
 /// `sets` of NSEC3 records as they are but for the hash they say they use: `iterations` and `salt` are theirs, the
 /// rest as the zone served it.
 fn rehashed(sets: &[Rrset], iterations: u16, salt: &[u8]) -> Vec<Rrset> {

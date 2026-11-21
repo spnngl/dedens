@@ -528,8 +528,9 @@ impl RrsetCache {
     }
 
     /// The fresh `RRset` of `owner`, any case, `rtype` and `class` at `now`, whatever its rank: see [`Ranked`] for
-    /// the ranks that may answer a client. Of an NSEC at the apex of its signer and one at the same name signed by
-    /// its parent zone, which are kept apart, the apex's: it is what the zone's own servers answer for the name.
+    /// the ranks that may answer a client. Of an NSEC or NSEC3 at the apex of its signer and one at the same name
+    /// signed by another zone, which are kept apart, the apex's: it is what the zone's own servers answer for the
+    /// name.
     #[must_use]
     pub fn get(
         &self,
@@ -538,7 +539,7 @@ impl RrsetCache {
         class: Class,
         now: u32,
     ) -> Option<Ranked> {
-        let hit = (rtype == RecordType::NSEC)
+        let hit = matches!(rtype, RecordType::NSEC | RecordType::NSEC3)
             .then(|| self.fetch(true, owner, rtype, class, now))
             .flatten()
             .or_else(|| self.fetch(false, owner, rtype, class, now));
@@ -546,9 +547,16 @@ impl RrsetCache {
         hit
     }
 
-    /// As [`RrsetCache::get`], of the NSEC at the apex of its signer if `apex`, else of the other one (D199).
-    pub(crate) fn get_nsec(&self, owner: &Name<'_>, apex: bool, now: u32) -> Option<Ranked> {
-        let hit = self.fetch(apex, owner, RecordType::NSEC, Class::IN, now);
+    /// As [`RrsetCache::get`], of the NSEC or NSEC3 (`rtype`) at the apex of its signer if `apex`, else of the other
+    /// one (D199).
+    pub(crate) fn get_nsec(
+        &self,
+        owner: &Name<'_>,
+        rtype: RecordType,
+        apex: bool,
+        now: u32,
+    ) -> Option<Ranked> {
+        let hit = self.fetch(apex, owner, rtype, Class::IN, now);
         self.metrics.lookup(hit.is_some());
         hit
     }
@@ -618,15 +626,18 @@ const NEGATIVE: u8 = 0x80;
 /// reason.
 const HOLD: u8 = 0x81;
 
-/// The first byte of the key of an NSEC `RRset` at the apex of its signer ([`at_apex`]), apart from the NSEC of the
-/// same name that its parent zone signs, a delegation's (D199, as Unbound's `PACKED_RRSET_NSEC_AT_APEX`).
+/// The first byte of the key of an NSEC or NSEC3 `RRset` at the apex of its signer ([`at_apex`]), apart from the
+/// one of the same name that another zone signs: its parent's NSEC, a delegation's, or the NSEC3 of the parent at the
+/// hash of the child's name (D199, as Unbound's `PACKED_RRSET_NSEC_AT_APEX`).
 const APEX_NSEC: u8 = 0x82;
 
-/// Whether `rrset` is an NSEC at the apex of the zone that signed it: the owner is the signer. Its parent zone's NSEC
-/// at the same name, which marks a delegation, has the same key but for this, so that a child cannot replace its
-/// parent's record: the parent's chain stays, and the records of the two zones are never taken for each other's.
+/// Whether `rrset` is an NSEC or NSEC3 at the apex of the zone that signed it: the owner is the signer. The record of
+/// the other zone at the same name has the same key but for this, so that a child cannot replace its parent's
+/// record, by its apex NSEC or by an NSEC3 at a hash the parent uses (anyone may register such a name, which makes
+/// every proof under the parent a miss): the parent's chain stays, and the records of the two zones are never taken
+/// for each other's.
 fn at_apex(rrset: &Rrset) -> bool {
-    rrset.rtype() == RecordType::NSEC
+    matches!(rrset.rtype(), RecordType::NSEC | RecordType::NSEC3)
         && rrset
             .signer()
             .is_some_and(|signer| signer == *rrset.owner())

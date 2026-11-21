@@ -98,17 +98,18 @@ pub(crate) fn synthesise(
 
 /// The `RRset` of `owner` and `rtype` in the zone `apex`, fresh, secure and signed by `apex` alone: the key of an
 /// `RRset` is its owner, type and class, so a set of another zone at the same name (a child's NSEC at its own apex,
-/// or an NSEC3 at the name of one of the parent's hashes) may have replaced the parent's record, and `denial::prove`
-/// takes every record it is given for the zone's (RFC 6840 §4.1). The NSEC at the apex is read under its own key
-/// ([`RrsetCache::get_nsec`]).
+/// or an NSEC3 at the name of one of the parent's hashes) could have replaced the parent's record, and
+/// `denial::prove` takes every record it is given for the zone's (RFC 6840 §4.1). The cache keeps the two apart: a
+/// set at its signer's apex has a key of its own, which only the NSEC at `apex` has here; an NSEC3 owner is a hash
+/// below it ([`RrsetCache::get_nsec`]).
 fn secure(
     rrsets: &RrsetCache,
     apex: &Name<'_>,
     (owner, rtype): (&Name<'_>, RecordType),
     now: u32,
 ) -> Option<Ranked> {
-    let held = if rtype == RecordType::NSEC {
-        rrsets.get_nsec(owner, owner == apex, now)
+    let held = if matches!(rtype, RecordType::NSEC | RecordType::NSEC3) {
+        rrsets.get_nsec(owner, rtype, owner == apex, now)
     } else {
         rrsets.get(owner, rtype, Class::IN, now)
     };

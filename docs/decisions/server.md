@@ -2136,13 +2136,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     proof (D74), for the name and type. A set counts only if every signature on it has the apex for signer (RFC
     6840 §4.1, as the index requires on insert): a `RRset` is keyed by owner, type and class, so a child zone's NSEC
     at its apex, or an NSEC3 of a child named like one of the parent's hashes, may have replaced the parent's
-    record the index still names, and the child's span proves nothing for the parent's names. An NSEC at the apex of
-    its signer is kept under its own key (`0x82`), apart from the NSEC of the same name that the parent signs for a
-    delegation, so neither evicts the other and a lookup of an NSEC prefers the apex's (Unbound's
-    `PACKED_RRSET_NSEC_AT_APEX`, `validator/val_neg.c`). A child's NSEC3 at the name of a parent's hash is not
-    kept apart: it may still replace the parent's record (a miss, not a forged proof). Unbound keeps every NSEC at an
-    apex apart by that flag; here only the NSEC is, an NSEC3 owner being a hash, which no zone's apex is. The
-    proof: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN (not the compact form, which has no
+    record the index still names, and the child's span proves nothing for the parent's names. An NSEC or NSEC3 at the
+    apex of its signer is kept under its own key (`0x82`), apart from the one of the same name that another zone
+    signs (the parent's NSEC for a delegation, the parent's NSEC3 at the hash of a child's name), so neither evicts
+    the other and a lookup of one of the two types prefers the apex's (Unbound's `PACKED_RRSET_NSEC_AT_APEX`,
+    `validator/val_neg.c`, which sets it for both). Without it anyone could register `<hash of nl.>.nl`, sign an NSEC3
+    at its apex and ask for it: the answer is secure, replaces the TLD's record at the hash of its apex, which every
+    closest encloser proof under it needs, and the proofs fail until the record is stored again (78 queries for a name
+    under nl., measured, repeatable at will). The proof: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN (not the compact form, which has no
     NXDOMAIN), NODATA and wildcard NODATA are synthesised. Not synthesised: a proof with the opt-out flag (an unsigned
     delegation may be there, RFC 5155 §6: an opt-out answer is insecure, so a captured one never enters the index, but
     a record inserted secure does, and the proof is refused: tested); a DS, ANY, RRSIG or NXNAME question; a name
