@@ -21,6 +21,9 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   an `RRset` of its rank; its seeds are the captures of `testdata/recursion`. A record no `RRset` holds (a meta
   type) is dropped, not kept, and an RRSIG question's signatures are `Outcome::Signatures`, outside `ranked` and
   `records` (D176): grouping loses nothing.
+- A `Resolution` is total too: whatever the responses, it ends within its `Limits` and never panics. The fuzz target
+  `resolve_replay` answers each query with one fuzzed response (or a timeout, or an error) and checks the queries
+  sent, the time and the cache's size; the attack scenarios of `dedens-sim/tests/attacks.rs` hold the bounds' numbers.
 - A scrubbed `Lame` or `Unusable` keeps and drops nothing: the iteration asks another server, nothing is logged per
   record.
 - A value's `Cost` counts the bytes asked for every allocation it owns (`Rrset::cost`: the `Arc`, the owner name,

@@ -1,14 +1,22 @@
-//! Targets of dedens-resolver: the scrubbing of a response (D192), and its `RRset` cache fed the records of
-//! responses off the wire.
+//! Targets of dedens-resolver: the scrubbing of a response (D192), its `RRset` cache fed the records of
+//! responses off the wire, and a resolution answered with one response to each query (D191).
 
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dedens_cache::{Checked, Config};
+use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::RData;
-use dedens_proto::{Message, Name, Record, RecordType, Section};
-use dedens_resolver::{Inserted, Outcome, Rank, Rrset, RrsetCache, Scrubbed, scrub};
+use dedens_proto::{Class, Message, Name, Question, Record, RecordType, Section};
+use dedens_resolver::{
+    Caches, Failure, InfraCache, Inserted, Limit, Limits, Marks, Minimisation, Next, Outcome, Rank,
+    Reply, Resolution, Resolved, Rrset, RrsetCache, Scrubbed, scrub,
+};
+use dedens_roots::RootHints;
+use rand_core::{TryCryptoRng, TryRng};
 
 /// The cache's capacity: small, so that a large response evicts.
 const CAPACITY: usize = 64 << 10;
@@ -176,6 +184,149 @@ pub fn scrub_response(data: &[u8]) {
     }
     partitioned(response, &scrubbed, &kept);
 }
+
+/// The round-trip time the transport reports for a response.
+const RTT: Duration = Duration::from_millis(20);
+
+/// The time a replay starts at, so that a TTL of a response is fresh.
+const START: Duration = Duration::from_secs(1_760_000_000);
+
+/// A response off the wire, which every query of a resolution of its question is answered with, as often as the
+/// draws seeded by its bytes say, the others met by a timeout, a failed exchange or a datagram that does not decode;
+/// half the inputs have the answer validated. The resolution ends within [`Limits`]: the queries it sent, the
+/// validator's beside them, and the time; the caches hold within capacity. D191, D197.
+///
+/// # Panics
+///
+/// On a panic of the resolution, or on a bound of [`Limits`] it passed.
+pub fn resolve_replay(data: &[u8]) {
+    let Ok(decoded) = Message::decode(data) else {
+        return;
+    };
+    let mut response = decoded.message;
+    let question = (response.questions.first())
+        .filter(|question| question.qclass == Class::IN)
+        .map_or_else(
+            || Question::new("example.com.".parse().expect("a name"), RecordType::A),
+            |question| Question::new(question.name.clone().into_owned(), question.qtype),
+        );
+    let config = Config {
+        shards: 1,
+        ..Config::default()
+    };
+    let caches = Arc::new(Caches {
+        rrsets: RrsetCache::new(CAPACITY, config).expect("a valid config"),
+        infra: InfraCache::new(CAPACITY, 1).expect("a valid size"),
+        roots: RootHints::bundled().clone(),
+        tlds: None,
+    });
+    let limits = Limits::default();
+    let Ok(resolution) = Resolution::start(
+        question,
+        Arc::clone(&caches),
+        START,
+        limits,
+        Minimisation::Off,
+    ) else {
+        return;
+    };
+    let length = u16::try_from(data.len()).unwrap_or(u16::MAX);
+    let mut draws = Draws(u64::from(response.header.id) << 16 | u64::from(length));
+    let mut resolution = if draws.below(2) == 0 {
+        resolution
+    } else {
+        let validator = Validator::new(TrustAnchors::root(), dedens_dnssec::Limits::default());
+        resolution.validated(validator, START.as_secs())
+    };
+    let mut elapsed = Duration::ZERO;
+    loop {
+        let step = match resolution.step(START + elapsed, &mut draws) {
+            Next::Done(resolved) => Err(matches!(
+                resolved,
+                Resolved::Failed(Failure::Limit(Limit::Time))
+            )),
+            Next::Send(query) => Ok(query.clone()),
+        };
+        let query = match step {
+            Err(late) => {
+                assert!(
+                    resolution.sent() <= limits.queries + limits.validation,
+                    "{} queries",
+                    resolution.sent()
+                );
+                assert!(
+                    late || elapsed <= limits.time + RTT,
+                    "{elapsed:?} to end without the time limit"
+                );
+                assert!(
+                    caches.rrsets.used() <= CAPACITY,
+                    "the cache within its capacity"
+                );
+                return;
+            }
+            Ok(query) => query,
+        };
+        assert!(
+            resolution.sent() <= limits.queries + limits.validation,
+            "{} queries, still asking",
+            resolution.sent()
+        );
+        match draws.below(8) {
+            0 => resolution.receive(Reply::Timeout, START + elapsed + query.timeout),
+            1 => resolution.receive(Reply::Undecodable, START + elapsed + RTT),
+            2 => resolution.receive(Reply::ServerError, START + elapsed + RTT),
+            _ => {
+                // The transport matches the response to the query: its question is the query's.
+                response.questions = vec![query.question.clone()];
+                let reply = Reply::Response {
+                    message: &response,
+                    seen: Marks::default(),
+                    rtt: Some(RTT),
+                };
+                resolution.receive(reply, START + elapsed + RTT);
+            }
+        }
+        elapsed += match draws.below(8) {
+            0 => query.timeout,
+            _ => RTT,
+        };
+    }
+}
+
+/// `SplitMix64`, seeded by the input: a CSPRNG by marker only, so that a failing input replays.
+struct Draws(u64);
+
+impl Draws {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        (z ^ (z >> 31)) % bound
+    }
+}
+
+impl TryRng for Draws {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+        Ok(u32::try_from(self.try_next_u64()? >> 32).unwrap_or_default())
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+        Ok(self.below(u64::MAX))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
+        for chunk in dst.chunks_mut(8) {
+            let word = self.try_next_u64()?.to_le_bytes();
+            chunk.copy_from_slice(&word[..chunk.len()]);
+        }
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for Draws {}
 
 /// The signatures `outcome` answers an RRSIG question with: each an RRSIG owned by the end of its chain from `name`.
 fn signatures<'a, 'm>(name: &Name<'m>, outcome: &'a Outcome<'m>) -> &'a [Record<'m>] {

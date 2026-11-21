@@ -44,7 +44,7 @@ pub use plugins::parse_lists;
 pub use proto::{
     decode_message, differential_hickory, parse_name, parse_query_file, parse_zone, read_query,
 };
-pub use resolver::{rrset_cache_insert, scrub_response};
+pub use resolver::{resolve_replay, rrset_cache_insert, scrub_response};
 pub use roots::{parse_root_hints, parse_tlds_json};
 pub use server::{cache_insert, parse_network, serve_query};
 
@@ -113,4 +113,5 @@ targets! {
     parse_tlds_json,
     rrset_cache_insert,
     scrub_response,
+    resolve_replay,
 }
