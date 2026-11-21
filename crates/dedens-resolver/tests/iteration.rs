@@ -1907,6 +1907,38 @@ fn d191_a_cached_delegation_with_no_address_to_ask_is_skipped() {
 }
 
 #[test]
+fn d191_a_cached_delegation_with_no_address_is_skipped_whatever_the_switch() {
+    // The cache holds google.com's NS without the addresses of its servers (the glue expired first, or came not at
+    // all): with local addresses asked or not, the closest delegation is the root's, not a zone to look up from
+    // itself.
+    let capture = recursion::Resolution::read("unsigned");
+    for ask in [false, true] {
+        let caches = caches(false);
+        let referral = response(&capture, "com.", "google.com.");
+        for set in Rrset::group(&referral.authority) {
+            let rank = Rank::AuthorityNonAuthoritative;
+            let stored = (caches.rrsets).insert(set, rank, Checked::Unchecked, secs(at(&capture)));
+            assert!(stored.is_ok(), "{stored:?}");
+        }
+        steer(&caches, &capture);
+        let authorities = Authorities::new([&capture]);
+        let server = |query: &Query| Answered::Response(captured(&authorities, query));
+        let mut resolution =
+            start(&capture, &caches, Limits::default()).asking_local_addresses(ask);
+        let (outcome, sent) = run(&mut resolution, &server, at(&capture));
+        assert!(
+            matches!(outcome, Resolved::Answer { .. }),
+            "{ask}: {outcome:?}"
+        );
+        assert_eq!(
+            sent.first().map(|s| &s.0),
+            Some(&Name::root()),
+            "{ask}: {sent:?}"
+        );
+    }
+}
+
+#[test]
 fn rfc5452_5_a_reply_shared_does_not_judge_the_server_again() {
     // The same query of two resolutions, sent once: the one that waited on it takes the reply without timing the
     // server out a second time (D195).

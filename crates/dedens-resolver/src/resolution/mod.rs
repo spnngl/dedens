@@ -2122,7 +2122,7 @@ fn closest(
                 }
                 addresses.extend(known);
             }
-            if local || addresses.iter().any(|&address| askable(address)) {
+            if addresses.iter().any(|&address| local || askable(address)) {
                 debug!(%zone, "delegation from the cache");
                 let zone = zone.into_owned();
                 return Delegation::new(zone, Source::Cache, addresses, missing, local);
