@@ -352,6 +352,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "resolve_replay"
+path = "fuzz_targets/resolve_replay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "parse_rdap"
 path = "fuzz_targets/parse_rdap.rs"
 test = false
