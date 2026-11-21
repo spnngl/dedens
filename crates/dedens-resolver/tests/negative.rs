@@ -643,7 +643,8 @@ fn rfc9520_3_2_a_clock_gone_back_does_not_extend_a_hold() {
     let caches = configured(false, Config::default());
     let text = capture.name.to_string();
     let question = (text.as_str(), capture.rtype);
-    let base = at(&capture) + Duration::from_secs(10_000);
+    let early = at(&capture);
+    let base = early + Duration::from_secs(10_000);
     let fails = |now: Duration| {
         let mut resolution = resolution(&caches, question, now, false);
         let (_, sent) = run(&mut resolution, &|_| Answered::ServerError, now);
@@ -651,11 +652,8 @@ fn rfc9520_3_2_a_clock_gone_back_does_not_extend_a_hold() {
     };
     assert!(fails(base) > 0);
     assert_eq!(fails(base + Duration::from_secs(1)), 0, "held");
-    // The hold ends 5 s after the first failure: a clock 2 hours earlier is outside the longest hold.
-    assert!(
-        fails(base - Duration::from_secs(7_200)) > 0,
-        "held across a clock gone back"
-    );
+    // The hold ends 5 s after the first failure: a clock 10 000 s earlier is outside the longest hold.
+    assert!(fails(early) > 0, "held across a clock gone back");
 }
 
 #[test]
