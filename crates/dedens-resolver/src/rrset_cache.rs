@@ -376,6 +376,11 @@ impl RrsetCache {
                 .spans
                 .add_nsec(&apex, &set.owner().clone().into_owned()),
             RecordType::NSEC3 => {
+                // An NSEC3 at the apex itself (a child's, signed by its owner) is no record of the zone: indexed
+                // under the hash its first label spells, it would only be pruned at its first miss.
+                if set.owner().label_count() != apex.label_count() + 1 {
+                    return;
+                }
                 let Some(hash) = hash_of(set.owner()) else {
                     return;
                 };
