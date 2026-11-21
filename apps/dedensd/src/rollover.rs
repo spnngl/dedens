@@ -153,9 +153,10 @@ pub(crate) struct Kept {
     /// The anchors served and those of D128 the last warning was about, until they agree again: the same pair is
     /// not warned of at each reload.
     told: Option<(TrustAnchors, TrustAnchors)>,
-    /// Whether the last [`Kept::anchors`] served the seed as it is, the state not readable then: that is what the
-    /// validators hold, not what the state serves once it reads again (RFC 5011 §2.1: a revoked key the seed
-    /// lists is trusted until they are loaded again).
+    /// Whether [`Kept::anchors`] served the seed as it is, the state not readable then, since the last
+    /// [`Kept::observe`]: the validators may hold that, not what the state serves once it reads again (RFC 5011
+    /// §2.1: a revoked key the seed lists is trusted until they are loaded again). Only `observe` clears it: a
+    /// reload that read the state and failed later keeps the validators' old pipeline.
     unfiltered: bool,
 }
 
@@ -221,8 +222,8 @@ impl Kept {
     /// The root anchors the validators trust, `seed` those of D128: the rollover's, warned of when they disagree
     /// with `seed`; when it holds revoked keys only, `seed` less those; else `seed`.
     pub(crate) fn anchors(&mut self, state_dir: &Path, seed: &TrustAnchors) -> TrustAnchors {
-        self.unfiltered = !self.load(state_dir);
-        if self.unfiltered {
+        if !self.load(state_dir) {
+            self.unfiltered = true;
             return seed.clone();
         }
         let Some(rollover) = self.rollover() else {
@@ -836,6 +837,30 @@ pub(crate) mod tests {
         assert!(text.contains("\naddpend "), "{text}");
     }
 
+    /// A state in `dir` that followed the revocation of KSK-2010 in March 2019; its text.
+    fn revoked_state(dir: &Path, seed: &TrustAnchors) -> String {
+        let path = dir.join(STATE);
+        fs::write(
+            &path,
+            format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010()),
+        )
+        .unwrap();
+        Kept::default().observe(&snapshot("20190305003355"), seed, dir, MARCH_2019);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\nrevoked "), "{text}");
+        text
+    }
+
+    /// Replaces the state at `path` with one of a version this build does not know: unreadable, and kept, with no
+    /// regard for who runs the test (a mode of 0 reads as root).
+    fn unreadable(path: &Path) {
+        fs::write(
+            path,
+            format!("dedens rfc5011 2\nvalid {}\nend\n", ksk_2010()),
+        )
+        .unwrap();
+    }
+
     /// Whether `anchors` trust KSK-2010, by its DS or as a DNSKEY.
     fn trusts_2010(anchors: &TrustAnchors) -> bool {
         let text = anchors.to_string();
@@ -847,35 +872,43 @@ pub(crate) mod tests {
     /// nothing, so that a revoked key is not trusted until the next SIGHUP.
     #[test]
     fn a_state_readable_again_replaces_the_seed_served_meanwhile() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        if nix::unistd::geteuid().is_root() {
-            // Root reads any file.
-            return;
-        }
         let state = tempfile::tempdir().unwrap();
         let (dir, seed) = (state.path(), seed());
         let path = dir.join(STATE);
         let march = snapshot("20190305003355");
-        fs::write(
-            &path,
-            format!("dedens rfc5011 1\nvalid {}\nend\n", ksk_2010()),
-        )
-        .unwrap();
-        Kept::default().observe(&march, &seed, dir, MARCH_2019);
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("\nrevoked "), "{text}");
+        let text = revoked_state(dir, &seed);
 
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        unreadable(&path);
         let mut kept = Kept::default();
         assert!(trusts_2010(&kept.anchors(dir, &seed)), "the seed, as is");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&path, text).unwrap();
         let observed = kept.observe(&march, &seed, dir, MARCH_2019 + 60 * 60);
         assert!(observed.changed);
         assert!(!trusts_2010(&kept.anchors(dir, &seed)));
         // The seed served no more, an answer that moves nothing reloads nothing.
         let again = kept.observe(&march, &seed, dir, MARCH_2019 + 2 * 60 * 60);
         assert!(!again.changed);
+    }
+
+    /// D200, RFC 5011 §2.1: what the validators hold is the seed as it is until an answer takes that: a reload that
+    /// reads the state again but fails after it (a bad configuration) keeps the validators' old pipeline, so the
+    /// next answer still reloads them.
+    #[test]
+    fn the_seed_served_stays_so_through_a_reload_that_fails() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, seed) = (state.path(), seed());
+        let path = dir.join(STATE);
+        let march = snapshot("20190305003355");
+        let text = revoked_state(dir, &seed);
+
+        unreadable(&path);
+        let mut kept = Kept::default();
+        assert!(trusts_2010(&kept.anchors(dir, &seed)), "the seed, as is");
+        // The state reads again; the reload that asked for it fails later, its pipeline is dropped.
+        fs::write(&path, text).unwrap();
+        assert!(!trusts_2010(&kept.anchors(dir, &seed)), "served, not held");
+        let observed = kept.observe(&march, &seed, dir, MARCH_2019 + 60 * 60);
+        assert!(observed.changed, "the validators still trust KSK-2010");
     }
 
     /// D200: a disagreement of the anchors followed with those of D128 is warned of once, at each change of
