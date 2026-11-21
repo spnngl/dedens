@@ -22,7 +22,8 @@
 //!   iterations (`ws`'s 10 are an opt-out span, insecure by itself), so no run isolates the limit's verdict, and a
 //!   changed record has no signature. `MaxIterations` is held by `crates/dedens-dnssec/tests/denial.rs` and
 //!   `validator.rs` (`nsec3_iterations_above_the_limit_are_insecure`), on captured proofs (D74).
-//! - `MaginotDNS` (Li et al., USENIX Security 2023): a zone's server answers with records of a sibling zone.
+//! - `MaginotDNS` (Li et al., USENIX Security 2023): a referral's glue for servers named outside
+//!   the zone of the answer.
 //! - `TuDoor` (Li et al., IEEE S&P 2024): datagrams that are no message, with the query's ID, port and address.
 //! - The ghost domain (Jiang et al., NDSS 2012): a delegation that the parent revoked, kept alive by the child's
 //!   answers.
@@ -1156,74 +1157,65 @@ fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
 }
 
 #[test]
-fn maginotdns_records_of_a_sibling_zone_in_an_answer_are_not_cached() {
-    // Li et al., USENIX Security 2023: the server of google.com adds to its answer an address of example.com's name
-    // and example.com's delegation with the poison for its server. None is in the zone of the answer (D192): the
-    // scrubber drops them, example.com is asked of its own servers, and the cache keeps nothing of the poison.
+fn maginotdns_glue_of_a_name_outside_the_zone_is_not_cached() {
+    // Li et al., USENIX Security 2023: the server of org. refers netmeister.org to its servers, names of gandi.net, and
+    // adds to the referral an address of each: the poison. The owner of the glue is outside the zone of the answer
+    // (D192): the scrubber drops it, the servers' names are resolved from their own zone, and the cache keeps nothing
+    // of the attacker's. Of the injections of the paper this one only the zone's bound stops: a chain of CNAME records
+    // is cut at the zone's edge, a delegation of `org.` itself in an answer is not a referral, and an address that
+    // answers nothing is not glue.
     seed::each(SEEDS, |seed| {
-        let (unsigned, signed) = (Resolution::read("unsigned"), Resolution::read("signed-com"));
-        let (google, example) = (dns("google.com."), dns("example.com."));
-        let example_servers = servers_of(&signed, &example);
-        let (sibling, template) = (dns("ns1.example.com."), unsigned.clone());
-        let plot = Plot::new(vec![unsigned, signed]).deriving({
-            let (google, example) = (google.clone(), example.clone());
-            move |zone, question| {
-                if *zone != google
-                    || question.name != template.name
-                    || question.qtype != template.rtype
-                {
-                    return None;
+        let capture = Resolution::read("dname");
+        let (zone, org, child) = (capture.name.clone(), dns("org."), dns("netmeister.org."));
+        let child_servers = servers_of(&capture, &child);
+        let referral = answer_of(&capture, &org, &zone, RecordType::A);
+        let targets: Vec<Name<'static>> = (referral.authority.iter())
+            .filter_map(|record| match record.data() {
+                RData::Ns(server) => Some(server.into_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !targets.is_empty() && targets.iter().all(|server| !server.is_within(&org)),
+            "{targets:?}"
+        );
+        let plot =
+            Plot::new(vec![capture]).deriving({
+                let targets = targets.clone();
+                move |at, question| {
+                    if *at != org || question.name != zone || question.qtype != RecordType::A {
+                        return None;
+                    }
+                    let mut response = to(referral.clone(), question);
+                    let ttl = Ttl::new(86_400).expect("a TTL");
+                    response.additional.extend(targets.iter().map(|server| {
+                        Record::new(server.clone(), Class::IN, ttl, &RData::A(POISON))
+                    }));
+                    Some(response)
                 }
-                let mut response = to(captured(&template, zone), question);
-                let ttl = Ttl::new(86_400).expect("a TTL");
-                let poison = RData::A(POISON);
-                response
-                    .answer
-                    .push(Record::new(example.clone(), Class::IN, ttl, &poison));
-                response.authority.push(Record::new(
-                    example.clone(),
-                    Class::IN,
-                    ttl,
-                    &RData::Ns(sibling.clone()),
-                ));
-                response
-                    .additional
-                    .push(Record::new(sibling.clone(), Class::IN, ttl, &poison));
-                Some(response)
-            }
-        });
+            });
         let mut lab = lab(seed, plot);
         lab.world.client(async move |stub| {
-            stub.expect(question("google.com", RecordType::A), Carrier::Udp)
-                .await?;
-            stub.expect(question("example.com", RecordType::A), Carrier::Udp)
-                .await?;
+            stub.expect(
+                question("www.dname.dns.netmeister.org", RecordType::A),
+                Carrier::Udp,
+            )
+            .await?;
             Ok(())
         });
         let Ran { heard, caches, .. } = lab.run();
-        let at_example = (paid(&heard).iter())
-            .filter(|(server, _, _)| example_servers.contains(server))
+        let at_child = (paid(&heard).iter())
+            .filter(|(server, _, _)| child_servers.contains(server))
             .count();
         println!(
-            "maginot seed {}: {at_example} queries to example.com's servers",
+            "maginot seed {}: {at_child} queries to netmeister.org's servers",
             seed.0
         );
-        assert!(at_example >= 1, "example.com answered from the cache");
-        for (owner, rtype) in [(&example, RecordType::A), (&sibling_name(), RecordType::A)] {
-            assert!(!poisoned(&caches, owner, rtype), "{owner} {rtype:?}");
+        assert!(at_child >= 1, "the answer came from the poison");
+        for server in &targets {
+            assert!(!poisoned(&caches, server, RecordType::A), "{server}");
         }
-        let delegation = caches.rrsets.get(&example, RecordType::NS, Class::IN, NOW);
-        assert!(delegation.is_none_or(|held| {
-            held.rrset
-                .rdatas()
-                .iter()
-                .all(|rdata| !matches!(rdata.data(), RData::Ns(name) if name == sibling_name()))
-        }));
     });
-}
-
-fn sibling_name() -> Name<'static> {
-    dns("ns1.example.com.")
 }
 
 /// The datagrams that are no message but have the ID and the question of `genuine`: it cut short at 30 places, counts
