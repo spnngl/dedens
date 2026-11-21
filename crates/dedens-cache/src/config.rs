@@ -172,6 +172,13 @@ impl Config {
         self.bound(ttl.get(), self.max_ttl, checked)
     }
 
+    /// How long a negative answer of TTL `ttl`, `checked`, may be cached (RFC 2308 §5, D199): [`Config::lifetime`]
+    /// within `max_negative_ttl` instead of `max_ttl`, as a negative response is bounded (D124).
+    #[must_use]
+    pub fn negative_lifetime(&self, ttl: Ttl, checked: Checked) -> Option<u32> {
+        self.bound(ttl.get(), self.max_negative_ttl, checked)
+    }
+
     /// The bounds of [`Config::lifetime`] within `cap` instead of `max_ttl`, `None` for a cap of 0: the lifetime of
     /// an `RRset` and of a response.
     pub(crate) fn bound(&self, ttl: u32, cap: u32, checked: Checked) -> Option<u32> {

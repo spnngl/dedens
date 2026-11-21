@@ -15,7 +15,8 @@ fn from_the_root<'n>(name: &'n Name<'_>) -> Vec<&'n [u8]> {
 
 /// Canonical order of names (RFC 4034 §6.1): label by label from the root, each label as lowercase unsigned
 /// bytes, a name that runs out of labels first.
-pub(super) fn canonical_cmp(a: &Name<'_>, b: &Name<'_>) -> Ordering {
+#[must_use]
+pub fn canonical_cmp(a: &Name<'_>, b: &Name<'_>) -> Ordering {
     let (a, b) = (from_the_root(a), from_the_root(b));
     a.iter()
         .zip(&b)
