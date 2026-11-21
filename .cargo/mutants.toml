@@ -217,6 +217,34 @@ exclude_re = [
   # The state read at exactly `Rollover::MAX_LEN` bytes: lossy rather than strict UTF-8, which only changes the
   # message of a state set aside either way (a replacement character is no state, and the text outgrows the bound).
   'dedensd/src/rollover\.rs:\d+:\d+: replace > with >= in read$',
+  # A failure held costs the slot the store counts and no byte of its own: a byte more or less moves no bound a test
+  # can read (D199).
+  'negative\.rs:\d+:\d+: replace <impl Cost for Hold>::cost -> usize with 1$',
+  # The closest encloser of an NSEC proof is the longest name above the one asked that the covering record's owner or
+  # next name is within: the captured zones' records have both within it, so `||` and `&&` pick the same name, and the
+  # wildcard hashed for a name that matched (`at == 0`) adds a record the proof ignores, which a `>=` there adds too.
+  'aggressive\.rs:\d+:\d+: replace \|\| with && in nsec$',
+  'aggressive\.rs:\d+:\d+: replace > with >= in nsec3$',
+  # The span of the wildcard of a captured NSEC3 chain is the span of the name asked, whose record is kept already:
+  # leaving the wildcard unhashed finds the same records. No capture has them apart, and test data is real.
+  'aggressive\.rs:\d+:\d+: replace > with (<|==) in nsec3$',
+  # Held back by the filters of `cached_denial`, which skip a NODATA for ANY (one entry of the key of an NXDOMAIN)
+  # whether or not `denial_key` stores it.
+  'resolution/mod\.rs:\d+:\d+: replace match guard question\.qtype != RecordType::ANY with true in denial_key$',
+  # A failure after a limit reached in an address lookup, or after a bogus verdict made the resolution shun the servers
+  # that answered: the two cases `advance` does not hold. Neither is in a capture: a lookup that runs out of queries
+  # after the servers failed, and a bogus answer with servers left to shun (the validation tests' captures are
+  # secure or insecure), and test data is real.
+  'resolution/mod\.rs:\d+:\d+: replace && with \|\| in Resolution::advance$',
+  # A set of an NSEC3 hash other than SHA-1, or of more than 150 iterations (RFC 9276 §3.2), or a signature over an NSEC
+  # set of another type, or two signers over one set: no capture has one, and test data is real.
+  'rrset_cache\.rs:\d+:\d+: replace (\|\| with &&|!= with ==|&& with \|\||match guard sig\.type_covered == set\.rtype\(\) with true) in RrsetCache::index$',
+  # An entry whose size is exactly the limit: one byte more is refused, one less is stored, as the test reads it.
+  'rrset_cache\.rs:\d+:\d+: replace > with >= in RrsetCache::insert_negative$',
+  # A key longer than the longest: only a name over 255 octets would fill it, which no name is.
+  'rrset_cache\.rs:\d+:\d+: replace \+ with \* *$',
+  # `BTreeSet` orders by `Ord`, never by `PartialEq` or `PartialOrd`, which exist to satisfy `Ord`'s supertraits.
+  'spans\.rs:\d+:\d+: replace <impl (PartialEq|PartialOrd) for Owner>::(eq|partial_cmp) .*$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
