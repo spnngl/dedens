@@ -580,7 +580,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   client's key (DO and CD bits), so the RRSIGs are in a DO client's entry and out of the others' (RFC 4035 §3.2.1,
   §4.5: one atomic entry per answer): no per-RRset storage. Not done (TODECIDE): the BAD-cache threshold of RFC 4035
   §4.7, an EDE on a cached insecure answer or `InsecureReason::info_code()`, an EDE 22/23 for an upstream SERVFAIL, a
-  validation deadline, aggressive use of NSEC (RFC 8198). `Forward` no longer implements `PartialEq` and `Eq`: it
+  validation deadline, aggressive use of NSEC (RFC 8198) in the response cache (the recursive resolver's is D199's). `Forward` no longer implements `PartialEq` and `Eq`: it
   holds the validator's closure. Tests: `tests/dnssec.rs` of `dedens-server` (upstream answers the captures of `dedens-dnssec` at `captured_at`),
   `dedens-cache/tests/checked.rs`, the configuration tests of `config/`; bench `hit_secure` of `benches/server.rs`.
 

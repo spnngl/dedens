@@ -255,7 +255,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - DoC (D95): the discovery of a server by SVCB `docpath` (RFC 9953 §3.2), which needs CoAP over TLS or DTLS
   (the SVCB ALPN says which), and a client that follows `+doc-discover` on its own (a list from an untrusted source
   may not be used, §6). Default: not built; `+doc-discover` is asked for, one server at a time.
-- Aggressive use of the cache for denial (RFC 8198). Default: not before the recursive resolver's cache.
+- Aggressive use of the response cache for denial (RFC 8198; the recursive resolver's RRset cache does it, D199). Default:
+  not in the response cache.
+- Negative answers of the validator's own questions (a DS's NODATA, a DNSKEY's NXDOMAIN) in the recursive resolver's
+  cache, and the positive answer synthesised from a cached wildcard (RFC 8198 §5.1). Default: neither (D199).
 - Key tag signalling (RFC 8145) and the trust anchor sentinel (RFC 8509). Default: not sent.
 - Clock skew when checking signature windows (RFC 4035 §5.3.1). Default: none, the clock as given, with the
   window's edges inclusive; an option when a deployment shows it.

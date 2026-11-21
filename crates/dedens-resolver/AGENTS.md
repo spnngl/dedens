@@ -2,7 +2,7 @@
 
 The recursive resolver. Sans-IO: the caller passes the time and the random source, so tests drive both. The
 rustdoc holds the rules; D191 the iteration's choices, D192 the scrubber's, D193 the `RRset` cache's, D194 the
-infra cache's, D198 QNAME minimisation's.
+infra cache's, D198 QNAME minimisation's, D199 negative caching's.
 
 The caches keep their entries in `dedens_cache::Store` (D193): its sharding, byte budget and S3-FIFO are
 `dedens-cache`'s, tested there. Feature `metrics` (D30): counters in `src/metrics.rs`, tested in `tests/metrics.rs`.
@@ -36,8 +36,15 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
 - The infra cache's lame keys lower the zone the same way, through `lame_key`; its `Cost` is 0: its entries own no
   allocation, the key and slot are the store's.
 - The infra cache's random draw takes a `CryptoRng` (RFC 5452 §4.4): the server asked must not be predictable.
-- The value is an enum (`Entry`) so that negative entries (step 12) share the `RRset` cache's key space: add a
-  variant, not a second store.
+- The value is an enum (`Entry`: `Rrset`, `Absent` a negative answer, `Held` a failure held) so that every kind of entry
+  shares the `RRset` cache's byte budget and key space: add a variant, not a second store. A key's first byte
+  tells them apart (`NEGATIVE`, `HOLD`: above 63, which no wire name starts with), and `KEY_LEN` grows with a key.
+- A negative answer is cached only when judged secure or insecure (or unchecked, with no validator), never bogus,
+  failed, `NoSoa` or YXDOMAIN, and RFC 8020 reads secure NXDOMAIN entries only (D199). The span index of RFC 8198
+  (`Spans`) holds names, not data: a span is used only after `aggressive::synthesise` fetched its secure NSEC or
+  NSEC3 records from the store and `denial::prove` proved the denial again; its bytes are carved out of the
+  capacity (`SPANS_SHARE`), so `used()` stays within it. A change of what it indexes or accepts goes to D199 and
+  `tests/negative.rs`; `tests/memory.rs` counts it.
 - Time is `u32` seconds from any origin (a `Duration` in `Resolution`, its seconds to the caches) and may go back:
   use saturating arithmetic.
 - `Resolution::receive` reads a response only through `scrub`, whose `Outcome` alone picks the next move. The infra
