@@ -102,17 +102,21 @@ impl Absent {
     }
 
     /// Whether `new` replaces this answer at `now`, as an `RRset` does (`Cached::merge`): an expired one gives way to
-    /// anything; one judged secure to nothing less; the same data does not renew it, which would lengthen its
+    /// anything; one judged secure to nothing less, and an unchecked one to nothing but a verdict; the same data does not renew it, which would lengthen its
     /// life; other data of equal trust, the last heard of, does.
     pub(crate) fn replaced_by(&self, new: &Self, now: u32) -> bool {
         if self.left(now) == 0 {
             return true;
         }
-        let secure = |absent: &Self| absent.checked == Checked::Secure;
+        let verdict = |absent: &Self| match absent.checked {
+            Checked::Secure => 2,
+            Checked::Insecure => 1,
+            _ => 0,
+        };
         let same = self.kind == new.kind
             && self.sets.len() == new.sets.len()
             && (self.sets.iter().zip(&new.sets)).all(|(held, offered)| held.0 == offered.0);
-        match secure(new).cmp(&secure(self)) {
+        match verdict(new).cmp(&verdict(self)) {
             std::cmp::Ordering::Greater => true,
             std::cmp::Ordering::Equal => !same,
             std::cmp::Ordering::Less => false,
@@ -186,9 +190,10 @@ impl Hold {
         }
     }
 
-    /// The failure held at `now`, until the hold ends.
-    pub(crate) const fn active(&self, now: u32) -> Option<Failure> {
-        if now < self.until {
+    /// The failure held at `now`, until the hold ends: not one that would outlast `failure_max` (a clock gone back,
+    /// as the response cache reads it).
+    pub(crate) const fn active(&self, config: &Config, now: u32) -> Option<Failure> {
+        if now < self.until && self.until - now <= config.failure_max {
             Some(self.failure)
         } else {
             None
@@ -199,10 +204,10 @@ impl Hold {
     /// was not asked); one after it doubles the hold, unless a quiet spell as long as the longest hold went by,
     /// which starts again (RFC 9520 §3.2: back off, at most 5 minutes).
     pub(crate) const fn again(&mut self, failure: Failure, config: &Config, now: u32) {
-        if now < self.until {
+        if now < self.until && self.until - now <= config.failure_max {
             return;
         }
-        self.length = if now <= self.until.saturating_add(config.failure_max) {
+        self.length = if self.until <= now && now <= self.until.saturating_add(config.failure_max) {
             let doubled = self.length.saturating_mul(2);
             if doubled < config.failure_max {
                 doubled

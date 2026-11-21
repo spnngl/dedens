@@ -2103,8 +2103,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     verdict and the expiry, under a key of `0x80` (no wire name starts above 63), the name lowered, and the type
     asked for a NODATA, ANY for an NXDOMAIN. `Held`: a failure, under `0x81`, the name, the type and a server set.
     `KEY_LEN` is 1 + 255 + 2 + 8. A positive lookup ignores both; an entry over `entry_limit` is not cached; the
-    cost is the `Rrset`s' (`tests/memory.rs`). A new entry replaces a held one that expired, that is less trusted (secure over
-    not secure) or of the same trust with other data; a less trusted one is dropped.
+    cost is the `Rrset`s' (`tests/memory.rs`). A new entry replaces a held one that expired, that has a lesser verdict (secure over
+    insecure over unchecked) or the same verdict and other data; one with a lesser verdict is dropped.
   - What is stored, when. The client's question only, when its resolution settles: a NODATA or an NXDOMAIN judged
     secure or insecure (D197), or, with no validator, unchecked. Never bogus, failed, without SOA (D192), YXDOMAIN
     or the answer to a lookup of the resolution's own (an address, a cut). The validator's own questions' negative
@@ -2128,7 +2128,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     asks, and a wrong cached NXDOMAIN would deny a whole subtree.
   - RFC 8198: `Spans`, an index kept by `RrsetCache::insert` for each secure NSEC or NSEC3 `RRset` whose signer is
     above its owner (the apex): per apex, the NSEC owners in canonical order (RFC 4034 §6.1) or the NSEC3 hashes
-    (one salt and iteration count, SHA-1 only, at most 150, as D74's `MaxIterations`; a zone whose parameters
+    (only a set whose signatures all have one signer, an extra one being a server's;
+    one salt and iteration count, SHA-1 only, at most 150, as D74's `MaxIterations`; a zone whose parameters
     change starts again). It holds names only: `aggressive::synthesise` fetches the neighbours' `RRset`s, each fresh
     and secure, and the zone's SOA (secure), and hands them to `dedens_dnssec::denial::prove`, the validator's own
     proof (D74), for the name and type: the closest encloser and the wildcard are proved, §5.3 and §5.4. NXDOMAIN
@@ -2156,7 +2157,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     The hold is `failure_min` (5 s by default, 1 s at least, §3.2) and doubles for each failure after one expired,
     to `failure_max` (5 minutes at most, §3.2); a failure during a hold is not counted; a quiet spell longer than
     `failure_max` starts again (D43's schedule, one rule in two caches). `Limit`, `Bogus` and `Indeterminate` are
-    not held: a limit is the question's own, and a bogus answer is asked again of other servers (D197). The
+    not held, nor is a failure after a limit was reached (an address lookup's) or a bogus retry shunned the
+    servers: a limit is the question's own, and a bogus answer is asked again of other servers (D197). A hold
+    that would outlast `failure_max` (a clock gone back) is no hold, as in the response cache. The
     server set is part of the key so that a delegation that changed, or another name's servers, is asked. Unbound
     holds nothing per question: its infra cache backs each server off (D194) and `serve-expired` is another matter.
   - Rejected: a separate negative cache (a second budget; Unbound's); RFC 8020 from an insecure NXDOMAIN (Unbound

@@ -1236,12 +1236,16 @@ impl Resolution {
                     crate::metrics::limit(limit);
                     self.limit.get_or_insert(limit);
                 }
-                if matches!(
-                    failure,
-                    Failure::Unreachable | Failure::Network | Failure::Unusable
-                ) {
-                    // The servers failed this question, not a bound of ours: it is not asked of them again
-                    // at once (RFC 9520 §3.2, D199).
+                if self.limit.is_none()
+                    && self.retries == 0
+                    && matches!(
+                        failure,
+                        Failure::Unreachable | Failure::Network | Failure::Unusable
+                    )
+                {
+                    // The servers failed this question, not a bound of ours (an address lookup may have hit
+                    // one) nor the shunning of those that gave a bogus set: it is not asked of them again at
+                    // once (RFC 9520 §3.2, D199).
                     debug!(name = %asked.name, rtype = %asked.qtype, ?failure, "failure held");
                     metrics::hold(Hold::Recorded);
                     let (name, qtype, set) = (&asked.name, asked.qtype, delegation.set);
