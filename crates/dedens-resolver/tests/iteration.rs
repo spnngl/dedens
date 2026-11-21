@@ -40,8 +40,13 @@ pub(crate) fn caches(tlds: bool) -> Arc<Caches> {
 
 /// [`caches`], the `RRset` cache's under `config`.
 pub(crate) fn configured(tlds: bool, config: Config) -> Arc<Caches> {
+    sized(tlds, DEFAULT_CAPACITY, config)
+}
+
+/// [`configured`], the `RRset` cache of `capacity` bytes.
+pub(crate) fn sized(tlds: bool, capacity: usize, config: Config) -> Arc<Caches> {
     Arc::new(Caches {
-        rrsets: RrsetCache::new(DEFAULT_CAPACITY, config).expect("a valid config"),
+        rrsets: RrsetCache::new(capacity, config).expect("a valid config"),
         infra: InfraCache::new(InfraCache::DEFAULT_CAPACITY, 64).expect("a valid size"),
         roots: RootHints::bundled().clone(),
         tlds: tlds.then(|| Tlds::bundled().clone()),

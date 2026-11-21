@@ -21,7 +21,7 @@ use dedens_resolver::{
 };
 use dedens_testkit::recursion;
 
-use crate::iteration::{Answered, at, configured, name, response, run, served, start};
+use crate::iteration::{Answered, at, configured, name, response, run, served, sized, start};
 
 /// The captured resolution `id`.
 fn capture(id: &str) -> recursion::Resolution {
@@ -466,22 +466,25 @@ fn nsec3_sets(i: usize) -> Vec<Rrset> {
 /// The bytes the index of spans takes in a cache of `capacity` bytes in one shard after `count` secure NSEC3 sets
 /// are inserted, `judged` as it is: the cache's `used` less that of one holding the same sets unchecked.
 fn spans_used(capacity: usize, count: usize) -> usize {
+    index_bytes(capacity, (0..count).map(nsec3_sets))
+}
+
+/// [`spans_used`] of the `sets` given, in order.
+fn index_bytes(capacity: usize, sets: impl IntoIterator<Item = Vec<Rrset>>) -> usize {
     let config = Config {
         shards: 1,
         ..Config::default()
     };
     let indexed = RrsetCache::new(capacity, config.clone()).expect("a cache");
     let apart = RrsetCache::new(capacity, config).expect("a cache");
-    for i in 0..count {
-        for set in nsec3_sets(i) {
-            let rank = Rank::AuthorityAuthoritative;
-            indexed
-                .insert(set.clone(), rank, Checked::Secure, 0)
-                .expect("stored");
-            apart
-                .insert(set, rank, Checked::Insecure, 0)
-                .expect("stored");
-        }
+    for set in sets.into_iter().flatten() {
+        let rank = Rank::AuthorityAuthoritative;
+        indexed
+            .insert(set.clone(), rank, Checked::Secure, 0)
+            .expect("stored");
+        apart
+            .insert(set, rank, Checked::Insecure, 0)
+            .expect("stored");
     }
     assert!(
         indexed.used() <= capacity,
@@ -489,6 +492,42 @@ fn spans_used(capacity: usize, count: usize) -> usize {
         indexed.used()
     );
     indexed.used() - apart.used()
+}
+
+/// The real NSEC3 record of nl. [`nsec3_sets`] moves, at a hash of the zone `zone` (a name of 7 octets, whatever
+/// the number), signed by it: one more zone for the index of spans.
+fn zone_sets(zone: usize) -> Vec<Rrset> {
+    nsec3_in(&format!("zzz{zone:04}.nl."))
+}
+
+/// The real NSEC3 record of nl. [`nsec3_sets`] moves, at a hash of the zone `apex`, signed by it.
+fn nsec3_in(apex: &str) -> Vec<Rrset> {
+    let apex = name(apex);
+    let response = denial(
+        "nxdomain-nsec3",
+        "nl.",
+        &capture("nxdomain-nsec3").name.to_string(),
+    );
+    let (own, _) = nsec3s(&response).into_iter().next().expect("a record");
+    let from = hashed_owner(&name("nl."), &own).expect("a name");
+    let to = hashed_owner(&apex, &own).expect("a name");
+    relocated(&response, (&from, RecordType::NSEC3), (&to, &apex))
+}
+
+/// A real NSEC record of sidn.nl, moved to `label.apex` and signed by `apex`.
+fn nsec_sets(apex: &str, label: &str) -> Vec<Rrset> {
+    let response = denial(
+        "nxdomain-signed",
+        "sidn.nl.",
+        &capture("nxdomain-signed").name.to_string(),
+    );
+    let apex = name(apex);
+    let to = name(&format!("{label}.{apex}"));
+    relocated(
+        &response,
+        (&name("cybersterk.sidn.nl."), RecordType::NSEC),
+        (&to, &apex),
+    )
 }
 
 #[test]
@@ -507,6 +546,83 @@ fn d199_the_index_of_spans_stays_within_its_share_of_the_capacity() {
     // 400 hashes of 44 bytes are over the 2 KiB the index may have: it started over, more than once.
     assert!(used <= capacity / 32, "{used} of {}", capacity / 32);
     assert!(used > capacity / 64, "{used}: kept next to nothing");
+}
+
+#[test]
+fn d199_the_index_of_spans_counts_the_names_of_an_nsec_zone_by_their_length() {
+    // A zone's bytes are its apex twice (the key and the entry) and each owner's wire form: a longer apex is dearer
+    // by three times the difference (twice, and the owner is below it), a longer label by its own.
+    let capacity = 1 << 20;
+    let short = index_bytes(capacity, [nsec_sets("nl.", "a")]);
+    let long = index_bytes(capacity, [nsec_sets("sidn.nl.", "a")]);
+    let wide = index_bytes(capacity, [nsec_sets("nl.", "abc")]);
+    assert_eq!(long - short, 3 * "sidn.".len(), "{short} then {long}");
+    assert_eq!(wide - short, 2, "{short} then {wide}");
+    let two = index_bytes(capacity, [nsec_sets("nl.", "a"), nsec_sets("nl.", "b")]);
+    // An owner is a name, its bytes and a node: more than half and less than twice a hash, a node and its 20 octets.
+    let hash = spans_used(capacity, 2) - spans_used(capacity, 1);
+    let owner = two - short;
+    assert!(
+        2 * owner > hash && owner < 2 * hash,
+        "{owner} for an owner, {hash} for a hash"
+    );
+    // The one owner's bytes, size of the node and the owner's own, are counted again for another owner.
+    let three = index_bytes(
+        capacity,
+        ["a", "b", "c"].map(|label| nsec_sets("nl.", label)),
+    );
+    assert_eq!(three - two, two - short, "{short}, {two}, {three}");
+}
+
+#[test]
+fn d199_a_zone_that_changes_its_chain_is_counted_for_what_it_holds_now() {
+    // Three hashes of nl., then an NSEC of it: the index starts over, and holds the one owner, as if it had never
+    // had the hashes.
+    let capacity = 1 << 20;
+    let started = index_bytes(
+        capacity,
+        [
+            nsec3_sets(0),
+            nsec3_sets(1),
+            nsec3_sets(2),
+            nsec_sets("nl.", "a"),
+        ],
+    );
+    assert_eq!(started, index_bytes(capacity, [nsec_sets("nl.", "a")]));
+}
+
+#[test]
+fn d199_a_zone_too_big_for_its_share_starts_over_with_nothing_and_goes_on() {
+    // The share is 1 KiB: a zone of hashes grows to it and is then emptied, the zone itself (its own bytes) kept.
+    let capacity = 1 << 15;
+    let one = spans_used(capacity, 1);
+    let hash = spans_used(capacity, 2) - one;
+    let sizes: Vec<usize> = (1..=30).map(|n| spans_used(capacity, n)).collect();
+    assert!(sizes.iter().all(|used| *used <= capacity / 32), "{sizes:?}");
+    assert!(
+        sizes.contains(&(one - hash)),
+        "never started over, nor to the zone alone: {sizes:?}"
+    );
+    assert!(
+        sizes
+            .windows(2)
+            .all(|pair| pair[1] == pair[0] + hash || pair[1] == one - hash),
+        "{sizes:?}"
+    );
+}
+
+#[test]
+fn d199_the_index_of_spans_evicts_whole_zones_down_to_its_share_and_no_further() {
+    // The share is 2 KiB, of zones that cost the same: once it is full, each new zone takes the place of the
+    // oldest, the bytes stay at as many zones as fit.
+    let capacity = 1 << 16;
+    let zone = index_bytes(capacity, [zone_sets(0)]);
+    let fit = capacity / 32 / zone;
+    assert!(fit > 3, "{fit} zones of {zone} bytes fit");
+    for n in [fit + 1, fit + 5, 3 * fit] {
+        let used = index_bytes(capacity, (0..n).map(zone_sets));
+        assert_eq!(used, fit * zone, "{n} zones");
+    }
 }
 
 #[test]
@@ -1009,6 +1125,228 @@ fn d199_an_nsec3_signed_by_a_child_at_the_name_of_a_hash_of_its_parent_is_not_it
         sent > 0 && !matches!(resolved, Resolved::NxDomain { .. }),
         "{outside}: {sent} asked, {resolved:?}"
     );
+}
+
+/// `sets` of NSEC3 records as they are but for the hash they say they use: `iterations` and `salt` are theirs, the
+/// rest as the zone served it.
+fn rehashed(sets: &[Rrset], iterations: u16, salt: &[u8]) -> Vec<Rrset> {
+    let records: Vec<Record<'static>> = sets
+        .iter()
+        .flat_map(|set| {
+            let changed = set.rdatas().iter().map(|wire| match wire.data() {
+                RData::Nsec3(nsec3) => {
+                    let (alg, flags) = (nsec3.hash_algorithm, nsec3.flags);
+                    let (next, types) = (nsec3.next_hashed_owner(), nsec3.types.clone());
+                    let changed = Nsec3::new(alg, flags, iterations, salt, next, types)
+                        .expect("an NSEC3 record");
+                    (&RData::Nsec3(changed)).into()
+                }
+                _ => wire.clone(),
+            });
+            let signatures = set.rrsigs().iter().cloned();
+            changed
+                .chain(signatures)
+                .map(|rdata| Record {
+                    name: set.owner().clone(),
+                    class: set.class(),
+                    ttl: set.ttl(),
+                    rdata,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    Rrset::group(&records)
+}
+
+#[test]
+fn d199_a_zone_that_changes_its_chain_or_its_hash_starts_its_index_over() {
+    // The records of nl. (NSEC3, no salt, no iteration) prove names absent, and those of sidn.nl (NSEC) too. A
+    // record of the other chain, or hashed otherwise, comes for the zone: the index is the new chain's, and what
+    // proved a name before no longer proves another; the records of the old chain, left in the `RRset` cache, are
+    // no span of the new. (A name proved is cached as it was, so the second name is the one asked after.)
+    let nl = capture("nxdomain-nsec3");
+    let nl_asked = nl.name.to_string();
+    let nl_response = denial("nxdomain-nsec3", "nl.", &nl_asked);
+    let sidn = capture("nxdomain-signed");
+    let sidn_asked = sidn.name.to_string();
+    let sidn_response = denial("nxdomain-signed", "sidn.nl.", &sidn_asked);
+    let sidn_other = nsec_spanned(&sidn_response, &sidn_asked);
+    let nl_other = spanned(&nl_response, "nl.", false, &nl_asked);
+    let ws = capture("wildcard-optout");
+    let ws_response = response(&ws, "ws.", "dedens.ws.");
+    let ws_nsec3s = nsec3s(&ws_response);
+    let (_, ws_nsec3) = ws_nsec3s.first().expect("an NSEC3 record of ws.");
+    let nl_nsec3s = nsec3s(&nl_response);
+    let (own, own_nsec3) = nl_nsec3s.first().expect("an NSEC3 record of nl.");
+    let apex = |text: &str| name(text);
+    let at_nl = |hash: &[u8; 20]| hashed_owner(&apex("nl."), hash).expect("a name");
+    // A record of nl. moved to a name of its own, so that it replaces none of those held.
+    let own_set = |signer: &Name<'static>, zone: &Name<'static>| {
+        let mut fresh = *own;
+        fresh[0] = fresh[0].wrapping_add(1);
+        let to = hashed_owner(zone, &fresh).expect("a name");
+        relocated(
+            &nl_response,
+            (&at_nl(own), RecordType::NSEC3),
+            (&to, signer),
+        )
+    };
+    let proved = |caches: &Arc<Caches>, asked: &str, now: Duration| {
+        let (resolved, sent) = silent(caches, (asked, RecordType::A), now, true);
+        (sent == 0).then_some(resolved)
+    };
+    let cybersterk = name("cybersterk.sidn.nl.");
+    let nl_apex = name("nl.");
+    let sidn_apex = name("sidn.nl.");
+    // The new records, and the zone they are of: another chain than the one held, then the same chain hashed with
+    // another number of iterations, then with another salt.
+    let cases = [
+        (
+            [nl_asked.as_str(), nl_other.as_str()],
+            Rrset::group(&nl_response.authority),
+            relocated(
+                &sidn_response,
+                (&cybersterk, RecordType::NSEC),
+                (&cybersterk, &nl_apex),
+            ),
+            "NSEC where NSEC3 was",
+        ),
+        (
+            [sidn_asked.as_str(), sidn_other.as_str()],
+            Rrset::group(&sidn_response.authority),
+            own_set(&sidn_apex, &sidn_apex),
+            "NSEC3 where NSEC was",
+        ),
+        (
+            [nl_asked.as_str(), nl_other.as_str()],
+            Rrset::group(&nl_response.authority),
+            rehashed(
+                &own_set(&nl_apex, &nl_apex),
+                own_nsec3.iterations + 1,
+                own_nsec3.salt(),
+            ),
+            "other iterations",
+        ),
+        (
+            [nl_asked.as_str(), nl_other.as_str()],
+            Rrset::group(&nl_response.authority),
+            rehashed(
+                &own_set(&nl_apex, &nl_apex),
+                own_nsec3.iterations,
+                ws_nsec3.salt(),
+            ),
+            "another salt",
+        ),
+    ];
+    for ([before_name, after_name], held, new, case) in cases {
+        assert_eq!(new.len(), 1, "{case}");
+        let caches = configured(false, Config::default());
+        let now = at(&nl);
+        store_secure(&caches.rrsets, held, now);
+        let before = proved(&caches, before_name, now);
+        assert!(
+            matches!(before, Some(Resolved::NxDomain { .. })),
+            "{case}: {before_name} before: {before:?}"
+        );
+        store_secure(&caches.rrsets, new, now);
+        let after = proved(&caches, after_name, now);
+        assert!(after.is_none(), "{case}: {after_name} after: {after:?}");
+    }
+}
+
+#[test]
+fn d199_the_index_of_spans_evicts_the_zone_used_least_recently_not_the_first_indexed() {
+    // nl.'s records come first and prove names absent. Other zones' records come after, more than the index holds:
+    // a zone kept in use stays, as the oldest would go first if use did not count.
+    let capture = capture("nxdomain-nsec3");
+    let asked = capture.name.to_string();
+    let response = denial("nxdomain-nsec3", "nl.", &asked);
+    let records = nsec3s(&response);
+    let (own, _) = records.first().expect("an NSEC3 record");
+    let nl = name("nl.");
+    let config = Config {
+        shards: 1,
+        ..Config::default()
+    };
+    let caches = sized(false, 1 << 15, config);
+    let now = at(&capture);
+    store_secure(&caches.rrsets, Rrset::group(&response.authority), now);
+    for i in 0..10 {
+        // Two zones of nothing but a record each, which the index of 1 KiB holds six of.
+        for zone in [2 * i, 2 * i + 1] {
+            let apex = name(&format!("z{zone}.nl."));
+            let to = hashed_owner(&apex, own).expect("a name");
+            let moved = relocated(
+                &response,
+                (&hashed_owner(&nl, own).expect("a name"), RecordType::NSEC3),
+                (&to, &apex),
+            );
+            store_secure(&caches.rrsets, moved, now);
+        }
+        // A name of nl. is asked, whatever the answer: the zone is in use.
+        silent(
+            &caches,
+            (&format!("in-use-{i}.nl."), RecordType::A),
+            now,
+            true,
+        );
+    }
+    let (resolved, _) = silent(&caches, (&asked, RecordType::A), now, true);
+    assert!(
+        matches!(resolved, Resolved::NxDomain { .. }),
+        "{asked} after 20 other zones: {resolved:?}"
+    );
+}
+
+#[test]
+fn d199_an_owner_whose_record_expired_leaves_the_index_when_a_lookup_misses_it() {
+    // The records of nl. (NSEC3) and sidn.nl (NSEC) are indexed, then expire; the SOA is stored again, fresh. A name
+    // they covered is asked: the miss drops the owner it found, which the index counted. The same question under
+    // another TLD, as long, leaves the index alone: what is left is the difference of the two caches' bytes. A zone
+    // that then starts over (the other chain) leaves the same bytes in both, so the zone's own count was kept right.
+    for (id, zone, apex) in [
+        ("nxdomain-nsec3", "nl.", "nl."),
+        ("nxdomain-signed", "sidn.nl.", "sidn.nl."),
+    ] {
+        let capture = capture(id);
+        let asked = capture.name.to_string();
+        let response = denial(id, zone, &asked);
+        let other = if id == "nxdomain-nsec3" {
+            spanned(&response, apex, false, &asked)
+        } else {
+            nsec_spanned(&response, &asked)
+        };
+        let before = at(&capture);
+        let after = before + Duration::from_secs(1_000_000);
+        let (held, unheld): (Vec<_>, Vec<_>) = Rrset::group(&response.authority)
+            .into_iter()
+            .partition(|set| set.rtype() != RecordType::SOA);
+        let other_chain = if id == "nxdomain-nsec3" {
+            nsec_sets(apex, "x")
+        } else {
+            nsec3_in(apex)
+        };
+        let used = |question: &str| {
+            let caches = configured(false, Config::default());
+            store_secure(&caches.rrsets, held.clone(), before);
+            let indexed = caches.rrsets.used();
+            store_secure(&caches.rrsets, unheld.clone(), after);
+            let (resolved, _) = silent(&caches, (question, RecordType::A), after, true);
+            assert!(
+                !matches!(resolved, Resolved::NxDomain { .. }),
+                "{id}: {question} {resolved:?}"
+            );
+            let missed = caches.rrsets.used();
+            store_secure(&caches.rrsets, other_chain.clone(), after);
+            (indexed, missed, caches.rrsets.used())
+        };
+        let (start, dropped, restarted) = used(&other);
+        let (same, kept, restarted_kept) = used(&other.replace(".nl.", ".nm."));
+        assert_eq!(start, same, "{id}");
+        let freed = kept - dropped;
+        assert!((44..120).contains(&freed), "{id}: {freed} bytes freed");
+        assert_eq!(restarted, restarted_kept, "{id}");
+    }
 }
 
 #[test]
