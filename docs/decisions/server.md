@@ -1660,18 +1660,18 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     4096 case variants of one TXT string cost no quadratic work.
   - Ranks (RFC 2181 §5.4.1), least trusted first: additional non-authoritative (referral glue), authority
     non-authoritative (referral NS), additional authoritative, answer non-authoritative (the chain of an authoritative
-    answer past its first owner, never a response without AA, which is lame, D192), authority authoritative, answer authoritative. The RFC's last
-    bullet puts three of them at one level; they are split as Unbound's `rrset_trust` does
+    answer past its first owner, never a response without AA, which is lame, D192), authority authoritative,
+    answer authoritative. The RFC's last bullet puts three of them at one level; they are split as Unbound's `rrset_trust` does
     (`util/data/packed_rrset.h`): authoritative first, authority over additional. No zone-data ranks: the resolver
     holds no zone. Secure data is trusted above every rank (the RFC's closing paragraph). Step 05's scrubber ranks
     what it keeps: `insert` takes its `Scrubbed::ranked` `RRsets`, in the bailiwick of the server they came from,
     and trusts the rank given. `get` returns any rank: only answer-section data (answer non-authoritative or
-    authoritative), or a DS proved secure, may answer a client (RFC 2181 §5.4.1), which `Ranked` says and its
-    caller checks; the rest serves the resolution, authority authoritative included and proved secure too: the
-    parent's NSEC or NSEC3 at a cut does not answer `child. NSEC`, as Unbound's rrset path (`dns_cache_lookup`)
-    serves only a DS from an authority section. A DS of a referral to the name asked is answer authoritative
-    (`Rank`), so it answers a DS question; a DS of a referral to another name is no answer until the
-    validator proves it secure.
+    authoritative) may answer a client (RFC 2181 §5.4.1), which `Ranked` says and its caller checks; the rest
+    serves the resolution, authority authoritative included and proved secure too: the parent's NSEC or NSEC3 at
+    a cut does not answer `child. NSEC`. A DS of a referral to the name asked is answer authoritative (`Rank`),
+    so it answers a DS question; a DS of a referral to another name is no answer, and the validator asks for the
+    DS it judges (answer rank), so none is held secure at an authority rank to answer from (Unbound's rrset path
+    would serve one, `dns_cache_lookup`).
   - Replacement, Unbound's `need_to_update_rrset` (`services/cache/rrset.c`): an expired entry gives way to anything;
     more trusted data replaces, except data equal to bogus data that is not itself secure (it would lengthen the
     bogus data's life, RFC 4035 §4.7); other data of equal trust replaces (the last heard of); the same data of equal
