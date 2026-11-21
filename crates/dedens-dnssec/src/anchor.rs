@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use dedens_proto::rdata::{Dnskey, Ds, RData};
 use dedens_proto::{Class, DecodeError, Name, RecordType, TextError, Ttl, ZoneEntry, ZoneReader};
-pub use rollover::{KeyState, Rollover, RolloverError, RolloverStateError};
+pub use rollover::{KeyState, Rollover, RolloverError, RolloverStateError, RolloverStateFault};
 #[cfg(feature = "fetch-anchors")]
 pub use root::{RootAnchors, RootAnchorsError, RootKey};
 #[cfg(feature = "fetch-anchors")]

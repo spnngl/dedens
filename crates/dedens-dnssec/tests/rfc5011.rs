@@ -881,13 +881,49 @@ fn rfc5011_state_text_cut_short_is_refused() {
 }
 
 /// D200: a state of a version this build does not know is told from one that is damaged: the first may be good, and
-/// its tombstones are the state of a newer build that this one must not discard.
+/// its tombstones are the state of a newer build that this one must not discard. A version is a number above 1, and
+/// the header says it before anything else is looked at: a newer state is as long and ends as its build made it.
 #[test]
 fn rfc5011_state_text_of_an_unknown_version_is_told_from_a_damaged_one() {
     let k2010 = dnskey(&december_2018(), 19036);
-    for header in ["dedens rfc5011 2", "dedens rfc5011 10", "dedens rfc5011 "] {
+    for header in [
+        "dedens rfc5011 2",
+        "dedens rfc5011 10",
+        "dedens rfc5011 99999999999999999999999",
+    ] {
         let error = Rollover::read(&format!("{header}\nvalid {k2010}\nend\n")).unwrap_err();
         assert!(error.unknown_version(), "{header:?}: {error}");
+    }
+    let newer = "dedens rfc5011 2\n";
+    let long = format!("{newer}{}end\n", "valid\n".repeat(Rollover::MAX_LEN));
+    let texts = [
+        long,
+        format!("{newer}valid {k2010}\nstop\n"),
+        format!("{newer}valid {k2010}"),
+        newer.to_owned(),
+        "dedens rfc5011 2".to_owned(),
+    ];
+    for text in texts {
+        let error = Rollover::read(&text).unwrap_err();
+        assert!(
+            error.unknown_version(),
+            "{:?}: {error}",
+            &text[..text.len().min(40)]
+        );
+    }
+    for header in [
+        "dedens rfc5011 x",
+        "dedens rfc5011 1 ",
+        "dedens rfc5011 ",
+        "dedens rfc5011 0",
+        "dedens rfc5011 01",
+        "dedens rfc5011 +2",
+        "dedens rfc5011 -2",
+        "dedens rfc5011 2x",
+        "dedens rfc5011 2 ",
+    ] {
+        let error = Rollover::read(&format!("{header}\nvalid {k2010}\nend\n")).unwrap_err();
+        assert!(!error.unknown_version(), "{header:?}: {error}");
     }
     for text in [
         format!("dedens rfc5011 1\nvalid  {k2010}\nend\n"),

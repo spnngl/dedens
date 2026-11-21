@@ -71,7 +71,8 @@ mod validator;
 // One path per item (D160): `crypto`, `rrsig` and `denial` are the families a reader names; `anchor` and
 // `validator` are flat here.
 pub use anchor::{
-    Anchor, AnchorError, KeyState, Rollover, RolloverError, RolloverStateError, TrustAnchors,
+    Anchor, AnchorError, KeyState, Rollover, RolloverError, RolloverStateError, RolloverStateFault,
+    TrustAnchors,
 };
 #[cfg(feature = "fetch-anchors")]
 pub use anchor::{

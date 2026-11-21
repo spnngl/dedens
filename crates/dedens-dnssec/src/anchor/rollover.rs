@@ -14,10 +14,20 @@ use crate::rrsig::{self, Key, RrSet, SigError, Signature};
 
 /// The first line of the text of [`Rollover`]: what it is, and the version of its format.
 const HEADER: &str = "dedens rfc5011 1";
-/// What every version's header starts with.
+/// What every version's header starts with, its number after it.
 const HEADER_PREFIX: &str = "dedens rfc5011 ";
 /// What a header of another version is refused for.
 const UNKNOWN_VERSION: &str = "a version of `dedens rfc5011` this build does not know";
+
+/// Whether `header` is that of a version above this build's: `HEADER_PREFIX` and a number of digits only, above the
+/// version of [`HEADER`]. Nothing else is a newer build's: `1 `, `x`, `+2`, `01` and no number are damaged.
+fn newer(header: &str) -> bool {
+    header.strip_prefix(HEADER_PREFIX).is_some_and(|version| {
+        !version.is_empty()
+            && version.bytes().all(|byte| byte.is_ascii_digit())
+            && !version.parse::<u64>().is_ok_and(|version| version <= 1)
+    })
+}
 
 /// The last line of the text of [`Rollover`]: a text cut short lacks it, so it is refused rather than read as one
 /// with fewer keys.
@@ -109,14 +119,36 @@ pub struct RolloverStateError {
     pub line: usize,
     /// What is wrong with it.
     pub what: &'static str,
+    /// Which kind of fault it is.
+    pub kind: RolloverStateFault,
+}
+
+/// The kind of a [`RolloverStateError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RolloverStateFault {
+    /// The text is of a version of the format this build does not know, a newer one's perhaps: its header says it,
+    /// whatever follows. It may be a good state, and is not for this build to discard ([`Rollover::read`]).
+    UnknownVersion,
+    /// The text is not a state of this build's version.
+    Damaged,
 }
 
 impl RolloverStateError {
-    /// Whether the text is of a version of the format this build does not know, a newer one's perhaps: it may be a
-    /// good state, unlike a damaged one, and is not for this build to discard ([`Rollover::read`]).
+    /// Whether the text is of a version of the format this build does not know ([`RolloverStateFault`]), unlike a
+    /// damaged one.
     #[must_use]
     pub fn unknown_version(&self) -> bool {
-        self.what == UNKNOWN_VERSION
+        self.kind == RolloverStateFault::UnknownVersion
+    }
+
+    /// A text damaged at `line`, from 1, or 0 for the whole.
+    const fn damaged(line: usize, what: &'static str) -> Self {
+        Self {
+            line,
+            what,
+            kind: RolloverStateFault::Damaged,
+        }
     }
 }
 
@@ -263,9 +295,9 @@ impl Rollover {
     /// supported algorithm, waits [`Rollover::ADD_HOLD_DOWN`] (or the TTL when longer) and is valid when seen after
     /// that, unless the bounds are met ([`Rollover::is_full`]); one gone before is dropped. A valid key gone is
     /// missing, a missing key back is valid, and a missing key is dropped after [`Rollover::KEEP_MISSING`] when
-    /// another is valid. A revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver forget it after
-    /// the remove hold-down, but a stale anchor it is seeded with would trust it again (§2.1, §4), up to
-    /// [`Rollover::MAX_REVOKED`] of them.
+    /// another is valid. A revoked key is kept for good, whether published or not: RFC 5011 §2.4.2 lets a resolver
+    /// forget it after the remove hold-down, but a stale anchor it is seeded with would trust it again (§2.1, §4),
+    /// up to [`Rollover::MAX_REVOKED`] of them.
     ///
     /// # Errors
     ///
@@ -488,12 +520,25 @@ impl Rollover {
     /// # Errors
     ///
     /// [`RolloverStateError`] at the first line that is not as written, a key that is not after the one before
-    /// (out of order or twice) included, and a header of a version this build does not know, which
-    /// [`RolloverStateError::unknown_version`] tells; at line 0 when `text` is longer than [`Rollover::MAX_LEN`],
-    /// does not end with `end` and a line feed, or holds no key valid, missing or revoked: a text cut short or
-    /// emptied is never read as trusting nothing, while one of revoked keys is.
+    /// (out of order or twice) included. The header is read first: one of a version above this build's is told by
+    /// [`RolloverStateError::unknown_version`], whatever follows it (a newer build's text may be longer, or end
+    /// otherwise). Then at line 0 when `text` is longer than [`Rollover::MAX_LEN`], does not end with `end` and a
+    /// line feed, or holds no key valid, missing or revoked: a text cut short or emptied is never read as trusting
+    /// nothing, while one of revoked keys is.
     pub fn read(text: &str) -> Result<Self, RolloverStateError> {
-        let whole = |what| RolloverStateError { line: 0, what };
+        let whole = |what| RolloverStateError::damaged(0, what);
+        let header = text.split('\n').next().unwrap_or_default();
+        if header != HEADER {
+            return Err(if newer(header) {
+                RolloverStateError {
+                    line: 1,
+                    what: UNKNOWN_VERSION,
+                    kind: RolloverStateFault::UnknownVersion,
+                }
+            } else {
+                RolloverStateError::damaged(1, "not `dedens rfc5011 1`")
+            });
+        }
         if text.len() > Self::MAX_LEN {
             return Err(whole("longer than 64 KiB"));
         }
@@ -501,29 +546,19 @@ impl Rollover {
             .and_then(|body| body.strip_suffix(END))
             .and_then(|body| body.strip_suffix('\n'))
             .ok_or(whole("no `end` line at the end"))?;
-        let mut lines = body.split('\n').zip(1..);
-        let (header, line) = lines.next().ok_or(whole("empty"))?;
-        if header != HEADER {
-            return Err(RolloverStateError {
-                line,
-                what: if header.starts_with(HEADER_PREFIX) {
-                    UNKNOWN_VERSION
-                } else {
-                    "not `dedens rfc5011 1`"
-                },
-            });
-        }
+        // The header, the first line, was read above.
+        let lines = body.split('\n').zip(1..).skip(1);
         let mut keys: Vec<Tracked> = Vec::new();
         for (text, line) in lines {
-            let tracked = tracked(text).ok_or(RolloverStateError { line, what: KEY })?;
+            let tracked = tracked(text).ok_or(RolloverStateError::damaged(line, KEY))?;
             if keys
                 .last()
                 .is_some_and(|last| order(last, &tracked) != Ordering::Less)
             {
-                return Err(RolloverStateError {
+                return Err(RolloverStateError::damaged(
                     line,
-                    what: "a key not after the one before",
-                });
+                    "a key not after the one before",
+                ));
             }
             keys.push(tracked);
         }

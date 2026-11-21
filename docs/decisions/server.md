@@ -1665,8 +1665,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Ranks (RFC 2181 §5.4.1), least trusted first: additional non-authoritative (referral glue), authority
     non-authoritative (referral NS), additional authoritative, answer non-authoritative (the chain of an authoritative
     answer past its first owner, never a response without AA, which is lame, D192), authority authoritative,
-    answer authoritative. The RFC's last bullet puts three of them at one level; they are split as Unbound's `rrset_trust` does
-    (`util/data/packed_rrset.h`): authoritative first, authority over additional. No zone-data ranks: the resolver
+    answer authoritative. The RFC's last bullet puts three of them at one level; they are split as Unbound's
+    `rrset_trust` does (`util/data/packed_rrset.h`): authoritative first, authority over additional. No zone-data ranks: the resolver
     holds no zone. Secure data is trusted above every rank (the RFC's closing paragraph). Step 05's scrubber ranks
     what it keeps: `insert` takes its `Scrubbed::ranked` `RRsets`, in the bailiwick of the server they came from,
     and trusts the rank given. `get` returns any rank: only answer-section data (answer non-authoritative or
@@ -2110,14 +2110,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `rrsig::verify_revocation`, the one check a revoked key passes, D73), of a Valid or Missing key only (an
     AddPend key whose plain form is gone is dropped, §4's KeyRem; Unbound's `do_revoked` revokes only VALID or
     MISSING keys), even when no trusted key signs the rest; then needs a Valid or Missing key's signature, else
-    changes nothing more and errs. The table (§4): a new SEP key AddPend until now plus the larger of 30 days and the RRSIGs' original TTL, the lowest one so that a
-    bogus signature beside them stretches nothing (§2.4.1), Valid when seen past it, dropped
-    when unseen before; Valid unseen Missing, Missing seen Valid; Revoked kept for good, a tombstone (§2.4.2
+    changes nothing more and errs. The table (§4): a new SEP key AddPend until now plus the larger of 30 days and
+    the RRSIGs' original TTL, the lowest one so that a bogus signature beside them stretches nothing (§2.4.1),
+    Valid when seen past it, dropped when unseen before; Valid unseen Missing, Missing seen Valid; Revoked kept for good, a tombstone (§2.4.2
     lets a resolver forget it after 30 days, but a stale seed would trust it again: §2.1 and §4 make a revocation
     final). This deviates from Unbound, which moves a revoked key to REMOVED after the del-holddown and then
     neither writes nor keeps it (`autr_cleanup_keys`): it never reseeds while a state exists, and `reseed` here
     does, so a tombstone forgotten would be trusted again by a stale download. `reseed(anchors, records, now)`
-    replaces the state by `seed`, the tombstones kept: a key held Revoked is trusted through no DNSKEY anchor, no DS, no answer.
+    replaces the state by `seed`, the tombstones kept: a key held Revoked is trusted through no DNSKEY anchor, no
+    DS, no answer.
     `without_revoked(anchors)` takes a tombstone's key out of other anchors. `anchors()` are the DNSKEYs of Valid
     and Missing keys, none when none.
   - Bounds (`Rollover` constants, compared with Unbound's `validator/autotrust.c` and BIND's `lib/dns/zone.c`):
@@ -2147,16 +2148,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     never swept), for the operator, since the new state would overwrite its tombstones. A file that cannot be
     renamed (no free name, a directory not writable) is kept as it is, as the next case. A file the system fails
     to read (EACCES, EIO, no memory: it may be a good state), or of a version of `dedens rfc5011` this build does
-    not know (a newer build's, run before a rollback: its tombstones are not this build's to discard), stays where
-    it is, with a warn!: D128's anchors serve, a probe fails with `RETRY`, nothing is seeded or written, and the
-    next use reads the file again. Until it does, the validators hold D128's anchors as they are, so a key the
-    state holds revoked is trusted while it stays unreadable: the trade-off of serving anyway, where refusing to
-    serve would fail every answer on the mode of a file. The first answer after the state reads again reloads
-    them, filtered by it, also when a reload that read it failed later (a bad configuration keeps the old
-    pipeline): the seed served stays noted until an answer takes it. A state whose keys are all revoked is kept, serving
-    D128's anchors less the tombstones (warn!), also when D128's anchors predate the revocation: a validator
-    never trusts nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of which
-    signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
+    not know (a newer build's, run before a rollback: its tombstones are not this build's to discard; told by
+    its header alone, a number of digits above 1, whatever length or end follows), stays where it is, with a
+    warn!: D128's anchors serve, a probe fails with `RETRY`, nothing is seeded or written, and the next use reads
+    the file again. Until it does, the validators hold D128's anchors as they are, so a key the state holds
+    revoked is trusted while it stays unreadable: the trade-off of serving anyway, where refusing to serve would
+    fail every answer on the mode of a file. The first answer after the state reads again reloads them, filtered
+    by it, also when a reload that read it failed later (a bad configuration keeps the old pipeline): the seed
+    served stays noted until an answer takes it. A state whose keys are all revoked is kept, serving D128's
+    anchors less the tombstones (warn!), also when D128's anchors predate the revocation: a validator never
+    trusts nothing, where RFC 5011 §5 and Unbound (`autr_tp_remove`) make the zone insecure. A state no key of
+    which signs an answer D128's anchors sign, offline past a whole rollover (RFC 5011 §6 leaves it to the operator), is
     replaced by those, the tombstones kept, with a warn!. Forward stages keep D128's anchors.
   - Operator: the state is the server's to write and the operator's to read, and to reset (a key lost to a mistake,
     a tombstone to forget): stop `dedensd`, delete `root-5011` (and the `root-5011.bad.*` once read) in `state_dir`,
@@ -2181,8 +2183,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Tests: `crates/dedens-dnssec/tests/rfc5011.rs` (hold-downs, revocation, missing, an answer no trusted key
     signs, the state text, its prefixes and an unknown version), `apps/dedensd/src/rollover.rs` (seeding, a
     restart, a state that does not read, is a link, is of an unknown version, cannot be set aside or cannot be
-    read, a revoked key never trusted again, also after the state read again, the query's time), the config test in `apps/dedensd/src/config/sources.rs`,
-    the `. DNSKEY` resolution in `crates/dedens-server/tests/recurse.rs`; fuzz target `parse_5011_state`.
+    read, a revoked key never trusted again, also after the state read again, the query's time), the config
+    test in `apps/dedensd/src/config/sources.rs`, the `. DNSKEY` resolution in `crates/dedens-server/tests/recurse.rs`; fuzz target `parse_5011_state`.
   - Rejected: the download winning (a file on a site; the zone is what RFC 5011 trusts, and a download missing
     the roll would keep a revoked key); following without the download (a start with no state would trust the
     bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
