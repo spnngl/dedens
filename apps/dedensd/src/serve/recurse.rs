@@ -105,9 +105,12 @@ pub(super) async fn resolve<N: Io>(
     transport: Transport,
     mut deliver: impl AsyncFnMut(Vec<u8>),
 ) {
+    // The drives of the priming and of the root's keys are boxed: each is due once in a long while, and a future of
+    // `drive`'s size inline in this one made the task of every query several times larger, copied whole into the
+    // executor's allocation (D201).
     let priming = async {
         if let Some(mut priming) = pipeline.prime(clock(thread)) {
-            drive(thread, &mut priming).await;
+            Box::pin(drive(thread, &mut priming)).await;
             match priming.resolved() {
                 Some(Resolved::Answer { .. }) => tracing::debug!("root servers primed"),
                 resolved => tracing::warn!(?resolved, "root servers not primed"),
@@ -119,7 +122,7 @@ pub(super) async fn resolve<N: Io>(
         if let Some(taken) = thread.current.probe().take(unix_seconds()) {
             let mut answer = Vec::new();
             if let Some(mut keys) = pipeline.root_keys() {
-                drive(thread, &mut keys).await;
+                Box::pin(drive(thread, &mut keys)).await;
                 match keys.resolved() {
                     Some(resolved @ Resolved::Answer { .. }) => {
                         answer = resolved.message(keys.question(), true).answer;
