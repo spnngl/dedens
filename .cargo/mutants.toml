@@ -7,8 +7,9 @@ test_tool = "nextest"
 # function, never by line, so an edit elsewhere keeps them matching; a function made generic matches with or without
 # its parameters (`Client(<N>)?`). Checked 2026-11-03 at 92db76d.
 exclude_re = [
-  # `Debug` output is for logs and failing tests: no test reads it.
-  '<impl ((std|core)::)?(fmt::)?Debug for ',
+  # `Debug` output is for logs and failing tests: no test reads it. One does, a `Key`'s (`d205_debug_hides_the_secret`):
+  # a mutant of it still passes, as it shows nothing, so it is skipped with the rest.
+  '<impl (std::)?(fmt::)?Debug for ',
   # Kani's proofs, in a `proofs` module beside the code they reach or dedens-proto's `src/proofs.rs`, built only
   # under `cfg(kani)` and checked by `just kani` (D145, D179).
   '\bproofs(::|\.rs:)',

@@ -2364,20 +2364,26 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     is BADTIME, signed, with the request's time and fudge and the server's time in Other Data (§5.2.3); only then
     the truncation policy. Each refusal says what to answer: `Refusal::Format`, or `NotAuth` which signs the answer
     in place (`sign`). A message with no TSIG gives `None`: whether to serve it is the server's policy (step 09).
-    Knot answers the unsigned errors as this does, in its captures (`axfr-tsig-bad-secret`), and BADTIME signed
-    (`axfr-tsig-bad-time`); for an unknown key it sends NOTAUTH with no TSIG at all (`axfr-tsig-unknown-key`, and
+    The unsigned answer carries the request's Time Signed and the server's fudge, whatever the clock: RFC 8945
+    §5.3.2 gives neither, and Knot's `knot_tsig_add` writes the request's time. Knot answers the unsigned errors as
+    this does, in its captures (`axfr-tsig-bad-secret`, tested with a clock that is not the request's, so that the
+    bytes match only by the request's time), and BADTIME signed (`axfr-tsig-bad-time`); for an unknown key it sends NOTAUTH with no TSIG at all (`axfr-tsig-unknown-key`, and
     for a key not allowed by the ACL), which RFC 8945 §5.2.1 does not say (it asks for BADKEY, unsigned): the
     server here follows the RFC, and a client takes both.
   - Truncation: a MAC shorter than the algorithm's full length that passes the length rule and matches its prefix
     is refused BADTRUNC, signed with the full MAC over the truncated request MAC (§5.2.4, §5.4.4: the digest takes
-    the MAC as it came). No configuration: Knot refuses every truncated MAC too (`knot_tsig_server_check`'s
+    the MAC as it came), with the request's fudge and the server's time. No configuration: Knot refuses every truncated MAC too (`knot_tsig_server_check`'s
     "MAC truncation isn't supported", as FORMERR); a client of this crate never truncates and refuses a server's
     truncated MAC. Rejected: accepting truncation (the policy is the receiver's, §5.2.4; a truncated MAC weakens the
     key and nothing in the captured exchanges uses one).
   - Time: `FUDGE` is 300 s on what the crate signs (§10 recommends it; Knot's `KNOT_TSIG_FUDGE_DEFAULT`); the
     check takes the sender's fudge, either side of the clock, edges included, and never moves the clock (§5.4.3). A
     time signed has 48 bits at most (`MAX_TIME_SIGNED`). `now` is a parameter, so the tests pin it (`captures`
-    replays Knot's exchanges at their own times).
+    replays Knot's exchanges at their own times). Rejected for now: a cache of the last Time Signed of each key,
+    which §5.2.3 recommends (a SHOULD) against a replay inside the fudge window. Knot and NSD have none, a verifier
+    that keeps state belongs to the server that owns the keys, and a replayed AXFR or IXFR request is read-only. The
+    request that matters is an UPDATE (step 14: `docs/TODECIDE.md`). The fudge a sender writes is not capped either:
+    it is the sender's to choose (§5.2.3) and a large one only widens the window.
   - Responses: `Request::signer` gives a `ResponseSigner`, which signs every message of a response: the first over
     the request's MAC, the message and the variables (§5.3), the next ones over the MAC before and the message and
     the timers alone (§5.3.1); every message, as §5.3.1 requires (a client accepts unsigned ones, below). The
@@ -2387,18 +2393,26 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Client: `sign_request` gives the `ResponseVerifier` of its response, and `ResponseVerifier::new` the one of a
     request signed elsewhere. `verify` takes each message of the response in order: the first must carry a TSIG
     (`Missing`), key and algorithm are the request's (`Key`), a MAC is full length (`MacSize`), the time is within
-    the fudge (`BadTime`: no clock adjustment). Unsigned messages between signed ones are accepted, up to
+    the fudge (`BadTime`: no clock adjustment), and not earlier than the one before in the stream
+    (`TimeDecreased`, as Knot's `prev_time_signed`). Unsigned messages between signed ones are accepted, up to
     `MAX_UNSIGNED` = 99 in a row (§5.3.1: a client MUST accept them); the next signed MAC covers them,
     so a changed one fails it, and `finish` refuses a stream whose last message is unsigned. An error from the server
     is `Refused` with its code and whether its MAC checked: an empty MAC (BADSIG, BADKEY from Knot) is not
-    authenticated, a BADTIME or BADTRUNC verifies over the request's MAC. Any failure ends the stream; the caller
-    closes the connection and takes none of it as an answer. The caller still checks the ID and the question.
+    authenticated, a BADTIME or BADTRUNC verifies over the request's MAC. `verify` works on a copy of the digest and
+    keeps the state of the stream only when the message passes: a refused message leaves the verifier as it was, so
+    over UDP a forged answer does not stop the real one from verifying (the client keeps waiting), and over TCP the
+    caller closes the connection and takes none of the stream as an answer. `Verified::Unsigned` says "not yet
+    authenticated": a later signed message covers it. The caller still checks the ID and the question.
   - Tests: Knot's captures (D203: AXFR, IXFR, UPDATE signed; bad secret, unknown key, key not allowed, bad time):
     its requests verify, its responses verify, and ours, signed at its times, are its bytes; every bit of a signed
     request and response flipped, and only the ID and the case bits of the names stay valid (§4.3.2, §4.3.3); the
     algorithms against a second computation of the digest from RFC 8945 §4.3; a stream as long as the root AXFR's
     (82 messages) signed and verified, with a message dropped, repeated, swapped or changed, and with up to 99 unsigned
-    messages; fuzz target `tsig_verify`. No signed NOTIFY was captured (D203's NOTIFY recordings are unsigned): the
+    messages; a real stream, Knot's signed AXFR of 1200 records of the root, five messages (`axfr-tsig-stream`),
+    verified by the client and reproduced byte for byte by the signer at Knot's times, and refused with a message
+    dropped or swapped; a received MAC under 10 bytes never matches (`matches`, §5.2.2.1's floor, whatever the
+    prefix); fuzz target `tsig_verify`. The base64 of a secret is decoded by `dedens-proto`, which has no `zeroize`:
+    the bytes of a decode that fails half way are not wiped (`Key::new` wraps a successful decode at once). No signed NOTIFY was captured (D203's NOTIFY recordings are unsigned): the
     request is a message like any other to sign (RFC 1996 §3.7), and step 11 tests it.
   - Rejected: TSIG in `dedens-proto` (its keys and clock are not the wire format's); MD5 (the RFC deprecates it, no
     interoperability need); `ring::hmac::verify` alone (it compares the whole tag: a truncated MAC needs the prefix

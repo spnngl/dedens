@@ -23,7 +23,7 @@ fn root_axfr() -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// A signed request for the root's AXFR, the MAC it carries, and the verifier of its response.
+/// A signed request for the root's AXFR, the MAC it carries.
 fn request() -> (Vec<u8>, Vec<u8>) {
     let mut wire = query(0x1234, ".");
     sign_request(&capture_key(), &mut wire, T).expect("room");
@@ -116,6 +116,38 @@ fn s5_3_1_a_cut_stream_is_signed_to_its_end() {
     let (mac, stream) = signed_stream();
     assert_eq!(run(&mac, &stream[..stream.len() - 1]), Ok(()));
     assert_eq!(run(&mac, &stream[..1]), Ok(()));
+}
+
+/// §5.3.1: the Time Signed of successive messages does not decrease: an equal one passes, an earlier one is refused.
+#[test]
+fn s5_3_1_time_signed_does_not_decrease() {
+    let keys = keyring();
+    let (wire, mac) = request();
+    let mut signer = verify_request(&keys, &wire, T)
+        .expect("valid")
+        .expect("signed")
+        .signer();
+    let messages = root_axfr();
+    let times = [T + 10, T + 10, T + 5];
+    let stream: Vec<Vec<u8>> = messages
+        .into_iter()
+        .zip(times)
+        .map(|(mut message, time)| {
+            signer.sign(&mut message, time).expect("room");
+            message
+        })
+        .collect();
+    let key = capture_key();
+    let mut verifier = ResponseVerifier::new(&key, &mac);
+    assert_eq!(verifier.verify(&stream[0], T + 10), Ok(Verified::Signed));
+    assert_eq!(verifier.verify(&stream[1], T + 10), Ok(Verified::Signed));
+    assert_eq!(
+        verifier.verify(&stream[2], T + 10),
+        Err(ResponseError::TimeDecreased {
+            time_signed: T + 5,
+            previous: T + 10
+        })
+    );
 }
 
 /// A stream of `n` messages, the root AXFR's cycled, of which those with `signed[i]` carry a TSIG signed by the

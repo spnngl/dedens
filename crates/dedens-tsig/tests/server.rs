@@ -216,8 +216,8 @@ fn s5_2_1_unknown_key_or_algorithm_is_badkey() {
     assert_eq!(error_of(&wire, T), (TsigError::BADKEY, false));
 }
 
-/// §5.3.2: an unsigned error has the request's key and algorithm names, an empty MAC, the error code, and the ID
-/// of the response.
+/// §5.3.2: an unsigned error has the request's key and algorithm names, an empty MAC, the error code, the request's
+/// Time Signed whatever the clock, and the ID of the response.
 #[test]
 fn s5_3_2_an_unsigned_error_layout() {
     let secret = vec![1; 16];
@@ -234,7 +234,7 @@ fn s5_3_2_an_unsigned_error_layout() {
     assert_eq!(found.tsig.mac(), b"");
     assert_eq!(found.tsig.error, TsigError::BADKEY);
     assert_eq!(found.tsig.original_id, 0x4242);
-    assert_eq!(found.tsig.time_signed(), T + 1);
+    assert_eq!(found.tsig.time_signed(), T);
 }
 
 /// §5.2.2.1: a MAC cut to a length the RFC allows is compared by its prefix, and then refused by the policy:
