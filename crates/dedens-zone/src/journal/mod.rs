@@ -334,12 +334,7 @@ fn read(path: &Path) -> Result<Vec<u8>, JournalError> {
     }
     let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or_default());
     // The file may have grown since `metadata`: read no more than the bound.
-    file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).is_ok_and(|n| n > MAX_FILE) {
-        return Err(JournalError::TooLarge {
-            size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        });
-    }
+    file.take(MAX_FILE).read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 

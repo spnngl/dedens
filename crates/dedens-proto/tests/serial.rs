@@ -11,6 +11,18 @@ use proptest::prelude::*;
 
 const HALF: u32 = 1 << 31;
 
+/// §2: a serial is an unsigned 32-bit number, written in decimal.
+#[test]
+fn s2_a_serial_is_its_number() {
+    for n in [0, 1, 2_026_112_201, u32::MAX] {
+        let serial = Serial::new(n);
+        assert_eq!(serial.get(), n);
+        assert_eq!(u32::from(serial), n);
+        assert_eq!(serial.to_string(), n.to_string());
+        assert_eq!(Serial::from(n), serial);
+    }
+}
+
 /// §5.2 at 32 bits: `255+1 == 0` is `MAX+1 == 0`; `100+100 > 100` and `(100+100)+100 < 100` use a step of 100/256 of
 /// the circle.
 #[test]

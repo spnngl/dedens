@@ -256,6 +256,10 @@ exclude_re = [
   # The share's boundary: a zone of exactly the share's bytes is evicted by `>=`, kept by `>`, and no test builds a
   # zone of exactly the share (the figure is an estimate of the heap, D199).
   'spans\.rs:\d+:\d+: replace > with >= in Spans::add$',
+  # The journal's directory sync: what it adds is a rename on disk after a power loss, which no test can cut
+  # (D207); and its fallback for a path with no directory part, the working directory, which is the process's and
+  # not a test's to change under threads.
+  'journal/mod\.rs:\d+:\d+: (replace sync_directory -> io::Result<\(\)> with Ok\(\(\)\)|delete ! in sync_directory)$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
