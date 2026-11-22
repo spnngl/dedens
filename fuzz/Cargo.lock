@@ -784,6 +784,7 @@ dependencies = [
  "dedens-scenario",
  "dedens-server",
  "dedens-testkit",
+ "dedens-zone",
  "dedensd",
  "hickory-proto",
  "http",
@@ -909,6 +910,14 @@ dependencies = [
  "dedens-proto",
  "serde",
  "serde-saphyr",
+]
+
+[[package]]
+name = "dedens-zone"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "thiserror",
 ]
 
 [[package]]

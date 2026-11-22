@@ -34,6 +34,7 @@ dedens-resolver = { path = "../crates/dedens-resolver" }
 dedens-roots = { path = "../crates/dedens-roots" }
 dedens-scenario = { path = "../crates/dedens-scenario" }
 dedens-server = { path = "../crates/dedens-server" }
+dedens-zone = { path = "../crates/dedens-zone" }
 dedensd = { path = "../apps/dedensd", features = ["odoh", "doc", "dnscrypt"] }
 # The second implementation of `differential_hickory`; the same version as the workspace's (D14).
 hickory-proto = { version = "0.26.3", default-features = false, features = [
@@ -66,6 +67,13 @@ bench = false
 [[bin]]
 name = "parse_zone"
 path = "fuzz_targets/parse_zone.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "load_zone"
+path = "fuzz_targets/load_zone.rs"
 test = false
 doc = false
 bench = false
