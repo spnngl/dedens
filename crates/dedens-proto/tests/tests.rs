@@ -8,5 +8,6 @@ mod rdata;
 mod serial;
 mod svcb;
 mod text;
+mod tsig;
 mod util;
 mod wire;

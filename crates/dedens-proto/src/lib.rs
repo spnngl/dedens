@@ -57,11 +57,13 @@ mod record;
 mod serial;
 mod text;
 mod transport;
+mod tsig;
 mod wire;
 
 // One path per item (D160): `rdata` and `edns` are the namespaces a reader names; every other item is here.
 pub use codes::{
-    Class, DigestType, Nsec3HashAlgorithm, Opcode, Rcode, RecordType, SecAlgorithm, UnknownCode,
+    Class, DigestType, Nsec3HashAlgorithm, Opcode, Rcode, RecordType, SecAlgorithm, TsigError,
+    UnknownCode,
 };
 pub use error::{DecodeError, DecodeErrorKind, EncodeError};
 pub use header::{Flags, HEADER_LEN, Header};
@@ -72,8 +74,9 @@ pub use question::Question;
 pub use record::{DecodedRecord, GenericRecord, Record, Ttl, WireRdata};
 pub use serial::Serial;
 pub use text::{
-    Hex, TextError, TextErrorKind, ZoneEntry, ZoneReader, decode_base64url, decode_hex,
-    encode_base64url,
+    Hex, TextError, TextErrorKind, ZoneEntry, ZoneReader, decode_base64, decode_base64url,
+    decode_hex, encode_base64url,
 };
 pub use transport::Transport;
+pub use tsig::{MAX_TIME_SIGNED, Tsig, TsigDataError, TsigRecord, find_tsig};
 pub use wire::MAX_MESSAGE_LEN;
