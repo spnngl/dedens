@@ -201,7 +201,8 @@ pub enum LocalError {
     /// No UDP socket free in time to ask the server, [`Limits::sockets`] in flight.
     #[error("no UDP socket free before the deadline")]
     NoSocket,
-    /// No UDP socket bound: eight ports drawn all in use, or another error, no descriptor left or a port not allowed.
+    /// No UDP socket bound: eight ports drawn all in use, or another error, no descriptor left or a port not allowed;
+    /// not for want of the server's address family, which [`ServerError::Unreachable`] tells.
     #[error("cannot bind a UDP socket")]
     Bind(#[source] io::Error),
     /// A socket error that is not the network's, such as no buffer left.
@@ -244,8 +245,9 @@ pub enum ServerError {
         /// Queries sent in all.
         sends: u16,
     },
-    /// No response before the deadline, an ICMP error received meanwhile, or no route to the server: the server
-    /// or the network unreachable, or a forger knowing the port.
+    /// No response before the deadline, an ICMP error received meanwhile, or no route to the server or no address of
+    /// its family to send from (an IPv6 server of a host without IPv6, D199): the server or the network unreachable,
+    /// or a forger knowing the port.
     #[error("no response after {sends} queries, the server unreachable: {kind}")]
     Unreachable {
         /// Queries sent in all.
@@ -488,7 +490,7 @@ impl<N: Io> Authoritative<N> {
             Err(TcpError::TimedOut) => Ok(exchange.lose(self.io.now())),
             Err(TcpError::Busy) => Err(LocalError::TcpBusy.into()),
             Err(TcpError::BadLength(len)) => Err(LocalError::TooLong(len).into()),
-            Err(TcpError::Connect(error)) if local_io(&error) => {
+            Err(TcpError::Connect(error)) if local_io(&error) && !no_family(&error) => {
                 Err(LocalError::Socket(error).into())
             }
             Err(error) => Err(ServerError::Tcp(error).into()),
@@ -524,7 +526,9 @@ impl<N: Io> Authoritative<N> {
                             trace!(%server, %local, "socket open");
                             Ok(Socket { udp, _token: token })
                         }
-                        Err(error) if local_io(&error) => Err(LocalError::Socket(error).into()),
+                        Err(error) if local_io(&error) && !no_family(&error) => {
+                            Err(LocalError::Socket(error).into())
+                        }
                         // No route to the server.
                         Err(error) => Err(ServerError::Unreachable {
                             sends: 0,
@@ -534,6 +538,15 @@ impl<N: Io> Authoritative<N> {
                     };
                 }
                 Err(error) if error.kind() == io::ErrorKind::AddrInUse => in_use = Some(error),
+                // No socket of the server's family, as of IPv6 on a host without it: the server is out of reach, as
+                // with no route, and no port would do better (D199).
+                Err(error) if no_family(&error) => {
+                    return Err(ServerError::Unreachable {
+                        sends: 0,
+                        kind: error.kind(),
+                    }
+                    .into());
+                }
                 // A port not allowed, as one Windows reserves or SELinux denies, is not drawn again: unlike a port in
                 // use, nothing tells another would do. Unbound draws again on a port in use only.
                 Err(error) => return Err(LocalError::Bind(error).into()),
@@ -612,6 +625,14 @@ fn ours(error: &io::Error) -> bool {
             .map(Errno::raw_os_error)
             .contains(&raw)
     })
+}
+
+/// Whether a socket error says the host has no address of the family of the server: no IPv6 socket
+/// (`EAFNOSUPPORT`), none to bind or no address of it to send from (`EADDRNOTAVAIL`). A server of that family is out
+/// of reach as one with no route, not a failure of ours: it is backed off, and the holds of RFC 9520 §3.2 go on (D199).
+fn no_family(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::AddrNotAvailable
+        || error.raw_os_error() == Some(Errno::AFNOSUPPORT.raw_os_error())
 }
 
 /// Sends `wire` whole on `udp`.
