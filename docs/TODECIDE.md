@@ -12,9 +12,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - A domain `dedensd` answers for (aardvark-dns gives NXDOMAIN to unknown names of its domain, never forwards them;
   CoreDNS for `cluster.local`): the hosts stage passes an unknown name to the next stage
   (`crates/dedens-plugins/src/hosts.rs:150-158`), so a private domain's misses go upstream. Default: a `zone:`
-  option on hosts (NXDOMAIN with AA and the zone's SOA, NODATA as today) with the Kubernetes stage. TelltaleDNS also
-  answers any type from local records and zone files (`crates/telltale-policy/src/local.rs`): a `zone` plugin
-  reading a file with `ZoneReader` would give both; default: with the authoritative phase's zone loading.
+  option on hosts (NXDOMAIN with AA and the zone's SOA, NODATA as today) with the Kubernetes stage. Zone files are
+  not a plugin's (TelltaleDNS answers from them, `crates/telltale-policy/src/local.rs`): they belong to the authoritative
+  stage, which loads them as `dedens-zone`'s `Zone` (D204).
 - Private names past the `tlds` stage: RFC 6761 §6.2 asks caching servers for an option to resolve `test` names
   upstream, and a network may delegate an `internal` zone to its own servers; the stage answers `test` names
   NXDOMAIN whatever DO, and `internal` names NXDOMAIN without DO, as an absent TLD, so only a stage before it (hosts)

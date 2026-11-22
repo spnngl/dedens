@@ -370,7 +370,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   message and asserts that no input makes data insecure. RFC 8080 §6.1's Ed25519 RRSIG says 3 labels for
   `example.com.`, which has 2: as an `RRset` it is `BadLabels` (RFC 4035 §5.3.1), and `crypto` checks the
   signature over its bytes (`tests/algorithms.rs`).
-- D74 (amends D69; amended by D106) Denial of existence is `dedens_dnssec::denial`, pure set logic over NSEC and NSEC3
+- D74 (amends D69; amended by D106, D204) Denial of existence is `dedens_dnssec::denial`, pure set logic over NSEC and NSEC3
   records the caller verified, each signed by the zone's `apex` (step 06 checks; this trusts them and the module docs list
   what it owes). `prove` answers a question that got a name error, no data or a referral, `prove_wildcard_answer` one
   that got a wildcard expansion (the RRSIG's label count gives the next closer name), `prove_absent` that a name
@@ -387,7 +387,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   records are used when the response has usable ones (SHA-1, flags 0 or 1, owner one 32-digit base32hex label below
   the apex), NSEC otherwise; the records of more than one parameter set (iterations, salt) are
   `ConflictingNsec3Parameters`, for the caller to make bogus (RFC 5155 §8.2 allows it; no order of records picks
-  the set). `Name` has no order: canonical order (RFC 4034 §6.1) is private to `denial`. NSEC3 hashes are paid from
+  the set). `Name` orders canonically (RFC 4034 §6.1) since D204; it was private to `denial` before. NSEC3 hashes are paid from
   the `Budget`, one per name a proof tries, none kept between calls. Iterations above `MaxIterations`, default 150
   as Unbound and BIND (RFC 9276 §3.2 recommends 0 but tells validators to accept some; the limit is a parameter),
   are `IterationsAboveLimit` in any record's set, refused before any hashing: the response is insecure, with EDE 27

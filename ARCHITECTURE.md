@@ -10,6 +10,7 @@
 | `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself, the recurse stage and the zones it serves locally (D195) | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`); the root's key rollover by RFC 5011 (D200) | none (sans-IO), time passed in |
+| `crates/dedens-zone` | A zone for the authoritative phase (D204): zone text loaded into an immutable `Zone`, its names in canonical order with the delegations, DNAMEs, wildcards and empty non-terminals marked, checked per RFC 1035 §5.2 and RFC 2181 §10.1, bounded by `Limits` | none (sans-IO), `$INCLUDE` through a callback |
 | `crates/dedens-roots` | IANA's root hints and TLD list (D126): bundled, and read from a fresh copy | none (sans-IO) |
 | `crates/dedens-odoh` | Oblivious DoH (RFC 9230), experimental (D69, D78): configurations, message encryption | none (sans-IO) |
 | `crates/dedens-dnscrypt` | DNSCrypt (draft-denis-dprive-dnscrypt), experimental (D97, D101): certificates, query and response encryption for both classical systems and the X-Wing one (PQDNSCrypt, with resumption tickets) | none (sans-IO), time and randomness passed in |
@@ -45,7 +46,7 @@
 - Server, prewarm: a cache stage's `prewarm` names → `Pipeline::with_prewarm` (`crates/dedens-server/src/pipeline/prewarm.rs`)
   → one task of thread 0 (`apps/dedensd/src/serve/prewarm.rs`) asks each through `Pipeline::prewarm`, as a prefetch,
   when `Cache::refresh` says (D96).
-- Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller.
+- Zone files: `ZoneReader` → `DecodedRecord`s; `$INCLUDE` goes back to the caller, which `dedens-zone`'s `Zone::load` calls through its callback to build and check a `Zone`.
 
 ## Documents
 
