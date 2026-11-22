@@ -1898,8 +1898,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     local_error}` (a shared reply counted once; `tcp_timeout` a query moved to TCP, D197);
     `dedensd_recurse_errors_total{error=no_socket|tcp_busy|ports_exhausted|local|forged|unreachable|tcp}`, D190's
     errors (`ports_exhausted` the bind's `AddrInUse`, `unreachable` the ICMP);
-    `dedensd_recurse_shed_total`; gauges `dedensd_recurse_{rrset,infra}_cache_{entries,bytes}`, set after
-    each resolution; D191's `dedens_resolver_limits_total{limit}`.
+    `dedensd_recurse_shed_total`; gauges `dedensd_recurse_{rrset,infra}_cache_{entries,bytes}`, set by a
+    resolution at most once a second of a thread's clock (reading them locks every shard of both caches: a sweep
+    after each resolution cost 6% of a miss's user CPU, D201); D191's `dedens_resolver_limits_total{limit}`.
   - Left to later steps or open: no prefetch nor stale refresh with a recurse stage (the cache stage's refresh
     finds no forward stage and only replies), and `prewarm` needs a forward stage (TODECIDE); validation (step 10) is D197's, QNAME
     minimisation D198's, negative caching D199's; D199 adds the `aggressive_nsec` setting (default true).

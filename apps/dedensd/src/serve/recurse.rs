@@ -3,7 +3,7 @@
 //! same server the same question at the same time (RFC 5452 §5), and the priming of the root's servers alongside
 //! when due (RFC 8109 §3), as are the root's keys (RFC 5011 §2.3, D200).
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io;
@@ -70,10 +70,12 @@ pub(crate) fn describe() {
 /// A resolution waits on one query at a time and holds one of the thread's upstream queries (D47): 100 of 1024.
 pub(super) const WAITERS: usize = 100;
 
-/// What the recurse stage of a thread holds: its transport, made at its first query, and the queries in flight.
+/// What the recurse stage of a thread holds: its transport, made at its first query, the queries in flight, and the
+/// second its cache gauges were last set.
 pub(super) struct Recursion<N: Io> {
     transport: OnceCell<Authoritative<N>>,
     flights: Flights,
+    gauged: Cell<Option<u32>>,
 }
 
 impl<N: Io> Recursion<N> {
@@ -81,7 +83,15 @@ impl<N: Io> Recursion<N> {
         Self {
             transport: OnceCell::new(),
             flights: Flights::default(),
+            gauged: Cell::new(None),
         }
+    }
+
+    /// Whether the gauges are due at `second` of the cache's clock: once a second, for the first resolution and
+    /// then each second's. Reading their sizes locks every shard of two caches ([`gauges`]), which a resolution
+    /// costing tens of microseconds cannot pay each time.
+    fn gauges_due(&self, second: u32) -> bool {
+        self.gauged.replace(Some(second)) != Some(second)
     }
 }
 
@@ -122,7 +132,9 @@ pub(super) async fn resolve<N: Io>(
     };
     let reply = async {
         drive(thread, &mut resolving).await;
-        gauges(resolving.caches());
+        if thread.recursion.gauges_due(thread.now()) {
+            gauges(resolving.caches());
+        }
         let reply = {
             let mut out = thread.scratch.borrow_mut();
             match pipeline.resolved(&resolving, thread.now(), &mut out) {
@@ -804,6 +816,22 @@ mod tests {
         drop(lead);
         assert!(waiting.try_recv().is_err());
         assert!(matches!(flights.enter(&key()), Entered::Lead(_)));
+    }
+
+    /// The gauges are set for the first resolution, then once in each second of the clock, not after each.
+    #[test]
+    fn d195_the_gauges_are_set_once_a_second() {
+        let recursion = Recursion::<Compio>::new();
+        let due: Vec<_> = [0, 0, 0, 1, 1, 2, 2, 2, 2, 5, 5]
+            .into_iter()
+            .map(|second| recursion.gauges_due(second))
+            .collect();
+        assert_eq!(
+            due,
+            [
+                true, false, false, true, false, true, false, false, false, true, false
+            ]
+        );
     }
 
     /// The serving tasks describe the metrics, through `serve::describe` that `main` calls.
