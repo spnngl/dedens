@@ -27,6 +27,10 @@ pub const MAX_LABELS: usize = MAX_NAME_LEN / 2;
 #[cfg_attr(verus_only, verus_verify)]
 const MAX_POINTERS: usize = MAX_LABELS;
 
+/// Labels the canonical comparison buffers on the stack for most names: the `www.example.co.uk.` shapes, with room
+/// to spare. A longer name takes the buffers of `MAX_LABELS`.
+const SHORT: usize = 8;
+
 /// A label that cannot be part of a [`Name`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -215,6 +219,10 @@ impl<'a> Name<'a> {
     }
 
     /// The last `count` labels: the ancestor of that depth, or this name itself when it has no more.
+    ///
+    /// # Panics
+    ///
+    /// Never: a suffix of a valid name is a valid name.
     #[must_use]
     pub fn ancestor(&self, count: usize) -> Name<'static> {
         Name::from_labels(self.labels().skip(self.label_count().saturating_sub(count)))
@@ -233,16 +241,26 @@ impl<'a> Name<'a> {
     /// How many labels, counted from the root, this name and `other` share, whatever the case.
     #[must_use]
     pub fn shared_labels(&self, other: &Name<'_>) -> usize {
-        let (mut a, mut b) = ([&[][..]; MAX_LABELS], [&[][..]; MAX_LABELS]);
-        let (a, b) = (self.from_the_root(&mut a), other.from_the_root(&mut b));
+        if self.labels().nth(SHORT).is_none() && other.labels().nth(SHORT).is_none() {
+            self.shared_within::<SHORT>(other)
+        } else {
+            self.shared_within::<MAX_LABELS>(other)
+        }
+    }
+
+    /// [`Name::shared_labels`] of two names of at most `N` labels.
+    fn shared_within<const N: usize>(&self, other: &Name<'_>) -> usize {
+        let (mut a, mut b) = ([&[][..]; N], [&[][..]; N]);
+        let (a, b) = (self.root_first(&mut a), other.root_first(&mut b));
         a.iter()
             .zip(b)
             .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
             .count()
     }
 
-    /// The labels written into `buf`, least specific first: the order canonical comparison walks them in.
-    fn from_the_root<'b>(&'b self, buf: &'b mut [&'b [u8]; MAX_LABELS]) -> &'b [&'b [u8]] {
+    /// The labels written into `buf`, least specific first: the order canonical comparison walks them in. A name
+    /// of more labels than `N` is cut: callers check the count.
+    fn root_first<'b, const N: usize>(&'b self, buf: &'b mut [&'b [u8]; N]) -> &'b [&'b [u8]] {
         let mut count = 0;
         for (slot, label) in buf.iter_mut().zip(self.labels()) {
             *slot = label;
@@ -803,14 +821,31 @@ impl Eq for Name<'_> {}
 /// that runs out of labels first. It agrees with [`Eq`]: names equal whatever the case compare equal.
 impl Ord for Name<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        let (mut a, mut b) = ([&[][..]; MAX_LABELS], [&[][..]; MAX_LABELS]);
-        let (a, b) = (self.from_the_root(&mut a), other.from_the_root(&mut b));
+        // Most names have a few labels: a small buffer, as filling one of `MAX_LABELS` costs more than the
+        // comparison (a map of 100 000 names, D204).
+        if self.labels().nth(SHORT).is_none() && other.labels().nth(SHORT).is_none() {
+            self.cmp_within::<SHORT>(other)
+        } else {
+            self.cmp_within::<MAX_LABELS>(other)
+        }
+    }
+}
+
+impl Name<'_> {
+    /// Canonical order of two names of at most `N` labels.
+    fn cmp_within<const N: usize>(&self, other: &Self) -> Ordering {
+        let (mut a, mut b) = ([&[][..]; N], [&[][..]; N]);
+        let (a, b) = (self.root_first(&mut a), other.root_first(&mut b));
         a.iter()
             .zip(b)
             .map(|(x, y)| {
-                x.iter()
-                    .map(u8::to_ascii_lowercase)
-                    .cmp(y.iter().map(u8::to_ascii_lowercase))
+                if x == y {
+                    Ordering::Equal
+                } else {
+                    x.iter()
+                        .map(u8::to_ascii_lowercase)
+                        .cmp(y.iter().map(u8::to_ascii_lowercase))
+                }
             })
             .find(|ord| ord.is_ne())
             .unwrap_or_else(|| a.len().cmp(&b.len()))
@@ -1029,6 +1064,19 @@ mod tests {
     fn the_root_sorts_first() {
         assert!(Name::root() < parse("a."));
         assert_eq!(Name::root().cmp(&Name::root()), Ordering::Equal);
+    }
+
+    #[test]
+    fn names_of_more_labels_than_the_short_buffers_order_the_same() {
+        // Above `SHORT` labels, alone or against a short name.
+        let deep = parse("a.b.c.d.e.f.g.h.i.example.");
+        let deeper = parse("b.b.c.d.e.f.g.h.i.example.");
+        assert_eq!(deep.label_count(), 10);
+        assert!(deep < deeper);
+        assert!(parse("example.") < deep);
+        assert!(deep < parse("z.example."));
+        assert!(deep.ancestor(SHORT) < deep);
+        assert_eq!(deep.cmp(&deep.clone()), Ordering::Equal);
     }
 
     #[test]
