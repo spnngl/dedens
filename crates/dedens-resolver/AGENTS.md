@@ -23,7 +23,9 @@ The integration tests are one binary, `tests/tests.rs` (D162), but for `memory.r
   `records` (D176): grouping loses nothing.
 - A `Resolution` is total too: whatever the responses, it ends within its `Limits` and never panics. The fuzz target
   `resolve_replay` answers the n-th query with the n-th of the input's length-prefixed responses (or a timeout, or an
-  error) and checks the queries sent, the time and the cache's size; the attack scenarios of `dedens-sim/tests/attacks.rs` hold the bounds' numbers.
+  error; an input is framed only when its chunks consume it exactly, any other is one raw response) and checks the
+  queries sent, the time and the cache's size; the attack scenarios of `dedens-sim/tests/attacks.rs` hold the bounds'
+  numbers.
 - A scrubbed `Lame` or `Unusable` keeps and drops nothing: the iteration asks another server, nothing is logged per
   record.
 - A value's `Cost` counts the bytes asked for every allocation it owns (`Rrset::cost`: the `Arc`, the owner name,

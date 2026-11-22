@@ -85,7 +85,10 @@ const POISON: Ipv4Addr = Ipv4Addr::new(6, 6, 6, 6);
 
 /// The least and the most a message takes: a round trip within the 50 ms the infra cache's timer starts from (D194),
 /// where `recursion`'s 20 to 30 ms may exceed it and time a server out, which the scenarios asking one server
-/// again and again cannot have.
+/// again and again cannot have. The spread must stay under `TICK`: the attackers of `flood` and `tudoor` send the
+/// forgeries at once and the genuine answer one `TICK` later, and turmoil delivers in the order of sending within a
+/// tick (the same one), so a spread past `TICK` could let the genuine answer overtake forgeries; the exact counts of
+/// those tests then fail, loudly.
 const LAG: (Duration, Duration) = (Duration::from_millis(15), Duration::from_millis(20));
 
 /// The second at which the cache is read after a run: the entries of a run are fresh then, their TTLs being the
@@ -520,7 +523,7 @@ fn lucky(query: &[u8]) -> bool {
         .labels()
         .next()
         .and_then(|label| label.last())
-        .is_some_and(|digit| (digit - b'0') % 2 == 1)
+        .is_some_and(|digit| digit.is_ascii_digit() && (digit - b'0') % 2 == 1)
 }
 
 /// The attacker of Kaminsky's on the servers of a zone, which has silenced them: `FLOOD` forgeries a query, of a
@@ -1018,10 +1021,6 @@ fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
         );
         let served = other_network(&mut lab);
         let Ran { heard, .. } = lab.run();
-        // The same run without the attacker: what the other network is served in.
-        let mut alone = lab_of_the_budget(seed, &unsigned, &leaf);
-        let unattacked = other_network(&mut alone);
-        alone.run();
         let mine = |name: &Name<'_>| drawn(name, b'c', &leaf);
         let mine: Vec<_> = paid(&heard)
             .into_iter()
@@ -1029,12 +1028,11 @@ fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
             .collect();
         let last = mine.iter().map(|(_, _, at)| *at).max().unwrap_or_default();
         println!(
-            "camp budget seed {}: {} queries for {ASKS} questions, {} refused, the other served in {:?} ({:?} alone)",
+            "camp budget seed {}: {} queries for {ASKS} questions, {} refused, the other served in {:?}",
             seed.0,
             mine.len(),
             refused.get(),
-            served.get(),
-            unattacked.get()
+            served.get()
         );
         let seconds = usize::try_from(last.as_secs()).expect("a few seconds");
         let allowed = usize::try_from(SHARE.burst).expect("a count")
@@ -1048,13 +1046,14 @@ fn camp_a_network_over_its_budget_is_refused_and_the_others_are_served() {
         // 41 queries are paid: the burst of 40 and the one the bucket's refill gives; a chain costs about 13, so 3 are
         // answered and the other 5 of the 8 questions are refused.
         assert_eq!(refused.get(), 5, "refused");
-        // The attacker's refusals cost the other network nothing: it is served no slower than with no attacker (faster in fact,
-        // the attacker's walks having warmed the cache).
+        // The attacker's refusals cost the other network nothing: it is served within a round trip to the resolver
+        // and one to google.com's servers (the attacker's walks cached the delegation), a tick of slack for the
+        // timers; a cold cache takes 160 ms, so a budget that slowed it would show.
+        let bound = 4 * LAG.1 + TICK;
         assert!(
-            served.get() <= unattacked.get(),
-            "{:?} served, {:?} alone",
-            served.get(),
-            unattacked.get()
+            served.get() <= bound,
+            "{:?} served, {bound:?} allowed",
+            served.get()
         );
     });
 }
@@ -1451,10 +1450,8 @@ fn maginotdns_glue_of_a_name_outside_the_zone_is_not_cached() {
 /// The datagrams that are no message but have the ID and the question of `genuine`: it cut short at 30 places, counts
 /// that lie, a name that points at itself, bytes with nothing in them. No more than the 64 a simulated socket queues.
 fn malformed(genuine: &[u8]) -> Vec<Vec<u8>> {
-    let mut datagrams: Vec<Vec<u8>> = (0..genuine.len())
-        .step_by((genuine.len() / 30).max(1))
-        .map(|n| genuine[..n].to_vec())
-        .collect();
+    let len = genuine.len();
+    let mut datagrams: Vec<Vec<u8>> = (0..30).map(|i| genuine[..i * len / 30].to_vec()).collect();
     for count in [4, 6, 8, 10] {
         let mut lying = genuine.to_vec();
         lying[count..count + 2].copy_from_slice(&[0xff, 0xff]);
@@ -1466,9 +1463,13 @@ fn malformed(genuine: &[u8]) -> Vec<Vec<u8>> {
     let mut empty = genuine[..2].to_vec();
     empty.extend([0xff; 30]);
     datagrams.push(empty);
-    let mut long = genuine.to_vec();
-    long.extend([0xde, 0xad, 0xbe, 0xef]);
-    datagrams.push(long);
+    assert!(datagrams.len() < 64, "{} datagrams", datagrams.len());
+    assert!(
+        datagrams
+            .iter()
+            .all(|datagram| Message::decode(datagram).is_err()),
+        "a datagram that decodes"
+    );
     datagrams
 }
 
@@ -1480,6 +1481,7 @@ fn tudoor_datagrams_that_are_no_message_on_the_query_port_with_its_id_do_not_end
     // the real response is accepted and no query is asked again.
     seed::each(SEEDS, |seed| {
         let unsigned = Resolution::read("unsigned");
+        let leaf_servers = servers_of(&unsigned, &dns("google.com."));
         let plot = Plot::new(vec![unsigned]).attacked(|_| {
             Some(Attacker::new(|seen| {
                 let Some(genuine) = seen.genuine else {
@@ -1519,21 +1521,26 @@ fn tudoor_datagrams_that_are_no_message_on_the_query_port_with_its_id_do_not_end
                 _ => None,
             })
             .collect();
-        let arrived = (events.iter())
-            .filter(|event| matches!(event.what, What::Arrived { .. }))
+        // What google.com's servers sent the resolver, and what its exchange with them read.
+        let sent_by_leaf = (events.iter())
+            .filter(|event| {
+                matches!(event.what, What::Injected { .. }) && leaf_servers.contains(&event.host)
+            })
+            .count();
+        let read_from_leaf = (events.iter())
+            .filter(|event| matches!(&event.what, What::Arrived { from } if leaf_servers.contains(&from.ip())))
             .count();
         println!(
-            "tudoor seed {}: {} queries, {} datagrams sent, {arrived} read, {:?}",
+            "tudoor seed {}: {} queries, {} datagrams sent, {sent_by_leaf} by google.com's servers and {read_from_leaf} read, {:?}",
             seed.0,
             sent.len(),
             injected(&events),
             took.get()
         );
         assert_eq!(sent, vec![(Transport::Udp, 1); 5]);
-        // The exchanges read the unreadable datagrams, 30 and more each, then the answer: all but those of an
-        // exchange the resolver gave up on before they came (the root's, asked twice at once) were read.
-        assert!(arrived >= 3 * 30, "{arrived} datagrams read");
-        assert!(arrived < injected(&events), "{arrived} datagrams read");
+        // The exchange with google.com's server read each of the 30 and more unreadable datagrams, then the answer.
+        assert!(sent_by_leaf > 30, "{sent_by_leaf} datagrams sent");
+        assert_eq!(read_from_leaf, sent_by_leaf, "datagrams read");
         assert!(took.get() < Duration::from_millis(500), "{:?}", took.get());
     });
 }
