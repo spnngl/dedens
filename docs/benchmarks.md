@@ -2329,61 +2329,69 @@ recurse <cores>` and `recurse-dnssec`, 1 and 3 cores, then an A/A run (`dedensd 
 The setup is D201's: no forwarder, three Knot authorities (a root, `bench.`, and the zone `recurse.bench.` with its
 wildcard) on 127.0.0.2 to 4, each server resolving from a hints file naming the root, a million unique names, each
 asked once of a cold server (every query a miss that asks the zone's server one question; Knot's `mod-stats` counts
-1.00 `A` there and none at the root or the TLD for either server). `dedensd` is `main` at `953b9ca4`
-with `root_hints` (D201), the harness is `3c2a7bf6`'s. The `fixes/resolver` change that refuses private addresses by
-default had not merged: the authorities are loopback ones and this `main`'s resolver asks them. With it, the line
-`query_local_addresses: true` of `dnsperf/compare/dedensd-recurse.yaml` is on; these numbers are of the resolver
-before it and not rerun since. Host and pinning as the section above, except Linux 6.12.0-264.16.1.el10_3 and
-podman 6.1.1, `net.ipv4.ip_unprivileged_port_start` 53 for the runs and 1024 after, Knot's three processes on
-core 5. JSON in [`comparison/results/`](comparison/results/): `2026-11-20T185637Z` (1 core), `190109Z` (3), the
-`recurse-dnssec` files `190457Z` and `190901Z`, the A/A `191306Z`, and the 8 MiB variant `192456Z`, `192926Z`.
+1.00 `A` there and none at the root or the TLD for either server). `dedensd` and the harness are `main` at
+`049f432d`, which refuses private addresses by default (D191) and so runs with `query_local_addresses: true`
+(`dnsperf/compare/dedensd-recurse.yaml`): the authorities are loopback ones. Host and pinning as the section above,
+except Linux 6.12.0-264.16.1.el10_3 and podman 6.1.4, `net.ipv4.ip_unprivileged_port_start` 53 for the runs and
+1024 after, Knot's three processes on core 5. Run on 2026-11-22. JSON in [`comparison/results/`](comparison/results/):
+`2026-11-22T131806Z` (1 core), `132233Z` (3), the `recurse-dnssec` files `132624Z` and `133053Z`, and the A/A
+`133405Z`. The 8 MiB variant below is of the runs of 2026-11-20 (`2026-11-20T192456Z`, `192926Z`), before the
+change to `query_local_addresses`, and not rerun.
 
 Saturation, thousands of queries a second, medians (range) of the valid runs of 3 rounds, void runs of the 7 to 10
 saturation and half-rate runs:
 
 | Mode | `dedensd` | Unbound | Ratio |
 |---|---|---|---|
-| 1 core: `recurse` | 8.6 (8.0-8.7), 0 void | 8.0 (8.0-8.2), 3 void | 1.08 |
-| `recurse-dnssec` | 5.4 (one valid run), 2 void | 3.1 (3.0-3.1), 3 void | 1.74 |
-| 3 cores: `recurse` | 23.6 (19.7-24.9), 0 void | 19.9 (16.6-20.3), 0 void | 1.19 |
-| `recurse-dnssec` | 9.6 (one valid run), 2 void | 7.0 (5.7-10.1), 3 void | 1.37 |
+| 1 core: `recurse` | 8.1 (8.1-8.2), 0 void | 8.4 (8.0-8.6), 3 void | 0.97 |
+| `recurse-dnssec` | 5.1 (4.8-5.3), 2 void | 3.1 (3.0-3.1), 3 void | 1.65 |
+| 3 cores: `recurse` | 22.7 (18.7-23.2), 0 void | 26.0 (25.2-28.5), 1 void | 0.87 |
+| `recurse-dnssec` | no valid run, 3 void | 9.4 (one valid run), 4 void | |
 
-- The noise threshold of 1.15 (the A/A run: `dedensd` 9185 and 9183, Unbound 8224 and 8149 a second at 1 core, CPU a
-  query at the common rate within 10%) puts `recurse` at 1 core, and 3 cores where the ranges overlap, at no
-  difference; `recurse-dnssec` at 1 core ahead for `dedensd`.
-- At 3 cores the loader is the limit: dnsperf's busiest thread is at 90% (the void threshold) in `recurse`, and a
-  second session (the 8 MiB runs below) had Unbound at 23.4 and `dedensd` at 24.5. The 3-core saturations are floors.
+- The noise threshold of 1.15 (the A/A run: `dedensd` 8537 and 8346, Unbound 8522 and 8516 a second at 1 core; CPU a
+  query at the common rate 123.5 and 132.0 µs for the two `dedensd`, 79.7 and 83.0 for the two Unbound, so that
+  8% is what two identical servers differ by) puts `recurse` at 1 core at no difference in kqps, and at 3 cores
+  at the threshold (0.87 against 1/1.15 = 0.870) with the loader the limit (below); `recurse-dnssec` at 1 core
+  ahead for `dedensd`.
+- At 3 cores the loader is the limit: dnsperf's busiest thread is at 90% (the void threshold) in `recurse` and at
+  57% in `recurse-dnssec`. The 3-core saturations are floors, and `dedensd`'s lower range there (18.7, the others
+  22.7 to 23.2) is its own saturation runs losing queries.
 - `dedensd`'s `recurse-dnssec` saturation runs past its validation allowance answer SERVFAIL for what it cannot
-  validate (D77, as in `dnssec` above) and are void (`rcodes`): the table holds the runs below it. Unbound's void
-  runs are `loss` (about 1 100 queries lost to the timeout at the end of the first saturation run of a round).
-- The first session (`a`, an earlier build of the same sources, 3 rounds each) gave 8.5 and 7.9 (1 core), 22.0 and
-  20.6 (3), 5.1 and 3.0, 9.9 and 5.7 for `dedensd` and Unbound: the ratios agree.
+  validate (D77, as in `dnssec` above) and are void (`rcodes`): the table holds the runs below it, and at 3 cores
+  none was valid. Unbound's void runs are `loss` (about 1 100 queries lost to the timeout at the end of the first
+  saturation run of a round).
+- 2026-11-20, before `query_local_addresses`: 8.6 against 8.0 (1 core), 23.6 against 19.9 (3), 5.4 against 3.1,
+  9.6 against 7.0 for `dedensd` and Unbound. Unbound is faster in this run by 5% to 30%, `dedensd` the same; the two
+  sets agree within the noise of a shared host.
 
-At the common rate (half the slowest median; 4 000 a second at 1 core, 9 930 at 3 for `recurse`; 1 546 and 3 513 for
+At the common rate (half the slowest median; 4 069 a second at 1 core, 11 338 at 3 for `recurse`; 1 534 and 4 712 for
 `recurse-dnssec`): average / p99 / p99.9 latency in ms, CPU a query in µs (the container's cgroup, user + system; the
 softirq time, 12% to 17% of the core, is charged to none), memory idle / loaded in MiB, start in ms:
 
 | Mode | `dedensd` | Unbound |
 |---|---|---|
-| 1 core: `recurse` | 0.68 / 1.95 / 4.03, 123.9 (53.4 + 70.5), 5 / 34, 8 | 0.48 / 1.38 / 4.99, 87.9 (28.8 + 59.1), 4 / 14, 18 |
-| `recurse-dnssec` | 0.76 / 2.01 / 4.99, 221.3 (137.9 + 83.4), 5 / 30, 10 | 0.82 / 2.01 / 4.22, 304.6 (219.0 + 85.5), 4 / 13, 21 |
-| 3 cores: `recurse` | 0.65 / 6.14 / 30.72, 125.6 (59.7 + 65.9), 9 / 118, 9 | 0.38 / 4.61 / 18.94, 86.7 (32.8 + 54.0), 5 / 17, 16 |
-| `recurse-dnssec` | 0.51 / 2.17 / 7.17, 245.2 (146.7 + 98.5), 9 / 54, 12 | 0.59 / 2.94 / 7.42, 313.6 (222.4 + 91.2), 5 / 18, 20 |
+| 1 core: `recurse` | 0.66 / 1.41 / 3.58, 112.4 (58.0 + 54.4), 6 / 33, 9 | 0.40 / 1.09 / 3.97, 89.5 (32.7 + 56.8), 4 / 14, 16 |
+| `recurse-dnssec` | 0.77 / 1.69 / 3.01, 240.3 (150.3 + 90.0), 6 / 30, 11 | 0.85 / 1.86 / 3.39, 303.4 (221.0 + 82.5), 4 / 13, 21 |
+| 3 cores: `recurse` | 1.11 / 21.50 / 35.84, 131.3 (65.0 + 66.2), 9 / 110, 8 | 0.70 / 11.78 / 41.98, 90.2 (35.2 + 55.0), 5 / 22, 17 |
+| `recurse-dnssec` | 0.64 / 4.03 / 12.80, 242.3 (153.1 + 89.2), 9 / 55, 13 | 1.05 / 13.57 / 31.23, 304.8 (222.4 + 82.4), 5 / 19, 20 |
 
-At half its own rate, `recurse` at 1 core: 0.65 / 2.37 / 5.12 ms against Unbound's 0.44 / 1.73 / 3.97.
+At half its own rate, `recurse` at 1 core: 0.65 / 2.43 / 5.76 ms against Unbound's 0.42 / 1.09 / 3.33. The A/A run's
+CPU of its two `dedensd` (123.5 and 132.0, user 60.7 and 65.7) is above the 112.4 of the first run: a run of
+`dedensd` varies by 15% in the CPU a query, Unbound's by 10%, the gap between them by far more.
 
 `dedensd` with its caches at Unbound's sizes (`dedensd-8mib`: the cache stage 8 MiB, the RRset cache 4 MiB; its
-default is 128 MiB of RRsets): 9.1 (7.8-9.2) against 8.2 (8.0-8.4) at 1 core, 24.5 (24.0-27.8, 1 void) against
+default is 128 MiB of RRsets), of 2026-11-20: 9.1 (7.8-9.2) against 8.2 (8.0-8.4) at 1 core, 24.5 (24.0-27.8, 1 void) against
 23.4 (23.0-29.2) at 3; at the common rate 123.8 µs against 94.2 and 129.8 against 82.3, loaded 22 and 34 MiB against
 14 and 23. The caches' size is the memory (118 MiB loaded at 3 cores is the default 128 MiB filling), not the CPU.
 
 ### Where the gap is
 
-The target of the phase is `recurse` within 10% of Unbound's kqps (README choice 8): met at 1 core (1.08) and not
-told apart at 3 (loader-bound). `recurse-dnssec` is ahead. What is not within 10%: the CPU of a plain miss, 124 and
-126 µs against 88 and 87 (+41%, +45%, against 10% of noise), and with it the average latency at the common rate (0.68
-against 0.48 ms) and p99. The profile (`perf record` of user space at the common rate and at saturation, 1 core, and
-`strace -c`, `dedensd` built with line tables, outside the tree as step 02's):
+The target of the phase is `recurse` within 10% of Unbound's kqps (README choice 8): met at 1 core (0.97) and not
+told apart at 3 (0.87, loader-bound). `recurse-dnssec` is ahead (1.65 at 1 core). What is not within 10%: the CPU of
+a plain miss, 112 to 132 µs against 80 to 90 (+26% to +59%, against 10% of noise; 131 against 90 at 3 cores, +46%),
+and with it the average latency at the common rate (0.66 against 0.40 ms) and p99. The profile below is of
+2026-11-20 (CPU then 124 and 126 µs against 88 and 87), `perf record` of user space at the common rate and at
+saturation, 1 core, and `strace -c`, `dedensd` built with line tables, outside the tree as step 02's:
 
 - The gap is user space. User CPU a query is 53 against 29 µs at the common rate, 48 against 28 at saturation; system
   CPU is 70 against 59 at the common rate and 36 against 48 at saturation, where `io_uring` batches. At saturation

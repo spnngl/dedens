@@ -317,9 +317,9 @@ Open questions, each with its proposed default. Once answered, record the outcom
   failing to resolve, may reach its fifth lookup before the AAAA of the one that resolves, and fail on a silent
   IPv4 server (the simulation steers around it, D196). Unbound fetches a name's A and AAAA together and allows 16
   per delegation (`MAX_DP_TARGET_COUNT`). Default: count names, not lookups, and keep 5.
-- The CPU of a miss (D201): `recurse` costs `dedensd` 124 µs a query at the common rate against Unbound's 88 (+41%;
-  3 cores +45%; noise 10%), 25 µs of it more user CPU, while kqps is equal (1.08 at 1 core, 1.19 at 3, loader-bound)
-  and `recurse-dnssec` is ahead (1.74, 1.37). `docs/benchmarks.md` "Where the gap is" has the profile: the
+- The CPU of a miss (D201): `recurse` costs `dedensd` 112 to 132 µs a query at the common rate against Unbound's
+  80 to 90 (+26% to +59%; 3 cores 131 against 90, +46%; noise 10%), 25 µs of it more user CPU, while kqps is equal
+  (0.97 at 1 core, 0.87 at 3, loader-bound) and `recurse-dnssec` is ahead (1.65 at 1 core), as of 2026-11-22. `docs/benchmarks.md` "Where the gap is" has the profile: the
   allocator 16% of the user samples, copies 8%, the cache gauges 6.4%. `serve::recurse::gauges` sets four gauges
   after each resolution, and `Store::len` and `used` lock every shard of two caches for each: four sweeps a miss.
   Default: set the gauges on a timer or when the stage's metrics are read, then profile again; the allocations of a
@@ -328,7 +328,7 @@ Open questions, each with its proposed default. Once answered, record the outcom
   (`telltale-recursor`), so no root of ours. Default: not measured; measured when it takes root hints, or by a
   patched build (a fork, not its tag).
 - Equal caches in `recurse` (D201): `dedensd`'s default RRset cache is 128 MiB, Unbound's 4 MiB (message cache 4
-  MiB too), so a million unique names fill one and not the other (118 and 17 MiB loaded at 3 cores); `dedensd-8mib`
+  MiB too), so a million unique names fill one and not the other (110 and 22 MiB loaded at 3 cores); `dedensd-8mib`
   runs both small, as shipped is the default. Default: report both, as D183 reports `dedensd-8mib`.
 - A host without IPv6 and the holds of RFC 9520 (D199): on a host booted with `ipv6.disable=1`, binding `[::]` fails
   with EAFNOSUPPORT, which is a `LocalError::Bind` that never reaches the infra cache, so IPv6 servers are tried
