@@ -632,6 +632,16 @@ fn a_journal_with_a_changeset_is_not_empty() {
 // --- reading bytes ---
 
 #[test]
+fn nothing_is_a_clean_journal_and_a_cut_header_a_torn_one() {
+    let empty = format::scan(&[]).expect("scans");
+    assert_eq!((empty.valid, empty.tail), (0, Tail::Clean));
+    let cut = format::scan(&MAGIC[..3]).expect("scans");
+    assert_eq!((cut.valid, cut.tail), (0, Tail::Torn));
+    let header = format::scan(&MAGIC).expect("scans");
+    assert_eq!((header.valid, header.tail), (MAGIC.len(), Tail::Clean));
+}
+
+#[test]
 fn a_record_that_does_not_follow_the_one_before_ends_the_file() {
     let changesets = chain();
     // 1→2, then 3→4: a hole.
