@@ -157,7 +157,7 @@ fn lookup_btree_map(bencher: Bencher<'_, '_>) {
         .map(|(i, (name, _))| (name.clone(), i))
         .collect();
     let name: Name<'static> = DATA.parse().expect("a name");
-    bencher.bench_local(|| map.get(black_box(&name)).is_some());
+    bencher.bench_local(|| map.contains_key(black_box(&name)));
 }
 
 /// The answer, the message and its encoding: the whole of what a query costs the zone.

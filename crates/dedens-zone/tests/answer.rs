@@ -2,8 +2,10 @@
 //! (wildcards), RFC 6672 §2.2, §3, §6 (DNAME), RFC 2308 §3 (the SOA of a negative answer), RFC 8482 §4.2 (ANY),
 //! RFC 4035 §3.1.4.1 (DS at a delegation), RFC 9471 §3.1 (glue and TC). D206 records each choice.
 
+use std::fmt::Write;
+
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, Flags, Header, Message, Name, Question, Rcode, RecordType};
+use dedens_proto::{Class, Flags, Header, Message, Question, Rcode, RecordType};
 use dedens_testkit::dns;
 use dedens_zone::{Answer, End, Limits, Link, MAX_CHAIN, Zone};
 
@@ -74,17 +76,25 @@ fn ask(zone: &Zone, name: &str, rtype: RecordType) -> Reply {
     ask_class(zone, name, rtype, Class::IN)
 }
 
+/// The bytes as lowercase hexadecimal.
+fn hex(wire: &[u8]) -> String {
+    wire.iter().fold(String::new(), |mut text, byte| {
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
+}
+
 /// `d DNAME target` as zone text, in the generic form (RFC 3597 §5) the zone loader reads DNAME in.
 fn dname(owner: &str, target: &str) -> String {
     let wire = dns(target).to_wire(&mut [0; 255]).to_vec();
-    let hex: String = wire.iter().map(|byte| format!("{byte:02x}")).collect();
+    let hex = hex(&wire);
     format!("{owner} DNAME \\# {} {hex}\n", wire.len())
 }
 
 /// The DNAME record as the reply prints it: a type with no typed RDATA is shown in the generic form.
 fn dname_text(owner: &str, target: &str) -> String {
     let wire = dns(target).to_wire(&mut [0; 255]).to_vec();
-    let hex: String = wire.iter().map(|byte| format!("{byte:02x}")).collect();
+    let hex = hex(&wire);
     format!("{owner} 3600 IN DNAME \\# {} {hex}", wire.len())
 }
 
@@ -339,9 +349,9 @@ fn s4_3_2_a_cname_out_of_the_zone_ends_the_chain_there() {
 fn s4_3_2_a_chain_is_followed_up_to_max_chain_links() {
     let mut text = String::new();
     for i in 0..=MAX_CHAIN + 1 {
-        text += &format!("c{i} CNAME c{}\n", i + 1);
+        let _ = writeln!(text, "c{i} CNAME c{}", i + 1);
     }
-    text += &format!("c{} A 192.0.2.9\n", MAX_CHAIN + 2);
+    let _ = writeln!(text, "c{} A 192.0.2.9", MAX_CHAIN + 2);
     let zone = example(&text);
     let question = Question::new(dns("c0.example."), RecordType::A);
     let answer = zone.answer(&question);
@@ -638,7 +648,6 @@ fn s6_2_a_dname_delegates_a_shorter_prefix() {
         "33.8.0.192.in-addr.arpa. 3600 IN CNAME 33.8.8/22.0.192.in-addr.arpa."
     );
     // The CNAME leads to the delegation: a referral to the holder.
-    assert!(!r.authority.is_empty());
     assert_eq!(
         r.authority,
         ["8/22.0.192.in-addr.arpa. 3600 IN NS ns.slash-22-holder.example.com."]
@@ -780,5 +789,5 @@ fn rdata_of_a_cname_is_read_in_place() {
     let RData::Cname(target) = rrset.rdatas()[0].data() else {
         unreachable!("a CNAME");
     };
-    assert_eq!(target, Name::from(dns("b.example.")));
+    assert_eq!(target, dns("b.example."));
 }

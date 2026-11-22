@@ -99,14 +99,13 @@ pub fn zone_answer(data: &[u8]) {
         return;
     };
     let mut names: Vec<Name<'static>> = vec![apex.clone()];
-    if let Some((qtype, name)) = asked.split_first_chunk::<2>() {
-        if let Some(name) = std::str::from_utf8(name)
+    if let Some((qtype, name)) = asked.split_first_chunk::<2>()
+        && let Some(name) = std::str::from_utf8(name)
             .ok()
             .and_then(|name| name.parse().ok())
-        {
-            ask(&zone, &name, RecordType(u16::from_be_bytes(*qtype)));
-            names.push(name);
-        }
+    {
+        ask(&zone, &name, RecordType(u16::from_be_bytes(*qtype)));
+        names.push(name);
     }
     for (name, _) in zone.nodes().take(ASKED) {
         names.push(name.clone());
