@@ -1,6 +1,6 @@
 //! [`Journal`]: the changesets of one zone, kept in a file that survives a crash (RFC 1995 §4, D207).
 //!
-//! The file is append-only: a record is framed with its length and CRC ([`format`]), written, and synced before
+//! The file is append-only: a record is framed with its length and CRC ([`mod@format`]), written, and synced before
 //! [`Journal::append`] says it is done. A crash leaves at worst a torn last record, which [`Journal::open`] cuts;
 //! the changesets before it are whole. Dropping the oldest changesets, when a limit is reached, writes the kept
 //! ones to a new file and renames it over the old, so a crash leaves the old file or the new one.

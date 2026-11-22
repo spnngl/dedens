@@ -14,7 +14,7 @@ dedens-proto.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-dedens-testkit.workspace = true
+dedens-testkit = { workspace = true, features = ["authoritative"] }
 insta.workspace = true
 tempfile.workspace = true
 

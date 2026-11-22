@@ -73,7 +73,7 @@ pub fn journal_read(data: &[u8]) {
     if scan.valid > 0 {
         assert_eq!(MAGIC.len() + scan.sizes.iter().sum::<usize>(), scan.valid);
     } else {
-        assert!(scan.changesets.is_empty());
+        assert_eq!(scan.changesets.len(), 0);
     }
     for pair in scan.changesets.windows(2) {
         assert_eq!(pair[0].to_serial(), pair[1].from_serial());
