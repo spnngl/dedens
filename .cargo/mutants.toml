@@ -22,6 +22,9 @@ exclude_re = [
   'quic\.rs:\d+:\d+: replace (- with \+|\+ with [-*]|> with ==) in read_message$',
   # A name ending in a dot under a search list builds `name..domain`, which fails to parse: the same single name.
   'replace \|\| with && in ResolvConf::candidates',
+  # An entry that never ends the text: each caller reads entries until `None` and keeps them, so the tests grow
+  # without bound, past the machine's memory well before the timeout (three kernel panics on 2026-11-22).
+  'lexer\.rs:\d+:\d+: replace Lexer<.t>::entry -> .* with Ok\(Some\((true|false)\)\)$',
   # An idle timeout equal to the current one: never happens in a test.
   'tcp\.rs:\d+:\d+: replace < with <= in read$',
   # Dropping the stream, or both halves, right after closes it too, the FIN sent all the same: dedens-sim's write
