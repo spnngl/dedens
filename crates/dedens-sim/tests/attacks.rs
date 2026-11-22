@@ -17,8 +17,15 @@
 //!   failure hold of RFC 9520 §3.2 (D199) stops the next resolution.
 //! - CAMP and iDNS (Afek et al., "Amplification by chaining", 2023): a chain of CNAME records and one of
 //!   referrals, each link a query, and a client network that spends its budget on them (D117).
-//! - `KeyTrap` (CVE-2023-50387): signatures that fail, many. What a validation does is bounded by its budget (D75,
-//!   D77, D197). The NSEC3 iterations (CVE-2023-50868) are not here: no capture is secure with more than 0
+//! - `KeyTrap` (CVE-2023-50387), two legs. Sixty DNSKEYs of one tag are refused at the DS digest step (D77), before any
+//!   signature check, and cost none (the first two tests). An answer whose RRSIG is replaced by more than
+//!   `MAX_FAILED` copies with a changed signature costs the walk and `MAX_FAILED` checks, no more (the third): the
+//!   scrubber keeps 8 RRSIGs an `RRset` (D192) before the validator's own cap (D73) can trip, so no response reaches
+//!   that cap and only raising both turns the test red. The RRSIG and key loop with its cap is held by
+//!   `crates/dedens-dnssec/tests/rrsig.rs` (`a_rrset_gives_up_after_a_few_failed_checks`,
+//!   `failures_that_cost_no_verification_count_toward_the_cap_too`) and `validator.rs`
+//!   (`a_check_that_gave_up_on_failed_signatures_is_not_restarted`). What a validation does is bounded by its budget
+//!   (D75, D77, D197). The NSEC3 iterations (CVE-2023-50868) are not here: no capture is secure with more than 0
 //!   iterations (`ws`'s 10 are an opt-out span, insecure by itself), so no run isolates the limit's verdict, and a
 //!   changed record has no signature. `MaxIterations` is held by `crates/dedens-dnssec/tests/denial.rs` and
 //!   `validator.rs` (`nsec3_iterations_above_the_limit_are_insecure`), on captured proofs (D74).
@@ -47,7 +54,7 @@ use dedens_dnssec::crypto::Verifications;
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_net::exchange::Options;
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::rdata::{Dnskey, RData, Soa};
+use dedens_proto::rdata::{Dnskey, RData, Rrsig, Soa};
 use dedens_proto::{
     Class, Flags, Message, Name, Question, Rcode, Record, RecordType, Transport, Ttl,
 };
@@ -1134,10 +1141,11 @@ fn keytrapped(plot: Plot, capture: &Resolution) -> Plot {
 }
 
 #[test]
-fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
+fn keytrap_sixty_keys_of_one_tag_are_refused_before_any_signature_check() {
     // CVE-2023-50387: the DNSKEY set of sidn.nl holds `KEYS` keys more for each key, of its tag, none that verifies.
     // The validator refuses the set at its digest check (D77) before any signature check: the verdict is bogus, and
-    // costs no budget (D75, D197); the keys are asked once and the answer is SERVFAIL.
+    // costs no budget (D75, D197); the keys are asked once and the answer is SERVFAIL. The loop over signatures and
+    // keys that the attack aims at is `keytrap_an_answer_of_failing_signatures_is_given_up_within_the_budget`.
     seed::each(SEEDS, |seed| {
         let capture = Resolution::read("signed-nl");
         let at = capture.captured_at;
@@ -1249,6 +1257,131 @@ fn keytrap_a_budget_too_small_for_the_walk_is_indeterminate_not_bogus() {
         println!(
             "keytrap budget seed {}: trap with a budget of 4 {} queries bogus, of 3 {} queries indeterminate",
             seed.0, bogus.paid, indeterminate.paid
+        );
+    });
+}
+
+/// `message` with each RRSIG that covers `rtype` replaced by `copies` of it, each with another byte of its signature
+/// changed: the key tag and the signer are the key's own, so every copy is checked against the key, and fails.
+fn failing(mut message: Message<'static>, rtype: RecordType, copies: usize) -> Message<'static> {
+    let mut forged = Vec::new();
+    message.answer.retain(|record| {
+        let RData::Rrsig(rrsig) = record.data() else {
+            return true;
+        };
+        if rrsig.type_covered != rtype {
+            return true;
+        }
+        for at in 0..copies {
+            let mut signature = rrsig.signature().to_vec();
+            let len = signature.len();
+            signature[at % len] ^= 0xff;
+            let copy = Rrsig::new(
+                rrsig.type_covered,
+                rrsig.algorithm,
+                rrsig.labels,
+                rrsig.original_ttl,
+                rrsig.expiration,
+                rrsig.inception,
+                rrsig.key_tag,
+                rrsig.signer.clone(),
+                &signature,
+            )
+            .expect("a signature");
+            forged.push(Record::new(
+                record.name.clone(),
+                record.class,
+                record.ttl,
+                &RData::Rrsig(copy),
+            ));
+        }
+        false
+    });
+    message.answer.extend(forged);
+    message
+}
+
+/// The signature checks that the validation of sidn.nl's answer pays before the answer's own: the chain of trust to
+/// the keys of sidn.nl (4) and the signature of its DNSKEY set (1). The clean run is secure at this and one more, the
+/// answer's RRSIG.
+const WALK: u32 = 5;
+
+/// The RRSIGs a response carries for the `KeyTrap` of signatures: one more than the 8 failed checks `MAX_FAILED` allows
+/// an `RRset` (D73) and the 8 RRSIGs the scrubber keeps (D192), written as numbers so that a bound raised does not
+/// change the attack.
+const COPIES: usize = 9;
+
+/// The signature checks the cap allows an `RRset`, whatever the signatures sent.
+const CAP: u32 = 8;
+
+#[test]
+fn keytrap_an_answer_of_failing_signatures_costs_the_failed_checks_cap_not_one_check_a_copy() {
+    // CVE-2023-50387 by signatures: the answer's RRSIG is replaced by `COPIES` copies, each with a changed
+    // signature, the DNSKEY set intact. Each copy that reaches the validator is a check against the key, and fails.
+    // The cost is the walk and `MAX_FAILED` checks: a budget of that many is enough for the verdict, bogus, one less
+    // ends the validation as indeterminate (the budget says nothing of the data, D75). The checks are capped twice:
+    // the scrubber keeps `MAX_SIGNATURES` RRSIGs an `RRset` (D192, 8 as well) and the validator gives up after
+    // `MAX_FAILED` failed checks (D73). A response cannot make the validator reach the second cap, so raising
+    // `MAX_FAILED` alone leaves this test green; raising both makes the ninth copy cost a check and turns the first
+    // budget one short (red). The validator's cap alone is held by the unit tests the module docs name.
+    // The keys of the other tests cost no check: the digest step refused them (D77).
+    seed::each(SEEDS, |seed| {
+        let capture = Resolution::read("signed-nl");
+        let at = capture.captured_at;
+        let (name, rtype) = (capture.name.clone(), capture.rtype);
+        let signed = (capture.exchanges.iter())
+            .find(|exchange| {
+                exchange.name == name
+                    && exchange.rtype == rtype
+                    && (message(&exchange.response).answer.iter())
+                        .any(|record| matches!(record.data(), RData::Rrsig(sig) if sig.type_covered == rtype))
+            })
+            .expect("the signed answer");
+        let zone = signed.zone.clone();
+        let template = capture.clone();
+        let trap = |limits| {
+            let (zone, name, template) = (zone.clone(), name.clone(), template.clone());
+            let plot = Plot::new(vec![capture.clone()]).deriving(move |at, question| {
+                let held = *at == zone && question.name == name && question.qtype == rtype;
+                held.then(|| {
+                    let answer = answer_of(&template, at, &question.name, question.qtype);
+                    to(failing(answer, rtype, COPIES), question)
+                })
+            });
+            validated(seed, plot, (at, limits))
+        };
+        let budget = |checks| dedens_dnssec::Limits {
+            budget: dedens_dnssec::crypto::Budget::new(
+                Verifications(checks),
+                dedens_dnssec::crypto::Budget::DEFAULT_NSEC3_BLOCKS,
+            ),
+            ..dedens_dnssec::Limits::default()
+        };
+        let default = trap(dedens_dnssec::Limits::default());
+        let paid_for = WALK + CAP;
+        let (capped, starved) = (trap(budget(paid_for)), trap(budget(paid_for - 1)));
+        for run in [&default, &capped] {
+            assert_eq!(run.message.rcode(), Rcode::SERVFAIL, "{:?}", run.message);
+            assert_eq!(
+                ede(&run.message),
+                Some(InfoCode::DNSSEC_BOGUS),
+                "{:?}",
+                run.message
+            );
+        }
+        assert_eq!(starved.message.rcode(), Rcode::SERVFAIL);
+        assert_eq!(
+            ede(&starved.message),
+            Some(InfoCode::DNSSEC_INDETERMINATE),
+            "{:?}",
+            starved.message
+        );
+        println!(
+            "keytrap signatures seed {}: {} queries, bogus at a budget of {}, indeterminate at {}",
+            seed.0,
+            default.paid,
+            paid_for,
+            paid_for - 1
         );
     });
 }
