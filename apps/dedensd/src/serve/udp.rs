@@ -26,6 +26,7 @@ use futures_util::stream::FuturesUnordered;
 use futures_util::{Stream, StreamExt};
 
 use super::isolate::{Listener, Origin};
+use super::recurse::resolve;
 use super::upstream::{Ask, answer};
 use super::{ERROR_PAUSE, Thread, pause};
 
@@ -351,14 +352,24 @@ async fn udp_queries<N: Io, D: Datagram>(
             continue;
         };
         let (outbox, thread) = (Rc::clone(outbox), Rc::clone(thread));
-        Origin::new(listener, peer).spawn(&thread.io.clone(), async move {
-            let deliver = async |reply: Vec<u8>| {
-                let len = reply.len();
-                outbox.push(reply, len, peer).await;
-            };
-            answer(&thread, &pipeline, ask, Transport::Udp, deliver).await;
-            drop(slot);
-        });
+        let io = thread.io.clone();
+        let deliver = async move |reply: Vec<u8>| {
+            let len = reply.len();
+            outbox.push(reply, len, peer).await;
+        };
+        let origin = Origin::new(listener, peer);
+        // A resolution is spawned as it is, not through `answer`, whose future holds the forwarding path too: the
+        // task of each query would be twice as large, and its allocation zeroed and filled for nothing (D201).
+        match ask {
+            Ask::Resolve(resolving) => origin.spawn(&io, async move {
+                resolve(&thread, &pipeline, resolving, Transport::Udp, deliver).await;
+                drop(slot);
+            }),
+            ask => origin.spawn(&io, async move {
+                answer(&thread, &pipeline, ask, Transport::Udp, deliver).await;
+                drop(slot);
+            }),
+        }
     }
 }
 
