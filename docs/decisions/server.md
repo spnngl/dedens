@@ -2302,17 +2302,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
     I/O and the stage); Unbound's DS entries kept in the state (the seed's DS name keys that turn Valid at once);
     following forward stages' anchors (the upstream's answers, out of the step); non-root anchors (out of the step).
-- D204 (amends D74; amended by D207) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
+- D204 (amends D74; amended by D206, D207) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
   &Limits)` returns for zone text, checked, and it never changes: a change loads a new `Zone` and the server swaps
   it in whole (`Arc`, as D24's pipeline), so a query sees one version from start to end and a reload that fails
   leaves the served one. Loading does no I/O: `$INCLUDE` is a callback giving the bytes of a file (D25: the
-  reader hands it back to the caller); the journal's file is D207's. Layout: a `BTreeMap` of names in canonical order (`Name` orders so, RFC 4034 §6.1,
+  reader hands it back to the caller); the journal's file is D207's. Layout: a sorted `Vec` of names in canonical order (a `BTreeMap` first, D206) (`Name` orders so, RFC 4034 §6.1,
   moved from `denial`, which amends D74 where the order was private), each `Node` with its `RRset`s by type, RDATA
   already wire bytes, the RRSIGs apart by the type they cover, a `Kind` (authoritative, delegation point, occluded,
   empty non-terminal) and the wildcard and DNAME owner marks. Every ancestor of a name down to the apex is a node
-  (RFC 4592 §2.2.2). An `RRset` has one TTL and its duplicates merged. A map and not a trie: answering needs a
-  lookup and a predecessor in canonical order (NSEC), which `BTreeMap::range` gives; another layout waits for the
-  answering stage's bench.
+  (RFC 4592 §2.2.2). An `RRset` has one TTL and its duplicates merged. A sequence and not a trie: answering needs a
+  lookup and a predecessor in canonical order (NSEC), which a sorted sequence gives; D206 replaced the first
+  layout, a `BTreeMap`, by a `Vec`, measured.
   - Errors, each with file, line and column (`ZoneReader::at`), all reported up to `Limits::errors`, the load
     refused: another class than the first record's (RFC 1035 §5.2), a record outside the zone (§5.2), RDATA its
     type refuses, no SOA at the apex, a second SOA or one below the apex, no NS at the apex (§5.2), a CNAME beside
@@ -2342,6 +2342,58 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     last TTL (the file's order would decide); an error for differing TTLs (BIND, NSD and Knot accept them); refusing
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
     over a finished `Zone` (the errors would lose their lines).
+
+- D206 (amends D204) The answer of a zone (`dedens-zone`, the authoritative phase): `Zone::answer(&Question) -> Answer`
+  is RFC 1034 §4.3.2 as a loop over the name asked, with RFC 4592 wildcards, RFC 6672 DNAME and RFC 9471 glue, no
+  DNSSEC record (step 07 adds them from what the answer carries). The answer refers to the zone and copies nothing:
+  a chain of links, then one end. A link is a CNAME followed or a DNAME with the CNAME synthesised from it (owner the
+  name asked, the DNAME's TTL, RFC 6672 §3.1); the end is data (the `RRset` asked for, from a node or from the
+  wildcard that gave it, with the closest encloser), no data, NXDOMAIN (with the closest encloser, which a proof
+  needs), a referral (the cut), YXDOMAIN, a synthesised CNAME asked for, a chain that goes on out of the zone or past
+  the bound (`End::Open`: the client asks again from there), or REFUSED (a name outside the zone, a class other than
+  the zone's and not ANY, RFC 1035 §3.2.5). The step file's list of variants is this chain-and-end shape: a CNAME
+  or DNAME is a link and not an outcome, so that a chain ending in a referral or in NXDOMAIN is one value; the call takes no
+  `Limits` (those bound a load): the chain bound is `MAX_CHAIN`. `Answer::fill` writes the records into a `Message`
+  borrowing the zone's names and RDATA (`Name::reborrow`, `WireRdata::reborrow`, no copy) and `Glue::encode` encodes
+  it; no zone data is allocated for a query (the `Vec`s of the message are).
+  - Algorithm: the name or its closest encloser (the first node among its ancestors; every ancestor is a node, D204).
+    Occluded names answer as the cut or DNAME above them. An existing name, an empty non-terminal included, answers
+    itself: no wildcard (RFC 4592 §2.2.1), no data when the type is absent. An absent name: a delegation at the
+    encloser is a referral, a DNAME there synthesises, `*.<encloser>` answers if it exists (its owner is the name
+    asked, the case as asked), else NXDOMAIN. DS at a delegation is answered from the parent side, the zone being the
+    parent (RFC 4035 §3.1.4.1; Knot and NSD alike); another type there is a referral. AA is set but for a referral
+    and a refusal (a chain that ends in a referral keeps it, as Knot).
+  - Negative answers carry the SOA with the least of its TTL and MINIMUM (RFC 2308 §3, Knot's `SOAMINTTL`); a name
+    that holds only NSEC3 records is absent (RFC 5155 §7.2; both servers answer NXDOMAIN, and no NSEC3 as data).
+  - Chains: followed in the zone up to `MAX_CHAIN` = 11 links, then `Open`. Knot stops at 5 (`CNAME_CHAIN_MAX`), NSD at
+    18 (`MAX_CNAME_CHAIN`); 11 is what the resolver accepts in a response (D192), so a dedens client never refuses
+    what `dedensd` sends. A name met twice ends the chain (shown once, as Knot's duplicate check). Not followed for the
+    types CNAME, RRSIG, NSEC and ANY (Knot); an alias asked below a DNAME is the synthesised one. A name made past 255
+    bytes or 127 labels is YXDOMAIN with the DNAME in the answer and no SOA (RFC 6672 §2.2; Knot the same).
+  - ANY: one `RRset`, the lowest type but NSEC3 (RFC 8482 §4.2), Knot's choice (D203 difference 3); NSD prefers A,
+    AAAA and other small types. RRSIG asked: the signatures of the first type (D203 difference 4; step 07).
+  - Additional section: the A and AAAA of in-zone NS, MX and SRV targets, in answers and referrals, the A
+    before the AAAA; none for a CNAME target (RFC 2181 §10.3); no apex NS in the authority of a positive answer
+    (D203 difference 1, Knot). Knot adds SVCB and HTTPS records too: left to TODECIDE.
+  - Referral (RFC 9471): NS in the authority, glue first for the servers inside the delegated domain (required), then
+    the other servers' addresses in the zone, glue below another cut included (RFC 9471 §2.2; optional). TC is set
+    only when required glue does not fit (§3.1: a response without in-domain glue is useless); optional glue is
+    dropped whole by `encode_truncated` without TC, as Knot. NSD's cut of the additional section is compared by TC
+    alone (D203 difference 7).
+  - Layout, amending D204: the nodes are a sorted `Vec`, searched by bisection, not a `BTreeMap`: the map's lookup
+    with a name of the query's lifetime ties the node it returns to that lifetime, and the answer must keep it for the
+    zone's. Cost (`lookup_*` in `benches/zone.rs`, 100 000-record zone, one name): 215 ns against 196 ns for the
+    map, 10% more; a load of 63 ms and 47 MB is the same. The predecessor in canonical order is the previous index.
+  - Test data: RFC 1034 §6.2 on the §6.1 root zone, RFC 4592 §2.2.1 and RFC 6672 §2.2, §6 examples
+    (`crates/dedens-zone/tests/answer.rs`), and every answer captured from Knot and NSD for each zone of D203
+    (`reference.rs`), by D203's rules: signed zones without DO (the proofs are step 07's), Knot's answer (NSD's
+    for the ISI zone, which Knot refuses), RDATA names compared lowercase (both servers lower them), owners as asked.
+    Fuzz target `zone_answer`; bench `answer_zone`, `reply_zone`, `reply_root` (answers 0.25-0.6 µs, replies 0.3-0.7 µs
+    on the 100 000-record zone; a root referral 6 µs, 15 allocations of the message's `Vec`s).
+  - Rejected: following chains without bound (a loop is an infinite reply); Knot's 5 (a resolver of ours would
+    take the chain for one it must ask again); every `RRset` for ANY (RFC 8482); TC for any glue that does not fit
+    (resolvers would fall back to TCP for nothing, RFC 9471 §3.1); a wildcard for an empty non-terminal (RFC 4592
+    §2.2.1).
 
 - D207 (amends D204) Zone differences and the journal (`dedens-zone`): a `Changeset` is the difference between two
   versions of a zone as RFC 1995 §4 sends it: the old and the new SOA record and the records removed and added, each

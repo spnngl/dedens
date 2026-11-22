@@ -343,6 +343,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   the storm protection off in effect. Default: treat an address-family error as the server unreachable (it is
   recorded, and IPv4 servers are preferred from then on), or add an address-family switch, as Unbound's `do-ip6`.
 
+## Authoritative answers
+
+- SVCB and HTTPS records of in-zone NS, MX and SRV targets in the additional section (RFC 9460 §4; Knot adds them,
+  `internet.c` `solve_additional`): D206 adds A and AAAA only. Default: add them with the step that
+  takes the zone's SVCB data into answers (RFC 9460 §4.1 AliasMode targets), not before.
+- A chain of more than `MAX_CHAIN` (11) links ends in `End::Open` with AA and the links so far; Knot stops at 5, NSD at 18. Default: keep 11 until a client of `dedensd` that is not ours refuses one.
+
 ## Later
 
 - RAPx on dedens-proto (D187): 0.7.75 stops with an internal compiler error (`item_name: no name for DefPath`,

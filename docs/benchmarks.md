@@ -947,6 +947,31 @@ Peak memory 47 MB (`max alloc` of the allocation profiler: 297 000 live allocati
 - Left: the one `BTreeMap` lookup per record, and its comparisons. A map keyed by hash would drop them but sort at
   the end; not tried: the load runs once per zone version.
 
+### Answering from a zone (D206)
+
+`answer_zone`, `reply_zone`, `reply_root` and `lookup_*` in `crates/dedens-bench/benches/zone.rs`: the generated zone of
+100 000 records (`h4000.example.` data, `nothing.example.` NXDOMAIN, `anything.wild.example.` wildcard,
+`www.h4002.example.` CNAME then data) and the captured root zone (a referral, a name under no delegation); `reply` is
+the answer, the message filled and encoded in 1232 bytes. Medians of one run, one query at a time:
+
+| | `answer` alone | `reply` |
+|---|---|---|
+| data | 255 ns | 300 ns |
+| NXDOMAIN, SOA TTL | 614 ns | 711 ns |
+| wildcard | 667 ns | 794 ns |
+| CNAME, then data | 518 ns | 662 ns |
+| root: name under no delegation | | 789 ns |
+| root: referral to `com.` (13 name servers, glue) | | 6.2 µs |
+
+- The lookup is 85% of a data answer: a name is searched ancestor by ancestor over its own wire bytes (no allocation;
+  `answer` allocates nothing but the chain's `Vec` when there is a link). `reply` allocates the message's `Vec`s: 1
+  allocation of 224 B for a data answer, 15 of 2.6 KB for the root's referral.
+- The nodes are a sorted `Vec` bisected, not D204's `BTreeMap` (the map cannot return a node outliving the name it was
+  asked with): one lookup in 100 000 names 215 ns against 196 ns (10% more). `load_dedens` after the change: 63 ms and
+  47 MB, `read_dedens` 9.1 ms, the same ratio of 7 as before.
+- Left: the root referral's allocations (the message's `Vec`s grow by push) and the `Name` order, whose comparison
+  is most of a lookup; neither tried, for a response that already takes under a microsecond but for referrals.
+
 ## DNSSEC crypto (D71)
 
 `benches/dnssec.rs`, one call on the RFC example each (`ring`; keys of 1024 bits where RSA's size is not said).
