@@ -204,4 +204,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D200 [server](server.md): RFC 5011 root key rollover followed from the resolver's own `. DNSKEY` queries, seeded by the signed download, which it wins over; state `root-5011` in `state_dir`; 30-day hold-downs, 366 days missing, queries every 1 h to 15 d
 - D201 [performance and safety](performance-and-safety.md): the recursive resolver against Unbound: a mini Internet of three Knot authorities (root, TLD, signed zone), unique names, `root_hints`; TelltaleDNS and CoreDNS not measured
 - D202 [simulation tests](simulation-tests.md): `just sim-time`'s crate budget is 12 s (84 s on CI), a family's 2 s; 10 s was set for nine families, fifteen now
-- D204 [server](server.md) (amends D74): `dedens-zone`: a zone is an immutable checked `Zone` built by `Zone::load`, errors with file, line and column, warnings apart, `Limits` on every count; `Name` orders canonically
+- D204 [server](server.md): `dedens-zone`: a zone is an immutable checked `Zone` built by `Zone::load`, errors with file, line and column, warnings apart, `Limits` on every count; `Name` orders canonically

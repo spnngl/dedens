@@ -2337,8 +2337,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Test data: the RFC example zones of `testdata/zones/` (RFC 1035 §5.3 with its `$INCLUDE`, RFC 4035 and RFC 5155
     appendix A), each refused in a broken variant by the check naming it. `every_type.zone`, the fuzzing seed, is not
     a zone for the loader: it holds records of the classes CH, HS and CLASS32 and a name outside the zone, so the
-    tests show its refusals and load it with them made right. The root zone's capture comes with D203 and is not
-    loaded here. Fuzz target `load_zone`; bench `load_dedens` (`crates/dedens-bench/benches/zone.rs`).
+    tests show its refusals and load it with them made right. The root zone's capture is not loaded here. Fuzz target `load_zone`; bench `load_dedens` (`crates/dedens-bench/benches/zone.rs`).
   - Rejected: a `Zone` edited in place (a query would see half a change; a lock on the read path); the first or
     last TTL (the file's order would decide); an error for differing TTLs (BIND, NSD and Knot accept them); refusing
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
