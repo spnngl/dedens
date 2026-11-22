@@ -221,18 +221,18 @@ fn differences(id: &str, apex: &str, reference: &Reference) -> BTreeSet<Differen
     if truncated {
         return BTreeSet::from([Difference::Truncation]);
     }
-    let (ka, kn, kd) = (
+    let (ka, kn, kadd) = (
         lines(&knot.answer),
         lines(&knot.authority),
         lines(&knot.additional),
     );
-    let (na, mut nn, nd) = (
+    let (na, mut nn, nadd) = (
         lines(&nsd.answer),
         lines(&nsd.authority),
         lines(&nsd.additional),
     );
     let mut found = BTreeSet::new();
-    if (&ka, &kn, &kd) == (&na, &nn, &nd) {
+    if (&ka, &kn, &kadd) == (&na, &nn, &nadd) {
         return found;
     }
     if reference.rtype == RecordType::ANY {
@@ -276,13 +276,13 @@ fn differences(id: &str, apex: &str, reference: &Reference) -> BTreeSet<Differen
         );
         found.insert(proof);
     }
-    if kd != nd {
+    if kadd != nadd {
         assert!(
             only(
-                kd.symmetric_difference(&nd).cloned(),
+                kadd.symmetric_difference(&nadd).cloned(),
                 &["A", "AAAA", "RRSIG"]
             ),
-            "unexplained {}: knot {kd:?} nsd {nd:?}",
+            "unexplained {}: knot {kadd:?} nsd {nadd:?}",
             key()
         );
         found.insert(Difference::AdditionalAddresses);

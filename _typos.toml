@@ -13,6 +13,10 @@ extend-exclude = [
   "testdata/zones/rfc4035_appendix_a.zone",
   # Blocklists and hosts files, as published.
   "testdata/plugins/",
+  # Zones as transferred, and base64 of captured messages (`just capture-authoritative`).
+  "testdata/authoritative/zones/",
+  "testdata/authoritative/answers/",
+  "testdata/authoritative/recordings/",
   # Hex of captured CoAP datagrams.
   "testdata/coap/",
   # Base64 of captured responses (`just capture-recursion`, `just capture-minimisation`).

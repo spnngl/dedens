@@ -1,5 +1,5 @@
 //! Captures `testdata/authoritative/` (D203), run by `just capture-authoritative`: zones transferred from public
-//! servers, the answers Knot and NSD give on the same zones, and the transfers, NOTIFYs and UPDATEs Knot's tools
+//! servers, the answers Knot and NSD give on the same zones, and the transfers, NOTIFY and UPDATE messages Knot's tools
 //! exchange with Knot through a recording proxy.
 //!
 //! Usage: `capture_authoritative <dir> <stage>...` where `dir` is `testdata/authoritative` and a stage is

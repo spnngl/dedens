@@ -1,5 +1,5 @@
 //! The captures of the authoritative phase (D203): zones transferred from public servers, the answers Knot and NSD
-//! give on the same zones, and the transfers, NOTIFYs and UPDATEs Knot's tools exchanged with Knot.
+//! give on the same zones, and the transfers, NOTIFY and UPDATE messages Knot's tools exchanged with Knot.
 //!
 //! Written by `just capture-authoritative` (`examples/capture_authoritative`), read from `testdata/authoritative/`:
 //!
