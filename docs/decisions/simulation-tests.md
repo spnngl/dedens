@@ -227,9 +227,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Attacks: `crates/dedens-sim/tests/attacks.rs` (recursive step 14) runs each named attack of the recursive
     resolver on D196's Internet with captures changed as the attack changes them, asserting the bound of the decision
     that holds it: Kaminsky's flood (D190, D192), NXNSAttack (D191), TsuNAME (D191, D199), CAMP and iDNS (D191,
-    D117), KeyTrap (D75, D77, D197), MaginotDNS (D192), TuDoor (D190, D191), the ghost domain (D193). The NSEC3
-    iterations (D74) are held by `dedens-dnssec`'s tests: no capture is secure with iterations, so a run cannot
-    isolate the limit. Its fuzz target is `resolve_replay` (D181).
+    D117), KeyTrap (D75, D77, D197), MaginotDNS (D192), TuDoor (D190, D191), the ghost domain (D193). KeyTrap has
+    two legs: sixty DNSKEYs of one tag, refused at the DS digest step (D77) before any signature check; and an
+    answer whose RRSIG is replaced by nine copies with a changed signature, which costs the walk and 8 checks (the
+    scrubber's 8 RRSIGs an `RRset`, D192, are met before the validator's 8 failed checks, D73, so a run cannot
+    reach the second cap: `dedens-dnssec`'s tests hold it). The NSEC3 iterations (D74) are held by
+    `dedens-dnssec`'s tests too: no capture is secure with iterations, so a run cannot isolate the limit. Its fuzz target is `resolve_replay` (D181).
 - D196 (amends D190, D191; builds on D133, D164, D182, D189, D194, D195) Recursion in the simulator (recursive step
   09): `crates/dedens-sim/tests/recursion.rs` runs `dedensd`'s own loop (D182) with a cache stage then a recurse stage
   (D195) on D189's Internet, every capture's servers hosted, and a client asks each capture's question in turn. The
