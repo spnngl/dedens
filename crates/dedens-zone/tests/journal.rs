@@ -504,6 +504,24 @@ fn several_of_the_oldest_go_when_the_limit_on_opening_is_far_below_the_file() {
     assert_eq!(journal.len(), 2);
 }
 
+#[test]
+fn several_of_the_oldest_go_when_the_bytes_on_opening_are_far_below_the_file() {
+    let (_dir, path) = directory();
+    let changesets = chain();
+    let (bytes, starts) = file_of(&changesets);
+    fs::write(&path, &bytes).expect("writes");
+    let journal = Journal::open(
+        &path,
+        JournalLimits {
+            bytes: bytes.len() - starts[2] + MAGIC.len(),
+            ..JournalLimits::default()
+        },
+    )
+    .expect("opens");
+    assert_eq!(serials(&journal, 3), Some(vec![(3, 4), (4, 5)]));
+    assert_eq!(journal.len(), 2);
+}
+
 /// A changeset that fills the bytes to the last one is kept; one byte less room and it is over.
 #[test]
 fn a_changeset_that_fits_the_bytes_exactly_is_kept() {
