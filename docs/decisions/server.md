@@ -2302,3 +2302,44 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
     I/O and the stage); Unbound's DS entries kept in the state (the seed's DS name keys that turn Valid at once);
     following forward stages' anchors (the upstream's answers, out of the step); non-root anchors (out of the step).
+- D204 (amends D74) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
+  &Limits)` returns for zone text, checked, and it never changes: a change loads a new `Zone` and the server swaps
+  it in whole (`Arc`, as D24's pipeline), so a query sees one version from start to end and a reload that fails
+  leaves the served one. The crate does no I/O: `$INCLUDE` is a callback giving the bytes of a file (D25: the reader
+  hands it back to the caller). Layout: a `BTreeMap` of names in canonical order (`Name` orders so, RFC 4034 §6.1,
+  moved from `denial`, which amends D74 where the order was private), each `Node` with its `RRset`s by type, RDATA
+  already wire bytes, the RRSIGs apart by the type they cover, a `Kind` (authoritative, delegation point, occluded,
+  empty non-terminal) and the wildcard and DNAME owner marks. Every ancestor of a name down to the apex is a node
+  (RFC 4592 §2.2.2). An `RRset` has one TTL and its duplicates merged. A map and not a trie: answering needs a
+  lookup and a predecessor in canonical order (NSEC), which `BTreeMap::range` gives; another layout waits for the
+  answering stage's bench.
+  - Errors, each with file, line and column (`ZoneReader::at`), all reported up to `Limits::errors`, the load
+    refused: another class than the first record's (RFC 1035 §5.2), a record outside the zone (§5.2), RDATA its
+    type refuses, no SOA at the apex, a second SOA or one below the apex, no NS at the apex (§5.2), a CNAME beside
+    other data but RRSIG and NSEC (RFC 2181 §10.1), a second CNAME (§10.1) or DNAME (RFC 6672 §2.4) at a name, a
+    CNAME and a DNAME at one (§2.4), a DNAME beside an NS below the apex (§2.3), text the reader refuses, an
+    `$INCLUDE` the callback refuses.
+  - Warnings, the load accepted: the TTLs of an `RRset` differ (RFC 2181 §5.2); a delegation's name server inside
+    the delegation with no A or AAAA record at it (RFC 9471 §2: the glue is missing); names below a DNAME (RFC 6672
+    §2.4: kept, occluded, never answered from), once per DNAME. Data below a delegation point is kept, occluded
+    (RFC 1034 §4.2.1).
+  - TTLs of an `RRset`: the lowest, with a warning. NSD warns and keeps the first (`zonec.c` `zonec_accept`, "TTL
+    does not match the TTL of the RRset"), BIND warns and takes the prior one (`lib/dns/master.c`, "TTL set to
+    prior TTL"), Knot warns and takes the last (`src/knot/zone/zonefile.c`, `node.c`); all three exempt RRSIG. The
+    first and the last depend on the file's order; RFC 2181 §5.2 says to treat the set as the lowest.
+  - Against the prior art: a DNAME's children are an error in Knot (`check_dname`), a warning here with the data
+    kept occluded; Knot's glue check (`check_delegation`) is an error, here a warning, the glue being the parent's
+    to give.
+  - `Limits`, each a field with a reason and a test (`crates/dedens-zone/tests/limits.rs`): records 2^24, names 2^24
+    (empty non-terminals count), records per `RRset` 100 and `RRset`s per name 100 (BIND's `max-records-per-type` and
+    `max-types-per-name`; its `max-records` is unlimited), RDATA bytes 2^30, `$INCLUDE` depth 8 (Knot and BIND have
+    no bound: a file that includes itself must end), errors reported 100.
+  - Test data: the RFC example zones of `testdata/zones/` (RFC 1035 §5.3 with its `$INCLUDE`, RFC 4035 and RFC 5155
+    appendix A), each refused in a broken variant by the check naming it. `every_type.zone`, the fuzzing seed, is not
+    a zone for the loader: it holds records of the classes CH, HS and CLASS32 and a name outside the zone, so the
+    tests show its refusals and load it with them made right. The root zone's capture comes with D203 and is not
+    loaded here. Fuzz target `load_zone`; bench `load_dedens` (`crates/dedens-bench/benches/zone.rs`).
+  - Rejected: a `Zone` edited in place (a query would see half a change; a lock on the read path); the first or
+    last TTL (the file's order would decide); an error for differing TTLs (BIND, NSD and Knot accept them); refusing
+    data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
+    over a finished `Zone` (the errors would lose their lines).

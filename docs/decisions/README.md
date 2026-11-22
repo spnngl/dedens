@@ -81,7 +81,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D71 [scope](scope.md) (amended by D73, D106): DNSSEC crypto on `ring`; which algorithms validate
 - D72 [scope](scope.md) (amended by D127, D200): trust anchors per zone, negative ones, the root's bundled
 - D73 [scope](scope.md) (amended by D200): `rrsig` authenticates one RRset with one DNSKEY RRset
-- D74 [scope](scope.md) (amended by D106): denial of existence: set logic over verified NSEC and NSEC3
+- D74 [scope](scope.md) (amended by D106, D204): denial of existence: set logic over verified NSEC and NSEC3
 - D75 [scope](scope.md) (amended by D86, D106, D176): sans-IO `Validator`, driven by the caller, within limits
 - D76 [scope](scope.md) (amended by D86): `dedens +validate` is a validating stub resolver
 - D77 [scope](scope.md) (amended by D86, D90, D93, D106, D114, D117, D124, D184, D186): a forward stage validates with `dnssec: validate`
@@ -204,3 +204,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D200 [server](server.md): RFC 5011 root key rollover followed from the resolver's own `. DNSKEY` queries, seeded by the signed download, which it wins over; state `root-5011` in `state_dir`; 30-day hold-downs, 366 days missing, queries every 1 h to 15 d
 - D201 [performance and safety](performance-and-safety.md): the recursive resolver against Unbound: a mini Internet of three Knot authorities (root, TLD, signed zone), unique names, `root_hints`; TelltaleDNS and CoreDNS not measured
 - D202 [simulation tests](simulation-tests.md): `just sim-time`'s crate budget is 12 s (84 s on CI), a family's 2 s; 10 s was set for nine families, fifteen now
+- D204 [server](server.md) (amends D74): `dedens-zone`: a zone is an immutable checked `Zone` built by `Zone::load`, errors with file, line and column, warnings apart, `Limits` on every count; `Name` orders canonically
