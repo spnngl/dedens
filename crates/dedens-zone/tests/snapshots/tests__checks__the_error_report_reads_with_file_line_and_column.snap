@@ -1,0 +1,6 @@
+---
+source: crates/dedens-zone/tests/checks.rs
+expression: report
+---
+zone.db:6:1: error: class CH in a zone of class IN (RFC 1035 §5.2)
+zone.db:7:1: error: CNAME beside TXT (RFC 2181 §10.1)
