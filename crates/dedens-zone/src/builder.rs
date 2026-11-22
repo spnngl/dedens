@@ -178,7 +178,7 @@ impl<'l> Builder<'l> {
         let pending = self.names.entry(record.name).or_default();
         // RRSIG is kept by the type it covers. After the invalid RDATA check it always reads as a signature.
         let covered = match record.rdata.data() {
-            RData::Rrsig(sig) if rtype == RecordType::RRSIG => Some(sig.type_covered),
+            RData::Rrsig(sig) => Some(sig.type_covered),
             _ => None,
         };
         let new_type = covered.map_or_else(

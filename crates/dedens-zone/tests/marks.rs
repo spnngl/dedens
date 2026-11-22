@@ -99,6 +99,8 @@ fn s2_4_names_below_a_dname_are_kept_and_reported_once() {
         .expect("a warning only");
     let d = loaded.zone.node(&dns("d.example.")).expect("d");
     assert_eq!((d.kind(), d.is_dname_owner()), (Kind::Authoritative, true));
+    let x = loaded.zone.node(&dns("x.d.example.")).expect("x.d");
+    assert!(!x.is_dname_owner());
     assert_eq!(kind(&loaded, "x.d.example."), Kind::Occluded);
     assert_eq!(kind(&loaded, "z.d.d.example."), Kind::Occluded);
     assert_eq!(
