@@ -1542,9 +1542,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `referrals` 30, below Unbound's `MAX_REFERRAL_COUNT` 130 and above hickory's 24: the captures' deepest follows
     4; `depth` 4 sub-resolutions waiting on one another, Unbound's `target-fetch-policy` (BIND
     `max-recursion-depth` 7); `servers` 13 addresses asked and NS names used per delegation, BIND's
-    `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 address lookups per delegation,
-    A and AAAA each counted, after Unbound's `MAX_TARGET_NX` 5 (NXNSAttack, CVE-2020-12662), which counts NXDOMAIN
-    lookups per client question, and its `MAX_DP_TARGET_COUNT` 16 per delegation (BIND counts them within its 13);
+    `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 server names looked up
+    per delegation, a name's A and its AAAA counting as one, after Unbound's `MAX_TARGET_NX` 5 (NXNSAttack,
+    CVE-2020-12662), which counts NXDOMAIN lookups per client question, and its `MAX_DP_TARGET_COUNT` 16 per
+    delegation, which counts a name's lookups once too (`target_count_increase` runs once for each set it sends;
+    BIND counts them within its 13). Counted by lookup, a delegation of three names without glue, two failing to
+    resolve, spent the bound before the AAAA of the one that worked and failed on a silent IPv4 server: the bound
+    is on names, not on queries, which `queries` caps (up to 10 lookups, 5 names, for names whose A does not
+    answer NXDOMAIN; one A for each name denied, the AAAA skipped, so the NXNSAttack of D189's simulation costs
+    what it did);
     `MAX_ADDRESSES` 100 addresses known per delegation, not per server name, glue, lookups and cache together,
     Unbound's `delegpt_max_addr` (the scrubber keeps 100 glue records already), the servers shunned (D197) not
     counted, so that a bogus answer does not take an address from the retry: an answer of thousands costs the draw
@@ -1562,7 +1568,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     server per question: the infra cache marks lame every other address for each zone, so the draw falls on the
     server the capture followed; the test harness is the transport (UDP, TCP after TC). The defaults are reached on
     referrals built from the captured ones, every query timing out, or captured responses changed; each change is
-    written in its test.
+    written in its test. Three names without glue, two with no address and one with only an AAAA, reach that AAAA
+    whatever the order they are drawn in, and a bound of one name takes a name's A and its AAAA.
   - Not here: the stage and its transport binding (08), DNSSEC (10), QNAME minimisation (11, D198), negative
     caching (D199), a last resort to the root when a cached delegation fails.
 - D192 (builds on D188) The recursive resolver scrubs each response before anything reads it:
