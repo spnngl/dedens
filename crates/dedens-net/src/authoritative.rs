@@ -490,7 +490,10 @@ impl<N: Io> Authoritative<N> {
             Err(TcpError::TimedOut) => Ok(exchange.lose(self.io.now())),
             Err(TcpError::Busy) => Err(LocalError::TcpBusy.into()),
             Err(TcpError::BadLength(len)) => Err(LocalError::TooLong(len).into()),
-            Err(TcpError::Connect(error)) if local_io(&error) && !no_family(&error) => {
+            // EADDRNOTAVAIL stays ours here: on a TCP connect it is above all the ephemeral ports of the 4-tuple
+            // exhausted, a failure of the host under load, not of the server (D199). A host without the address
+            // family fails the UDP bind first, and its TCP socket with EAFNOSUPPORT.
+            Err(TcpError::Connect(error)) if local_io(&error) && !no_socket_family(&error) => {
                 Err(LocalError::Socket(error).into())
             }
             Err(error) => Err(ServerError::Tcp(error).into()),
@@ -630,9 +633,15 @@ fn ours(error: &io::Error) -> bool {
 /// Whether a socket error says the host has no address of the family of the server: no IPv6 socket
 /// (`EAFNOSUPPORT`), none to bind or no address of it to send from (`EADDRNOTAVAIL`). A server of that family is out
 /// of reach as one with no route, not a failure of ours: it is backed off, and the holds of RFC 9520 §3.2 go on (D199).
+/// Of a UDP socket only: on a TCP connect `EADDRNOTAVAIL` is ours, see [`no_socket_family`].
 fn no_family(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::AddrNotAvailable
-        || error.raw_os_error() == Some(Errno::AFNOSUPPORT.raw_os_error())
+    error.kind() == io::ErrorKind::AddrNotAvailable || no_socket_family(error)
+}
+
+/// Whether a socket error is `EAFNOSUPPORT`: the host has no socket of the server's family at all. The one sign of
+/// that a TCP connect gives, `EADDRNOTAVAIL` there being the ephemeral ports exhausted (D199).
+fn no_socket_family(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(Errno::AFNOSUPPORT.raw_os_error())
 }
 
 /// Sends `wire` whole on `udp`.

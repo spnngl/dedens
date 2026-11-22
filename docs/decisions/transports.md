@@ -986,11 +986,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     socket makes it readable and fails the receive, so the wait failing is its registration, ENOMEM or ENOSPC.
     A query too long for TCP is ours, `LocalError::TooLong`.
   - A host without the server's address family (a host booted with `ipv6.disable=1` binding `[::]`: EAFNOSUPPORT;
-    EADDRNOTAVAIL on a bind or a connect, no address of that family to send from) cannot reach the server, as with
+    EADDRNOTAVAIL on a UDP bind or connect, no address of that family to send from) cannot reach the server, as with
     no route: `ServerError::Unreachable { sends: 0 }`, not `LocalError::Bind`, and not ours (`authoritative::no_family`,
-    checked beside `local_io` for a TCP or UDP connect; the stub client's `is_local` keeps EADDRNOTAVAIL ours). The infra cache then records the server as
+    checked beside `local_io` for a UDP connect). The infra cache then records the server as
     unreachable and IPv4 servers are preferred, and no `Resolution::failed_here`, so RFC 9520's holds go on (D194,
-    D199). The bind is not drawn again: no port would do better. The other bind errors stay `LocalError::Bind`.
+    D199). The bind is not drawn again: no port would do better. The other bind errors stay `LocalError::Bind`. A TCP
+    connect is told so by EAFNOSUPPORT only (`ServerError::Tcp(TcpError::Connect)`, the server's, as any TCP failure;
+    a failure shared by the queries waiting on one connection keeps its errno, `TcpError::copy`): its EADDRNOTAVAIL is
+    above all the ephemeral ports of the 4-tuple exhausted, a failure of the host under load, so it stays `LocalError::Socket`, ours, with `failed_here` set, as the stub client's `is_local` has it. A host without
+    the family never reaches that arm: its UDP bind fails first.
   - Errors: `AuthoritativeError::Local` (randomness, no socket or TCP connection free before the deadline, a
     bind but of the server's family missing, a socket error of ours, the encoding) is not the server's fault, `AuthoritativeError::Server` (timeout,
     forged responses, unreachable, a TCP failure) is: the caller's server selection counts the second only.
@@ -1012,7 +1016,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     for 16 queries, a socket wait ending at the deadline, a wait for a socket or a TCP connection leaving less than `SERVER_FLOOR` ours, a dropped query giving its socket
     back; a TCP query waiting for the connection of 1; a deadline past the 5 s an exchange waits by default kept;
     a send, a receive, a UDP or a TCP connect failing the server's, but for want of ours; a bind or a connect
-    failing for want of the address family (EAFNOSUPPORT, EADDRNOTAVAIL) the server's, the bind not drawn again.
+    failing for want of the address family (EAFNOSUPPORT, EADDRNOTAVAIL) the server's, the bind not drawn again, a TCP
+    connect's EAFNOSUPPORT the server's and its EADDRNOTAVAIL ours.
     `tests/tcp.rs`: a replaced connection counted until it closes, a query timing out short of `STALLED` keeping
     its connection, short timeouts one after the other closing a silent one, a response after the oldest query
     unanswered keeping it, waiters taking room in the order they came, a retired connection closing during a hand-off waking the line again.

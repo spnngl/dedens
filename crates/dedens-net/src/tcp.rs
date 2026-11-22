@@ -73,9 +73,16 @@ pub enum TcpError {
 }
 
 impl TcpError {
-    /// The same error for another query: an I/O error keeps its kind and message, not its source.
+    /// The same error for another query: an I/O error keeps its system error, or else its kind and message, not
+    /// its source. The system error stays whole for the classes that tell it apart from its kind, such as
+    /// `EAFNOSUPPORT` (D199).
     fn copy(&self) -> Self {
-        let io = |error: &io::Error| io::Error::new(error.kind(), error.to_string());
+        let io = |error: &io::Error| {
+            error.raw_os_error().map_or_else(
+                || io::Error::new(error.kind(), error.to_string()),
+                io::Error::from_raw_os_error,
+            )
+        };
         match self {
             Self::Connect(error) => Self::Connect(io(error)),
             Self::Handshake(error) => Self::Handshake(io(error)),

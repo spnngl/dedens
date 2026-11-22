@@ -2205,8 +2205,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     servers: a limit is the question's own, and a bogus answer is asked again of other servers (D197). Nor is a
     failure after an exchange failed on our side (`Reply::LocalError`: a send error, no sign of the servers failing;
     `Resolution::failed_here`, set in an address lookup too: the servers of a zone whose addresses were not found
-    were never heard failing). A host without IPv6 (`ipv6.disable=1`: EAFNOSUPPORT binding `[::]`, EADDRNOTAVAIL) is not
-    a local failure: the transport tells it `ServerError::Unreachable { sends: 0 }` (D190), the infra cache backs the
+    were never heard failing). A host without IPv6 (`ipv6.disable=1`: EAFNOSUPPORT or EADDRNOTAVAIL binding `[::]`) is not
+    a local failure: the transport tells it `ServerError::Unreachable { sends: 0 }` (D190; over TCP, EAFNOSUPPORT only, `ServerError::Tcp`), the infra cache backs the
     server off (D194), IPv4 servers are preferred from then on and `failed_here` stays unset, so the holds work. Unbound
     has `do-ip6: no` for it; here no switch, the host tells. An ICMP unreachable (`Reply::Unreachable`) may hold, as §3.2 allows: a spoofed one
     can make a resolver hold a set for up to `failure_max`, a cost the RFC accepts. A hold
