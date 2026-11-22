@@ -80,12 +80,18 @@ const TTL: u32 = 10800;
 
 /// The zones served locally, and what each answers.
 #[derive(Debug, Clone)]
-pub(super) struct LocalZones(Box<[(Name<'static>, Local)]>);
+pub(super) struct LocalZones {
+    zones: Box<[(Name<'static>, Local)]>,
+    /// The last label of each zone, in lower case, each once: a question whose last label is none of these is in
+    /// no zone, which almost every question is, and is told so without comparing it to each zone (D201). No zone is
+    /// the root.
+    tops: Box<[Vec<u8>]>,
+}
 
 impl Default for LocalZones {
     /// Every zone of [`ZONES`].
     fn default() -> Self {
-        Self(
+        Self::new(
             ZONES
                 .iter()
                 .map(|&(zone, local)| (zone.parse().expect("a zone of the list parses"), local))
@@ -95,17 +101,32 @@ impl Default for LocalZones {
 }
 
 impl LocalZones {
+    fn new(zones: Vec<(Name<'static>, Local)>) -> Self {
+        let mut tops: Vec<Vec<u8>> = Vec::new();
+        for (zone, _) in &zones {
+            if let Some(top) = zone.labels().last().map(<[u8]>::to_ascii_lowercase)
+                && !tops.contains(&top)
+            {
+                tops.push(top);
+            }
+        }
+        Self {
+            zones: zones.into(),
+            tops: tops.into(),
+        }
+    }
+
     /// The zones without `zone`, resolved instead; `None` when `zone` is not served locally.
     pub(super) fn without(&self, zone: &Name<'_>) -> Option<Self> {
-        let at = self.0.iter().position(|(held, _)| held == zone)?;
-        let mut zones = self.0.to_vec();
+        let at = self.zones.iter().position(|(held, _)| held == zone)?;
+        let mut zones = self.zones.to_vec();
         zones.remove(at);
-        Some(Self(zones.into()))
+        Some(Self::new(zones))
     }
 
     /// The zones, in the order of [`ZONES`].
     pub(super) fn names(&self) -> impl Iterator<Item = &Name<'static>> {
-        self.0.iter().map(|(zone, _)| zone)
+        self.zones.iter().map(|(zone, _)| zone)
     }
 
     /// The answer to `question`, as its zone serves it, if a zone of these holds it, in class IN, the zones' class:
@@ -116,8 +137,12 @@ impl LocalZones {
         if question.qclass != Class::IN {
             return None;
         }
+        let top = question.name.labels().last()?;
+        if !self.tops.iter().any(|held| held.eq_ignore_ascii_case(top)) {
+            return None;
+        }
         let (zone, local) = self
-            .0
+            .zones
             .iter()
             .find(|(zone, _)| question.name.is_within(zone))?;
         let apex = question.name == *zone;
