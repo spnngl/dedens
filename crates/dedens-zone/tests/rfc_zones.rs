@@ -68,6 +68,8 @@ fn a_the_signed_zone_loads_with_its_signatures_kept_apart() {
     let apex = zone.node(zone.apex()).expect("the apex");
     assert!(apex.rrset(RecordType::SOA).is_some());
     assert!(apex.signatures(RecordType::SOA).is_some());
+    // Every set of the apex is signed.
+    assert_eq!(apex.signature_sets().count(), apex.rrsets().len());
     assert!(apex.rrsets().all(|(t, _)| t != RecordType::RRSIG));
     let nsec = apex.rrset(RecordType::NSEC).expect("NSEC");
     let first = nsec.rdatas().first().expect("an NSEC record");
