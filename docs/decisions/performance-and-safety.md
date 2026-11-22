@@ -392,3 +392,43 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   zones); one Knot with the three zones at one address, which answers from the closest zone whatever the server asked, so no referral is ever walked; the
   real root servers' addresses on loopback aliases (root rights, and `dedensd`'s bundled TLD hints would send it
   below the root); patching TelltaleDNS to read hints (a fork measured, not its tag).
+
+- D203 (builds on D161, D162, D188) The authoritative server's test data is captured from Knot DNS 3.6.2 and NSD 4.15.4
+  (images from `testdata/authoritative/Containerfile`, NSD built from its tarball by checksum; `just
+  authoritative-images`) and from public servers, in `testdata/authoritative/` (README beside), by `just
+  capture-authoritative [stages]`: the example `capture_authoritative` of `dedens-testkit`, read through its feature
+  `authoritative` (`Answers`, `Recording`). No BIND, and no byte invented.
+  - Sources: AXFR of the root zone (ICANN, then root servers) and of `zonetransfer.me.` (a zone published for it), as
+    text (`zones/`) and as the transfer's messages; the zones of `testdata/zones/` served by both servers, one
+    server run per zone (three of them are `example.`), each answering a fixed list of questions (the README's
+    rules) over UDP at 1232 and 512 bytes, without EDNS, and TCP, with and without DO, kept as bytes beside the
+    other's; Knot behind a recording proxy for what a client sends and it answers or sends: AXFR and IXFR signed
+    (hmac-sha256) and not, with a wrong secret, an unknown key, a clock 600 s off (BADSIG, BADKEY, BADTIME), UPDATE
+    with each prerequisite form met and unmet, adds, deletes, refused ones, NOTIFY (at an NSD). The IXFR between two
+    root serials is Knot loading the root zone of serial 2026111401 (the Wayback Machine's copy of
+    `internic.net/domain/root.zone`, the root changing twice a day) and then the current one with `zonefile-load:
+    difference`; both texts are kept. Knot refuses the ISI zone of RFC 1035 (MB and MG, obsolete) and both refuse the
+    zone of every type: those get no reference answers.
+  - Comparison rules, for the steps that check an answer against the captures: the RRsets of a section are compared
+    as sets, TTLs exact, order within and across RRsets ignored; header flags and RCODE equal; OPT present or not as
+    in the capture (the UDP payload size is the server's own); the additional section by the answer algorithm's
+    own decision; a response truncated in either is compared on TC alone, and the other must fit the limit of the
+    query. Any difference not listed below fails.
+  - The differences between the two servers, and the answer `dedensd` gives (the RFCs leave most choices to the
+    server): (1) NSD adds the apex NS RRset (with its RRSIG under DO) to the authority section of positive answers,
+    and its addresses to the additional; Knot does not; RFC 1034 §4.3.2 asks for neither; `dedensd` follows Knot.
+    (2) Additional addresses of NS and MX targets: Knot adds A and AAAA, NSD often the A alone, at 512 bytes each
+    keeps a different one; `dedensd` adds both, with their RRSIGs under DO (RFC 3596 §3, RFC 4035 §3.1.1), the answer
+    algorithm's decision says what is dropped. (3) `ANY`: each gives one RRset (RFC 8482 §4.1), Knot the one of the lowest type, NSD
+    the SOA at the apex; `dedensd` follows Knot, a rule needing no choice among types. (4) `RRSIG`: Knot answers
+    the signatures of that one RRset, NSD all the name's; RFC 8482 §7 leaves RRSIG queries unspecified; `dedensd`
+    follows Knot, as for `ANY`. (5) NODATA at a wildcard's own name under NSEC3: NSD adds a covering NSEC3 to the
+    matching one; RFC 5155 §7.2.3 asks for the match alone, which is Knot's and `dedensd`'s. (6) `NSEC` asked at a
+    name a wildcard expands to: NSD adds the NSEC proving that name absent, Knot does not; RFC 4035 §3.1.3.3
+    requires the proof in any wildcard answer, so `dedensd` follows NSD. (7) Over 512 bytes, which parts each drops
+    before setting TC (RFC 2181 §9) differ; the answer algorithm's decision says.
+  - `dedens-proto` reads every capture except the UPDATE messages whose RDATA is empty (class ANY or NONE, RFC 2136
+    §2.4, §2.5: an NS of it fails, other types read as invalid RDATA); the step of UPDATE parses them itself.
+  - Rejected: BIND (not asked for; no image pinned); one Knot or NSD run for all zones (three are `example.`); the
+    ISI zone with its types dropped (a zone edited by hand is no capture); waiting for a second root serial (hours,
+    and the capture of the next day would differ).
