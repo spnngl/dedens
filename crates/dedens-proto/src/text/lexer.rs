@@ -52,6 +52,8 @@ pub(crate) struct Lexer<'t> {
     in_entry: bool,
     /// Line and column right after the last token read, where a missing field is reported.
     end: (usize, usize),
+    /// Line and column where the current entry starts.
+    start: (usize, usize),
 }
 
 impl<'t> Lexer<'t> {
@@ -64,12 +66,18 @@ impl<'t> Lexer<'t> {
             open: None,
             in_entry: false,
             end: (1, 1),
+            start: (1, 1),
         }
     }
 
     /// Line and column right after the last token read.
     pub(crate) const fn end(&self) -> (usize, usize) {
         self.end
+    }
+
+    /// Line and column where the current entry starts: the line start, as an entry may start with a blank.
+    pub(crate) const fn start(&self) -> (usize, usize) {
+        self.start
     }
 
     /// Moves to the next entry with at least one token, skipping what is left of the current one and blank and
@@ -97,6 +105,7 @@ impl<'t> Lexer<'t> {
                     });
                 }
                 self.end = self.here();
+                self.start = (line, column);
                 return Ok(Some(matches!(first, Some(b' ' | b'\t'))));
             }
         }

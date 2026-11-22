@@ -1,5 +1,6 @@
 //! Domain names (RFC 1035 §3.1, §4.1.4; RFC 4343).
 
+use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::net::IpAddr;
@@ -204,6 +205,52 @@ impl<'a> Name<'a> {
                 .skip(labels - depth)
                 .zip(zone.labels())
                 .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    }
+
+    /// The name without its first label, or `None` for the root.
+    #[must_use]
+    pub fn parent(&self) -> Option<Name<'static>> {
+        let count = self.label_count();
+        (count > 0).then(|| self.ancestor(count - 1))
+    }
+
+    /// The last `count` labels: the ancestor of that depth, or this name itself when it has no more.
+    #[must_use]
+    pub fn ancestor(&self, count: usize) -> Name<'static> {
+        Name::from_labels(self.labels().skip(self.label_count().saturating_sub(count)))
+            .expect("a suffix of a valid name is a valid name")
+    }
+
+    /// The wildcard `*.name` (RFC 4592 §2.1.1).
+    ///
+    /// # Errors
+    ///
+    /// [`NameError::NameTooLong`] when this name leaves no room for the label: no such wildcard exists.
+    pub fn wildcard(&self) -> Result<Name<'static>, NameError> {
+        Name::from_labels(core::iter::once(&b"*"[..]).chain(self.labels()))
+    }
+
+    /// How many labels, counted from the root, this name and `other` share, whatever the case.
+    #[must_use]
+    pub fn shared_labels(&self, other: &Name<'_>) -> usize {
+        let (mut a, mut b) = ([&[][..]; MAX_LABELS], [&[][..]; MAX_LABELS]);
+        let (a, b) = (self.from_the_root(&mut a), other.from_the_root(&mut b));
+        a.iter()
+            .zip(b)
+            .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
+            .count()
+    }
+
+    /// The labels written into `buf`, least specific first: the order canonical comparison walks them in.
+    fn from_the_root<'b>(&'b self, buf: &'b mut [&'b [u8]; MAX_LABELS]) -> &'b [&'b [u8]] {
+        let mut count = 0;
+        for (slot, label) in buf.iter_mut().zip(self.labels()) {
+            *slot = label;
+            count += 1;
+        }
+        let labels = buf.get_mut(..count).unwrap_or_default();
+        labels.reverse();
+        labels
     }
 
     /// The same name, owning its bytes.
@@ -752,6 +799,30 @@ impl<'b> PartialEq<Name<'b>> for Name<'_> {
 
 impl Eq for Name<'_> {}
 
+/// Canonical order (RFC 4034 §6.1): label by label from the root, each label as lowercase unsigned bytes, a name
+/// that runs out of labels first. It agrees with [`Eq`]: names equal whatever the case compare equal.
+impl Ord for Name<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let (mut a, mut b) = ([&[][..]; MAX_LABELS], [&[][..]; MAX_LABELS]);
+        let (a, b) = (self.from_the_root(&mut a), other.from_the_root(&mut b));
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| {
+                x.iter()
+                    .map(u8::to_ascii_lowercase)
+                    .cmp(y.iter().map(u8::to_ascii_lowercase))
+            })
+            .find(|ord| ord.is_ne())
+            .unwrap_or_else(|| a.len().cmp(&b.len()))
+    }
+}
+
+impl PartialOrd for Name<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Hash for Name<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         let mut buf = [0; MAX_NAME_LEN];
@@ -926,6 +997,57 @@ mod tests {
 
     fn name(labels: &[&[u8]]) -> Name<'static> {
         Name::from_labels(labels.iter().copied()).unwrap()
+    }
+
+    fn parse(text: &str) -> Name<'static> {
+        text.parse().unwrap()
+    }
+
+    /// RFC 4034 §6.1: the example order, whose labels all differ only past the first byte, in case or in depth.
+    #[test]
+    fn rfc4034_canonical_order() {
+        let sorted = [
+            "example.",
+            "a.example.",
+            "yljkjljk.a.example.",
+            "Z.a.example.",
+            "zABC.a.EXAMPLE.",
+            "z.example.",
+            "\\001.z.example.",
+            "*.z.example.",
+            "\\200.z.example.",
+        ]
+        .map(parse);
+        for (i, a) in sorted.iter().enumerate() {
+            for (j, b) in sorted.iter().enumerate() {
+                assert_eq!(a.cmp(b), i.cmp(&j), "{a} against {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_root_sorts_first() {
+        assert!(Name::root() < parse("a."));
+        assert_eq!(Name::root().cmp(&Name::root()), Ordering::Equal);
+    }
+
+    #[test]
+    fn ancestors_parents_and_wildcards() {
+        let n = parse("a.b.c.example.");
+        assert_eq!(n.ancestor(2), parse("c.example."));
+        assert_eq!(n.ancestor(9), n);
+        assert!(n.ancestor(0).is_root());
+        assert_eq!(n.parent(), Some(parse("b.c.example.")));
+        assert_eq!(Name::root().parent(), None);
+        assert_eq!(parse("c.example.").wildcard().unwrap(), parse("*.c.example."));
+        assert_eq!(n.shared_labels(&parse("x.C.example.")), 2);
+    }
+
+    #[test]
+    fn a_wildcard_needs_room_for_its_label() {
+        // 63 + 63 + 63 + 61 label bytes and their length bytes, and the root: the 255 bytes of the longest name.
+        let long = Name::from_labels([&[b'a'; 63][..], &[b'a'; 63], &[b'a'; 63], &[b'a'; 61]]).unwrap();
+        assert_eq!(long.wildcard(), Err(NameError::NameTooLong));
     }
 
     #[test]

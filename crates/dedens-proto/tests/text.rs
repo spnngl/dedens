@@ -494,12 +494,26 @@ mod zone {
         let mut reader = ZoneReader::new(text.as_bytes(), Some(dns("example.")));
         assert_eq!(reader.line(), 1);
         let mut ends = Vec::new();
+        let mut starts = Vec::new();
         while let Some(entry) = reader.next() {
             entry.unwrap();
             ends.push(reader.line());
+            starts.push(reader.at());
         }
         // The `$ORIGIN` is no entry; a parenthesized record ends on the line of its last token.
         assert_eq!(ends, [3, 8]);
+        assert_eq!(starts, [(3, 1), (6, 1)]);
+    }
+
+    #[test]
+    fn s5_1_at_is_where_the_last_entry_starts_blank_or_not() {
+        let mut reader = ZoneReader::new(b"a 60 A 192.0.2.1\n\n  60 A 192.0.2.2\n", Some(dns("example.")));
+        let mut starts = Vec::new();
+        while let Some(entry) = reader.next() {
+            entry.unwrap();
+            starts.push(reader.at());
+        }
+        assert_eq!(starts, [(1, 1), (3, 1)]);
     }
 
     #[test]

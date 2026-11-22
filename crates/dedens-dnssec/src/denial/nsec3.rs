@@ -3,7 +3,7 @@
 use dedens_proto::rdata::{Nsec3, RData, TypeBitmap};
 use dedens_proto::{Class, Name, NameError, Nsec3HashAlgorithm, Question, Record, RecordType, Ttl};
 
-use super::names::{covers, wildcard};
+use super::names::covers;
 use super::{Fact, MaxIterations, Proof, Unproven, at_name, least, wildcard_lacks};
 use crate::crypto::Budget;
 
@@ -223,7 +223,7 @@ pub(super) fn prove(
     if qtype == RecordType::DS && opt_out {
         return Ok(Proof::new(Fact::InsecureDelegation, ttl).with_opt_out(true));
     }
-    let wildcard_hash = chain.hash(&wildcard(&encloser.name)?, budget)?;
+    let wildcard_hash = chain.hash(&encloser.name.wildcard()?, budget)?;
     if let Some(entry) = chain.matching(&wildcard_hash) {
         let fact = wildcard_lacks(&entry.types, qtype)?;
         return Ok(Proof::new(fact, least([ttl, entry.ttl])).with_opt_out(opt_out));
