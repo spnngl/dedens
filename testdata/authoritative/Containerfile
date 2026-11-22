@@ -1,0 +1,26 @@
+# The images of `just capture-authoritative` (D203): NSD built at the version pinned here, and Knot's image with
+# libfaketime added for the one request signed by a clock set off. Both run the servers and the tools (`kdig`,
+# `knsupdate`); build with `--target nsd` and `--target knot`.
+ARG KNOT_IMAGE=docker.io/cznic/knot:v3.6.2
+
+FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS nsd-build
+ARG NSD_VERSION=4.15.4
+ARG NSD_SHA256=74a095fdb774a157c8aec9009e440fc3d2ba94c4372ae9ed86588c1719d1df2f
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl \
+    libssl-dev libevent-dev libexpat1-dev bison flex pkg-config >/dev/null
+RUN curl -fsSLO "https://nlnetlabs.nl/downloads/nsd/nsd-${NSD_VERSION}.tar.gz" \
+    && echo "${NSD_SHA256}  nsd-${NSD_VERSION}.tar.gz" | sha256sum -c - \
+    && tar xzf "nsd-${NSD_VERSION}.tar.gz" \
+    && cd "nsd-${NSD_VERSION}" \
+    && ./configure -q --prefix=/usr/local --sysconfdir=/etc --localstatedir=/var --with-user=root --disable-dnstap \
+    && make -s -j"$(nproc)" && make -s install DESTDIR=/out
+
+FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS nsd
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends libssl3t64 libevent-2.1-7t64 libexpat1 \
+    >/dev/null && rm -rf /var/lib/apt/lists/*
+COPY --from=nsd-build /out/usr/local /usr/local
+RUN nsd -v 2>&1 | head -1
+
+FROM ${KNOT_IMAGE} AS knot
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends faketime >/dev/null \
+    && rm -rf /var/lib/apt/lists/*

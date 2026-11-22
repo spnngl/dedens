@@ -31,6 +31,8 @@ odoh = ["responder", "dedens-net/odoh", "dep:dedens-odoh"]
 doc = ["responder", "dedens-net/doc"]
 # The captured resolutions of the recursive resolver and the servers replaying them (`recursion`, D188).
 recursion = ["dep:serde", "dep:serde-saphyr"]
+# The captures of the authoritative phase (D203): zones, reference answers and recorded exchanges, on serde too.
+authoritative = ["dep:serde", "dep:serde-saphyr"]
 
 [dev-dependencies]
 # The tool capturing the resolutions (`examples/capture_recursion.rs`, run by `just capture-recursion`).
@@ -42,10 +44,15 @@ dedens-roots.workspace = true
 name = "capture_recursion"
 required-features = ["recursion"]
 
+# The tool capturing the authoritative data (`examples/capture_authoritative/`, run by `just capture-authoritative`).
+[[example]]
+name = "capture_authoritative"
+required-features = ["authoritative"]
+
 [[test]]
 name = "tests"
 path = "tests/tests.rs"
-required-features = ["recursion"]
+required-features = ["recursion", "authoritative"]
 
 [lints]
 workspace = true

@@ -9,11 +9,15 @@
 //! certificates of the encrypted transports' tests, on `dedens-net`, compio and rcgen; `responder` adds the
 //! loopback server the tests of `dedens` and `dedensd` query, with the Anonymized `DNSCrypt` relay they go through, and
 //! `odoh` and `doc` its experimental transports. `recursion` adds the captured resolutions of the recursive resolver
-//! and the servers replaying them, on serde (D188).
+//! and the servers replaying them, on serde (D188); `authoritative` the captures of the authoritative phase (D203).
 
+#[cfg(feature = "authoritative")]
+pub mod authoritative;
 #[cfg(feature = "certificates")]
 pub mod certificates;
 pub mod dnssec;
+#[cfg(any(feature = "recursion", feature = "authoritative"))]
+mod fields;
 #[cfg(feature = "responder")]
 mod loopback;
 #[cfg(feature = "recursion")]
