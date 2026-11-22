@@ -84,7 +84,8 @@ impl fmt::Display for Base64<'_> {
 /// Decodes padded base64; `None` unless the length is a multiple of four, every byte is of the alphabet, padding
 /// only ends the text and the bits it leaves unused are zero, so that each byte string has one text
 /// (RFC 4648 section 3.5).
-pub(crate) fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
+#[must_use]
+pub fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
     let (groups, rest) = text.as_chunks::<4>();
     if !rest.is_empty() {
         return None;

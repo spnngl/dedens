@@ -179,6 +179,10 @@ code_type! {
     /// Non-existent name signalled by a compact denial of existence: a meta-TYPE that only appears in an NSEC
     /// type bitmap (RFC 9824 §2).
     NXNAME = 128, "NXNAME";
+    /// Transaction key establishment (RFC 2930): the type number only, its RDATA stays opaque.
+    TKEY = 249, "TKEY";
+    /// Transaction signature, the last record of a signed message (RFC 8945 §4.1).
+    TSIG = 250, "TSIG";
     /// Incremental zone transfer, QTYPE only (RFC 1995).
     IXFR = 251, "IXFR";
     /// Zone transfer, QTYPE only (RFC 1035 §3.2.3).
@@ -305,6 +309,22 @@ code_type! {
     BADCOOKIE = 23, "BADCOOKIE";
 }
 
+code_type! {
+    /// The Error field of a TSIG record (RFC 8945 §4.2, IANA "DNS RCODEs", "TSIG Error values"): the numbers the
+    /// message RCODE shares from 16 up, where 16 is BADSIG here and BADVERS in an OPT record.
+    TsigError(u16), "RCODE";
+    /// No TSIG error (RFC 8945 §4.2).
+    NOERROR = 0, "NOERROR";
+    /// The MAC does not verify (RFC 8945 §5.2.2).
+    BADSIG = 16, "BADSIG";
+    /// The key or its algorithm is not known (RFC 8945 §5.2.1).
+    BADKEY = 17, "BADKEY";
+    /// Time Signed is outside the interval the fudge allows (RFC 8945 §5.2.3).
+    BADTIME = 18, "BADTIME";
+    /// The MAC is truncated below what the local policy accepts (RFC 8945 §5.2.4).
+    BADTRUNC = 22, "BADTRUNC";
+}
+
 impl Default for Opcode {
     fn default() -> Self {
         Self::QUERY
@@ -358,6 +378,29 @@ mod tests {
             );
             assert_eq!(text.parse::<RecordType>(), Ok(code));
         }
+    }
+
+    #[test]
+    fn tsig_codes_have_their_registered_values() {
+        let errors = [
+            (TsigError::NOERROR, 0, "NOERROR"),
+            (TsigError::BADSIG, 16, "BADSIG"),
+            (TsigError::BADKEY, 17, "BADKEY"),
+            (TsigError::BADTIME, 18, "BADTIME"),
+            (TsigError::BADTRUNC, 22, "BADTRUNC"),
+        ];
+        for (code, value, text) in errors {
+            assert_eq!(
+                (u16::from(code), code.to_string()),
+                (value, text.to_owned())
+            );
+            assert_eq!(text.parse::<TsigError>(), Ok(code));
+        }
+        assert_eq!(TsigError(19).to_string(), "RCODE19");
+        assert_eq!(
+            (u16::from(RecordType::TKEY), u16::from(RecordType::TSIG)),
+            (249, 250)
+        );
     }
 
     #[test]
