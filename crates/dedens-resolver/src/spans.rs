@@ -11,6 +11,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasher, RandomState};
 use std::mem::size_of;
 use std::ops::Bound;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use dedens_dnssec::denial::{canonical_cmp, owner_hash};
@@ -103,6 +105,9 @@ impl Shard {
 pub(crate) struct Spans {
     shards: Box<[Mutex<Shard>]>,
     hasher: RandomState,
+    /// The zones the shards hold, so that a lookup in an empty index (a resolver that validates nothing) takes no
+    /// lock and makes no name: a hint, as a zone added meanwhile may be missed (D201).
+    zones: AtomicUsize,
     /// The bytes a shard may count.
     share: usize,
 }
@@ -113,6 +118,7 @@ impl Spans {
         Self {
             shards: (0..shards).map(|_| Mutex::default()).collect(),
             hasher: RandomState::new(),
+            zones: AtomicUsize::new(0),
             share: budget / shards.max(1),
         }
     }
@@ -178,6 +184,7 @@ impl Spans {
         let touched = shard.tick();
         let indexed = shard.zones.entry(apex.clone()).or_insert_with(|| {
             shard.used += overhead;
+            self.zones.fetch_add(1, Relaxed);
             Indexed {
                 zone: fresh(),
                 used: overhead,
@@ -204,6 +211,7 @@ impl Spans {
                 Some(oldest) if oldest != *apex => {
                     if let Some(gone) = shard.zones.remove(&oldest) {
                         shard.used -= gone.used;
+                        self.zones.fetch_sub(1, Relaxed);
                     }
                 }
                 _ => {
@@ -251,6 +259,9 @@ impl Spans {
     /// The deepest zone `name` is within that the index holds, with how it is chained. The zone found is the most
     /// recently used.
     pub(crate) fn zone_of(&self, name: &Name<'_>) -> Option<(Name<'static>, Chain)> {
+        if self.zones.load(Relaxed) == 0 {
+            return None;
+        }
         (0..=name.label_count()).find_map(|skip| {
             let apex = Name::from_labels(name.labels().skip(skip)).ok()?;
             let mut shard = lock(self.shard(&apex));
