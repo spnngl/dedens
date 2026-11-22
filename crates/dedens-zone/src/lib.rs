@@ -18,8 +18,8 @@ mod node;
 mod reply;
 mod zone;
 
-pub use changeset::{Changeset, ChangesetError};
 pub use answer::{Answer, End, Entry, Link, MAX_CHAIN, Match};
+pub use changeset::{Changeset, ChangesetError};
 pub use error::{Bound, ErrorKind, Place, Report, Warning, WarningKind, ZoneError};
 pub use limits::Limits;
 pub use load::{Include, Loaded, Source};

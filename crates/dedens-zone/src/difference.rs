@@ -30,7 +30,7 @@ impl Zone {
             removed: &mut removed,
             added: &mut added,
         };
-        for (name, old_node, new_node) in merge(old.nodes.iter(), new.nodes.iter()) {
+        for (name, old_node, new_node) in merge(old.nodes(), new.nodes()) {
             let (old_sets, old_signatures) = sets_of(old_node);
             let (new_sets, new_signatures) = sets_of(new_node);
             for (rtype, o, n) in merge(pairs(old_sets), pairs(new_sets)) {
