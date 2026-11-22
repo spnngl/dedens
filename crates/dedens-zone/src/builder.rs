@@ -328,7 +328,13 @@ impl<'l> Builder<'l> {
                     self.limit(None, Bound::Names);
                 }
                 let ent = name.ancestor(depth);
-                self.place(&mut nodes, &mut delegations, &mut cut, ent, Pending::default());
+                self.place(
+                    &mut nodes,
+                    &mut delegations,
+                    &mut cut,
+                    ent,
+                    Pending::default(),
+                );
             }
             self.place(&mut nodes, &mut delegations, &mut cut, name, pending);
         }

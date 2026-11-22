@@ -45,9 +45,20 @@ fn the_loader_keeps_the_records_the_reader_yields() {
         text: text.as_bytes(),
         default_ttl: None,
     };
-    let loaded = Zone::load(origin, source, &mut |_| Err(String::new()), &Limits::default())
-        .expect("loads");
+    let loaded = Zone::load(
+        origin,
+        source,
+        &mut |_| Err(String::new()),
+        &Limits::default(),
+    )
+    .expect("loads");
     assert_eq!(loaded.zone.record_count(), read);
     // Each owner-less record after a record with its own TTL is an `RRset` of two TTLs: a warning, not an error.
-    assert!(loaded.report.warnings.iter().all(|w| matches!(w.kind, WarningKind::DifferentTtls { .. })));
+    assert!(
+        loaded
+            .report
+            .warnings
+            .iter()
+            .all(|w| matches!(w.kind, WarningKind::DifferentTtls { .. }))
+    );
 }

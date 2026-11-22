@@ -67,7 +67,10 @@ fn whole(zone: &Zone, apex: &Name<'static>) {
         assert!(name.is_within(apex), "{name} outside {apex}");
         assert!(previous.is_none_or(|p| p < name), "{name} out of order");
         previous = Some(name);
-        let sets = node.rrsets().map(|(_, set)| set).chain(node.signature_sets());
+        let sets = node
+            .rrsets()
+            .map(|(_, set)| set)
+            .chain(node.signature_sets());
         let mut held = 0;
         for set in sets {
             assert!(!set.rdatas().is_empty(), "an empty RRset at {name}");
@@ -88,7 +91,12 @@ fn whole(zone: &Zone, apex: &Name<'static>) {
             }
             parent = p.parent();
         }
-        assert_eq!(node.kind() == Kind::Occluded, cut, "{name} is {:?}", node.kind());
+        assert_eq!(
+            node.kind() == Kind::Occluded,
+            cut,
+            "{name} is {:?}",
+            node.kind()
+        );
     }
     assert_eq!(records, zone.record_count());
 }

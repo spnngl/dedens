@@ -159,10 +159,7 @@ fn nsec_spanned(response: &Message<'_>, exclude: &str) -> String {
         .map(|n| format!("dedens-{n}.{apex}"))
         .find(|text| {
             let at = name(text);
-            text != exclude
-                && spans.iter().any(|(owner, next)| {
-                    owner < &at && &at < next
-                })
+            text != exclude && spans.iter().any(|(owner, next)| owner < &at && &at < next)
         })
         .expect("a name in a span")
 }
