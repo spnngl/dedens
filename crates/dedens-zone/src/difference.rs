@@ -21,12 +21,9 @@ impl Zone {
     ///
     /// # Errors
     ///
-    /// [`ChangesetError::DifferentZone`] when the apex or the class differs, and the errors of
-    /// [`Changeset::new`]: `new`'s serial must be ahead of `old`'s.
+    /// The errors of [`Changeset::new`]: [`ChangesetError::DifferentZone`] when the apex or the class differs (after
+    /// the walk of both), and `new`'s serial must be ahead of `old`'s.
     pub fn diff(old: &Self, new: &Self) -> Result<Changeset, ChangesetError> {
-        if old.apex != new.apex || old.class != new.class {
-            return Err(ChangesetError::DifferentZone);
-        }
         let (mut removed, mut added) = (Vec::new(), Vec::new());
         let mut sink = Sink {
             class: old.class,
