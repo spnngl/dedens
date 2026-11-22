@@ -333,11 +333,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Equal caches in `recurse` (D201): `dedensd`'s default RRset cache is 128 MiB, Unbound's 4 MiB (message cache 4
   MiB too), so a million unique names fill one and not the other (128 and 20 MiB loaded at 3 cores); `dedensd-8mib`
   runs both small, as shipped is the default. Default: report both, as D183 reports `dedensd-8mib`.
-- A host without IPv6 and the holds of RFC 9520 (D199): on a host booted with `ipv6.disable=1`, binding `[::]` fails
-  with EAFNOSUPPORT, which is a `LocalError::Bind` that never reaches the infra cache, so IPv6 servers are tried
-  again and again and almost every resolution sets `Resolution::failed_here`: no failure is held, which turns
-  the storm protection off in effect. Default: treat an address-family error as the server unreachable (it is
-  recorded, and IPv4 servers are preferred from then on), or add an address-family switch, as Unbound's `do-ip6`.
 
 ## Authoritative answers
 

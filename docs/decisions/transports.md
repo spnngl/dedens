@@ -893,7 +893,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     memory, `docs/TODECIDE.md`), the decapsulation budgets as settings (`docs/TODECIDE.md`), and the network-change
     rule of the ticket (above). Reviewer: the choice of the KEM crate, the ticket and control-field parsing and
     the order a resumed query is checked are the places a mistake would matter.
-- D190 (amends D27; builds on D31, D47, D50, D108, D184; amended by D196, D197) The client's authoritative mode
+- D190 (amends D27; builds on D31, D47, D50, D108, D184; amended by D196, D197, D199) The client's authoritative mode
   (`dedens_net::authoritative::Authoritative`, per thread), for the recursive resolver: one query to one of the
   thousands of servers it asks, with RFC 5452's defences and bounded resources.
   - Ports (RFC 5452 §9.2, §10): each query over UDP binds a socket of its own to a port drawn by `Io::random` from
@@ -985,8 +985,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `ServerError::Unreachable`. Any error of the wait for the socket to be readable is ours: an error on the
     socket makes it readable and fails the receive, so the wait failing is its registration, ENOMEM or ENOSPC.
     A query too long for TCP is ours, `LocalError::TooLong`.
+  - A host without the server's address family (a host booted with `ipv6.disable=1` binding `[::]`: EAFNOSUPPORT;
+    EADDRNOTAVAIL on a bind or a connect, no address of that family to send from) cannot reach the server, as with
+    no route: `ServerError::Unreachable { sends: 0 }`, not `LocalError::Bind`, and not ours (`authoritative::no_family`,
+    checked beside `local_io` for a TCP or UDP connect; the stub client's `is_local` keeps EADDRNOTAVAIL ours). The infra cache then records the server as
+    unreachable and IPv4 servers are preferred, and no `Resolution::failed_here`, so RFC 9520's holds go on (D194,
+    D199). The bind is not drawn again: no port would do better. The other bind errors stay `LocalError::Bind`.
   - Errors: `AuthoritativeError::Local` (randomness, no socket or TCP connection free before the deadline, a
-    bind, a socket error of ours, the encoding) is not the server's fault, `AuthoritativeError::Server` (timeout,
+    bind but of the server's family missing, a socket error of ours, the encoding) is not the server's fault, `AuthoritativeError::Server` (timeout,
     forged responses, unreachable, a TCP failure) is: the caller's server selection counts the second only.
   - What a server shows, `Quirks { edns, no_case, tcp }`, goes back in `Answer` and comes in with the next query:
     the infra cache keeps it, and its marks expire with its entry; nothing here remembers a server. Counters of
@@ -1005,7 +1011,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     after NOERROR, kept for a server known to do it; TC to TCP unmarked, BADCOOKIE twice marked; 4 sockets of 4
     for 16 queries, a socket wait ending at the deadline, a wait for a socket or a TCP connection leaving less than `SERVER_FLOOR` ours, a dropped query giving its socket
     back; a TCP query waiting for the connection of 1; a deadline past the 5 s an exchange waits by default kept;
-    a send, a receive, a UDP or a TCP connect failing the server's, but for want of ours.
+    a send, a receive, a UDP or a TCP connect failing the server's, but for want of ours; a bind or a connect
+    failing for want of the address family (EAFNOSUPPORT, EADDRNOTAVAIL) the server's, the bind not drawn again.
     `tests/tcp.rs`: a replaced connection counted until it closes, a query timing out short of `STALLED` keeping
     its connection, short timeouts one after the other closing a silent one, a response after the oldest query
     unanswered keeping it, waiters taking room in the order they came, a retired connection closing during a hand-off waking the line again.

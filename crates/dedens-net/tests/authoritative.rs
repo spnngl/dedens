@@ -229,6 +229,8 @@ struct Seen {
     most: usize,
     /// The errors the next binds fail with, in order, before any socket is bound: a port another program holds.
     failing: Vec<io::ErrorKind>,
+    /// The system errors the next binds fail with, in order, after `failing`: the address family a host lacks.
+    failing_errno: Vec<Errno>,
     /// The binds tried, failed ones included.
     binds: usize,
     /// The errors the next receives on a socket fail with, in order, before any datagram is read.
@@ -314,6 +316,9 @@ impl Io for Watched {
             seen.binds += 1;
             if !seen.failing.is_empty() {
                 return Err(seen.failing.remove(0).into());
+            }
+            if !seen.failing_errno.is_empty() {
+                return Err(seen.failing_errno.remove(0).into());
             }
         }
         let udp = Compio.udp_bind(addr).await?;
@@ -683,6 +688,62 @@ async fn a_port_taken_is_drawn_again() {
         );
         assert_eq!(seen.borrow().binds, binds);
     }
+}
+
+/// A host without the address family of the server (D199) cannot bind, or connect to, an address of it, as no IPv6
+/// socket on a host without IPv6: the server is unreachable, no query sent, and nothing of ours failed.
+#[compio::test]
+async fn a_host_without_the_address_family_makes_the_server_unreachable() {
+    let addr = silent();
+    let (client, seen) = client(Limits::default());
+    let tcp = Quirks {
+        tcp: true,
+        ..Quirks::default()
+    };
+    for errno in [None, Some(Errno::AFNOSUPPORT)] {
+        {
+            let mut watched = seen.borrow_mut();
+            watched.binds = 0;
+            match errno {
+                Some(errno) => watched.failing_errno = vec![errno],
+                None => watched.failing = vec![io::ErrorKind::AddrNotAvailable],
+            }
+        }
+        let failed = client
+            .query(google(), addr, Quirks::default(), deadline())
+            .await;
+        assert!(
+            matches!(
+                &failed,
+                Err(AuthoritativeError::Server(ServerError::Unreachable {
+                    sends: 0,
+                    ..
+                }))
+            ),
+            "{failed:?}"
+        );
+        assert_eq!(seen.borrow().binds, 1, "not drawn again");
+    }
+    seen.borrow_mut().connect_errors = vec![io::ErrorKind::AddrNotAvailable; 2];
+    let failed = client.query(google(), addr, tcp, deadline()).await;
+    assert!(
+        matches!(&failed, Err(AuthoritativeError::Server(ServerError::Tcp(TcpError::Connect(error)))) if error.kind() == io::ErrorKind::AddrNotAvailable),
+        "{failed:?}"
+    );
+    seen.borrow_mut().connect_errors = vec![io::ErrorKind::AddrNotAvailable];
+    let failed = client
+        .query(google(), addr, Quirks::default(), deadline())
+        .await;
+    assert!(
+        matches!(
+            &failed,
+            Err(AuthoritativeError::Server(ServerError::Unreachable {
+                sends: 0,
+                kind: io::ErrorKind::AddrNotAvailable
+            }))
+        ),
+        "{failed:?}"
+    );
 }
 
 /// An ICMP error, which a forger knowing the port can send, does not end the query: a closed port is waited on

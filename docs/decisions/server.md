@@ -1748,7 +1748,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `Vec`s' capacity is not the bytes the budget sees, and it would make the cache depend on the validator); the
     RFC's three-way tie (glue would replace an authoritative additional section); zone-data ranks (no zones); a
     public `Rank::of(section, authoritative)` (an answer's section and AA do not rank it alone).
-- D194 (builds on D116, D193) The recursive resolver's infra cache, `dedens_resolver::InfraCache` (recursive
+- D194 (amended by D199; builds on D116, D193) The recursive resolver's infra cache, `dedens_resolver::InfraCache` (recursive
   step 07): what the resolver knows of each authoritative server, and which one to ask next.
   - Per server address (IP and port): the round-trip time smoothed per RFC 6298 §2 (SRTT, RTTVAR, RTO = SRTT +
     4 RTTVAR, in ms), the timeouts in a row, the time of its next probe and its marks (`Marks`): EDNS
@@ -1757,7 +1757,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (lowered, RFC 4343): lameness, with its own expiry. Unbound keys everything by (address, zone)
     (`services/cache/infra.c` `infra_lookup_nottl`); a server's time and marks are its own, so they are kept once whatever zones it serves, and
     only lameness, which is per zone (RFC 4697 §2.2.1), is keyed by zone. Cookies stay in the transport's jar
-    (recursive step 03, per source and server, RFC 7873 §4.1), not here.
+    (recursive step 03, per source and server, RFC 7873 §4.1), not here. A server the host has no address family
+    for (IPv6 on a host without it) is a server unreachable like any: its failed query is a timeout here, so the
+    server backs off and IPv4 ones are asked first (D199, D190).
   - Numbers, each an associated constant of `InfraCache`, against Unbound (and BIND where it differs):
     `UNKNOWN_TIMEOUT` 376 ms, Unbound's `UNKNOWN_SERVER_NICENESS` (`iterator/iterator.c`, RFC 6298 §2.1 says 1 s);
     `MIN_TIMEOUT` 50 ms, Unbound's `RTT_MIN_TIMEOUT` (`util/rtt.c`, RFC 6298 §2.4 says 1 s: a DNS answer is no TCP
@@ -2105,7 +2107,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: strict by default (RFC 9156 §1 reports relaxed causes almost no failures, strict some); a bound per
     zone (the per-name count with `Limits::queries` bounds the whole); `Limits` fields for the counts (RFC 9156
     and Unbound fix them; nobody tunes them).
-- D199 (amends D193, D195, D198; builds on D22, D74, D77, D124, D191, D197) The recursive resolver caches negative
+- D199 (amends D190, D193, D194, D195, D198; builds on D22, D74, D77, D124, D191, D197) The recursive resolver caches negative
   answers and resolution failures (recursive step 12): RFC 2308 §5, RFC 8020 §2, RFC 8198 §4-§5, RFC 9520 §3.2.
   - Entries. `Entry` of D193 gains two variants in the same `Store`, so the byte budget (D116) and the eviction
     stay one. `Absent`: the SOA and the denial records (NSEC, NSEC3) of one negative answer, their ranks, the
@@ -2196,7 +2198,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     servers: a limit is the question's own, and a bogus answer is asked again of other servers (D197). Nor is a
     failure after an exchange failed on our side (`Reply::LocalError`: a send error, no sign of the servers failing;
     `Resolution::failed_here`, set in an address lookup too: the servers of a zone whose addresses were not found
-    were never heard failing). An ICMP unreachable (`Reply::Unreachable`) may hold, as §3.2 allows: a spoofed one
+    were never heard failing). A host without IPv6 (`ipv6.disable=1`: EAFNOSUPPORT binding `[::]`, EADDRNOTAVAIL) is not
+    a local failure: the transport tells it `ServerError::Unreachable { sends: 0 }` (D190), the infra cache backs the
+    server off (D194), IPv4 servers are preferred from then on and `failed_here` stays unset, so the holds work. Unbound
+    has `do-ip6: no` for it; here no switch, the host tells. An ICMP unreachable (`Reply::Unreachable`) may hold, as §3.2 allows: a spoofed one
     can make a resolver hold a set for up to `failure_max`, a cost the RFC accepts. A hold
     that would outlast `failure_max` (a clock gone back) is no hold, as in the response cache. The
     server set is part of the key so that a delegation that changed, or another name's servers, is asked. Unbound
