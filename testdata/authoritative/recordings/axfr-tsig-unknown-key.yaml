@@ -1,0 +1,17 @@
+description: "AXFR signed with a key the server does not know: BADKEY (RFC 8945 §5.3.1)"
+server: knotd, Knot DNS 3.6.2
+captured_at: 1795374274
+zone: zonetransfer.me.
+key: dedens-unknown-key
+messages:
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: client
+  message: >-
+    9NUBIAABAAAAAAACDHpvbmV0cmFuc2ZlcgJtZQAA/AABAAApBNAAAAAAAAASZGVkZW5zLXVua25vd24ta2V5AAD6AP8AAAAAAD0LaG1hYy1zaGEyNTYAAABrAzzEASwAIMxuO2wQvC8vMdXddbZ8wQpogyWznX1C6MKns0V7ZSMy9NUAAAAA
+- at_ms: 1
+  transport: tcp
+  connection: 1
+  from: server
+  message: 9NWBCQABAAAAAAABDHpvbmV0cmFuc2ZlcgJtZQAA/AABAAApBNAAAAAAAAA=
