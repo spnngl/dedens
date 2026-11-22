@@ -556,6 +556,27 @@ fn a_path_that_cannot_be_read_is_an_error_and_a_missing_one_is_a_new_journal() {
     ));
 }
 
+/// A file that cannot be read is not a new journal to write over: the error is the caller'"'"'s and the file stays.
+#[cfg(unix)]
+#[test]
+fn a_file_that_is_not_readable_is_an_error_and_is_left() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, path) = directory();
+    let content = file_of(&chain()).0;
+    fs::write(&path, &content).expect("writes");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("chmod");
+    if fs::read(&path).is_ok() {
+        return; // root reads it anyway: nothing to show
+    }
+    assert!(matches!(
+        Journal::open(&path, JournalLimits::default()),
+        Err(JournalError::Io(e)) if e.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+    assert_eq!(fs::read(&path).expect("the file"), content);
+}
+
 /// The bound is on the size: a file of exactly [`MAX_FILE`] bytes is read (and is no journal), one longer says
 /// how long it is.
 #[test]
