@@ -932,6 +932,21 @@ IP addresses, whose byte parser (`parse_ascii`) is not stable yet. Scanning toke
 `u64` (bit tricks, no `unsafe`) instead of the byte table was 9% slower (9.05 → 9.9 ms): most tokens are
 shorter than 8 bytes, so the word test only adds work before the byte loop.
 
+### Loading a zone (D204)
+
+`load_dedens` in the same bench: the generated zone of 100 000 records through `Zone::load` (the reader, every record
+checked and filed under its name and `RRset`, the empty non-terminals and cuts found, the map built). On a loaded
+machine, `read_dedens` beside it at 9.9-27 ms (median 15.6): the load 76-151 ms (median 110), 7 times the reading.
+Peak memory 47 MB (`max alloc` of the allocation profiler: 297 000 live allocations), 63 MB allocated in all.
+
+- The first version took 1.05 s (0.6-4 s): 60% of the profile was `Name`'s `Ord`, which filled two buffers of
+  `MAX_LABELS` (127) label slots, 2 KB, for each comparison, 5 million of them in `BTreeMap` lookups. Buffers of 8
+  labels for names of up to 8 (the rest take the large ones), with equal labels passing by `memcmp` alone: 222 ms.
+- Finding the empty non-terminals by what a name shares with the one before it in canonical order, instead of
+  looking each ancestor up twice, and building the final map from the sorted nodes in one pass: 222 → 110 ms.
+- Left: the one `BTreeMap` lookup per record, and its comparisons. A map keyed by hash would drop them but sort at
+  the end; not tried: the load runs once per zone version.
+
 ## DNSSEC crypto (D71)
 
 `benches/dnssec.rs`, one call on the RFC example each (`ring`; keys of 1024 bits where RSA's size is not said).

@@ -31,6 +31,8 @@ dedens-proto.workspace = true
 dedens-resolver.workspace = true
 dedens-roots.workspace = true
 dedens-server.workspace = true
+# The loading of the zone of `benches/zone.rs`.
+dedens-zone.workspace = true
 divan.workspace = true
 http.workspace = true
 # Zone file readers, for `benches/zone.rs`.
