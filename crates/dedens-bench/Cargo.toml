@@ -31,8 +31,6 @@ dedens-proto.workspace = true
 dedens-resolver.workspace = true
 dedens-roots.workspace = true
 dedens-server.workspace = true
-# The loading of the zone of `benches/zone.rs`.
-dedens-zone.workspace = true
 divan.workspace = true
 http.workspace = true
 # Zone file readers, for `benches/zone.rs`.
@@ -45,6 +43,8 @@ rand_core.workspace = true
 [dev-dependencies]
 # The shared test data (D161); `recursion`, the captured resolutions of `benches/scrub.rs`.
 dedens-testkit = { workspace = true, features = ["recursion"] }
+# The loading of the zone of `benches/zone.rs`.
+dedens-zone.workspace = true
 
 [[bench]]
 name = "message"
