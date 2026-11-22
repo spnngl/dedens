@@ -7,10 +7,11 @@
 use std::collections::BTreeSet;
 use std::fs;
 
+use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Header, Message, Opcode, Record, RecordType, Ttl};
 use dedens_testkit::authoritative::{Answers, QUERY_ID, Reference, Server, Transport};
 use dedens_testkit::{message, path};
-use dedens_zone::{Include, Limits, Source, Zone};
+use dedens_zone::{Include, Kind, Limits, Source, Zone};
 
 /// The zones whose answers carry no DNSSEC records: with DO they are compared too.
 const UNSIGNED: [&str; 2] = ["rfc1035_isi", "zonetransfer.me"];
@@ -73,29 +74,81 @@ fn respond(zone: &Zone, reference: &Reference, limit: usize) -> Vec<u8> {
     buf
 }
 
-/// The records of a section as lines, in a set: the order of a section is not compared (D203).
-fn lines(section: &[Record<'static>]) -> BTreeSet<String> {
-    section.iter().map(ToString::to_string).collect()
+/// The records of a section as compared (D203): each with its owner as the server wrote it, in lower case for
+/// NSD. The record itself compares its names, in the owner and in RDATA, ASCII case-insensitively (RFC 4343),
+/// and its strings as they are. Which are in a section is compared, not their order.
+type Rows<'a> = Vec<(String, &'a Record<'static>)>;
+
+fn rows<'a>(server: Server, records: impl IntoIterator<Item = &'a Record<'static>>) -> Rows<'a> {
+    records
+        .into_iter()
+        .map(|record| {
+            let owner = record.name.to_string();
+            let owner = if server == Server::Nsd {
+                owner.to_ascii_lowercase()
+            } else {
+                owner
+            };
+            (owner, record)
+        })
+        .collect()
 }
 
-/// The type of a line of [`lines`].
-fn rtype(line: &str) -> &str {
-    line.split('\t').nth(3).unwrap_or("")
+/// Whether every row of `a` is in `b`.
+fn subset(a: &Rows<'_>, b: &Rows<'_>) -> bool {
+    a.iter().all(|row| b.contains(row))
+}
+
+/// Whether the two sections hold the same rows.
+fn same(a: &Rows<'_>, b: &Rows<'_>) -> bool {
+    subset(a, b) && subset(b, a)
+}
+
+/// The rows as lines, for the message of a failed assertion.
+fn show(rows: &Rows<'_>) -> BTreeSet<String> {
+    rows.iter()
+        .map(|(owner, record)| format!("{owner} {record}"))
+        .collect()
+}
+
+/// The size a response is held to: the limit of its transport and of the EDNS size it was asked with, 512
+/// without (RFC 6891 §6.2.3, which takes a smaller size as 512).
+fn limit(reference: &Reference) -> usize {
+    match reference.transport {
+        Transport::Tcp => usize::from(u16::MAX),
+        Transport::Udp => usize::from(reference.edns_size.unwrap_or(512).max(512)),
+    }
 }
 
 fn fits(reference: &Reference, wire: &[u8]) -> bool {
-    reference.transport == Transport::Tcp
-        || wire.len() <= usize::from(reference.edns_size.unwrap_or(512))
+    wire.len() <= limit(reference)
 }
 
-/// Compares `ours` with what `server` sent, `theirs`, as D203 says.
-fn compare(id: &str, server: Server, apex: &str, reference: &Reference, ours: &[u8], full: &[u8]) {
+/// The records of `section` a response gives: not those of names below a delegation point or a DNAME owner in
+/// an answer, which dedens leaves out where Knot gives them, optional (D206). A referral has them as glue.
+fn given<'a>(
+    zone: &Zone,
+    referral: bool,
+    section: &'a [Record<'static>],
+) -> impl Iterator<Item = &'a Record<'static>> {
+    section.iter().filter(move |record| {
+        referral
+            || zone
+                .node(&record.name)
+                .is_none_or(|node| node.kind() != Kind::Occluded)
+    })
+}
+
+/// Compares `ours` with what `server` sent, `theirs`, as D203 says; `full` is ours without a limit.
+fn compare(id: &str, server: Server, zone: &Zone, reference: &Reference, ours: &[u8], full: &[u8]) {
     let theirs = &reference.responses[&server];
     let key = format!(
         "{id} {server} {} {} {:?} DO={}",
         reference.name, reference.rtype, reference.edns_size, reference.dnssec_ok
     );
     let (mine, other) = (message(ours), message(theirs));
+    assert_eq!(mine.rcode(), other.rcode(), "{key}");
+    assert_eq!(mine.edns.is_some(), other.edns.is_some(), "{key}");
     let (mut a, mut b) = (mine.header.flags, other.header.flags);
     if a.contains(Flags::TC) || b.contains(Flags::TC) {
         // A response truncated on either side is compared on TC alone, and the other must fit (D203).
@@ -113,65 +166,75 @@ fn compare(id: &str, server: Server, apex: &str, reference: &Reference, ours: &[
         return;
     }
     assert_eq!(a, b, "{key}");
-    assert_eq!(mine.rcode(), other.rcode(), "{key}");
-    assert_eq!(mine.edns.is_some(), other.edns.is_some(), "{key}");
+    // An authority section with an NS record is a referral: ours has none else.
+    let referral = mine.authority.iter().any(|r| r.rtype() == RecordType::NS);
+    let (answer, authority) = (rows(server, &mine.answer), rows(server, &mine.authority));
+    let (their_answer, mut their_authority) =
+        (rows(server, &other.answer), rows(server, &other.authority));
+    // The name servers of the apex NS NSD adds to a positive answer, whose addresses it adds too.
+    let mut apex_servers = Vec::new();
+    if server == Server::Nsd {
+        // NSD's own choice (D203): the apex NS in the authority of a positive answer.
+        their_authority.retain(|(owner, record)| {
+            let apex_ns = record.rtype() == RecordType::NS
+                && *owner == zone.apex().to_string().to_ascii_lowercase()
+                && !mine.answer.is_empty();
+            if let (true, RData::Ns(server)) = (apex_ns, record.data()) {
+                apex_servers.push(server.into_owned());
+            }
+            !apex_ns
+        });
+    }
     if reference.rtype == RecordType::ANY && server == Server::Nsd {
         // D203: which RRset answers ANY is the server's; ours is the lowest type, one of them (RFC 8482 §4.2).
-        let types: BTreeSet<RecordType> = mine.answer.iter().map(Record::rtype).collect();
-        assert!(types.len() <= 1, "{key}");
+        assert_eq!(answer.is_empty(), their_answer.is_empty(), "{key}: answer");
+        if !their_answer.is_empty() {
+            let types: BTreeSet<RecordType> = mine.answer.iter().map(Record::rtype).collect();
+            assert_eq!(types.len(), 1, "{key}");
+        }
+        assert!(
+            same(&authority, &their_authority),
+            "{key}: authority {:?} {:?}",
+            show(&authority),
+            show(&their_authority)
+        );
         return;
     }
-    // Both servers write the names inside RDATA in lower case, NSD the owners too: the owners are compared as
-    // each wrote them, so a name asked in another case than the zone's is answered in the case asked (RFC 4343
-    // §4.1, D206).
-    let fold = |set: BTreeSet<String>| -> BTreeSet<String> {
-        set.into_iter()
-            .map(|line| {
-                let at = line.match_indices('\t').nth(3).map_or(0, |(at, _)| at);
-                let (head, rdata) = line.split_at(at);
-                let head = if server == Server::Nsd {
-                    head.to_ascii_lowercase()
-                } else {
-                    head.to_owned()
-                };
-                head + &rdata.to_ascii_lowercase()
-            })
-            .collect()
-    };
-    assert_eq!(
-        fold(lines(&mine.answer)),
-        fold(lines(&other.answer)),
-        "{key}: answer"
+    assert!(
+        same(&answer, &their_answer),
+        "{key}: answer {:?} {:?}",
+        show(&answer),
+        show(&their_answer)
     );
-    let (mut authority, mut extra) = (
-        fold(lines(&other.authority)),
-        fold(lines(&other.additional)),
+    assert!(
+        same(&authority, &their_authority),
+        "{key}: authority {:?} {:?}",
+        show(&authority),
+        show(&their_authority)
     );
-    if server == Server::Nsd {
-        // NSD's own choices (D203): the apex NS in the authority of a positive answer, fewer addresses.
-        let apex = apex.to_ascii_lowercase();
-        authority.retain(|l| {
-            !(rtype(l).eq_ignore_ascii_case("NS")
-                && l.starts_with(&apex)
-                && !mine.answer.is_empty())
-        });
-        extra = fold(lines(&mine.additional));
-    }
-    assert_eq!(fold(lines(&mine.authority)), authority, "{key}: authority");
-    let additional = fold(lines(&mine.additional));
-    if additional != fold(lines(&message(full).additional)) || extra != additional {
+    let additional = rows(server, &mine.additional);
+    let whole_message = message(full);
+    let whole = rows(server, &whole_message.additional);
+    let their_additional = rows(
+        server,
+        given(zone, referral, &other.additional).filter(|r| !apex_servers.contains(&r.name)),
+    );
+    let outcome = if server == Server::Nsd {
+        // NSD gives fewer addresses (D203): what it gives is part of the whole.
+        subset(&their_additional, &whole)
+    } else if same(&additional, &whole) {
+        same(&additional, &their_additional)
+    } else {
         // Past the limit the additional section is cut where the server decides (D203): what each keeps is
         // part of the whole.
-        let whole = fold(lines(&message(full).additional));
-        if additional != whole {
-            assert!(
-                additional.is_subset(&whole) && extra.is_subset(&whole),
-                "{key}: additional"
-            );
-            return;
-        }
-    }
-    assert_eq!(additional, extra, "{key}: additional");
+        subset(&additional, &whole) && subset(&their_additional, &whole)
+    };
+    assert!(
+        outcome,
+        "{key}: additional {:?} {:?}",
+        show(&additional),
+        show(&their_additional)
+    );
 }
 
 #[test]
@@ -180,7 +243,6 @@ fn every_captured_answer_is_the_one_of_knot_by_the_rules_of_d203() {
     for id in Answers::ids() {
         let answers = Answers::read(&id);
         let zone = load(&answers);
-        let apex = answers.zone.to_string();
         let unsigned = UNSIGNED.contains(&id.as_str());
         for reference in &answers.answers {
             if reference.dnssec_ok && !unsigned {
@@ -191,13 +253,9 @@ fn every_captured_answer_is_the_one_of_knot_by_the_rules_of_d203() {
             } else {
                 Server::Nsd
             };
-            let limit = match reference.transport {
-                Transport::Tcp => usize::from(u16::MAX),
-                Transport::Udp => usize::from(reference.edns_size.unwrap_or(512).max(512)),
-            };
             let full = respond(&zone, reference, usize::from(u16::MAX));
-            let ours = respond(&zone, reference, limit);
-            compare(&id, server, &apex, reference, &ours, &full);
+            let ours = respond(&zone, reference, limit(reference));
+            compare(&id, server, &zone, reference, &ours, &full);
             compared += 1;
         }
     }

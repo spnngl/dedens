@@ -4,7 +4,7 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{EncodeError, Flags, Message, Name, Record, RecordType, Ttl, WireRdata};
 
 use crate::answer::{Answer, End, Link};
-use crate::{RrSet, Zone};
+use crate::{Kind, RrSet, Zone};
 
 /// The bit of the header's flags word that is TC, in its first byte at offset 2.
 const TC_BYTE: u8 = 0x02;
@@ -31,6 +31,8 @@ impl Glue {
     ///
     /// As [`Message::encode_truncated`].
     pub fn encode(self, message: &Message<'_>, buf: &mut [u8]) -> Result<usize, EncodeError> {
+        // `fill` writes the required glue first into an additional section it found empty.
+        debug_assert!(self.required <= message.additional.len());
         let encoded = message.encode_truncated(buf)?;
         let kept = message.additional.len().saturating_sub(encoded.dropped);
         if !encoded.truncated
@@ -50,8 +52,10 @@ impl Answer<'_> {
     ///
     /// The additional section holds the addresses of the name servers, mail exchanges and service hosts of the
     /// answer that the zone has, A before AAAA, and for a referral first those of name servers at or below the
-    /// delegation point, the glue it needs (RFC 9471 §2, §3.1); a name asked for is never resolved there
-    /// (RFC 2181 §10.3).
+    /// delegation point, the glue it needs (RFC 9471 §2, §3.1). No alias is followed: the target of an NS or MX
+    /// record must not be one (RFC 2181 §10.3). The additional section of `message` must be empty. An answer takes
+    /// addresses of authoritative names only: not data below a delegation point, which only a referral gives as
+    /// glue, nor below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4).
     pub fn fill<'m>(&'m self, zone: &'m Zone, message: &mut Message<'m>) -> Glue {
         let class = zone.class();
         if self.authoritative() {
@@ -164,13 +168,17 @@ fn additional<'m>(
             if pass.is_some_and(|wanted| wanted != below) {
                 continue;
             }
-            let Some(node) = zone.node(&host) else {
+            let Some(node) = zone
+                .node(&host)
+                .filter(|node| cut.is_some() || node.kind() == Kind::Authoritative)
+            else {
                 continue;
             };
             for rtype in [RecordType::A, RecordType::AAAA] {
                 let Some(set) = node.rrset(rtype) else {
                     continue;
                 };
+                // Quadratic in the hosts, which the `RRset`s bound (D206).
                 if out.iter().any(|r| r.rtype() == rtype && r.name == host) {
                     continue;
                 }

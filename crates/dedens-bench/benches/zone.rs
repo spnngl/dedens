@@ -95,10 +95,15 @@ fn loaded(origin: Name<'static>, text: &str) -> Zone {
     .zone
 }
 
-/// The generated zone with a wildcard.
+/// `d DNAME b.d.example.` in the generic form (RFC 3597 §5) the loader reads it in: a target below its own owner,
+/// which makes each name it leads to one label longer.
+const GROWING_DNAME: &str = "d DNAME \\# 13 01620164076578616d706c6500\n";
+
+/// The generated zone with a wildcard and a DNAME that grows names.
 fn answered_zone() -> Zone {
     let mut text = zone(ZONE_HOSTS);
     text.push_str("*.wild TXT \"wildcard\"\n");
+    text.push_str(GROWING_DNAME);
     let origin = Name::from_labels([b"example".as_slice()]).expect("a name");
     loaded(origin, &text)
 }
@@ -130,12 +135,29 @@ const WILD: &str = "anything.wild.example.";
 const ALIAS: &str = "www.h4002.example.";
 const REFERRAL: &str = "www.example.com.";
 const ROOT_MISSING: &str = "nothing.invalid.";
+/// The longest name under `example.`, 122 labels, that is not there: the closest encloser is the apex.
+const LONG: &str = "long";
+/// 100 labels below `d.example.`: the DNAME makes it 11 links of a name one label longer each.
+const GROWTH: &str = "growth";
+/// The longest name of all, 127 labels, under the root zone.
+const ROOT_LONG: &str = "root_long";
+
+/// The name a bench argument stands for: the long ones are built, the others are the argument.
+fn asked(arg: &str) -> Name<'static> {
+    let text = match arg {
+        LONG => format!("{}example.", "a.".repeat(122)),
+        GROWTH => format!("{}d.example.", "a.".repeat(100)),
+        ROOT_LONG => "a.".repeat(127),
+        name => name.to_owned(),
+    };
+    text.parse().expect("a name")
+}
 
 /// `Zone::answer` alone, no message: finding the answer in the zone of 100 000 records.
-#[divan::bench(args = [DATA, MISSING, WILD, ALIAS])]
+#[divan::bench(args = [DATA, MISSING, WILD, ALIAS, LONG, GROWTH])]
 fn answer_zone(bencher: Bencher<'_, '_>, name: &str) {
     let zone = answered_zone();
-    let question = Question::new(name.parse().expect("a name"), RecordType::A);
+    let question = Question::new(asked(name), RecordType::A);
     bencher.bench_local(|| zone.answer(black_box(&question)).chain.len());
 }
 
@@ -161,19 +183,19 @@ fn lookup_btree_map(bencher: Bencher<'_, '_>) {
 }
 
 /// The answer, the message and its encoding: the whole of what a query costs the zone.
-#[divan::bench(args = [DATA, MISSING, WILD, ALIAS])]
+#[divan::bench(args = [DATA, MISSING, WILD, ALIAS, LONG, GROWTH])]
 fn reply_zone(bencher: Bencher<'_, '_>, name: &str) {
     let zone = answered_zone();
-    let question = Question::new(name.parse().expect("a name"), RecordType::A);
+    let question = Question::new(asked(name), RecordType::A);
     let mut buf = [0_u8; 1232];
     bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
 }
 
-/// A referral from the root zone, and a name under no delegation of it.
-#[divan::bench(args = [REFERRAL, ROOT_MISSING])]
+/// A referral from the root zone, a name under no delegation of it, and one of 127 labels.
+#[divan::bench(args = [REFERRAL, ROOT_MISSING, ROOT_LONG])]
 fn reply_root(bencher: Bencher<'_, '_>, name: &str) {
     let zone = root_zone();
-    let question = Question::new(name.parse().expect("a name"), RecordType::A);
+    let question = Question::new(asked(name), RecordType::A);
     let mut buf = [0_u8; 1232];
     bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
 }

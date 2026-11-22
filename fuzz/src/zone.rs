@@ -151,6 +151,19 @@ fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType) {
             .message;
         assert_eq!(decoded.rcode(), answer.rcode(), "{name} in {size}");
         let truncated = decoded.header.flags.contains(Flags::TC);
+        // RFC 9471 §3.1: when the answer and authority fit, the glue the zone requires is in, or TC is set.
+        let mut bare = message.clone();
+        bare.additional.clear();
+        if !bare
+            .encode_truncated(&mut vec![0; size])
+            .expect("a reply encodes")
+            .truncated
+        {
+            assert!(
+                truncated || decoded.additional.len() >= glue.required(),
+                "{name} in {size}: required glue lost without TC"
+            );
+        }
         if size == 65535 {
             assert!(!truncated, "{name}: truncated in 64 KiB");
             assert_eq!(decoded.answer.len(), message.answer.len());
