@@ -864,7 +864,7 @@ fn idns_a_chain_of_referrals_each_one_label_deeper_stops_at_the_referrals_limit(
     let default = Limits::default();
     let lifted = Limits {
         referrals: 1000,
-        ..default.clone()
+        ..default
     };
     for (limits, at_leaf_is, paid_is) in [(default, 29, 31), (lifted, 30, 32)] {
         seed::each(SEEDS, |seed| {
@@ -906,7 +906,7 @@ fn idns_a_chain_of_referrals_each_one_label_deeper_stops_at_the_referrals_limit(
                     Some(response)
                 }
             });
-            plot.limits = limits.clone();
+            plot.limits = limits;
             let mut lab = lab(seed, plot);
             let resolver = lab.world.resolver;
             let took = Rc::new(Cell::new(Duration::ZERO));
@@ -1114,34 +1114,34 @@ fn validated(seed: Seed, mut plot: Plot, (at, limits): (u64, dedens_dnssec::Limi
     }
 }
 
+/// `plot` with the DNSKEY set of sidn.nl that `capture` holds made a `KeyTrap`'s by `colliding`.
+fn keytrapped(plot: Plot, capture: &Resolution) -> Plot {
+    let template = capture.clone();
+    let (sidn, dnskeys) = (
+        dns("sidn.nl."),
+        Question::new(dns("sidn.nl."), RecordType::DNSKEY),
+    );
+    plot.deriving(move |zone, question| {
+        let held =
+            *zone == sidn && question.qtype == RecordType::DNSKEY && question.name == dnskeys.name;
+        held.then(|| {
+            to(
+                colliding(answer_of(&template, zone, &question.name, question.qtype)),
+                question,
+            )
+        })
+    })
+}
+
 #[test]
 fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
     // CVE-2023-50387: the DNSKEY set of sidn.nl holds `KEYS` keys more for each key, of its tag, none that verifies.
     // The validator refuses the set at its digest check (D77) before any signature check: the verdict is bogus, and
-    // costs no budget (D75, D197). A budget too small for the walk makes it indeterminate; either way the keys are
-    // asked once and the answer is SERVFAIL.
+    // costs no budget (D75, D197); the keys are asked once and the answer is SERVFAIL.
     seed::each(SEEDS, |seed| {
         let capture = Resolution::read("signed-nl");
         let at = capture.captured_at;
-        let (sidn, dnskeys) = (
-            dns("sidn.nl."),
-            Question::new(dns("sidn.nl."), RecordType::DNSKEY),
-        );
-        let trapped = |plot: Plot| {
-            let template = capture.clone();
-            let (sidn, dnskeys) = (sidn.clone(), dnskeys.clone());
-            plot.deriving(move |zone, question| {
-                let held = *zone == sidn
-                    && question.qtype == RecordType::DNSKEY
-                    && question.name == dnskeys.name;
-                held.then(|| {
-                    to(
-                        colliding(answer_of(&template, zone, &question.name, question.qtype)),
-                        question,
-                    )
-                })
-            })
-        };
+        let dnskeys = Question::new(dns("sidn.nl."), RecordType::DNSKEY);
         let limits = dedens_dnssec::Limits::default();
         let clean = validated(seed, Plot::new(vec![capture.clone()]), (at, limits.clone()));
         assert_eq!(clean.message.rcode(), Rcode::NOERROR, "{:?}", clean.message);
@@ -1153,7 +1153,7 @@ fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
         {
             let run = validated(
                 seed,
-                trapped(Plot::new(vec![capture.clone()])),
+                keytrapped(Plot::new(vec![capture.clone()]), &capture),
                 (at, limits),
             );
             // Over UDP the set is cut (TC) and asked again over TCP: one query, two transports.
@@ -1181,72 +1181,75 @@ fn keytrap_sixty_keys_of_one_tag_are_checked_within_the_validation_budget() {
                 seed.0, run.paid, clean.paid
             );
         }
-        {
-            // The budget's leg. The chain of trust to the keys of sidn.nl costs 4 signature checks and the answer's
-            // 2 more (the clean run is secure at 6, indeterminate at 5: the budget says nothing of the data, D75).
-            // The trapped keys cost none: at the walk's 4 the verdict is bogus, for the digest check of D77 refuses
-            // the set before any signature is checked, and at 3 it is the walk that the budget stops.
-            let walk = |checks| dedens_dnssec::Limits {
-                budget: dedens_dnssec::crypto::Budget::new(
-                    Verifications(checks),
-                    dedens_dnssec::crypto::Budget::DEFAULT_NSEC3_BLOCKS,
-                ),
-                ..dedens_dnssec::Limits::default()
-            };
-            let fresh =
-                |checks| validated(seed, Plot::new(vec![capture.clone()]), (at, walk(checks)));
-            let trap = |checks| {
-                validated(
-                    seed,
-                    trapped(Plot::new(vec![capture.clone()])),
-                    (at, walk(checks)),
-                )
-            };
-            let (secure, starved) = (fresh(6), fresh(5));
-            assert_eq!(
-                secure.message.rcode(),
-                Rcode::NOERROR,
-                "{:?}",
-                secure.message
-            );
+    });
+}
+
+#[test]
+fn keytrap_a_budget_too_small_for_the_walk_is_indeterminate_not_bogus() {
+    // The chain of trust to the keys of sidn.nl costs 4 signature checks and the answer's 2 more (the clean run is
+    // secure at 6, indeterminate at 5: the budget says nothing of the data, D75). The trapped keys cost none: at the
+    // walk's 4 the verdict is bogus, for the digest check of D77 refuses the set before any signature is checked,
+    // and at 3 it is the walk that the budget stops. The queries stay within the clean run's plus one.
+    seed::each(SEEDS, |seed| {
+        let capture = Resolution::read("signed-nl");
+        let at = capture.captured_at;
+        let walk = |checks| dedens_dnssec::Limits {
+            budget: dedens_dnssec::crypto::Budget::new(
+                Verifications(checks),
+                dedens_dnssec::crypto::Budget::DEFAULT_NSEC3_BLOCKS,
+            ),
+            ..dedens_dnssec::Limits::default()
+        };
+        let fresh = |checks| validated(seed, Plot::new(vec![capture.clone()]), (at, walk(checks)));
+        let trap = |checks| {
+            let plot = keytrapped(Plot::new(vec![capture.clone()]), &capture);
+            validated(seed, plot, (at, walk(checks)))
+        };
+        let clean = fresh(64);
+        let (secure, starved) = (fresh(6), fresh(5));
+        assert_eq!(
+            secure.message.rcode(),
+            Rcode::NOERROR,
+            "{:?}",
+            secure.message
+        );
+        assert!(
+            secure.message.header.flags.contains(Flags::AD),
+            "{:?}",
+            secure.message
+        );
+        assert_eq!(
+            starved.message.rcode(),
+            Rcode::SERVFAIL,
+            "{:?}",
+            starved.message
+        );
+        assert_eq!(ede(&starved.message), Some(InfoCode::DNSSEC_INDETERMINATE));
+        let (bogus, indeterminate) = (trap(4), trap(3));
+        assert_eq!(
+            bogus.message.rcode(),
+            Rcode::SERVFAIL,
+            "{:?}",
+            bogus.message
+        );
+        assert_eq!(ede(&bogus.message), Some(InfoCode::DNSSEC_BOGUS));
+        assert_eq!(indeterminate.message.rcode(), Rcode::SERVFAIL);
+        assert_eq!(
+            ede(&indeterminate.message),
+            Some(InfoCode::DNSSEC_INDETERMINATE)
+        );
+        for run in [&bogus, &indeterminate] {
             assert!(
-                secure.message.header.flags.contains(Flags::AD),
-                "{:?}",
-                secure.message
-            );
-            assert_eq!(
-                starved.message.rcode(),
-                Rcode::SERVFAIL,
-                "{:?}",
-                starved.message
-            );
-            assert_eq!(ede(&starved.message), Some(InfoCode::DNSSEC_INDETERMINATE));
-            let (bogus, indeterminate) = (trap(4), trap(3));
-            assert_eq!(
-                bogus.message.rcode(),
-                Rcode::SERVFAIL,
-                "{:?}",
-                bogus.message
-            );
-            assert_eq!(ede(&bogus.message), Some(InfoCode::DNSSEC_BOGUS));
-            assert_eq!(indeterminate.message.rcode(), Rcode::SERVFAIL);
-            assert_eq!(
-                ede(&indeterminate.message),
-                Some(InfoCode::DNSSEC_INDETERMINATE)
-            );
-            for run in [&bogus, &indeterminate] {
-                assert!(
-                    run.paid <= clean.paid + 1,
-                    "{} queries, {} clean",
-                    run.paid,
-                    clean.paid
-                );
-            }
-            println!(
-                "keytrap seed {}: trap with a budget of 4 {} queries bogus, of 3 {} queries indeterminate",
-                seed.0, bogus.paid, indeterminate.paid
+                run.paid <= clean.paid + 1,
+                "{} queries, {} clean",
+                run.paid,
+                clean.paid
             );
         }
+        println!(
+            "keytrap budget seed {}: trap with a budget of 4 {} queries bogus, of 3 {} queries indeterminate",
+            seed.0, bogus.paid, indeterminate.paid
+        );
     });
 }
 
@@ -1402,6 +1405,29 @@ fn tudoor_datagrams_that_are_no_message_on_the_query_port_with_its_id_do_not_end
     });
 }
 
+/// The NS set and the glue a zone renews its delegation with for a day: those of `ghost`, or, for "ghost 2.0", one
+/// server of another name, the parent never delegated to, at the zone's own address.
+fn renewed(
+    ghost: &Message<'static>,
+    zone: &Name<'static>,
+    new_names: bool,
+) -> (Vec<Record<'static>>, Vec<Record<'static>>) {
+    if !new_names {
+        return (ghost.authority.clone(), ghost.additional.clone());
+    }
+    let server = dns("ns.renewed.google.com.");
+    let day = Ttl::new(86_400).expect("a TTL");
+    (
+        vec![Record::new(
+            zone.clone(),
+            Class::IN,
+            day,
+            &RData::Ns(server.clone()),
+        )],
+        vec![Record::new(server, Class::IN, day, &RData::A(LEAF))],
+    )
+}
+
 #[test]
 fn ghost_domain_a_delegation_the_parent_revoked_is_gone_at_its_ns_ttl() {
     // Jiang et al., NDSS 2012: google.com's NS set at .com lives 20 s; at 15 s .com revokes the delegation
@@ -1421,21 +1447,7 @@ fn ghost_domain_a_delegation_the_parent_revoked_is_gone_at_its_ns_ttl() {
             let revoked = Duration::from_secs(15);
             let parent = living(captured(&unsigned, &com), NS_TTL);
             let ghost = living(parent.clone(), 86_400);
-            let (renewal, glue) = if new_names {
-                let renewed = dns("ns.renewed.google.com.");
-                let day = Ttl::new(86_400).expect("a TTL");
-                (
-                    vec![Record::new(
-                        google.clone(),
-                        Class::IN,
-                        day,
-                        &RData::Ns(renewed.clone()),
-                    )],
-                    vec![Record::new(renewed, Class::IN, day, &RData::A(LEAF))],
-                )
-            } else {
-                (ghost.authority.clone(), ghost.additional.clone())
-            };
+            let (renewal, glue) = renewed(&ghost, &google, new_names);
             let leaf = captured(&unsigned, &google);
             let plot = {
                 let (com, google) = (com.clone(), google.clone());
