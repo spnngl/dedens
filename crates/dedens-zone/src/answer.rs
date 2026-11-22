@@ -329,9 +329,9 @@ impl Zone {
     fn hidden<'a>(&'a self, name: Name<'a>, entry: Entry<'a>) -> Step<'a> {
         match self.above(entry) {
             Some(cut) if cut.node.kind() == Kind::Delegation => Step::End(End::Referral { cut }),
-            Some(owner) if owner.node.is_dname_owner() => Self::dname(name, owner),
-            // Occluded names are below a cut that is one or the other.
-            _ => Step::End(End::NotAuth),
+            // `above` finds a node that is no occluded one: a delegation point or a DNAME owner.
+            Some(owner) => Self::dname(name, owner),
+            None => Step::End(End::NotAuth),
         }
     }
 
