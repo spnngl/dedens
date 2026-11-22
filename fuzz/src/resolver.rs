@@ -192,13 +192,17 @@ const RTT: Duration = Duration::from_millis(20);
 const START: Duration = Duration::from_secs(1_760_000_000);
 
 /// The responses of an input, in the order the resolution sends: the input is messages each behind its length (two
-/// octets, big-endian; the last may be short), a chunk that does not decode a datagram that does not. An input with
-/// no such message is one response off the wire, as the seeds are.
+/// octets, big-endian), a chunk that does not decode a datagram that does not, when the chunks consume the input
+/// exactly (the last one complete, no octet left over) and one of them decodes. Any other input is one response off
+/// the wire, as the seeds are: its ID is not read as a length.
 fn responses(data: &[u8]) -> Vec<Option<Message<'static>>> {
     let mut rest = data;
     let mut framed = Vec::new();
+    let mut exact = true;
     while let Some((&length, tail)) = rest.split_first_chunk() {
-        let (chunk, tail) = tail.split_at(usize::from(u16::from_be_bytes(length)).min(tail.len()));
+        let wanted = usize::from(u16::from_be_bytes(length));
+        exact &= wanted <= tail.len();
+        let (chunk, tail) = tail.split_at(wanted.min(tail.len()));
         framed.push(
             Message::decode(chunk)
                 .ok()
@@ -206,7 +210,7 @@ fn responses(data: &[u8]) -> Vec<Option<Message<'static>>> {
         );
         rest = tail;
     }
-    if framed.iter().any(Option::is_some) {
+    if exact && rest.is_empty() && framed.iter().any(Option::is_some) {
         return framed;
     }
     Message::decode(data)
