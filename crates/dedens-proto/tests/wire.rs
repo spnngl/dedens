@@ -779,7 +779,7 @@ proptest! {
     #[test]
     fn a_record_outside_a_message_round_trips(rec in record(), tail in any::<Vec<u8>>()) {
         let mut wire = Vec::new();
-        rec.write_wire(&mut wire);
+        rec.write_wire(&mut wire).expect("fits");
         let end = wire.len();
         wire.extend(&tail);
         let (decoded, used) = Record::from_wire(&wire).expect("reads what was written");
@@ -792,7 +792,7 @@ proptest! {
     #[test]
     fn a_record_outside_a_message_cut_short_is_refused(rec in record(), garbage in any::<Vec<u8>>()) {
         let mut wire = Vec::new();
-        rec.write_wire(&mut wire);
+        rec.write_wire(&mut wire).expect("fits");
         for len in 0..wire.len() {
             prop_assert!(Record::from_wire(&wire[..len]).is_err(), "{len} bytes of {}", wire.len());
         }

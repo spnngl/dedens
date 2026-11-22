@@ -344,20 +344,24 @@ impl<'a> Record<'a> {
 
     /// Appends the record as it is on the wire (RFC 1035 §3.2.1, §4.1.3), nothing compressed: owner, type, class,
     /// TTL, RDLENGTH and RDATA. A record outside a message, as a journal keeps it; [`Record::from_wire`] reads it.
-    pub fn write_wire(&self, out: &mut Vec<u8>) {
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when the RDATA is over 65535 bytes, as in a message; `out` is then as it was.
+    pub fn write_wire(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let rdata = self.rdata.wire();
+        let rdlength = u16::try_from(rdata.len()).map_err(|_| EncodeError::BufferFull)?;
         let mut buf = [0; MAX_NAME_LEN];
         out.extend_from_slice(self.name.to_wire(&mut buf));
-        let rdata = self.rdata.wire();
         let fixed = Fixed {
             rtype: self.rtype().0.into(),
             class: self.class.0.into(),
             ttl: self.ttl.get().into(),
-            rdlength: u16::try_from(rdata.len())
-                .expect("RDATA is at most 65535 bytes by construction (D125)")
-                .into(),
+            rdlength: rdlength.into(),
         };
         out.extend_from_slice(fixed.as_bytes());
         out.extend_from_slice(&rdata);
+        Ok(())
     }
 
     /// Reads the record [`Record::write_wire`] wrote at the start of `wire`, and how many bytes it took.

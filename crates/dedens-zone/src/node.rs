@@ -3,11 +3,23 @@
 use dedens_proto::{RecordType, Ttl, WireRdata};
 
 /// The records of one type at one name: one TTL (RFC 2181 §5.2) and distinct RDATA, in the order of the text.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Two are equal when they have the same TTL and the same RDATA in any order: an `RRset` is a set (RFC 2181 §5),
+/// so a zone changed by a [`Changeset`](crate::Changeset) equals the zone loaded from the text of its result.
+#[derive(Debug, Clone)]
 pub struct RrSet {
     pub(crate) ttl: Ttl,
     /// Never empty.
     pub(crate) rdatas: Vec<WireRdata<'static>>,
+}
+
+impl PartialEq for RrSet {
+    fn eq(&self, other: &Self) -> bool {
+        // RDATA is distinct within a set, so equal lengths and one containing the other make the sets equal.
+        self.ttl == other.ttl
+            && self.rdatas.len() == other.rdatas.len()
+            && self.rdatas.iter().all(|r| other.rdatas.contains(r))
+    }
 }
 
 impl RrSet {

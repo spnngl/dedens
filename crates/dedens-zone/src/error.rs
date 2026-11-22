@@ -2,16 +2,19 @@
 
 use core::fmt;
 
-use dedens_proto::{Class, DecodeError, Name, RecordType, TextErrorKind};
+use dedens_proto::{Class, DecodeError, Name, RecordType, Serial, TextErrorKind};
 
 /// Where a record starts: the line and column, from 1, in the file of that index in [`Report::files`].
+///
+/// A record of a zone that [`Zone::apply`](crate::Zone::apply) changes has no line: `line` and `column` are 0, and
+/// `file` is 0. A record of the changeset is its number, from 1, removals first, as the `line`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Place {
     /// Index in [`Report::files`]; 0 is the zone file.
     pub file: usize,
-    /// Line, from 1.
+    /// Line, from 1; 0 for a record the zone had before a change.
     pub line: usize,
-    /// Column, from 1, in bytes.
+    /// Column, from 1, in bytes; 0 as `line`.
     pub column: usize,
 }
 
@@ -118,6 +121,23 @@ pub enum ErrorKind {
     /// would both cut the tree).
     #[error("DNAME beside NS below the apex (RFC 6672 §2.3)")]
     DnameWithNs,
+    /// A record to remove that the zone does not have (RFC 1995 §4: each deleted record is one of the old version).
+    #[error("{owner} {rtype} record to remove is not in the zone (RFC 1995 §4)")]
+    RemoveAbsent {
+        /// The owner of the record.
+        owner: Name<'static>,
+        /// Its type.
+        rtype: RecordType,
+    },
+    /// A changeset that starts at another version than the zone's (RFC 1995 §4: the differences are from the
+    /// version the old SOA names).
+    #[error("the changeset starts at serial {changeset}, the zone is at {zone} (RFC 1995 §4)")]
+    WrongVersion {
+        /// The serial of the zone.
+        zone: Serial,
+        /// The serial the changeset starts from.
+        changeset: Serial,
+    },
     /// More errors than [`Limits::errors`](crate::Limits::errors): the load stopped.
     #[error("more than {limit} errors: stopped")]
     Stopped {
@@ -193,6 +213,9 @@ impl Report {
             return f.write_str(self.files.first().map_or("", String::as_str));
         };
         let file = self.files.get(at.file).map_or("", String::as_str);
+        if at.line == 0 {
+            return f.write_str(file);
+        }
         write!(f, "{file}:{}:{}", at.line, at.column)
     }
 }

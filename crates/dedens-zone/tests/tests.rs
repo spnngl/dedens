@@ -2,6 +2,7 @@
 //! docs and in the names of its tests.
 
 mod checks;
+mod differences;
 mod limits;
 mod marks;
 mod rfc_zones;
