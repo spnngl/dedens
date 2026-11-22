@@ -241,6 +241,8 @@ struct Seen {
     send_errors: Vec<io::Error>,
     /// The errors the next connects, of a UDP socket or a TCP stream, fail with, in order.
     connect_errors: Vec<io::ErrorKind>,
+    /// The system errors the next TCP connects fail with, in order, before `connect_errors`.
+    tcp_connect_errno: Vec<Errno>,
 }
 
 /// Compio, its UDP sockets counted and its randomness from a seed.
@@ -335,10 +337,14 @@ impl Io for Watched {
     async fn tcp_connect(&self, addr: SocketAddr) -> io::Result<TcpStream> {
         let failing = {
             let mut seen = self.seen.borrow_mut();
-            (!seen.connect_errors.is_empty()).then(|| seen.connect_errors.remove(0))
+            if seen.tcp_connect_errno.is_empty() {
+                (!seen.connect_errors.is_empty()).then(|| seen.connect_errors.remove(0).into())
+            } else {
+                Some(io::Error::from(seen.tcp_connect_errno.remove(0)))
+            }
         };
         match failing {
-            Some(kind) => Err(kind.into()),
+            Some(error) => Err(error),
             None => Compio.tcp_connect(addr).await,
         }
     }
@@ -690,8 +696,9 @@ async fn a_port_taken_is_drawn_again() {
     }
 }
 
-/// A host without the address family of the server (D199) cannot bind, or connect to, an address of it, as no IPv6
-/// socket on a host without IPv6: the server is unreachable, no query sent, and nothing of ours failed.
+/// A host without the address family of the server (D199) cannot bind a UDP socket for, or open a TCP socket to, an
+/// address of it, as no IPv6 socket on a host without IPv6: the server is unreachable, no query sent, and nothing of
+/// ours failed. A TCP connect's EADDRNOTAVAIL is not that: it is ours (ephemeral ports exhausted).
 #[compio::test]
 async fn a_host_without_the_address_family_makes_the_server_unreachable() {
     let addr = silent();
@@ -724,12 +731,22 @@ async fn a_host_without_the_address_family_makes_the_server_unreachable() {
         );
         assert_eq!(seen.borrow().binds, 1, "not drawn again");
     }
+    // A TCP connect's EADDRNOTAVAIL is the ephemeral ports exhausted: ours, not the server's.
     seen.borrow_mut().connect_errors = vec![io::ErrorKind::AddrNotAvailable; 2];
     let failed = client.query(google(), addr, tcp, deadline()).await;
     assert!(
-        matches!(&failed, Err(AuthoritativeError::Server(ServerError::Tcp(TcpError::Connect(error)))) if error.kind() == io::ErrorKind::AddrNotAvailable),
+        matches!(&failed, Err(AuthoritativeError::Local(LocalError::Socket(error))) if error.kind() == io::ErrorKind::AddrNotAvailable),
         "{failed:?}"
     );
+    seen.borrow_mut().connect_errors.clear();
+    // A TCP socket of a family the host lacks is the server's.
+    seen.borrow_mut().tcp_connect_errno = vec![Errno::AFNOSUPPORT; 2];
+    let failed = client.query(google(), addr, tcp, deadline()).await;
+    assert!(
+        matches!(&failed, Err(AuthoritativeError::Server(ServerError::Tcp(TcpError::Connect(error)))) if error.raw_os_error() == Some(Errno::AFNOSUPPORT.raw_os_error())),
+        "{failed:?}"
+    );
+    seen.borrow_mut().tcp_connect_errno.clear();
     seen.borrow_mut().connect_errors = vec![io::ErrorKind::AddrNotAvailable];
     let failed = client
         .query(google(), addr, Quirks::default(), deadline())
