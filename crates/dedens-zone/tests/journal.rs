@@ -9,10 +9,10 @@ use std::path::PathBuf;
 use dedens_proto::Serial;
 use dedens_zone::journal::format::{self, FRAME, MAGIC, Tail};
 use dedens_zone::journal::{Journal, JournalError, JournalLimits, MAX_FILE, Stored};
-use dedens_zone::{Changeset, Zone};
+use dedens_zone::{Changeset, Limits, Zone};
 use tempfile::TempDir;
 
-use crate::util::{APEX, load};
+use crate::util::{APEX, load, load_files, zone_file};
 
 /// [`APEX`] at `serial`, then `extra`, loaded.
 fn version(serial: u32, extra: &str) -> Zone {
@@ -47,6 +47,45 @@ fn file_of(changesets: &[Changeset]) -> (Vec<u8>, Vec<usize>) {
         format::encode(changeset, &mut bytes).expect("encodes");
     }
     (bytes, starts)
+}
+
+/// The zone of RFC 4035 appendix A at `serial`, `edit` applied to its text.
+fn signed(serial: u32, edit: impl Fn(String) -> String) -> Zone {
+    let text = zone_file("rfc4035_appendix_a.zone").replace("1081539377", &serial.to_string());
+    load_files("example.", &edit(text), None, &[], &Limits::default())
+        .expect("a valid zone")
+        .zone
+}
+
+/// The journal file the fuzz target `journal_read` starts from (`fuzz/seeds/example.journal`): three versions of
+/// the zone of RFC 4035 appendix A, one with its signatures renewed, one with a name added. With
+/// `DEDENS_WRITE_SEED` set the test writes the file first, which is how it is made again when the format changes.
+#[test]
+fn the_fuzz_seed_is_the_journal_of_three_versions_of_an_example_zone() {
+    let versions = [
+        signed(1_081_539_377, |t| t),
+        signed(1_081_539_378, |t| t.replace("38519", "38520")),
+        signed(1_081_539_379, |t| {
+            format!(
+                "{}\nextra.example. 3600 IN TXT \"added\"\n",
+                t.replace("38519", "38520")
+            )
+        }),
+    ];
+    let changesets: Vec<_> = versions
+        .windows(2)
+        .map(|pair| Zone::diff(&pair[0], &pair[1]).expect("ahead"))
+        .collect();
+    let (bytes, _) = file_of(&changesets);
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/example.journal");
+    if std::env::var_os("DEDENS_WRITE_SEED").is_some() {
+        fs::write(&path, &bytes).expect("writes the seed");
+    }
+    assert!(
+        fs::read(&path).expect("the seed") == bytes,
+        "fuzz/seeds/example.journal is not what the journal writes: DEDENS_WRITE_SEED=1 cargo test -p dedens-zone"
+    );
 }
 
 fn directory() -> (TempDir, PathBuf) {

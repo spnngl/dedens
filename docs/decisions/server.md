@@ -2302,11 +2302,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
     I/O and the stage); Unbound's DS entries kept in the state (the seed's DS name keys that turn Valid at once);
     following forward stages' anchors (the upstream's answers, out of the step); non-root anchors (out of the step).
-- D204 (amends D74) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
+- D204 (amends D74; amended by D207) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
   &Limits)` returns for zone text, checked, and it never changes: a change loads a new `Zone` and the server swaps
   it in whole (`Arc`, as D24's pipeline), so a query sees one version from start to end and a reload that fails
-  leaves the served one. The crate does no I/O: `$INCLUDE` is a callback giving the bytes of a file (D25: the reader
-  hands it back to the caller). Layout: a `BTreeMap` of names in canonical order (`Name` orders so, RFC 4034 §6.1,
+  leaves the served one. Loading does no I/O: `$INCLUDE` is a callback giving the bytes of a file (D25: the
+  reader hands it back to the caller); the journal's file is D207's. Layout: a `BTreeMap` of names in canonical order (`Name` orders so, RFC 4034 §6.1,
   moved from `denial`, which amends D74 where the order was private), each `Node` with its `RRset`s by type, RDATA
   already wire bytes, the RRSIGs apart by the type they cover, a `Kind` (authoritative, delegation point, occluded,
   empty non-terminal) and the wildcard and DNAME owner marks. Every ancestor of a name down to the apex is a node
@@ -2342,3 +2342,70 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     last TTL (the file's order would decide); an error for differing TTLs (BIND, NSD and Knot accept them); refusing
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
     over a finished `Zone` (the errors would lose their lines).
+
+- D207 (amends D204) Zone differences and the journal (`dedens-zone`): a `Changeset` is the difference between two
+  versions of a zone as RFC 1995 §4 sends it: the old and the new SOA record and the records removed and added, each
+  with its owner, class, TTL and RDATA, RRSIGs as ordinary records. `Changeset::new` checks what the sequence needs:
+  both ends SOA, one owner and class, the new serial ahead of the old by RFC 1982 §3.2, no SOA among the rest.
+  `Zone::diff(&old, &new)` lists what changed: an `RRset` is compared as a set of RDATA (the order of a file is no
+  difference, RFC 2181 §5), one whose TTL changed goes whole and comes again (an `RRset` has one TTL, §5.2), the
+  rest as the records that differ, as Knot does (`diff_rrsets` in `src/knot/zone/zone-diff.c`: the records with no
+  match removed, those with none added). `Zone::apply(&changeset, &Limits)` builds the next version through the
+  `Builder` seeded with the old one, so every check of a load runs again, on the whole zone, and the `Zone` it
+  returns is as if loaded: it refuses a changeset whose old SOA is not the zone's (`WrongVersion`) and a record to
+  remove that is not there (`RemoveAbsent`, RFC 1995 §4), each with the changeset's record number as its line; a
+  record is removed by owner, type and RDATA, its TTL ignored (RFC 1995 §4 sends the sender's TTL, which may not be
+  the receiver's). The cost is a copy of the zone's nodes (D204: a version never changes; the copy is O(zone) per
+  change, to be measured with the serving stage). A name is the same in another case (`Name` compares so), so a
+  change of case alone is no difference. `Changeset::condense(next)` is RFC 1995 §6's net difference of two
+  consecutive changesets: a record added by one and removed by the other cancels, as Knot's `changeset_merge`
+  (`src/knot/updates/changesets.c`) does by adding the second's removals then its additions with its check; the
+  result applied to a zone equals the two in turn. `Serial` (RFC 1982) is in `dedens-proto`: RRSIG validity
+  (D73) and cookie timestamps (D113) use it in place of their own arithmetic.
+  - The journal, `dedens_zone::journal::Journal`, is one file per zone, at a path the caller gives (its directory
+    writable: a rewrite goes through the path with `.tmp` added). Append-only: an 8-byte header `dedensj1`, then
+    a record per changeset, `length` (u32), `CRC-32` (u32, ISO-HDLC, of the length and the payload), the payload
+    being the RFC 1995 §4 sequence in wire form (names uncompressed): old SOA, removed, new SOA, added. Each record
+    starts from the serial the one before ends at, so the file is a chain, which `changes_since(serial)` walks:
+    the changesets from a serial to the last version, none for the last, and `None` when the serial is older than
+    the first, unknown or ahead, so that the caller sends the whole zone (RFC 1995 §4). The whole file is read into
+    memory (bounded by the limits) when the journal is opened, and kept.
+  - Durability: `append` writes the record and `fsync`s the file before it returns, and changes nothing in memory
+    until then; the journal never reports a changeset done that a crash would lose. A crash in the middle of a
+    write leaves a torn record (cut short, or its length past the end): `open` finds it, cuts the file there and
+    syncs, and the changesets before it are kept. A bad CRC, a payload that is no changeset or a record that does
+    not follow the one before ends the file there too, and everything after it is lost with it (a record after a
+    hole is no use to an IXFR, and bytes after a bad one cannot be told from noise); the bytes cut are counted
+    (`discarded`). A file with another header is refused and left, never overwritten; one over 2^30 bytes
+    (`MAX_FILE`) is not read. Dropping the oldest changesets, clearing, and making the file write the kept ones to
+    `<path>.tmp`, `fsync`, rename over the journal and `fsync` the directory: a crash leaves the old file or the new
+    one, and a leftover `.tmp` is overwritten by the next rewrite. A write that fails poisons the journal
+    (the file's state is unknown after a failed `fsync`): it refuses until it is opened again, which reads the file.
+    The calls block: the caller runs them off the thread that serves queries. The crate does file I/O for the
+    journal only; loading stays free of it (amends D204).
+  - Limits (`JournalLimits`, a test each): 100 MiB of file and 20 changesets, the oldest dropped until the new one
+    fits. Knot keeps both, `journal-max-usage` 100 MiB and `journal-max-depth` 20 (`src/knot/conf/schema.c`); NSD
+    keeps `ixfr-size` 1 MiB and `ixfr-number` 5 (`IXFR_SIZE_DEFAULT`, `IXFR_NUMBER_DEFAULT` in `ixfr.h`) and drops
+    the oldest until the new one fits (`zone_ixfr_make_space` in `ixfr.c`); BIND bounds the size only, twice the
+    zone's by default, 4096 bytes at least (`max-journal-size`, `lib/dns/zone.c`, `DNS_JOURNAL_SIZE_MIN` in
+    `lib/dns/include/dns/journal.h`). A changeset over a limit alone is not kept and empties the journal
+    (`Stored::TooBig`, NSD's `ixfr_store_cancel`): its predecessors would end at a version that is not kept, and a
+    client behind it is sent the zone. `MAX_FILE` 2^30 is the read bound, below BIND's `DNS_JOURNAL_SIZE_MAX`
+    (`INT32_MAX`).
+  - Against the prior art: BIND's journal rewrites a header in place and syncs twice per transaction
+    (`dns_journal_commit`, `lib/dns/journal.c`); an append of one `fsync` and a self-checking record needs no header
+    update, and a torn record is told by its CRC. Knot's journal is an LMDB database (`src/knot/journal/`, which
+    also merges old changesets into a zone-in-journal); NSD writes one IXFR file per version (`ixfr.c`); neither is
+    a file of one writer to link without a database or a second format.
+  - Test data: the zone of RFC 4035 appendix A and small zones of `crates/dedens-zone/tests/util.rs`, each version
+    the one before with a change written next to the test; the journal file as a crash leaves it, cut at every byte
+    of its last record and flipped at every byte of each. `fuzz/seeds/example.journal` is a journal of three
+    versions of the RFC 4035 zone, made again with `DEDENS_WRITE_SEED=1 cargo test -p dedens-zone fuzz_seed`. Fuzz
+    target `journal_read` (reading, then writing again what was read). Root zone captures: see the step's open
+    questions in `docs/TODECIDE.md`.
+  - Rejected: a changeset applied in place (D204); a database for the journal (a dependency for a log that is
+    written once and read whole); a header rewritten per append (BIND: two syncs, and a crash between them needs
+    recovery logic); a CRC-less record with a length only (a flipped byte in a name would apply a wrong change); a
+    record after a refused one kept (a hole breaks the chain); one `Changeset` per RRset (RFC 1995 §4's sequence is
+    per version); keeping a changeset over the limit alone and dropping the rest (the oldest of a chain is what
+    goes first, NSD).
