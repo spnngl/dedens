@@ -1,0 +1,15 @@
+description: "AXFR without TSIG of a zone that is for the key's holder: REFUSED"
+server: knotd, Knot DNS 3.6.2
+captured_at: 1795374284
+zone: zonetransfer.me.
+messages:
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: client
+  message: uaQBIAABAAAAAAABDHpvbmV0cmFuc2ZlcgJtZQAA/AABAAApBNAAAAAAAAA=
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: server
+  message: uaSBCQABAAAAAAABDHpvbmV0cmFuc2ZlcgJtZQAA/AABAAApBNAAAAAAAAA=

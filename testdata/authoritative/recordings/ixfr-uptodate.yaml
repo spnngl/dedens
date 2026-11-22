@@ -1,0 +1,17 @@
+description: "IXFR over UDP from the serial the server has: one SOA (RFC 1995 §4)"
+server: knotd, Knot DNS 3.6.2
+captured_at: 1795374300
+zone: example.
+messages:
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: client
+  message: >-
+    IekBIAABAAAAAQABB2V4YW1wbGUAAPsAAcAMAAYAAQAAAAAAFgAAQHb7MQAAAAAAAAAAAAAAAAAAAAAAACkE0AAAAAAAAA==
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: server
+  message: >-
+    IemBAAABAAEAAAABB2V4YW1wbGUAAPsAAcAMAAYAAQAADhAAJQNuczHADARidWdzAXgBd8AMQHb7MQAADhAAAAEsADbugAAADhAAACkE0AAAAAAAAA==

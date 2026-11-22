@@ -1,0 +1,27 @@
+description: "UPDATE adding a name, then IXFR over TCP from the serial before it: the difference (RFC 1995 §4)"
+server: knotd, Knot DNS 3.6.2
+captured_at: 1795374304
+zone: example.
+messages:
+- at_ms: 0
+  transport: udp
+  connection: 0
+  from: client
+  message: 7y4oAAABAAAAAQAAB2V4YW1wbGUAAAYAAQpkZWRlbnMtbmV3wAwAAQABAAABLAAEwAACAQ==
+- at_ms: 2
+  transport: udp
+  connection: 0
+  from: server
+  message: 7y6oAAABAAAAAAAAB2V4YW1wbGUAAAYAAQ==
+- at_ms: 190
+  transport: tcp
+  connection: 1
+  from: client
+  message: >-
+    sQUBIAABAAAAAQABB2V4YW1wbGUAAPsAAcAMAAYAAQAAAAAAFgAAQHb7MQAAAAAAAAAAAAAAAAAAAAAAACkE0AAAAAAAAA==
+- at_ms: 191
+  transport: tcp
+  connection: 1
+  from: server
+  message: >-
+    sQWFAAABAAUAAAABB2V4YW1wbGUAAPsAAcAMAAYAAQAADhAAJQNuczHADARidWdzAXgBd8AMQHb7MgAADhAAAAEsADbugAAADhDADAAGAAEAAA4QACUDbnMxwAwEYnVncwF4AXfADEB2+zEAAA4QAAABLAA27oAAAA4QwAwABgABAAAOEAAlA25zMcAMBGJ1Z3MBeAF3wAxAdvsyAAAOEAAAASwANu6AAAAOEApkZWRlbnMtbmV3wAwAAQABAAABLAAEwAACAcAMAAYAAQAADhAAJQNuczHADARidWdzAXgBd8AMQHb7MgAADhAAAAEsADbugAAADhAAACkE0AAAAAAAAA==

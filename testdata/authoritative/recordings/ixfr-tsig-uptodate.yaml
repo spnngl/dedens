@@ -1,0 +1,18 @@
+description: "IXFR signed, from the serial the server has: one SOA (RFC 1995 §4)"
+server: knotd, Knot DNS 3.6.2
+captured_at: 1795374286
+zone: zonetransfer.me.
+key: dedens-test-key
+messages:
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: client
+  message: >-
+    NtkBIAABAAAAAQACDHpvbmV0cmFuc2ZlcgJtZQAA+wABwAwABgABAAAAAAAWAAB4WQiBAAAAAAAAAAAAAAAAAAAAAAAAKQTQAAAAAAAAD2RlZGVucy10ZXN0LWtleQAA+gD/AAAAAAA9C2htYWMtc2hhMjU2AAAAawM81QEsACC6l1f557UPNj10VzCUBITwQJOZY0l5tLeaQfPWnEJXETbZAAAAAA==
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: server
+  message: >-
+    NtmBAAABAAEAAAACDHpvbmV0cmFuc2ZlcgJtZQAA+wABwAwABgABAAAcIAAvBm5zenRtMQRkaWdpBW5pbmphAAVyb2JpbsA0eFkIgQACowAAAAOEABJ1AAAADhAAACkE0AAAAAAAAA9kZWRlbnMtdGVzdC1rZXkAAPoA/wAAAAAAPQtobWFjLXNoYTI1NgAAAGsDPNUBLAAgxBkH+Kp1bdoiwXToVLoQs44lVw3izKWv4lY5g1AT1HQ22QAAAAA=

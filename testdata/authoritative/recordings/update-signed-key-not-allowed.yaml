@@ -1,0 +1,17 @@
+description: "UPDATE of a zone whose ACL has no key, signed: refused (RFC 2136 §3.3, RFC 8945)"
+server: knotd, Knot DNS 3.6.2
+captured_at: 1795374307
+zone: example.
+key: dedens-test-key
+messages:
+- at_ms: 0
+  transport: udp
+  connection: 0
+  from: client
+  message: >-
+    0eQoAAABAAAAAQABB2V4YW1wbGUAAAYAAQpkZWRlbnMtbmV3wAwAAQABAAABLAAEwAACAQ9kZWRlbnMtdGVzdC1rZXkAAPoA/wAAAAAAPQtobWFjLXNoYTI1NgAAAGsDPOQBLAAgXsKBaMAM3D3eHwRtCbT8gjvrWjuwq7IZkpTTu0iD5UHR5AAAAAA=
+- at_ms: 0
+  transport: udp
+  connection: 0
+  from: server
+  message: 0eSoCQABAAAAAAAAB2V4YW1wbGUAAAYAAQ==

@@ -1,0 +1,18 @@
+description: "AXFR signed by a client whose clock is 600 seconds behind: BADTIME (RFC 8945 §5.2.3)"
+server: knotd, Knot DNS 3.6.2
+captured_at: 1795374277
+zone: zonetransfer.me.
+key: dedens-test-key
+messages:
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: client
+  message: >-
+    5GsBIAABAAAAAAACDHpvbmV0cmFuc2ZlcgJtZQAA/AABAAApBNAAAAAAAAAPZGVkZW5zLXRlc3Qta2V5AAD6AP8AAAAAAD0LaG1hYy1zaGEyNTYAAABrAzpzASwAIB/G+Kgq5v8sj3JNBw+YMzr+DWHxJLM358mDeSu/IOnN5GsAAAAA
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: server
+  message: >-
+    5GuBCQABAAAAAAACDHpvbmV0cmFuc2ZlcgJtZQAA/AABAAApBNAAAAAAAAAPZGVkZW5zLXRlc3Qta2V5AAD6AP8AAAAAAEMLaG1hYy1zaGEyNTYAAABrAzpzASwAIO4A3+NHehmR/WSHrOY2+RXiUn/4sG8Z7jzJAa9/D4on5GsAEgAGAABrAzzL

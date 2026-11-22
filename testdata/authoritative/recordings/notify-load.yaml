@@ -1,0 +1,27 @@
+description: the NOTIFY Knot sends when it loads a zone (RFC 1996 §3.11)
+server: NSD version 4.15.4
+captured_at: 1795374380
+zone: example.
+messages:
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: client
+  message: >-
+    ReQkAAABAAEAAAABDHpvbmV0cmFuc2ZlcgJtZQAABgABwAwABgABAAAcIAAvBm5zenRtMQRkaWdpBW5pbmphAAVyb2JpbsA0eFkIgQACowAAAAOEABJ1AAAADhAAACkE0AAAAAAAAA==
+- at_ms: 0
+  transport: tcp
+  connection: 2
+  from: client
+  message: >-
+    /tMkAAABAAEAAAABB2V4YW1wbGUAAAYAAcAMAAYAAQAADhAAJQNuczHADARidWdzAXgBd8AMQHb7MQAADhAAAAEsADbugAAADhAAACkE0AAAAAAAAA==
+- at_ms: 0
+  transport: tcp
+  connection: 1
+  from: server
+  message: ReSkAwAAAAAAAAAA
+- at_ms: 0
+  transport: tcp
+  connection: 2
+  from: server
+  message: /tOkAAABAAAAAAAAB2V4YW1wbGUAAAYAAQ==
