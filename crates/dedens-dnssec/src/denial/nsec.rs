@@ -3,7 +3,7 @@
 use dedens_proto::rdata::{RData, TypeBitmap};
 use dedens_proto::{Class, Name, Question, Record, RecordType, Ttl};
 
-use super::names::{Canonical, covers, shared_labels, suffix, wildcard};
+use super::names::covers;
 use super::{Fact, Proof, Unproven, at_name, least, wildcard_lacks};
 
 /// An NSEC record: a name of the zone, the next one in canonical order, and the types at the first.
@@ -24,9 +24,9 @@ impl Link<'_> {
                 || self.types.contains(RecordType::NS) && !self.types.contains(RecordType::SOA));
         !below_cut
             && covers(
-                &Canonical(self.owner),
-                &Canonical(&self.next),
-                &Canonical(name),
+                self.owner,
+                &self.next,
+                name,
             )
     }
 }
@@ -64,8 +64,8 @@ pub(super) fn prove(links: &[Link<'_>], question: &Question<'_>) -> Result<Proof
     }
     // The closest encloser is the longest ancestor of the name that the NSEC shows to exist: the owner and
     // the next name are both names of the zone, so their common ancestors with the name are.
-    let depth = shared_labels(qname, covering.owner).max(shared_labels(qname, &covering.next));
-    let wildcard = wildcard(&suffix(qname, depth)?)?;
+    let depth = qname.shared_labels(covering.owner).max(qname.shared_labels(&covering.next));
+    let wildcard = qname.ancestor(depth).wildcard()?;
     if let Some(link) = links.iter().find(|l| *l.owner == wildcard) {
         return Ok(Proof::new(
             wildcard_lacks(&link.types, qtype)?,
@@ -128,7 +128,7 @@ mod tests {
             let matched = links.iter().filter(|l| l.owner == &name).count();
             let covered = links
                 .iter()
-                .filter(|l| covers(&Canonical(l.owner), &Canonical(&l.next), &Canonical(&name)))
+                .filter(|l| covers(l.owner, &l.next, &name))
                 .count();
             prop_assert_eq!(matched + covered, 1, "{}", name);
             for link in &links {

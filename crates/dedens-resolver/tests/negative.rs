@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use dedens_cache::{Checked, Config, Cost};
 use dedens_dnssec::crypto::Budget;
-use dedens_dnssec::denial::{canonical_cmp, hashed_owner, owner_hash};
+use dedens_dnssec::denial::{hashed_owner, owner_hash};
 use dedens_dnssec::{TrustAnchors, Validator};
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::{Nsec3, RData};
@@ -161,7 +161,7 @@ fn nsec_spanned(response: &Message<'_>, exclude: &str) -> String {
             let at = name(text);
             text != exclude
                 && spans.iter().any(|(owner, next)| {
-                    canonical_cmp(owner, &at).is_lt() && canonical_cmp(&at, next).is_lt()
+                    owner < &at && &at < next
                 })
         })
         .expect("a name in a span")

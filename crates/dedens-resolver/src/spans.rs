@@ -6,7 +6,6 @@
 //! Zones are evicted whole, the least recently used first, to keep each shard within its share of the byte budget.
 //! An owner whose record is gone is dropped when a lookup misses it, so that it does not shadow its range.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasher, RandomState};
 use std::mem::size_of;
@@ -15,7 +14,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use dedens_dnssec::denial::{canonical_cmp, owner_hash};
+use dedens_dnssec::denial::owner_hash;
 use dedens_proto::Name;
 
 /// The bytes of a hash of NSEC3 (RFC 5155 §3.1.4: SHA-1).
@@ -30,37 +29,13 @@ const HASH_COST: usize = HASH_LEN + NODE;
 
 /// What an NSEC owner counts for.
 fn owner_cost(owner: &Name<'_>) -> usize {
-    size_of::<Owner>() + owner.wire_len() + NODE
-}
-
-/// An NSEC owner, ordered as RFC 4034 §6.1 orders names.
-#[derive(Debug, Clone)]
-struct Owner(Name<'static>);
-
-impl PartialEq for Owner {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl Eq for Owner {}
-
-impl PartialOrd for Owner {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Owner {
-    fn cmp(&self, other: &Self) -> Ordering {
-        canonical_cmp(&self.0, &other.0)
-    }
+    size_of::<Name<'static>>() + owner.wire_len() + NODE
 }
 
 /// How a zone's records are chained, and what is indexed of them.
 #[derive(Debug)]
 enum Zone {
-    Nsec(BTreeSet<Owner>),
+    Nsec(BTreeSet<Name<'static>>),
     Nsec3 {
         salt: Box<[u8]>,
         iterations: u16,
@@ -137,7 +112,7 @@ impl Spans {
     /// Indexes `owner`, an NSEC of the zone `apex`. A zone that was chained otherwise starts over.
     pub(crate) fn add_nsec(&self, apex: &Name<'static>, owner: &Name<'static>) {
         self.add(apex, owner_cost(owner), &Chain::Nsec, |zone| match zone {
-            Zone::Nsec(owners) => owners.insert(Owner(owner.clone())),
+            Zone::Nsec(owners) => owners.insert(owner.clone()),
             Zone::Nsec3 { .. } => false,
         });
     }
@@ -230,7 +205,7 @@ impl Spans {
     /// Drops `owner`, an NSEC of the zone `apex` whose record the cache no longer holds secure.
     pub(crate) fn forget_nsec(&self, apex: &Name<'_>, owner: &Name<'_>) {
         self.forget(apex, owner_cost(owner), |zone| match zone {
-            Zone::Nsec(owners) => owners.remove(&Owner(owner.clone().into_owned())),
+            Zone::Nsec(owners) => owners.remove(&owner.clone().into_owned()),
             Zone::Nsec3 { .. } => false,
         });
     }
@@ -279,9 +254,9 @@ impl Spans {
         let Zone::Nsec(owners) = &shard.zones.get(apex)?.zone else {
             return None;
         };
-        let at = Owner(name.clone().into_owned());
+        let at = name.clone().into_owned();
         let before = owners.range(..=&at).next_back().or_else(|| owners.last());
-        before.map(|owner| owner.0.clone())
+        before.cloned()
     }
 
     /// The hash of the zone `apex` that `hash` is at or after, as [`Spans::owner_before`] for NSEC3.

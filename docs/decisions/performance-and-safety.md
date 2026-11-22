@@ -259,7 +259,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   the proofs are worth what it is. In `crates/dedens-dnssec/src/denial/names.rs`, `one_link_covers`: in a chain of
   owners in order, of any length and under any strict order (irreflexive, transitive), a name is covered by exactly
   one link unless it sorts alike an owner, which none covers (RFC 4034 §4.1.1, RFC 5155 §1.2); `covers` is that test
-  of a link wherever `<` is the type's order. That canonical order (`canonical_cmp`, RFC 4034 §6.1) is a strict one
+  of a link wherever `<` is the type's order. That canonical order (`Ord` of `Name`, RFC 4034 §6.1) is a strict one
   stays unproven. Kani's proof of `covers`, on chains of up to 4 `u8` owners (D179), is dropped for it. `just verus` checks it all in 20 s from cold (Apple M5, 2026-11-12), outside the
   gate, and `deep.yml`'s `verus` job on each pull request, informational. The specifications are
   `#[cfg_attr(verus_only, verus_spec(..))]` on the Rust as it is, the hints `#[cfg(verus_only)] proof! {..}`: a

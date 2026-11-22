@@ -32,7 +32,6 @@ mod nsec3;
 use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::TypeBitmap;
 use dedens_proto::{Name, NameError, Question, Record, RecordType, Ttl};
-pub use names::canonical_cmp;
 pub use nsec3::{hashed_owner, owner_hash};
 
 use crate::crypto::{Budget, BudgetExhausted};
@@ -301,7 +300,7 @@ pub fn prove_wildcard_answer(
         return Err(Unproven::NotExpanded);
     }
     // The name one label below the wildcard's parent: the one that, existing, would have been the answer.
-    let next_closer = names::suffix(qname, labels + 1)?;
+    let next_closer = qname.ancestor(labels + 1);
     let proof = prove_absent(apex, &next_closer, records, max, budget)?;
     Ok(Proof {
         fact: Fact::WildcardAnswer,

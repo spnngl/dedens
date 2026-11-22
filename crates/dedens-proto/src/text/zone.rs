@@ -126,6 +126,13 @@ impl<'t> ZoneReader<'t> {
         self.lexer.end().0
     }
 
+    /// The line and column, from 1, where the entry the reader just returned starts, for a caller that refuses it
+    /// and names its place.
+    #[must_use]
+    pub const fn at(&self) -> (usize, usize) {
+        self.lexer.start()
+    }
+
     fn entry(&mut self) -> Result<Option<ZoneEntry>, TextError> {
         loop {
             let Some(blank) = self.lexer.entry()? else {
