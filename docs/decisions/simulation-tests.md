@@ -2,7 +2,7 @@
 
 Decisions; the rules and the index are in [`README.md`](README.md).
 
-- D133 (amends D26; amended by D134, D162, D164, D182) Simulation tests: the sans-IO cores run as hosts of a simulated network,
+- D133 (amends D26; amended by D134, D162, D164, D182, D202) Simulation tests: the sans-IO cores run as hosts of a simulated network,
   `turmoil` 0.7.2, so lost, late, reordered and forged packets, partitions and crashes meet the real `Exchange`,
   `Pipeline` and cache together, and a failing run replays from its seed. A crate `crates/dedens-sim`
   (`publish = false`): a test-only driver in `src/` that mirrors `dedensd`'s glue (`apps/dedensd/src/serve/`,
@@ -70,8 +70,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
       Lookup-only maps of `dedens-proto` and `-cache` are never iterated.
     - `seed::in_two_processes` runs a scenario here and in a second process of the test binary and compares the
       digests of the traces (`tests/replay.rs`).
-  - Time: the tests of a family run under 2 s in `just check` (debug build), the crate under 10 s; a family over the
-    budget runs fewer fixed seeds, not a smaller scenario. `just sim-time` measures it (D164).
+  - Time: the tests of a family run under 2 s in `just check` (debug build), the crate under 10 s (12 s: D202); a
+    family over the budget runs fewer fixed seeds, not a smaller scenario. `just sim-time` measures it (D164).
   - `just sim 100` runs every scenario under `runs` random seeds, as `fuzz-all` runs the fuzz targets; the
     `sim` jobs of `.github/workflows/deep.yml` run it on pull requests, one per family (`just sim 100
     dnssec`, 30 minutes each), informational, outside the gate as `mutants` (D103); the workflow's `loom` job is
@@ -114,11 +114,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     come and answers each in a task of its own, as the pool pipelines (RFC 7766 §6.2.1.1); a TCP query to a
     host that does not answer ends in `TcpError::Connect(TimedOut)` at the pool's idle timeout (`docs/TODECIDE.md`);
     the IDs are drawn in another order, which changed some fixed seeds.
-- D164 (amends D133; builds on D103; amended by D165, D167) D133's time budget is measured, outside the gate: `just
+- D164 (amends D133; builds on D103; amended by D165, D167, D202) D133's time budget is measured, outside the gate: `just
   sim-time` times each family of `dedens-sim`'s `tests` binary run alone (the filter `<family>::`, its tests on the
   harness's threads), then the binary whole, in `just check`'s build under the fixed seeds, and fails when a family
-  takes over 2 s or the binary over 10 s. The gate's build is `cargo test --workspace --all-features`, whose
-  features unify over the workspace (`dedens-bench`'s `metrics` turns on the cache's counters): `-p dedens-sim` alone
+  takes over 2 s or the binary over 10 s (12 s: D202). The gate's build is `cargo test --workspace --all-features`,
+  whose features unify over the workspace (`dedens-bench`'s `metrics` turns on the cache's counters): `-p dedens-sim` alone
   would time other code, where the workspace's build reuses the gate's artifacts. The crate's time is the binary's:
   `src/`'s unit tests take milliseconds. The binary runs once (`--list`) before the timings: macOS checks a new
   executable on its first run, 0.5 s and more. Wall time is the machine's and its load's, so a gate on it would fail
@@ -262,3 +262,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Deviations from the step's plan, which predates step 08: `dedensd`'s loop, not the driver, which refuses a
     recurse stage (D195); lame as refusing servers, since a server answering without AA (`Unauthoritative`) still
     refers, and its referrals still resolve the captures.
+
+- D202 (amends D133, D164; builds on D172) The crate's time budget of `just sim-time` is 12 s, 84 s at D172's scale of 7;
+  a family's stays 2 s. 10 s was set for nine families (D164, binary 7.2 s); at fifteen, main's binary took about
+  10.1 s on the Apple M5 and 70.6 s on a runner (2026-11-21), so every new family failed the job without being slow
+  itself: `attacks` (D189) adds 0.4 to 0.7 s, 2.0 to 2.3 s on a runner, and its pull request measured 70.5 and 72.0 s.
+  A family over its 2 s still runs fewer seeds (D133). Rejected: fewer seeds in the heaviest families (`dnssec`,
+  `crash`, `baseline`, `recursion`), each within its own budget, so the cut would buy time no family overspent; a
+  budget growing with the number of families, which would never fail on the binary.
