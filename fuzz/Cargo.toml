@@ -86,6 +86,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "zone_answer"
+path = "fuzz_targets/zone_answer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cache_insert"
 path = "fuzz_targets/cache_insert.rs"
 test = false

@@ -1,13 +1,12 @@
 //! [`Zone`]: the checked content of one zone, immutable (D204).
 
-use std::collections::BTreeMap;
-
 use dedens_proto::rdata::Soa;
-use dedens_proto::{Class, Name, Ttl};
+use dedens_proto::{Class, Name, RecordType, Ttl};
 
-use crate::Node;
+use crate::{Node, RrSet};
 
-/// A zone: every name at or below its apex with the `RRset`s there, in canonical order (RFC 4034 §6.1).
+/// A zone: every name at or below its apex with the `RRset`s there, in canonical order (RFC 4034 §6.1), found by
+/// binary search (D206).
 ///
 /// Immutable: a change is a new `Zone` the server swaps in whole (D204), so a query reads one version from its
 /// start to its end without a lock. Every name between a name and the apex is a node, an empty non-terminal when
@@ -18,7 +17,7 @@ pub struct Zone {
     pub(crate) class: Class,
     pub(crate) soa: Soa<'static>,
     pub(crate) soa_ttl: Ttl,
-    pub(crate) nodes: BTreeMap<Name<'static>, Node>,
+    pub(crate) nodes: Vec<(Name<'static>, Node)>,
     pub(crate) records: usize,
 }
 
@@ -48,18 +47,28 @@ impl Zone {
     }
 
     /// The node of `name`, if the zone has it: with a record, or as an empty non-terminal.
-    ///
-    /// The node lives as long as `name` does at most: the map is searched with a borrowed key, which only a map of
-    /// the same lifetime allows.
     #[must_use]
-    pub fn node<'a>(&'a self, name: &Name<'a>) -> Option<&'a Node> {
-        let nodes: &BTreeMap<Name<'a>, Node> = &self.nodes;
-        nodes.get(name)
+    pub fn node(&self, name: &Name<'_>) -> Option<&Node> {
+        find(&self.nodes, name).map(|(_, node)| node)
+    }
+
+    /// The node of `name` with the name as the zone stores it, in the case of the zone file.
+    #[must_use]
+    pub fn find(&self, name: &Name<'_>) -> Option<(&Name<'static>, &Node)> {
+        find(&self.nodes, name)
+    }
+
+    /// The `RRset` of the SOA record, at the apex: the first name in canonical order, as every other name is
+    /// below it.
+    #[must_use]
+    pub fn soa_rrset(&self) -> Option<&RrSet> {
+        let (_, apex) = self.nodes.first()?;
+        apex.rrset(RecordType::SOA)
     }
 
     /// Every node with its name, in canonical order.
     pub fn nodes(&self) -> impl ExactSizeIterator<Item = (&Name<'static>, &Node)> {
-        self.nodes.iter()
+        self.nodes.iter().map(|(name, node)| (name, node))
     }
 
     /// The records of the zone, duplicates merged, signatures counted.
@@ -67,4 +76,13 @@ impl Zone {
     pub const fn record_count(&self) -> usize {
         self.records
     }
+}
+
+/// The entry of `name` in `nodes`, which are in canonical order.
+pub(crate) fn find<'n>(
+    nodes: &'n [(Name<'static>, Node)],
+    name: &Name<'_>,
+) -> Option<(&'n Name<'static>, &'n Node)> {
+    let at = nodes.binary_search_by(|(key, _)| key.cmp(name)).ok()?;
+    nodes.get(at).map(|(key, node)| (key, node))
 }

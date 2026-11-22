@@ -49,6 +49,7 @@ pub use resolver::{resolve_replay, rrset_cache_insert, scrub_response};
 pub use roots::{parse_root_hints, parse_tlds_json};
 pub use server::{cache_insert, parse_network, serve_query};
 pub use zone::{journal_read, load_zone};
+pub use zone::{load_zone, zone_answer};
 
 /// A fuzz entry point.
 pub type Entry = fn(&[u8]);
@@ -76,6 +77,7 @@ targets! {
     parse_zone,
     load_zone,
     journal_read,
+    zone_answer,
     cache_insert,
     serve_query,
     parse_name,

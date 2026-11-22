@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, DecodedRecord, Name, Record, RecordType, Ttl, WireRdata};
 
+use crate::zone::find;
 use crate::{
     Bound, ErrorKind, Kind, Limits, Node, Place, Report, RrSet, Warning, WarningKind, Zone,
     ZoneError,
@@ -327,7 +328,7 @@ impl<'l> Builder<'l> {
         self.check_names();
         let (nodes, delegations) = self.nodes();
         self.check_glue(&nodes, delegations);
-        let soa = nodes.get(&self.apex).and_then(|apex| {
+        let soa = find(&nodes, &self.apex).and_then(|(_, apex)| {
             let set = apex.rrset(RecordType::SOA)?;
             match set.rdatas().first()?.data() {
                 RData::Soa(soa) => Some((soa.into_owned(), set.ttl())),
@@ -335,9 +336,7 @@ impl<'l> Builder<'l> {
             }
         });
         let apex = &self.apex;
-        let has_ns = nodes
-            .get(apex)
-            .is_some_and(|n| n.rrset(RecordType::NS).is_some());
+        let has_ns = find(&nodes, apex).is_some_and(|(_, n)| n.rrset(RecordType::NS).is_some());
         if soa.is_none() {
             self.error(None, ErrorKind::NoSoa);
         }
@@ -399,7 +398,7 @@ impl<'l> Builder<'l> {
     /// The names come in canonical order, and in it a name's ancestors that are no name of the zone are exactly
     /// those deeper than what it shares with the name before it: an ancestor there would sort after the
     /// previous name and before this one. So the empty non-terminals are found with no lookup.
-    fn nodes(&mut self) -> (BTreeMap<Name<'static>, Node>, Vec<Delegation>) {
+    fn nodes(&mut self) -> (Vec<(Name<'static>, Node)>, Vec<Delegation>) {
         let names = std::mem::take(&mut self.names);
         let mut total = names.len();
         let mut nodes = Vec::with_capacity(total);
@@ -428,8 +427,7 @@ impl<'l> Builder<'l> {
             }
             self.place(&mut nodes, &mut delegations, &mut cut, name, pending);
         }
-        // Already in canonical order, so the map is built in one pass.
-        (nodes.into_iter().collect(), delegations)
+        (nodes, delegations)
     }
 
     /// Adds the node of `name`, the next in canonical order, marking it by the `cut` it is below.
@@ -528,10 +526,10 @@ impl<'l> Builder<'l> {
     }
 
     /// Delegations whose name servers inside the delegated domain have no address in the zone (RFC 9471 §2).
-    fn check_glue(&mut self, nodes: &BTreeMap<Name<'static>, Node>, delegations: Vec<Delegation>) {
+    fn check_glue(&mut self, nodes: &[(Name<'static>, Node)], delegations: Vec<Delegation>) {
         for d in delegations {
             for target in d.targets {
-                let has_address = nodes.get(&target).is_some_and(|n| {
+                let has_address = find(nodes, &target).is_some_and(|(_, n)| {
                     n.rrset(RecordType::A).is_some() || n.rrset(RecordType::AAAA).is_some()
                 });
                 if !has_address {
