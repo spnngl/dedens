@@ -10,6 +10,8 @@
 //!   `answers/`.
 //! - `exchanges`: TSIG-signed and unsigned AXFR, IXFR, NOTIFY and UPDATE between Knot's tools and Knot, into
 //!   `recordings/` ([`scenarios`]).
+//! - `signed-stream`: Knot serves the first records of the root zone to the key's holder, and the signed AXFR, several
+//!   TSIG-signed messages, is recorded.
 //! - `root-ixfr`: Knot loads `root-previous.zone`, reloads `root.zone` as a difference, and the IXFR from the
 //!   first serial is recorded.
 //!
@@ -62,6 +64,7 @@ fn main() -> Result<()> {
             "sources" => transfer::sources(&dir)?,
             "answers" => servers::answers(&dir)?,
             "exchanges" => scenarios::exchanges(&dir)?,
+            "signed-stream" => scenarios::signed_stream(&dir)?,
             "root-ixfr" => scenarios::root_ixfr(&dir)?,
             other => return Err(format!("no stage {other}").into()),
         }

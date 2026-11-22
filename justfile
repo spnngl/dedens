@@ -536,9 +536,9 @@ authoritative-images:
 
 # Capture testdata/authoritative/ anew (D203): the root zone and zonetransfer.me transferred from public servers, the
 # answers of Knot and NSD on every zone of the tests, and the exchanges of Knot's tools with Knot, among them the IXFR
-# between two serials of the root. Each file is replaced when its capture succeeded. Needs the images of
-# `authoritative-images`.
-capture-authoritative *stages="sources answers exchanges root-ixfr":
+# between two serials of the root, and a signed AXFR of several messages. Each file is replaced when its capture
+# succeeded. Needs the images of `authoritative-images`.
+capture-authoritative *stages="sources answers exchanges root-ixfr signed-stream":
     cargo run -q -p dedens-testkit --features authoritative --example capture_authoritative -- testdata/authoritative {{ stages }}
 
 # Capture the root's DNSKEY RRset through the KSK-2010 to KSK-2017 rollover (D200) into testdata/dnssec/rollover-*.zone:

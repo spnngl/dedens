@@ -791,6 +791,55 @@ pub(crate) fn exchanges(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// How many records of the root zone the `signed-stream` stage serves: its transfer takes five messages or more.
+const STREAM_RECORDS: usize = 1200;
+
+/// The `signed-stream` stage: Knot serves the first [`STREAM_RECORDS`] records of the root zone to the key's holder,
+/// and `kdig` signs the AXFR: the response is several messages, each signed over the one before (RFC 8945 §5.3.1).
+pub(crate) fn signed_stream(dir: &Path) -> Result<()> {
+    let testdata = dir.parent().ok_or("no testdata directory")?;
+    let root = ZONES
+        .iter()
+        .find(|zone| zone.id == "root")
+        .ok_or("no root zone")?
+        .load(testdata)?;
+    let records = root
+        .get(..STREAM_RECORDS)
+        .ok_or("the root zone is shorter")?;
+    let serial = serial_of(records)?;
+    let captured_at = now()?;
+    let served = [Served {
+        apex: ".".to_owned(),
+        text: zones::render(
+            records,
+            &format!("the first {STREAM_RECORDS} records of the root zone."),
+        ),
+        acl: "signed",
+    }];
+    let lab = Lab::start(&served, false, false)?;
+    let _ = lab.proxy.take();
+    lab.run(&signed(".", "AXFR", GOOD))?;
+    let messages = lab.proxy.take();
+    eprintln!("{}", summary(&messages));
+    let recording = Recording {
+        description: format!(
+            "AXFR of the first {STREAM_RECORDS} records of the root zone signed with hmac-sha256: a stream of TSIG-signed messages (RFC 8945 §5.3.1)"
+        ),
+        server: servers::versions()?
+            .remove(&Server::Knot)
+            .ok_or("no Knot version")?,
+        captured_at,
+        zone: Name::root(),
+        serial: Some(serial),
+        key: Some(GOOD.name.to_owned()),
+        messages,
+    };
+    write(
+        &dir.join("recordings/axfr-tsig-stream.yaml"),
+        recording.to_yaml()?.as_bytes(),
+    )
+}
+
 /// The `root-ixfr` stage: Knot loads the previous root zone, then the current one as a difference, and IXFRs the
 /// difference (RFC 1995 §4).
 pub(crate) fn root_ixfr(dir: &Path) -> Result<()> {
