@@ -5,6 +5,7 @@ mod dnssec;
 mod edns;
 mod message;
 mod rdata;
+mod serial;
 mod svcb;
 mod text;
 mod util;

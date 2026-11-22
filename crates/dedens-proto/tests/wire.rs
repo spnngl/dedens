@@ -771,3 +771,31 @@ fn a_message_over_65535_bytes_is_refused() {
     let error = Message::decode(&vec![0; 65536]).expect_err("too long");
     assert!(matches!(error.kind, DecodeErrorKind::Invalid(_)));
 }
+
+// --- A record outside a message ---
+
+proptest! {
+    /// `Record::write_wire` and `Record::from_wire` are inverses, whatever follows the record.
+    #[test]
+    fn a_record_outside_a_message_round_trips(rec in record(), tail in any::<Vec<u8>>()) {
+        let mut wire = Vec::new();
+        rec.write_wire(&mut wire);
+        let end = wire.len();
+        wire.extend(&tail);
+        let (decoded, used) = Record::from_wire(&wire).expect("reads what was written");
+        prop_assert_eq!(used, end);
+        prop_assert_eq!(decoded.invalid_rdata, None);
+        prop_assert_eq!(decoded.record, rec);
+    }
+
+    /// A record cut short is an error at every length, and bytes outside data never panic.
+    #[test]
+    fn a_record_outside_a_message_cut_short_is_refused(rec in record(), garbage in any::<Vec<u8>>()) {
+        let mut wire = Vec::new();
+        rec.write_wire(&mut wire);
+        for len in 0..wire.len() {
+            prop_assert!(Record::from_wire(&wire[..len]).is_err(), "{len} bytes of {}", wire.len());
+        }
+        let _ = Record::from_wire(&garbage);
+    }
+}
