@@ -253,8 +253,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     them lame for the iteration tests: lame, they would be asked once the zone's servers were (RFC 4697 §2.2.1).
     Each server of a zone answers every question the zone was asked: servers of one zone refer to different
     servers of a child (Akamai's), and a capture asked those of the first referral alone. netmeister.org's servers
-    were found by a lookup of one of its three names, the others refused: its IPv6 server is the broken one, as
-    the AAAA may be past `Limits::targets` when that name is drawn last. A silent server drops the questions its
+    were found by a lookup of one of its three names, the others refused: its IPv6 server is the broken one (a
+    name's A and AAAA count as one of `Limits::targets` since D191's amendment, so the AAAA was once past it when
+    that name was drawn last, and no longer is). A silent server drops the questions its
     zones were asked and refuses the others, as the other server does: a lookup of a name no capture holds would
     wait on it, asked again with its timeout doubled, where the Internet's other server answers (seed
     16147968738952915998 spent `Limits::time` on net.'s).

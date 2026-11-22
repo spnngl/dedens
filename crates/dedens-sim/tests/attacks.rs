@@ -664,8 +664,9 @@ const NAMES: usize = 1000;
 
 #[test]
 fn nxnsattack_a_referral_of_a_thousand_servers_without_address_costs_the_targets_limit() {
-    // D191: an address lookup for each server of a delegation, up to `Limits::targets`; the scrubber keeps 20 names
-    // of the thousand (D192), the resolution 13 servers, and the lookups' queries count in the question's.
+    // D191: a lookup for each server name of a delegation, up to `Limits::targets` names (A only: each is
+    // denied); the scrubber keeps 20 names of the thousand (D192), the resolution 13 servers, and the lookups'
+    // queries count in the question's.
     seed::each(SEEDS, |seed| {
         let (unsigned, nx) = (
             Resolution::read("unsigned"),
@@ -713,7 +714,7 @@ fn nxnsattack_a_referral_of_a_thousand_servers_without_address_costs_the_targets
             paid.len(),
             slowest.get()
         );
-        // The numbers of D191's defaults, written out: a limit changed must change them here too. 5 lookups
+        // The numbers of D191's defaults, written out: a limit changed must change them here too. 5 names, one A each
         // (`Limits::targets`, Unbound's `MAX_TARGET_NX`), the walk of 4 queries, none of the 32 of `queries`, and
         // the 4.5 s of `time` not reached.
         assert_eq!(lookups, 5, "lookups");

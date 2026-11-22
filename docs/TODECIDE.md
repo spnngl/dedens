@@ -309,10 +309,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   asks for a minimal answer instead: one RRset of the name (§4.1) or a synthesized HINFO (§4.2). Over UDP it is
   truncated, as the forward stage's. Default: the cached RRsets of the name if any, else resolve its A and answer
   that, as §4.1 allows.
-- `Limits::targets` counts A and AAAA apart (D191): a delegation of three server names without glue, two of them
-  failing to resolve, may reach its fifth lookup before the AAAA of the one that resolves, and fail on a silent
-  IPv4 server (the simulation steers around it, D196). Unbound fetches a name's A and AAAA together and allows 16
-  per delegation (`MAX_DP_TARGET_COUNT`). Default: count names, not lookups, and keep 5.
 - The CPU of a miss (D201): after the cuts of 2026-11-22 (`docs/benchmarks.md` "After the cuts"), `recurse` at
   saturation costs `dedensd` 69 to 78 µs a query against Unbound's 73 to 77 and answers 1.21 times its queries at 1
   core (1.10 at 3), but at the common rate it is still 128 µs against 94 (+36%; 113 against 83 at 3 cores), 58 µs

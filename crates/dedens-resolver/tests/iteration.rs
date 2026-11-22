@@ -1565,16 +1565,53 @@ fn rfc1034_5_3_3_a_server_without_ipv4_reached_over_ipv6() {
 }
 
 #[test]
-fn d191_targets_bound_counts_aaaa_lookups() {
-    // The A lookup of ns-143-b.gandi.net gives no address: its AAAA lookup is past a bound of one.
+fn d191_the_aaaa_of_the_third_name_is_reached_within_the_default_bound() {
+    // Three server names without glue, looked up in any order: two have no address, A or AAAA, the third only an
+    // AAAA. Counted by lookup, the AAAA of the third looked up last is the sixth, past the bound of 5 (and its
+    // address, which the server of google.com at it would give, never asked); counted by name, it is the third
+    // name's.
+    let capture = recursion::Resolution::read("unsigned");
+    let answer = answered(&capture);
+    let (class, ttl) = (answer.answer[0].class, answer.answer[0].ttl);
+    let nx = recursion::Resolution::read("nxdomain-nsec3");
+    let soa = (response(&nx, "nl.", "dedens-nxdomain.nl.")
+        .authority
+        .into_iter())
+    .find(|r| r.rtype() == RecordType::SOA)
+    .expect("nl's SOA");
+    let working = name("ns2.dedens-targets.example.");
+    let v6 = RData::Aaaa(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+    let lookup = |query: &Query| {
+        let question = &query.question;
+        // NODATA of the zone asked.
+        let mut response = to(answer.clone(), question);
+        response.answer.clear();
+        response.authority = vec![Record {
+            name: query.zone.clone(),
+            ..soa.clone()
+        }];
+        if question.name == working && question.qtype == RecordType::AAAA {
+            response.authority.clear();
+            response.answer = vec![Record::new(working.clone(), class, ttl, &v6)];
+        }
+        response
+    };
+    let names: Vec<Name<'static>> = (0..3)
+        .map(|i| name(&format!("ns{i}.dedens-targets.example.")))
+        .collect();
+    for seed in 0..16 {
+        let (_, sent) = glueless(&names, Limits::default(), seed, &lookup);
+        let aaaa = (working.to_string(), RecordType::AAAA);
+        assert!(looked_up(&sent).contains(&aaaa), "seed {seed}: {sent:?}");
+    }
+    // A bound of one name still takes the name's A and its AAAA.
     let limits = Limits {
         targets: 1,
-        servers: 100,
-        queries: 100,
         ..Limits::default()
     };
-    let (outcome, _) = without_ipv4(limits);
-    assert_eq!(outcome, Resolved::Failed(Failure::Limit(Limit::Targets)));
+    let (_, sent) = glueless(&names[2..], limits, SEED, &lookup);
+    let aaaa = (working.to_string(), RecordType::AAAA);
+    assert!(looked_up(&sent).contains(&aaaa), "{sent:?}");
 }
 
 #[test]

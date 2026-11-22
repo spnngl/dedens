@@ -75,10 +75,10 @@ pub struct Limits {
     /// (`bin/include/defaultconfig.h`), the most a referral needs (RFC 1035 §4.2.1's 512 bytes hold 13 root
     /// servers). A delegation that asked as many looks up no more addresses.
     pub servers: usize,
-    /// Address lookups per delegation, its servers' A and AAAA each counting: 5, Unbound's `MAX_TARGET_NX`
+    /// Server names looked up per delegation, a name's A and AAAA counting as one: 5, Unbound's `MAX_TARGET_NX`
     /// (`iterator/iterator.h`) against `NXNSAttack` (CVE-2020-12662). Unbound counts the lookups answered NXDOMAIN,
-    /// per client question, and allows 16 lookups per delegation (`MAX_DP_TARGET_COUNT`); here a name whose A is
-    /// NXDOMAIN has its AAAA skipped (D191).
+    /// per client question, and allows 16 names per delegation (`MAX_DP_TARGET_COUNT`, counted once for each set of
+    /// a name's lookups: `target_count_increase`); here a name whose A is NXDOMAIN has its AAAA skipped (D191).
     pub targets: usize,
     /// Queries sent for the validator's questions, beside [`Limits::queries`]: 32, as Unbound gives each of its
     /// validator's fetches a `max-sent-count` of its own within its global quota of 200 (`MAX_GLOBAL_QUOTA`,
@@ -139,7 +139,7 @@ pub enum Limit {
     #[error("servers per delegation")]
     Servers,
     /// [`Limits::targets`].
-    #[error("address lookups per delegation")]
+    #[error("server names looked up per delegation")]
     Targets,
     /// [`Limits::validation`].
     #[error("validation queries")]
@@ -778,7 +778,7 @@ struct Delegation {
     missing: Vec<Name<'static>>,
     /// The server whose A was looked up last, whose AAAA comes next.
     aaaa: Option<Name<'static>>,
-    /// Address lookups started.
+    /// Server names looked up, each once for its A and its AAAA ([`Limits::targets`]).
     looked_up: usize,
     heard: Heard,
     /// Whether its servers at local addresses are asked ([`Resolution::asking_local_addresses`]).
@@ -2046,7 +2046,9 @@ fn ask(
         // The servers timed out are asked again, each timeout backed off, until the infra cache skips them (D194):
         // a datagram lost costs a try, not the server (RFC 1035 §7.2, Unbound's `outbound-msg-retry`). They come
         // after a name's AAAA, whose A was looked up, and before a name not looked up yet, which costs queries (D196).
+        let mut follows = false;
         let lookup = if let Some(name) = delegation.aaaa.take() {
+            follows = true;
             Some(Question::new(name, RecordType::AAAA))
         } else if let Some(choice) =
             pick(&mut delegation.timed_out, zone, infra, remaining, now, rng)
@@ -2068,10 +2070,11 @@ fn ask(
             }
             if depth >= limits.depth {
                 limit = Some(Limit::Depth);
-            } else if delegation.looked_up >= limits.targets {
+            } else if !follows && delegation.looked_up >= limits.targets {
                 limit = Some(Limit::Targets);
             } else {
-                delegation.looked_up += 1;
+                // A name counts once, for its A and its AAAA: the AAAA follows the A that was counted.
+                delegation.looked_up += usize::from(!follows);
                 return Ask::Lookup(lookup);
             }
         }
