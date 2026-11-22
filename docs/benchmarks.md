@@ -951,21 +951,36 @@ Peak memory 47 MB (`max alloc` of the allocation profiler: 297 000 live allocati
 
 `answer_zone`, `reply_zone`, `reply_root` and `lookup_*` in `crates/dedens-bench/benches/zone.rs`: the generated zone of
 100 000 records (`h4000.example.` data, `nothing.example.` NXDOMAIN, `anything.wild.example.` wildcard,
-`www.h4002.example.` CNAME then data) and the captured root zone (a referral, a name under no delegation); `reply` is
-the answer, the message filled and encoded in 1232 bytes. Medians of one run, one query at a time:
+`www.h4002.example.` CNAME then data, `long`: a name of 122 labels, the most under `example.`, that is not there,
+`growth`: 100 labels below a DNAME whose target is below its own owner, which makes the name longer at each link) and
+the captured root zone (a referral, a name under no delegation, `root_long`: 127 labels); `reply` is the answer, the
+message filled and encoded in 1232 bytes. Medians of one run, one query at a time, on a machine shared with other
+builds (read the ratios):
 
 | | `answer` alone | `reply` |
 |---|---|---|
-| data | 255 ns | 300 ns |
-| NXDOMAIN, SOA TTL | 614 ns | 711 ns |
-| wildcard | 667 ns | 794 ns |
-| CNAME, then data | 518 ns | 662 ns |
-| root: name under no delegation | | 789 ns |
-| root: referral to `com.` (13 name servers, glue) | | 6.2 µs |
+| data | 284 ns | 372 ns |
+| NXDOMAIN, SOA TTL | 578 ns | 695 ns |
+| wildcard | 833 ns | 956 ns |
+| CNAME, then data | 913 ns | 1.12 µs |
+| 122 labels, not there | 979 ns | 1.16 µs |
+| DNAME that grows the name | 15.1 µs | 22.2 µs |
+| root: name under no delegation | | 1.12 µs |
+| root: 127 labels | | 862 ns |
+| root: referral to `com.` (13 name servers, glue) | | 6.58 µs |
 
-- The lookup is 85% of a data answer: a name is searched ancestor by ancestor over its own wire bytes (no allocation;
-  `answer` allocates nothing but the chain's `Vec` when there is a link). `reply` allocates the message's `Vec`s: 1
-  allocation of 224 B for a data answer, 15 of 2.6 KB for the root's referral.
+- The first version searched a name from itself up, a lookup for each ancestor to find the closest encloser, then
+  again for the cut above it: quadratic in the labels. The long names took (`answer` / `reply`) 369 µs / 359 µs
+  (122 labels), 3.47 ms / 4.2 ms (the DNAME growth, whose every link is a long name) and 476 µs for the root's 127
+  labels, against 0.3-0.9 µs for a normal name. Now one walk from
+  the apex down over the wire bytes of the name, stopping at the first suffix that is no node (D204: every ancestor
+  of a node is a node), recording the first cut on the way: 979 ns, 15.1 µs and 862 ns, 3.4 times a short name for
+  122 labels; the growth case is a chain of long names, a link each.
+- A short name's lookup is the same: data 292 → 284 ns, wildcard 791 → 833 ns, CNAME 664 → 913 ns, NXDOMAIN 1.54 µs → 578 ns (614 ns in
+  the first record of this section: runs vary by that much on this machine).
+- The lookup is most of a data answer: no allocation (`answer` allocates nothing but the chain's `Vec` when there is a
+  link). `reply` allocates the message's `Vec`s: 1 allocation of 224 B for a data answer, 15 of 2.6 KB for the
+  root's referral.
 - The nodes are a sorted `Vec` bisected, not D204's `BTreeMap` (the map cannot return a node outliving the name it was
   asked with): one lookup in 100 000 names 215 ns against 196 ns (10% more). `load_dedens` after the change: 63 ms and
   47 MB, `read_dedens` 9.1 ms, the same ratio of 7 as before.

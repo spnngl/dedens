@@ -349,6 +349,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
   `internet.c` `solve_additional`): D206 adds A and AAAA only. Default: add them with the step that
   takes the zone's SVCB data into answers (RFC 9460 §4.1 AliasMode targets), not before.
 - A chain of more than `MAX_CHAIN` (11) links ends in `End::Open` with AA and the links so far; Knot stops at 5, NSD at 18. Default: keep 11 until a client of `dedensd` that is not ours refuses one.
+- Addresses below a delegation or a DNAME in the additional section of an answer (D206): Knot adds them (the root
+  zone's `. NS` answer carries the glue of `net.`'s `root-servers.net`), dedens does not (RFC 9471 §2.2 allows glue
+  only in a referral; an answer's names must be authoritative data). A priming query of the root zone is the case that
+  loses addresses. Default: none, until a client needs them; alternative: Knot's, for the `NS`, `MX` and `SRV` targets.
+- A wildcard that is a delegation (`*.a NS ns.x.`, D206): dedens refers, as Knot; RFC 4592 §4.2 says a wildcard NS
+  is not a delegation for names it synthesises. Default: refer; alternative: answer NS data as for any type.
 
 ## Later
 

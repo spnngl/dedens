@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use dedens_proto::{Class, MAX_NAME_LEN, Name, Question, Rcode, RecordType};
+use dedens_proto::{Class, MAX_LABELS, MAX_NAME_LEN, Name, Question, Rcode, RecordType};
 
 use crate::{Kind, Node, RrSet, Zone};
 
@@ -162,8 +162,8 @@ impl Answer<'_> {
         }
     }
 
-    /// Whether the answer is authoritative, AA: all but a referral from the name asked, or a refusal. A chain
-    /// that ends in a referral keeps it, as Knot's does.
+    /// Whether the answer is authoritative, AA: all but a referral from the name asked, or a refusal. AA is the
+    /// first owner's, so a chain that ends in a referral keeps it (RFC 6604 §2.1; Knot does the same).
     #[must_use]
     pub const fn authoritative(&self) -> bool {
         match self.end {
@@ -174,11 +174,15 @@ impl Answer<'_> {
     }
 }
 
-/// Where a name is, in a zone that has every ancestor of its names down to the apex as a node.
+/// Where a name is, in a zone that has every ancestor of its names down to the apex as a node (D204).
 enum Located<'a> {
+    /// The zone has the name.
     Exact(Entry<'a>),
-    /// The closest encloser.
+    /// The zone has no such name: its closest encloser, a node that is neither a cut nor occluded.
     Absent(Entry<'a>),
+    /// The name is below this delegation point or DNAME owner, the first on the way down from the apex: it is
+    /// hidden by it, whatever the zone holds there (RFC 1034 §4.2.1, RFC 6672 §2.4).
+    Cut(Entry<'a>),
 }
 
 /// Whether `node` holds NSEC3 records and nothing else.
@@ -239,41 +243,50 @@ impl Zone {
         Answer { chain, end }
     }
 
-    /// Where `name`, which is within the zone, is: its node, or its closest encloser.
+    /// Where `name`, which is within the zone, is, walking down from the apex.
+    ///
+    /// Every ancestor of a node is a node (D204), so the closest encloser is the last name of the walk before one
+    /// the zone lacks, and a name that is not in the zone costs one lookup past its closest encloser: the time is
+    /// bounded by the depth of the zone, not by the length of the name, which a client picks.
     fn locate<'a>(&'a self, name: &Name<'_>) -> Option<Located<'a>> {
+        let (apex, node) = self.nodes.first()?;
+        let mut encloser = Entry { name: apex, node };
         let mut buf = [0; MAX_NAME_LEN];
         let wire = name.to_wire(&mut buf);
+        // Where each label starts in `wire`, the first one first.
+        let mut starts = [0_u8; MAX_LABELS];
+        let mut count = 0;
         let mut at = 0;
-        // The name, then each ancestor down to the apex: one of them is a node.
-        loop {
-            let suffix = Name::from_uncompressed(wire.get(at..)?).ok()?;
+        while let Some(&len) = wire.get(at).filter(|len| **len != 0) {
+            *starts.get_mut(count)? = u8::try_from(at).ok()?;
+            count += 1;
+            at += usize::from(len) + 1;
+        }
+        let apex_labels = self.apex.label_count();
+        if count > apex_labels && node.is_dname_owner() {
+            return Some(Located::Cut(encloser));
+        }
+        // The suffix of `depth` labels, from the apex's depth + 1 to the name itself.
+        for depth in apex_labels + 1..=count {
+            let from = usize::from(*starts.get(count - depth)?);
+            let suffix = Name::from_uncompressed(wire.get(from..)?).ok()?;
             // A name that holds nothing but NSEC3 records is no name to ask for: it is in the zone for the
             // proofs only (RFC 5155 §7.2), and Knot and NSD answer as if it were absent.
-            if let Some((name, node)) = self.find(&suffix).filter(|(_, node)| !only_nsec3(node)) {
-                let entry = Entry { name, node };
-                return Some(if at == 0 {
-                    Located::Exact(entry)
-                } else {
-                    Located::Absent(entry)
-                });
+            let Some((name, node)) = self.find(&suffix).filter(|(_, node)| !only_nsec3(node))
+            else {
+                return Some(Located::Absent(encloser));
+            };
+            let entry = Entry { name, node };
+            if depth == count {
+                return Some(Located::Exact(entry));
             }
-            at += usize::from(*wire.get(at)?) + 1;
-        }
-    }
-
-    /// The nearest ancestor of `entry` that is not occluded: the delegation point or DNAME owner that hides it.
-    fn above<'a>(&'a self, entry: Entry<'a>) -> Option<Entry<'a>> {
-        let mut buf = [0; MAX_NAME_LEN];
-        let wire = entry.name.to_wire(&mut buf);
-        let mut at = 0;
-        loop {
-            at += usize::from(*wire.get(at)?) + 1;
-            let suffix = Name::from_uncompressed(wire.get(at..)?).ok()?;
-            let (name, node) = self.find(&suffix)?;
-            if node.kind() != Kind::Occluded {
-                return Some(Entry { name, node });
+            if node.kind() == Kind::Delegation || node.is_dname_owner() {
+                return Some(Located::Cut(entry));
             }
+            encloser = entry;
         }
+        // The apex itself.
+        Some(Located::Exact(encloser))
     }
 
     /// The wildcard that answers for a name whose closest encloser is `encloser`.
@@ -289,14 +302,14 @@ impl Zone {
         Some(Entry { name, node })
     }
 
-    /// What `name`, within the zone, leads to when `qtype` is asked, .
+    /// What `name`, within the zone, leads to when `qtype` is asked.
     fn step<'a>(&'a self, name: Name<'a>, qtype: RecordType) -> Step<'a> {
-        let Some(located) = self.locate(&name) else {
-            // The apex is a node of every zone, so this is out of reach; refusing is the safe answer.
-            return Step::End(End::NotAuth);
-        };
-        let at = match located {
-            Located::Exact(entry) => match entry.node.kind() {
+        let at = match self.locate(&name) {
+            Some(Located::Cut(cut)) if cut.node.kind() == Kind::Delegation => {
+                return Step::End(End::Referral { cut });
+            }
+            Some(Located::Cut(owner)) => return Self::dname(name, owner),
+            Some(Located::Exact(entry)) => match entry.node.kind() {
                 Kind::Authoritative => Match::Exact(entry),
                 Kind::Delegation if qtype == RecordType::DS => Match::Exact(entry),
                 Kind::Delegation => return Step::End(End::Referral { cut: entry }),
@@ -306,33 +319,24 @@ impl Zone {
                         at: Match::Exact(entry),
                     });
                 }
-                Kind::Occluded => return self.hidden(name, entry),
+                // `locate` gives a name below a cut as `Cut`.
+                Kind::Occluded => return Step::End(End::NotAuth),
             },
-            Located::Absent(encloser) => match encloser.node.kind() {
-                Kind::Occluded => return self.hidden(name, encloser),
-                Kind::Delegation => return Step::End(End::Referral { cut: encloser }),
-                Kind::Authoritative | Kind::EmptyNonTerminal => {
-                    if encloser.node.is_dname_owner() {
-                        return Self::dname(name, encloser);
-                    }
-                    match self.wildcard(encloser.name) {
-                        Some(source) => Match::Wildcard { source, encloser },
-                        None => return Step::End(End::NxDomain { name, encloser }),
-                    }
+            Some(Located::Absent(encloser)) => match self.wildcard(encloser.name) {
+                // A wildcard that is a delegation point refers, as Knot's does; RFC 4592 §4.2 leaves it open. Its
+                // DS is data, as at any delegation point.
+                Some(source)
+                    if source.node.kind() == Kind::Delegation && qtype != RecordType::DS =>
+                {
+                    return Step::End(End::Referral { cut: source });
                 }
+                Some(source) => Match::Wildcard { source, encloser },
+                None => return Step::End(End::NxDomain { name, encloser }),
             },
+            // The apex is a node of every zone, so this is out of reach; refusing is the safe answer.
+            None => return Step::End(End::NotAuth),
         };
         Self::at(name, at, qtype)
-    }
-
-    /// What a name hidden below a delegation point or a DNAME leads to.
-    fn hidden<'a>(&'a self, name: Name<'a>, entry: Entry<'a>) -> Step<'a> {
-        match self.above(entry) {
-            Some(cut) if cut.node.kind() == Kind::Delegation => Step::End(End::Referral { cut }),
-            // `above` finds a node that is no occluded one: a delegation point or a DNAME owner.
-            Some(owner) => Self::dname(name, owner),
-            None => Step::End(End::NotAuth),
-        }
     }
 
     /// The synthesis of the DNAME of `owner` for `name` below it (RFC 6672 §3.1).

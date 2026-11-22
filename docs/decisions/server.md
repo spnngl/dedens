@@ -2356,13 +2356,19 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `Limits` (those bound a load): the chain bound is `MAX_CHAIN`. `Answer::fill` writes the records into a `Message`
   borrowing the zone's names and RDATA (`Name::reborrow`, `WireRdata::reborrow`, no copy) and `Glue::encode` encodes
   it; no zone data is allocated for a query (the `Vec`s of the message are).
-  - Algorithm: the name or its closest encloser (the first node among its ancestors; every ancestor is a node, D204).
-    Occluded names answer as the cut or DNAME above them. An existing name, an empty non-terminal included, answers
-    itself: no wildcard (RFC 4592 §2.2.1), no data when the type is absent. An absent name: a delegation at the
-    encloser is a referral, a DNAME there synthesises, `*.<encloser>` answers if it exists (its owner is the name
-    asked, the case as asked), else NXDOMAIN. DS at a delegation is answered from the parent side, the zone being the
-    parent (RFC 4035 §3.1.4.1; Knot and NSD alike); another type there is a referral. AA is set but for a referral
-    and a refusal (a chain that ends in a referral keeps it, as Knot).
+  - Algorithm: the name or its closest encloser, found by one walk from the apex down, a label at a time, over the
+    wire bytes of the name (every ancestor of a node is a node, D204, so the first suffix that is no node ends the
+    walk; a name of 127 labels costs what one of 3 does, where a search of each ancestor from the name up cost a
+    lookup each, quadratic, `docs/benchmarks.md`). The first delegation or DNAME owner on the way is the cut: the
+    names below it answer as it does, a delegation a referral and a DNAME the synthesis (RFC 6672 §2.4: data below a
+    DNAME is occluded). An existing name, an empty non-terminal included, answers itself: no wildcard (RFC 4592
+    §2.2.1), no data when the type is absent. An absent name: `*.<encloser>` answers if it exists (its owner is the
+    name asked, the case as asked), else NXDOMAIN. A wildcard that is itself a delegation (`*.a NS`) refers, as Knot,
+    but for DS (RFC 4592 §4.2 says otherwise: TODECIDE). DS at a delegation is answered from the parent side, the
+    zone being the parent (RFC 4035 §3.1.4.1; Knot and NSD alike); another type there, ANY included, is a referral.
+    AA is set but for a referral and a refusal (a chain that ends in a referral keeps it: RFC 6604 §2.1, AA is the
+    first owner's, and Knot does the same). The meta types AXFR, IXFR, OPT, TSIG, MAILA and MAILB are asked of the
+    zone as any type (AA, NODATA): the transfer and the OPT are the server's (steps 06 and 08), not the answer's.
   - Negative answers carry the SOA with the least of its TTL and MINIMUM (RFC 2308 §3, Knot's `SOAMINTTL`); a name
     that holds only NSEC3 records is absent (RFC 5155 §7.2; both servers answer NXDOMAIN, and no NSEC3 as data).
   - Chains: followed in the zone up to `MAX_CHAIN` = 11 links, then `Open`. Knot stops at 5 (`CNAME_CHAIN_MAX`), NSD at
@@ -2374,12 +2380,16 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     AAAA and other small types. RRSIG asked: the signatures of the first type (D203 difference 4; step 07).
   - Additional section: the A and AAAA of in-zone NS, MX and SRV targets, in answers and referrals, the A
     before the AAAA; none for a CNAME target (RFC 2181 §10.3); no apex NS in the authority of a positive answer
-    (D203 difference 1, Knot). Knot adds SVCB and HTTPS records too: left to TODECIDE.
+    (D203 difference 1, Knot). Knot adds SVCB and HTTPS records too: left to TODECIDE. An answer's addresses come
+    from authoritative nodes only (RFC 9471 §2.2: glue is a referral's): a target below a delegation or below a
+    DNAME has none, where Knot adds it (the root's `. NS` answer with the glue of `net.`'s servers): TODECIDE. A
+    referral takes them from anywhere in the zone.
   - Referral (RFC 9471): NS in the authority, glue first for the servers inside the delegated domain (required), then
     the other servers' addresses in the zone, glue below another cut included (RFC 9471 §2.2; optional). TC is set
     only when required glue does not fit (§3.1: a response without in-domain glue is useless); optional glue is
     dropped whole by `encode_truncated` without TC, as Knot. NSD's cut of the additional section is compared by TC
-    alone (D203 difference 7).
+    alone (D203 difference 7); its additional section is checked to be a subset of ours, since it adds less (no SVCB,
+    apex NS hosts' addresses with the NS it adds).
   - Layout, amending D204: the nodes are a sorted `Vec`, searched by bisection, not a `BTreeMap`: the map's lookup
     with a name of the query's lifetime ties the node it returns to that lifetime, and the answer must keep it for the
     zone's. Cost (`lookup_*` in `benches/zone.rs`, 100 000-record zone, one name): 215 ns against 196 ns for the
@@ -2387,9 +2397,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Test data: RFC 1034 §6.2 on the §6.1 root zone, RFC 4592 §2.2.1 and RFC 6672 §2.2, §6 examples
     (`crates/dedens-zone/tests/answer.rs`), and every answer captured from Knot and NSD for each zone of D203
     (`reference.rs`), by D203's rules: signed zones without DO (the proofs are step 07's), Knot's answer (NSD's
-    for the ISI zone, which Knot refuses), RDATA names compared lowercase (both servers lower them), owners as asked.
-    Fuzz target `zone_answer`; bench `answer_zone`, `reply_zone`, `reply_root` (answers 0.25-0.6 µs, replies 0.3-0.7 µs
-    on the 100 000-record zone; a root referral 6 µs, 15 allocations of the message's `Vec`s).
+    for the ISI zone, which Knot refuses), the names of RDATA compared lowercase (both servers lower them; `Record`'s
+    equality ignores case there, strings and the rest are exact), owners as asked (as stored for NSD). Fuzz target
+    `zone_answer`; bench `answer_zone`, `reply_zone`, `reply_root` (answers 0.3-0.9 µs, replies 0.4-1.1 µs on the
+    100 000-record zone; a root referral 6.5 µs, 15 allocations of the message's `Vec`s; a name of 122 labels
+    1 µs, a DNAME chain that grows a name 15 µs, which were 370 µs and 3.5 ms searched from the name up).
   - Rejected: following chains without bound (a loop is an infinite reply); Knot's 5 (a resolver of ours would
     take the chain for one it must ask again); every `RRset` for ANY (RFC 8482); TC for any glue that does not fit
     (resolvers would fall back to TCP for nothing, RFC 9471 §3.1); a wildcard for an empty non-terminal (RFC 4592

@@ -1,6 +1,7 @@
 //! What a zone answers: RFC 1034 §4.3.2 and the examples of §6.2 (on the root zone of §6.1), RFC 4592 §2.2.1 and §3
 //! (wildcards), RFC 6672 §2.2, §3, §6 (DNAME), RFC 2308 §3 (the SOA of a negative answer), RFC 8482 §4.2 (ANY),
-//! RFC 4035 §3.1.4.1 (DS at a delegation), RFC 9471 §3.1 (glue and TC). D206 records each choice.
+//! RFC 4035 §3.1.4.1 (DS at a delegation), RFC 6604 §2.1 (AA and RCODE after a chain), RFC 9471 §3.1 (glue and
+//! TC). D206 records each choice.
 
 use std::fmt::Write;
 
@@ -242,6 +243,24 @@ fn s6_2_8_a_cname_asked_for_is_not_followed() {
 }
 
 // --- RFC 1034 §4.3.2, RFC 1035 §4.1.1 ---
+
+/// RFC 6604 §2.1: AA is the first owner's and the RCODE the last name's: a chain from an authoritative name that
+/// ends in a referral is AA, NOERROR, with the cut's NS in the authority.
+#[test]
+fn rfc6604_s2_1_a_chain_that_ends_in_a_referral_is_authoritative() {
+    let zone = example("a CNAME x.sub\nsub NS ns.other.\n");
+    let r = ask(&zone, "a.example.", RecordType::A);
+    assert_eq!((r.rcode, r.aa), (Rcode::NOERROR, true));
+    assert_eq!(r.answer.len(), 1);
+    assert_eq!(r.authority.len(), 1);
+    let r = ask(&zone, "a.example.", RecordType::CNAME);
+    assert_eq!(
+        (r.rcode, r.aa, r.authority.len()),
+        (Rcode::NOERROR, true, 0)
+    );
+    // The name asked is below the cut itself: not authoritative.
+    assert!(!ask(&zone, "x.sub.example.", RecordType::A).aa);
+}
 
 #[test]
 fn s4_3_2_a_name_outside_the_zone_or_of_another_class_is_refused() {
@@ -741,8 +760,8 @@ fn s3_1_a_referral_whose_glue_does_not_fit_is_truncated_and_sibling_glue_is_drop
             .contains(Flags::TC)
     );
     // Room for the three required records and the optional one's absence: not truncated.
-    let mut fitting = 0;
-    for limit in full.len() - 32..=full.len() {
+    let (mut fitting, mut cut) = (0, 0);
+    for limit in full.len() - 64..=full.len() {
         let mut buf = vec![0; limit];
         let len = glue.encode(&message, &mut buf).expect("encodes");
         let decoded = Message::decode(&buf[..len]).expect("decodes").message;
@@ -753,8 +772,12 @@ fn s3_1_a_referral_whose_glue_does_not_fit_is_truncated_and_sibling_glue_is_drop
         if !tc && kept == 3 {
             fitting += 1;
         }
+        if tc && kept < 3 {
+            cut += 1;
+        }
     }
     assert!(fitting > 0, "a size that holds the required glue only");
+    assert!(cut > 0, "a size that loses required glue");
     // Too small for the authority: the answer is cut and TC is set by the encoder.
     let mut buf = vec![0; 60];
     let len = glue.encode(&message, &mut buf).expect("encodes");
@@ -800,4 +823,149 @@ fn rdata_of_a_cname_is_read_in_place() {
         unreachable!("a CNAME");
     };
     assert_eq!(target, dns("b.example."));
+}
+
+// --- Names the zone holds only below, wildcards of other kinds ---
+
+#[test]
+fn s4_9_a_wildcard_that_is_an_empty_non_terminal_is_no_data() {
+    // `*.foo.example.` holds no record, only `a.*.foo.example.` does: it exists, and answers nothing.
+    let zone = example("a.*.foo TXT x\n");
+    let r = ask(&zone, "x.foo.example.", RecordType::TXT);
+    assert_eq!(r.rcode, Rcode::NOERROR);
+    assert!(r.aa);
+    assert_eq!((r.answer.len(), r.authority.len()), (0, 1));
+}
+
+#[test]
+fn s4_3_3_a_wildcard_cname_is_followed_from_the_name_asked() {
+    let zone = example("* CNAME target\ntarget A 192.0.2.9\n");
+    let r = ask(&zone, "foo.example.", RecordType::A);
+    assert_eq!(
+        r.answer,
+        [
+            "foo.example. 3600 IN CNAME target.example.",
+            "target.example. 3600 IN A 192.0.2.9"
+        ]
+    );
+}
+
+#[test]
+fn s4_3_3_a_wildcard_cname_that_leads_back_to_the_wildcard_ends_the_loop() {
+    // `x.example.` is not there either: the wildcard answers it again.
+    let zone = example("* CNAME x\n");
+    let question = Question::new(dns("foo.example."), RecordType::A);
+    let answer = zone.answer(&question);
+    assert_eq!(answer.chain.len(), 2);
+    assert!(matches!(answer.end, End::Open { ref name } if *name == dns("x.example.")));
+    assert_eq!(answer.rcode(), Rcode::NOERROR);
+}
+
+#[test]
+fn s4_2_a_wildcard_that_is_a_delegation_point_refers() {
+    // RFC 4592 §4.2 leaves it open; as Knot does, D206.
+    let zone = example("* NS ns.other.\n");
+    for rtype in [RecordType::A, RecordType::NS] {
+        let r = ask(&zone, "foo.example.", rtype);
+        assert!(!r.aa, "{rtype:?}");
+        assert_eq!(r.answer, Vec::<String>::new());
+        assert_eq!(r.authority, ["*.example. 3600 IN NS ns.other."]);
+    }
+    // A DS is the parent's data, as at any delegation point: here none.
+    let r = ask(&zone, "foo.example.", RecordType::DS);
+    assert!(r.aa);
+    assert_eq!((r.answer.len(), r.authority.len()), (0, 1));
+}
+
+#[test]
+fn s3_1_4_1_a_ds_below_a_delegation_is_a_referral() {
+    let zone = example("sub NS ns.other.\nwww.sub A 192.0.2.8\n");
+    for name in ["www.sub.example.", "not.there.sub.example."] {
+        let r = ask(&zone, name, RecordType::DS);
+        assert!(!r.aa, "{name}");
+        assert_eq!(r.authority, ["sub.example. 3600 IN NS ns.other."]);
+    }
+}
+
+#[test]
+fn s4_2_1_any_at_a_delegation_point_is_a_referral() {
+    let zone = example(
+        "sub NS ns.other.\nsub DS 12345 8 2 49FD46E6C4B45C55D4AC49FD46E6C4B45C55D4AC49FD46E6C4B45C55D4AC49FD\n",
+    );
+    let r = ask(&zone, "sub.example.", RecordType::ANY);
+    assert!(!r.aa);
+    assert_eq!(r.answer, Vec::<String>::new());
+    assert_eq!(r.authority, ["sub.example. 3600 IN NS ns.other."]);
+}
+
+// --- DNAME chains that grow ---
+
+#[test]
+fn s3_1_a_dname_whose_target_is_below_its_owner_grows_the_name_until_the_chain_ends() {
+    let zone = example(&dname("d", "b.d.example."));
+    let question = Question::new(dns("x.d.example."), RecordType::A);
+    let answer = zone.answer(&question);
+    assert_eq!(answer.chain.len(), MAX_CHAIN);
+    assert!(matches!(answer.end, End::Open { .. }));
+    assert_eq!(answer.rcode(), Rcode::NOERROR);
+    assert!(answer.authoritative());
+}
+
+#[test]
+fn s2_2_a_dname_that_grows_the_name_past_255_bytes_is_yxdomain_before_the_bound() {
+    // Each link adds a label of 30 bytes to a name of 12: the ninth makes 282.
+    let label = "b".repeat(29);
+    let zone = example(&dname("d", &format!("{label}.d.example.")));
+    let question = Question::new(dns("x.d.example."), RecordType::A);
+    let answer = zone.answer(&question);
+    assert_eq!(answer.chain.len(), 8);
+    assert!(matches!(answer.end, End::YxDomain { .. }));
+    assert_eq!(answer.rcode(), Rcode::YXDOMAIN);
+}
+
+// --- A name of 122 labels, the longest the zone takes ---
+
+#[test]
+fn s4_3_2_a_name_with_the_most_labels_is_found_from_the_apex_down() {
+    let long = format!("{}example.", "x.".repeat(122));
+    let zone = example("a.a MX 10 ns\nsub NS ns.other.\n");
+    // Not there: the encloser is the apex.
+    let question = Question::new(dns(&long), RecordType::A);
+    let answer = zone.answer(&question);
+    let End::NxDomain { encloser, .. } = &answer.end else {
+        unreachable!("nxdomain");
+    };
+    assert_eq!(*encloser.name, dns("example."));
+    // Below a delegation: its referral, whatever the length.
+    let r = ask(
+        &zone,
+        &format!("{}sub.example.", "x.".repeat(120)),
+        RecordType::A,
+    );
+    assert_eq!(r.authority, ["sub.example. 3600 IN NS ns.other."]);
+    // Below a name that is there.
+    let r = ask(
+        &zone,
+        &format!("{}a.a.example.", "x.".repeat(118)),
+        RecordType::A,
+    );
+    assert_eq!(r.rcode, Rcode::NXDOMAIN);
+}
+
+// --- The additional section of an answer: authoritative names only ---
+
+#[test]
+fn s2_4_an_answer_has_no_address_from_below_a_dname_or_a_delegation_point() {
+    let zone = example(&format!(
+        "{}x.d A 192.0.2.7\nsub NS ns.other.\nh.sub A 192.0.2.8\n\
+         a MX 10 x.d\nb MX 10 h.sub\nc MX 10 ns\n",
+        dname("d", "other.")
+    ));
+    for name in ["a.example.", "b.example."] {
+        let r = ask(&zone, name, RecordType::MX);
+        assert_eq!(r.answer.len(), 1, "{name}");
+        assert_eq!(r.additional, Vec::<String>::new(), "{name}");
+    }
+    let r = ask(&zone, "c.example.", RecordType::MX);
+    assert_eq!(r.additional, ["ns.example. 3600 IN A 192.0.2.1"]);
 }
