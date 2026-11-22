@@ -6,13 +6,13 @@
 //! the DS and DNSKEY of each zone on the way included.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Display;
 use std::net::IpAddr;
-use std::str::FromStr;
 
 use dedens_proto::edns::EdnsFlags;
 use dedens_proto::{Flags, Header, Message, Name, Opcode, Question, Rcode, RecordType};
 use serde::{Deserialize, Serialize};
+
+use crate::fields::{base64, text};
 
 /// The resolution of one name: its file of `testdata/recursion/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,50 +252,6 @@ impl Authorities {
         response[dedens_proto::HEADER_LEN..end]
             .copy_from_slice(&query[dedens_proto::HEADER_LEN..end]);
         response
-    }
-}
-
-/// A field in its presentation form, as `Display` writes it and `FromStr` reads it.
-mod text {
-    use super::{Deserialize, Display, FromStr};
-
-    pub(super) fn serialize<T: Display, S: serde::Serializer>(
-        value: &T,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(value)
-    }
-
-    pub(super) fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
-    where
-        T: FromStr<Err: Display>,
-        D: serde::Deserializer<'de>,
-    {
-        let text = String::deserialize(deserializer)?;
-        text.parse().map_err(serde::de::Error::custom)
-    }
-}
-
-/// Bytes in base64 (RFC 4648 §4).
-mod base64 {
-    use data_encoding::BASE64;
-
-    use super::Deserialize;
-
-    pub(super) fn serialize<S: serde::Serializer>(
-        bytes: &[u8],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&BASE64.encode(bytes))
-    }
-
-    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<u8>, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        BASE64
-            .decode(text.as_bytes())
-            .map_err(serde::de::Error::custom)
     }
 }
 
