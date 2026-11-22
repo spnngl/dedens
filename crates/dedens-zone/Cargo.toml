@@ -1,0 +1,25 @@
+[package]
+name = "dedens-zone"
+description = "Authoritative zones: the zone model, loaded from zone text and checked (RFC 1035 §5.2, RFC 2181)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+dedens-proto.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+dedens-testkit.workspace = true
+insta.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
+
+[lints]
+workspace = true
