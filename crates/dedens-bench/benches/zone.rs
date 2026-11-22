@@ -1,13 +1,14 @@
 //! Zone file reading and loading: a generated zone of about 100 000 records, read against `domain` and hickory-proto,
-//! and loaded into a checked `dedens_zone::Zone`.
+//! and loaded into a checked `dedens_zone::Zone`; and the answers that zone and the root zone give (D206).
 //!
 //! dedens and `domain` yield one typed record at a time. hickory-proto has no such reader: its `Parser` also
 //! files every record into a map of record sets, so it does more work than the other two.
 
+use std::collections::BTreeMap;
 use std::hint::black_box;
 
 use dedens_bench::{ZONE_HOSTS, zone};
-use dedens_proto::{Name, ZoneEntry, ZoneReader};
+use dedens_proto::{Flags, Header, Message, Name, Question, RecordType, ZoneEntry, ZoneReader};
 use dedens_zone::{Limits, Source, Zone};
 use divan::Bencher;
 use domain::zonefile::inplace::Zonefile;
@@ -75,4 +76,104 @@ fn parse_hickory(bencher: Bencher<'_, '_>) {
             .parse()
             .expect("parses")
     });
+}
+
+/// A zone loaded for the answer benches: `text` under `origin`.
+fn loaded(origin: Name<'static>, text: &str) -> Zone {
+    let source = Source {
+        name: "zone",
+        text: text.as_bytes(),
+        default_ttl: None,
+    };
+    Zone::load(
+        origin,
+        source,
+        &mut |_| Err(String::new()),
+        &Limits::default(),
+    )
+    .expect("loads")
+    .zone
+}
+
+/// The generated zone with a wildcard.
+fn answered_zone() -> Zone {
+    let mut text = zone(ZONE_HOSTS);
+    text.push_str("*.wild TXT \"wildcard\"\n");
+    let origin = Name::from_labels([b"example".as_slice()]).expect("a name");
+    loaded(origin, &text)
+}
+
+/// The captured root zone: about 1 500 delegations.
+fn root_zone() -> Zone {
+    let text = std::fs::read_to_string(dedens_testkit::path("authoritative/zones/root.zone"))
+        .expect("the captured root zone");
+    loaded(Name::root(), &text)
+}
+
+/// What a query costs the zone: the answer, the message it fills, the reply encoded.
+fn reply(zone: &Zone, question: &Question<'_>, buf: &mut [u8]) -> usize {
+    let answer = zone.answer(question);
+    let mut message = Message {
+        header: Header {
+            flags: Flags::QR,
+            ..Header::default()
+        },
+        ..Message::default()
+    };
+    let glue = answer.fill(zone, &mut message);
+    glue.encode(&message, buf).expect("encodes")
+}
+
+const DATA: &str = "h4000.example.";
+const MISSING: &str = "nothing.example.";
+const WILD: &str = "anything.wild.example.";
+const ALIAS: &str = "www.h4002.example.";
+const REFERRAL: &str = "www.example.com.";
+const ROOT_MISSING: &str = "nothing.invalid.";
+
+/// `Zone::answer` alone, no message: finding the answer in the zone of 100 000 records.
+#[divan::bench(args = [DATA, MISSING, WILD, ALIAS])]
+fn answer_zone(bencher: Bencher<'_, '_>, name: &str) {
+    let zone = answered_zone();
+    let question = Question::new(name.parse().expect("a name"), RecordType::A);
+    bencher.bench_local(|| zone.answer(black_box(&question)).chain.len());
+}
+
+/// One lookup of a name present, in the zone's sorted `Vec` (binary search) and in a `BTreeMap` of the same names,
+/// D204's first layout: why the zone keeps its nodes in a `Vec`.
+#[divan::bench]
+fn lookup_sorted_vec(bencher: Bencher<'_, '_>) {
+    let zone = answered_zone();
+    let name: Name<'static> = DATA.parse().expect("a name");
+    bencher.bench_local(|| zone.node(black_box(&name)).is_some());
+}
+
+#[divan::bench]
+fn lookup_btree_map(bencher: Bencher<'_, '_>) {
+    let zone = answered_zone();
+    let map: BTreeMap<Name<'static>, usize> = zone
+        .nodes()
+        .enumerate()
+        .map(|(i, (name, _))| (name.clone(), i))
+        .collect();
+    let name: Name<'static> = DATA.parse().expect("a name");
+    bencher.bench_local(|| map.get(black_box(&name)).is_some());
+}
+
+/// The answer, the message and its encoding: the whole of what a query costs the zone.
+#[divan::bench(args = [DATA, MISSING, WILD, ALIAS])]
+fn reply_zone(bencher: Bencher<'_, '_>, name: &str) {
+    let zone = answered_zone();
+    let question = Question::new(name.parse().expect("a name"), RecordType::A);
+    let mut buf = [0_u8; 1232];
+    bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
+}
+
+/// A referral from the root zone, and a name under no delegation of it.
+#[divan::bench(args = [REFERRAL, ROOT_MISSING])]
+fn reply_root(bencher: Bencher<'_, '_>, name: &str) {
+    let zone = root_zone();
+    let question = Question::new(name.parse().expect("a name"), RecordType::A);
+    let mut buf = [0_u8; 1232];
+    bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
 }

@@ -1,7 +1,7 @@
 # dedens-zone
 
-Zone text into a checked, immutable `Zone` (D204), the changesets between versions and their journal file (D207);
-`src/lib.rs` says what each type is.
+Zone text into a checked, immutable `Zone` (D204), the changesets between versions and their journal file (D207), and
+what it answers (`answer.rs`, `reply.rs`, D206); `src/lib.rs` says what each type is.
 
 - A check goes in `Builder`: `add` for what one record shows, `finish` for what the whole zone does. Never over a
   finished `Zone`, which has lost the lines. A new error or warning is a variant of `ErrorKind` or `WarningKind`
@@ -21,3 +21,9 @@ Zone text into a checked, immutable `Zone` (D204), the changesets between versio
 - `testdata/zones/every_type.zone` is the fuzzing seed of `dedens-proto`, and no zone for this loader (classes CH,
   HS, CLASS32, a name outside the zone): `tests/rfc_zones.rs` shows its refusals; do not edit it for the loader.
 - DNAME has no typed text form yet: tests write it as `\#` generic RDATA.
+- A change to `Zone::answer` goes with `fuzz/src/zone.rs` (`zone_answer`), `tests/answer.rs` (the RFC examples) and `tests/reference.rs`
+  (Knot and NSD, by D203's rules); a difference there is D203's or a bug, never a changed expectation. The answer
+  must not allocate zone data: bench `answer_zone` and `reply_zone` after touching it.
+- `Zone`'s nodes are a sorted `Vec`, not a map (D206): a lookup by a name that lives shorter than the zone must still
+  return a node that lives as long as the zone. Names asked are searched by suffix slices of their wire bytes.
+- A name holding only NSEC3 records is no name for `answer` (RFC 5155 §7.2), though it is a node.

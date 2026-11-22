@@ -6,6 +6,7 @@
 //! never changes: a change loads a new one, [`Zone::apply`] from a [`Changeset`], which [`Zone::diff`] finds
 //! between two versions. The [`journal`] keeps changesets in a file (D207): the one place the crate does file I/O.
 
+mod answer;
 mod builder;
 mod changeset;
 mod difference;
@@ -14,11 +15,14 @@ pub mod journal;
 mod limits;
 mod load;
 mod node;
+mod reply;
 mod zone;
 
 pub use changeset::{Changeset, ChangesetError};
+pub use answer::{Answer, End, Entry, Link, MAX_CHAIN, Match};
 pub use error::{Bound, ErrorKind, Place, Report, Warning, WarningKind, ZoneError};
 pub use limits::Limits;
 pub use load::{Include, Loaded, Source};
 pub use node::{Kind, Node, RrSet};
+pub use reply::Glue;
 pub use zone::Zone;

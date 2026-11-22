@@ -1,8 +1,9 @@
-//! Targets of dedens-zone: zone text on its way into a checked zone, and a journal file into changesets.
+//! Targets of dedens-zone: zone text on its way into a checked zone, a journal file into changesets, and the
+//! answers of a zone.
 
-use dedens_proto::{Name, RecordType, Ttl};
+use dedens_proto::{Flags, Header, Message, Name, Question, Rcode, RecordType, Ttl};
 use dedens_zone::journal::format::{self, MAGIC, Tail};
-use dedens_zone::{Kind, Limits, Source, Zone};
+use dedens_zone::{End, Kind, Limits, MAX_CHAIN, Source, Zone};
 
 /// How many `$INCLUDE`s the callback gives the text of: each one reads the same bytes again, so a file that
 /// includes itself must end.
@@ -17,7 +18,27 @@ const INCLUDES: usize = 4;
 ///
 /// On a zone that is not whole, or a bug in the loader.
 pub fn load_zone(data: &[u8]) {
-    let apex = Name::from_labels([b"example".as_slice()]).expect("a valid name");
+    let apex = apex();
+    match load(data, &apex) {
+        Ok(zone) => whole(&zone, &apex),
+        Err(report) => {
+            assert!(!report.errors.is_empty(), "a refusal without an error");
+            for e in &report.errors {
+                if let Some(at) = e.at {
+                    assert!(at.file < report.files.len(), "{e:?} in no file");
+                    assert!(at.line >= 1 && at.column >= 1, "{e:?} before line 1");
+                }
+            }
+        }
+    }
+}
+
+fn apex() -> Name<'static> {
+    Name::from_labels([b"example".as_slice()]).expect("a valid name")
+}
+
+/// `data` as the zone of `apex`, with small bounds so that the limits are reached too.
+fn load(data: &[u8], apex: &Name<'static>) -> Result<Zone, dedens_zone::Report> {
     let mut given = 0_usize;
     let mut include = |_: &str| {
         given += 1;
@@ -32,7 +53,6 @@ pub fn load_zone(data: &[u8]) {
         text: data,
         default_ttl: Some(Ttl::ZERO),
     };
-    // Small bounds, so that the limits are reached too.
     let limits = Limits {
         records: 64,
         names: 64,
@@ -42,18 +62,107 @@ pub fn load_zone(data: &[u8]) {
         include_depth: 2,
         errors: 16,
     };
-    match Zone::load(apex.clone(), source, &mut include, &limits) {
-        Ok(loaded) => whole(&loaded.zone, &apex),
-        Err(report) => {
-            assert!(!report.errors.is_empty(), "a refusal without an error");
-            for e in &report.errors {
-                if let Some(at) = e.at {
-                    assert!(at.file < report.files.len(), "{e:?} in no file");
-                    assert!(at.line >= 1 && at.column >= 1, "{e:?} before line 1");
-                }
-            }
+    Zone::load(apex.clone(), source, &mut include, &limits).map(|loaded| loaded.zone)
+}
+
+/// The types every name is asked for, with the one the input names.
+const TYPES: [RecordType; 8] = [
+    RecordType::A,
+    RecordType::NS,
+    RecordType::CNAME,
+    RecordType::DNAME,
+    RecordType::MX,
+    RecordType::DS,
+    RecordType::SOA,
+    RecordType::ANY,
+];
+
+/// How many names of the zone are asked: each one with each type, itself and below, so a wildcard, a cut or a DNAME
+/// is reached.
+const ASKED: usize = 24;
+
+/// A zone file, then (after a NUL, which no zone text holds) a question: 2 bytes of type and a name in text. Every
+/// name of the zone, a name below it and the question's are asked of the zone `example.` the file loads into: an
+/// answer never panics, ends a chain within [`MAX_CHAIN`], and fills a message that encodes (in 512 bytes or 64 KiB)
+/// and decodes with the `RCODE`, `AA` and sections the answer gave.
+///
+/// # Panics
+///
+/// On an answer that is not whole, or a bug in the answering.
+pub fn zone_answer(data: &[u8]) {
+    let (text, asked) = data
+        .iter()
+        .position(|&byte| byte == 0)
+        .map_or((data, &[][..]), |at| (&data[..at], &data[at + 1..]));
+    let apex = apex();
+    let Ok(zone) = load(text, &apex) else {
+        return;
+    };
+    let mut names: Vec<Name<'static>> = vec![apex.clone()];
+    if let Some((qtype, name)) = asked.split_first_chunk::<2>() {
+        if let Some(name) = std::str::from_utf8(name)
+            .ok()
+            .and_then(|name| name.parse().ok())
+        {
+            ask(&zone, &name, RecordType(u16::from_be_bytes(*qtype)));
+            names.push(name);
         }
     }
+    for (name, _) in zone.nodes().take(ASKED) {
+        names.push(name.clone());
+        let below = format!("x.{name}");
+        names.extend(below.parse());
+    }
+    for name in &names {
+        for qtype in TYPES {
+            ask(&zone, name, qtype);
+        }
+    }
+}
+
+/// One question of `zone`: what the answer, and the reply made of it, must be.
+fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType) {
+    let question = Question::new(name.clone(), qtype);
+    let answer = zone.answer(&question);
+    assert!(answer.chain.len() <= MAX_CHAIN, "{name}: a chain too long");
+    assert_eq!(
+        matches!(answer.end, End::NotAuth),
+        !name.is_within(zone.apex()),
+        "{name}: the zone is the authority for its names"
+    );
+    let mut message = Message {
+        header: Header {
+            flags: Flags::QR,
+            ..Header::default()
+        },
+        questions: vec![question.clone()],
+        ..Message::default()
+    };
+    let glue = answer.fill(zone, &mut message);
+    assert_eq!(message.rcode(), answer.rcode());
+    assert_eq!(
+        message.header.flags.contains(Flags::AA),
+        answer.authoritative()
+    );
+    for size in [512, 65535] {
+        let mut buf = vec![0; size];
+        let len = glue.encode(&message, &mut buf).expect("a reply encodes");
+        let decoded = Message::decode(&buf[..len])
+            .expect("a reply decodes")
+            .message;
+        assert_eq!(decoded.rcode(), answer.rcode(), "{name} in {size}");
+        let truncated = decoded.header.flags.contains(Flags::TC);
+        if size == 65535 {
+            assert!(!truncated, "{name}: truncated in 64 KiB");
+            assert_eq!(decoded.answer.len(), message.answer.len());
+            assert_eq!(decoded.authority.len(), message.authority.len());
+            assert_eq!(decoded.additional.len(), message.additional.len());
+        }
+    }
+    assert!(
+        answer.rcode() != Rcode::REFUSED || message.answer.is_empty(),
+        "{name}: a refusal with an answer"
+    );
 }
 
 /// Arbitrary bytes as a journal file (D207): reading never panics, a journal it does not refuse is made of whole
