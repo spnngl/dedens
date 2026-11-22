@@ -35,7 +35,8 @@ recursion = ["dep:serde", "dep:serde-saphyr"]
 authoritative = ["dep:serde", "dep:serde-saphyr"]
 
 [dev-dependencies]
-# The tool capturing the resolutions (`examples/capture_recursion.rs`, run by `just capture-recursion`).
+# The tools capturing the resolutions and dating their signatures (`examples/capture_recursion.rs`, run by `just
+# capture-recursion`; `examples/signature_expiry.rs`, `just captures-expiry`).
 compio.workspace = true
 dedens-net.workspace = true
 dedens-roots.workspace = true
@@ -48,6 +49,10 @@ required-features = ["recursion"]
 [[example]]
 name = "capture_authoritative"
 required-features = ["authoritative"]
+
+[[example]]
+name = "signature_expiry"
+required-features = ["recursion"]
 
 [[test]]
 name = "tests"

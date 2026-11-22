@@ -337,7 +337,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   runs the gate, against D6's stable toolchain and D153's reproducible build); `--jobs-frontend` in
   `.cargo/config.toml` (stable reads it too and refuses `-Z` flags); a count above 2 in the recipes (within the
   noise, more CPU time and memory).
-- D188 (builds on D10, D40, D126, D161, D162) The recursive resolver's test data is real resolutions from the root
+- D188 (builds on D10, D40, D126, D161, D162; amended by D197) The recursive resolver's test data is real resolutions from the root
   servers in `testdata/recursion/`, one YAML file per name, captured by `just capture-recursion [ids]`: the example
   `capture_recursion` of `dedens-testkit` (its network crates dev-dependencies) iterates as `+trace` does (D40) from the bundled
   root hints (D126), primes (RFC 8109 §3), asks each zone's DS at its parent and DNSKEY at the zone, follows referrals
@@ -351,7 +351,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   nl, an unsigned name, a CNAME chain across three zones, a DNAME, a glueless delegation, NXDOMAIN and NODATA signed
   and unsigned, NXDOMAIN by NSEC3, an answer over 1232 bytes, an answer to an RRSIG question (D192); no zone served
   by IPv6 servers alone was found. The recipe replaces only the files of a run that succeeded; a recapture keeps the
-  cases, not the bytes. The feature
+  cases, not the bytes. The signatures of a capture end within days of it (D197), so no test validates a capture on
+  the real clock: `just captures-expiry` (the example `signature_expiry`) prints each capture's days to the end of
+  its earliest RRSIG, `just recapture-signed` captures `testdata/recursion/` and `testdata/dnssec/` anew, and the
+  check `each_capture_is_signed_at_its_time` (`dedens-testkit`) holds each capture signed at its own time. The feature
   `recursion` of `dedens-testkit` (on serde and serde-saphyr; the default build stays as D161 left it) reads them
   (`Resolution`) and replays them in memory (`Authorities`): by server address and question (name without case, type),
   the response over the transport asked when there is one, under the query's ID and question; anything else gets

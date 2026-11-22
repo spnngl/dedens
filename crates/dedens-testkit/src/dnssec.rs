@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use data_encoding::BASE64;
+use dedens_proto::rdata::RData;
 use dedens_proto::{MAX_NAME_LEN, Message, Name, RecordType};
 
 use crate::{dns, message, path};
@@ -64,6 +65,21 @@ pub fn capture(id: &str) -> Vec<u8> {
 #[track_caller]
 pub fn response(id: &str) -> Message<'static> {
     message(&capture(id))
+}
+
+/// The earliest end of validity among the RRSIGs of the sections of `messages`, `None` when there is none: the
+/// Unix time (RFC 4034 §3.1.5) after which a test validating them on the real clock fails, `just
+/// captures-expiry` (D188, D197).
+#[must_use]
+pub fn earliest_expiration<'a>(messages: impl IntoIterator<Item = &'a Message<'a>>) -> Option<u32> {
+    messages
+        .into_iter()
+        .flat_map(|m| m.answer.iter().chain(&m.authority).chain(&m.additional))
+        .filter_map(|record| match record.data() {
+            RData::Rrsig(rrsig) => Some(rrsig.expiration),
+            _ => None,
+        })
+        .min()
 }
 
 /// The captures by question, an upstream that answers each question asked of it with its capture.

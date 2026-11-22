@@ -895,7 +895,7 @@ mod tests {
         assert!(!kept.contains("20326") && kept.contains("38696"), "{kept}");
 
         fs::write(&file, "dedens root anchors 2\n").unwrap();
-        assert_eq!(tag(&build(&recursing("")).unwrap()), None);
+        assert_eq!(tag(&build(&recursing("    dnssec: off\n")).unwrap()), None);
         let own = state.path().join("anchors.txt");
         fs::write(&own, TrustAnchors::root().to_string()).unwrap();
         let named = recursing(&format!(
@@ -907,7 +907,7 @@ mod tests {
         fs::remove_file(&own).unwrap();
         assert!(build(&named).is_err(), "its anchors are read");
         assert!(crate::config::read_without_files(&named, env).is_ok());
-        let refused = recursing("    insecure: [corp.example]\n");
+        let refused = recursing("    dnssec: off\n    insecure: [corp.example]\n");
         assert!(crate::config::read_without_files(&refused, env).is_err());
     }
 

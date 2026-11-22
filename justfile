@@ -517,6 +517,16 @@ capture-recursion *ids:
     mkdir -p testdata/recursion
     cp "$tmp"/*.yaml testdata/recursion/
 
+# The days left before the earliest RRSIG of the captures of testdata/recursion/ ends (D188, D197), each capture's
+# too: no test fails when it does, each validates at its capture's time, but past it a recapture is due.
+captures-expiry:
+    cargo run -q -p dedens-testkit --features recursion --example signature_expiry
+
+# Capture the signed sets anew (D197): the resolutions of testdata/recursion/ and the DNSSEC set of testdata/dnssec/,
+# validated at their `captured_at`. The snapshots and the numbers the tests pin may move: run `just check`, read the
+# diff, and accept by `INSTA_UPDATE=always`.
+recapture-signed: capture-recursion capture-dnssec
+
 # Capture the minimised resolutions of testdata/recursion/minimised/ anew (D198): every case of the capture tool,
 # or those with the ids given, each run by the resolver from the root servers. The files are replaced only when
 # every one succeeded.

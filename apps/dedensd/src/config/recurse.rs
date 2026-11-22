@@ -48,9 +48,8 @@ pub(super) struct RecurseFile {
     /// A file of root hints (zone text, as `named.root`) in place of the bundled ones, for a private root (D201);
     /// with it the TLD hints are not used either, as they are the public Internet's.
     root_hints: Option<PathBuf>,
-    /// Whether it validates, `off` by default as a forward stage (D77, D197).
-    #[serde(default)]
-    dnssec: Dnssec,
+    /// Whether it validates: `validate` unless written, where a forward stage's is `off` (D77, D197).
+    dnssec: Option<Dnssec>,
     trust_anchors: Option<PathBuf>,
     #[serde(default)]
     insecure: Vec<Insecure>,
@@ -62,9 +61,14 @@ impl RecurseFile {
         self.trust_anchors.is_some() || self.root_hints.is_some()
     }
 
+    /// Whether it validates (D197): `validate` unless `dnssec` is written.
+    fn dnssec(&self) -> Dnssec {
+        self.dnssec.unwrap_or(Dnssec::Validate)
+    }
+
     /// Whether it validates, read before its trust anchors move into [`Validation`].
-    pub(super) const fn validates_by_root(&self) -> bool {
-        matches!(self.dnssec, Dnssec::Validate) && self.trust_anchors.is_none()
+    pub(super) fn validates_by_root(&self) -> bool {
+        matches!(self.dnssec(), Dnssec::Validate) && self.trust_anchors.is_none()
     }
 }
 
@@ -152,7 +156,7 @@ pub(super) fn recurse(
     (root, allowance): (Option<TrustAnchors>, Allowance),
 ) -> anyhow::Result<Stage> {
     let validation = Validation {
-        dnssec: file.dnssec,
+        dnssec: file.dnssec(),
         trust_anchors: file.trust_anchors,
         root,
         insecure: file.insecure,
@@ -550,24 +554,33 @@ mod tests {
     /// caches and its validator, one validating otherwise flushes them and the cache stage, whose answers were
     /// judged by the old one.
     #[test]
-    fn d197_a_recurse_stage_validates_and_a_reload_changing_it_flushes_the_caches() {
+    fn d197_a_recurse_stage_validates_by_default_and_a_reload_changing_it_flushes_the_caches() {
         fn recurse(pipeline: &Pipeline) -> (Arc<dedens_cache::Cache>, &dedens_server::Recurse) {
             match pipeline.stages() {
                 [Stage::Cache(cache), Stage::Recurse(recurse)] => (Arc::clone(cache), recurse),
                 stages => unreachable!("{stages:?}"),
             }
         }
-        let off = read(RECURSIVE, env, &Pipeline::default())
-            .expect("valid")
-            .pipeline;
+        let off = read(
+            &format!("{RECURSIVE}    dnssec: off\n"),
+            env,
+            &Pipeline::default(),
+        )
+        .expect("valid")
+        .pipeline;
         assert!(recurse(&off).1.validation().is_none());
-        let text = format!("{RECURSIVE}    dnssec: validate\n");
-        let validate = read(&text, env, &off).expect("valid").pipeline;
+        // Unwritten, it validates (D197); written, the same.
+        let text = RECURSIVE;
+        let validate = read(text, env, &off).expect("valid").pipeline;
         let (cache, stage) = recurse(&validate);
         assert!(stage.validation().is_some());
         assert!(!Arc::ptr_eq(&recurse(&off).0, &cache), "off to validate");
+        let written = format!("{RECURSIVE}    dnssec: validate\n");
+        let written = read(&written, env, &validate).expect("valid").pipeline;
+        assert!(Arc::ptr_eq(&recurse(&written).0, &cache), "the default");
+        assert!(Arc::ptr_eq(recurse(&written).1.caches(), stage.caches()));
         assert!(!Arc::ptr_eq(recurse(&off).1.caches(), stage.caches()));
-        let same = read(&text, env, &validate).expect("valid").pipeline;
+        let same = read(text, env, &validate).expect("valid").pipeline;
         assert!(Arc::ptr_eq(&recurse(&same).0, &cache), "unchanged");
         assert!(Arc::ptr_eq(recurse(&same).1.caches(), stage.caches()));
         assert_eq!(recurse(&same).1.validation_tag(), stage.validation_tag());
@@ -585,8 +598,10 @@ mod tests {
         );
         assert!(!Arc::ptr_eq(recurse(&insecure).1.caches(), stage.caches()));
         assert!(
-            error(&format!("{RECURSIVE}    insecure: [corp.example]\n"))
-                .contains("need `dnssec: validate`")
+            error(&format!(
+                "{RECURSIVE}    dnssec: off\n    insecure: [corp.example]\n"
+            ))
+            .contains("need `dnssec: validate`")
         );
     }
 
