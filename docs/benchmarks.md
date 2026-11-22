@@ -401,6 +401,14 @@ The state machine is 3 µs of the 63 µs of user CPU a miss costs `dedensd` unde
 is, the profile says. `warm` is the part of a miss the resolver crate owns, `cold` the walk a name under a new zone
 pays once.
 
+`warm_wire` is `warm` with the capture's response decoded from its wire inside the timed region, as `dedensd` does
+for each response (`Message::decode`, which borrows what it can: fewer allocations than the owned message `warm`
+replays). One run of 100 samples on the same machine, loaded, before and after skipping the span index while it is
+empty (D201; the allocations are exact, the times a single run's): `warm` 65 allocations (4.9 KB) then 63, `cold` 1 015
+(59 KB) then 1 009, `warm_wire` 51 then 49 (5.1 KB), 3.2 µs fastest, 3.4 median. The two allocations of a step are
+the names `Spans::zone_of` made to look for a zone to prove the name absent from, in an index nothing fills when
+nothing validates.
+
 ## Server hit path (D23, D43)
 
 - `benches/server.rs` `hit`: `Pipeline::query` reading a query with EDNS and answering it from the cache stage
@@ -2409,8 +2417,74 @@ saturation, 1 core, and `strace -c`, `dedensd` built with line tables, outside t
   3 µs of the 63 of a miss (`warm` above): the crate's logic is not where it goes, the 60 allocations of each step
   and the messages decoded and copied around it are. Unbound's profile shows 3% in allocation and 8% in unresolved
   libc symbols, spin locks (5.5%) and hash tables (lruhash 4%, hashlittle 3.8%).
-- `gauges` is a finding, not a design: after each resolution the stage sets four gauges, the entries and the bytes of
+- `gauges` was a finding, not a design: after each resolution the stage set four gauges, the entries and the bytes of
   the RRset and the infrastructure caches, and `Store::len` and `used` lock each of the shards in turn, four sweeps of
-  the locks for every miss: about 4 µs of the 63.
+  the locks for every miss: about 4 µs of the 63. It is set once a second now (below).
 
-That is `docs/TODECIDE.md`'s entry; no optimisation is in this step.
+### After the cuts (D201)
+
+The profile above was the guide; each change below was timed on the VPS before it was kept, by `perf record` of
+user space (frame pointers, 1 core at 4 000 queries a second) and by an A/B of builds at that fixed rate, the
+container's CPU a query in µs (user + system) of 5 to 10 interleaved rounds of 10 s, medians. The `main` build and
+the cuts, one on top of the other (the shared host's load moves a run by 10%; the last set of rounds is shown):
+
+| Build | CPU a query | user |
+|---|---|---|
+| `main` at `049f432d` | 127.0 (114.7-136.9), 135.9, 127.8, 132.6 in the other sets | 63.0 |
+| + gauges once a second, drives of `resolve` boxed, a UDP resolution not spawned through `answer` | 115.9 (104.6-135.0) | 51.0 |
+| + span index skipped while empty, local zones told by the last label | 115.4 (106.2-120.5) | 48.2 |
+
+The last row is within noise of the one before in the total (an A/B run separates 8%, not 0.4%), and 5% lower in
+user time; it is kept for the profile's own count: `Name::is_within` was 2.8% of the samples, called from
+`LocalZones::answer` for each of 37 zones, and is gone from the top; `Spans::zone_of` made a name and took a lock for
+each label of every name of every step (2 allocations a step of `resolution`'s `warm`, above). What was cut:
+
+- `serve::recurse::gauges` after each resolution (6.4% of the samples): once a second of a thread's clock (D195).
+- The task of a UDP query held `answer`'s future, forwarding path and all: 7.9 KB for a resolution that needs 3.9 KB,
+  allocated, zeroed, and filled by a copy of the future. `resolve`'s own future was 11 KB, the
+  priming and the root keys' drives inlined three times; they are boxed, being run once a process, and a UDP
+  resolution is spawned as `recurse::resolve`: a 4.1 KB task. `memcpy` went from 9.4% of the samples to 5.8%.
+- The span index lookup of an empty index, and the scan of the 37 local zones (2.3%), as above.
+
+The run of 2026-11-22 on the branch (`compare.sh recurse 1`, `3`, `recurse-dnssec 1`, `3`, 3 rounds as above, JSON
+`2026-11-22T153452Z` and `153918Z`, `154257Z` and `154647Z`):
+
+| Mode | `dedensd` | Unbound | Ratio |
+|---|---|---|---|
+| 1 core: `recurse` | 9.7 (9.0-9.9), 0 void | 8.0 (7.8-8.2), 3 void | 1.21 (before 0.97) |
+| `recurse-dnssec` | no valid run, 3 void | 3.1 (3.0-3.1), 3 void | |
+| 3 cores: `recurse` | 29.6 (27.6-31.5), 1 void | 26.9 (24.4-28.5), 0 void | 1.10 (before 0.87) |
+| `recurse-dnssec` | no valid run, 3 void | 9.9 (6.9-10.2), 1 void | |
+
+At saturation `dedensd` answers 19% more queries a second at 1 core, and its CPU a query is 19% lower: 68.7 to 77.7
+µs (median 71.5; user 35 to 40 µs) against 88.0 to 88.1 (user 51 to 52) before, for Unbound's 72.8 to 76.5
+of the valid runs (before 70.1 to 74.6): the CPU of a miss is at Unbound's where both fill their core. At 3
+cores 65.5 and 69.1 µs against 84.2 to 89.5 before, Unbound 62.2 to 67.0. `recurse-dnssec` is void for `dedensd` now
+at 1 core as well: 3 400 to 27 300 SERVFAIL past the validation allowance (D77) in each saturation run, which a
+faster resolver reaches sooner; the common-rate run below the allowance is unchanged (236.8 µs, before 240.3).
+
+At the common rate, 3 983 a second at 1 core and 13 433 at 3 for `recurse`: average / p99 / p99.9 latency in ms, CPU a
+query in µs (user + system), memory idle / loaded in MiB:
+
+| Mode | `dedensd` | Unbound |
+|---|---|---|
+| 1 core: `recurse` | 0.44 / 1.38 / 2.82, 128.5 (58.3 + 70.3), 5 / 31 | 0.37 / 1.34 / 7.04, 94.2 (33.9 + 60.3), 4 / 14 |
+| 3 cores: `recurse` | 1.33 / 22.02 / 37.89, 112.9 (51.8 + 61.1), 9 / 128 | 2.18 / 29.70 / 51.20, 83.2 (34.6 + 48.6), 5 / 20 |
+| 1 core: `recurse-dnssec` (1 550 a second) | 0.65 / 1.41 / 2.43, 236.8 (149.3 + 87.5), 6 / 20 | 0.77 / 1.89 / 4.35, 293.2 (209.7 + 83.5), 4 / 13 |
+
+The average latency at 1 core is 0.44 against 0.37 ms (0.66 against 0.40 before), at 3 cores 1.33 against 2.18. The
+CPU a query at the common rate is the part that did not come down in this run: 128.5 µs against 94.2 at 1 core (+36%),
+112.9 against 83.2 at 3 (+36%, before +46%), while a run of `dedensd` varies by 15% and the 112.4 µs of the run before
+is in the range (its half-rate runs of this run: 127.5, 113.0 and 112.9). The A/B of builds at 4 000 a second, in
+the same conditions for each, measured 127.0 against 115.4 (-9%), user 63.0 against 48.2. A query costs more user CPU
+at the common rate than at saturation, 58 against 38 µs for `dedensd` and 34 against 29 for Unbound: what a miss
+costs at a rate where the core idles between queries is more than the saturation shows, for `dedensd` more than for
+Unbound.
+
+The profile of the last build at 4 000 a second (2 711 samples, self time): the allocator 13% (`_mi_page_malloc_zero`
+7.0%, `mi_free` 3.5%, `mi_theap_malloc_aligned` 1.3%, `mi_check_padding` 1.2%, in a long tail of callers none above
+1.5%: `Exchange::start`, `Resolution::take`, `Name::from_labels`, `asked`, the decode of each response), `memcpy` 5.8%,
+`syscall` 3.0%, `asked` 2.5%, `RrsetCache` shard `get` 2.0%, `drive` 1.9%, `Authoritative::exchange` 1.9%, `sccp` 1.9%, the
+executor's and the driver's polls 1.5% to 1.8% each. Nothing is above 3% but the allocator and `memcpy`, which are
+spread over the callers, and the syscalls; mimalloc's secure mode (D154) is what a malloc costs here and stays.
+What is left is `docs/TODECIDE.md`'s entry.

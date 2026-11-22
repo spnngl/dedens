@@ -317,18 +317,25 @@ Open questions, each with its proposed default. Once answered, record the outcom
   failing to resolve, may reach its fifth lookup before the AAAA of the one that resolves, and fail on a silent
   IPv4 server (the simulation steers around it, D196). Unbound fetches a name's A and AAAA together and allows 16
   per delegation (`MAX_DP_TARGET_COUNT`). Default: count names, not lookups, and keep 5.
-- The CPU of a miss (D201): `recurse` costs `dedensd` 112 to 132 µs a query at the common rate against Unbound's
-  80 to 90 (+26% to +59%; 3 cores 131 against 90, +46%; noise 10%), 25 µs of it more user CPU, while kqps is equal
-  (0.97 at 1 core, 0.87 at 3, loader-bound) and `recurse-dnssec` is ahead (1.65 at 1 core), as of 2026-11-22. `docs/benchmarks.md` "Where the gap is" has the profile: the
-  allocator 16% of the user samples, copies 8%, the cache gauges 6.4%. `serve::recurse::gauges` sets four gauges
-  after each resolution, and `Store::len` and `used` lock every shard of two caches for each: four sweeps a miss.
-  Default: set the gauges on a timer or when the stage's metrics are read, then profile again; the allocations of a
-  step (60 warm, `benches/resolution.rs`) and of a decoded response after it.
+- The CPU of a miss (D201): after the cuts of 2026-11-22 (`docs/benchmarks.md` "After the cuts"), `recurse` at
+  saturation costs `dedensd` 69 to 78 µs a query against Unbound's 73 to 77 and answers 1.21 times its queries at 1
+  core (1.10 at 3), but at the common rate it is still 128 µs against 94 (+36%; 113 against 83 at 3 cores), 58 µs
+  of it user CPU against 34, where saturation shows 38 against 29. Left: the allocator (13% of the samples, a long
+  tail of callers none above 1.5%: `Exchange::start`, `Resolution::take`, the decode of each response in
+  `serve::recurse::hand`, the `Vec` copies of `Authoritative`'s send and receive and of `outcome`'s `Rc<[u8]>`),
+  `memcpy` 5.8%, the syscalls 3%. Default: one allocation at a time, each with its bench (`benches/resolution.rs`
+  `warm_wire` covers the decode, not the transport), until the common-rate CPU is within the 15% of noise; and find
+  what a query costs in user space at a rate that leaves the core idle between queries (cache misses of a core that
+  sleeps, the executor's wakeups) which saturation does not show.
+- `recurse-dnssec` of `dedensd` has no valid saturation run (D201, D77): the resolver now reaches the validation
+  allowance before the loader's rate, and SERVFAIL past it voids the run (3 400 to 27 300 of a run's answers at 1
+  core; Unbound's runs are valid). Default: report the common-rate row, as now; the harness could ramp up the rate
+  until the first SERVFAIL, so that the number is the rate below the allowance.
 - A bench of TelltaleDNS's recursion (D201): its `recursive://` upstream has the 13 root addresses built in
   (`telltale-recursor`), so no root of ours. Default: not measured; measured when it takes root hints, or by a
   patched build (a fork, not its tag).
 - Equal caches in `recurse` (D201): `dedensd`'s default RRset cache is 128 MiB, Unbound's 4 MiB (message cache 4
-  MiB too), so a million unique names fill one and not the other (110 and 22 MiB loaded at 3 cores); `dedensd-8mib`
+  MiB too), so a million unique names fill one and not the other (128 and 20 MiB loaded at 3 cores); `dedensd-8mib`
   runs both small, as shipped is the default. Default: report both, as D183 reports `dedensd-8mib`.
 - A host without IPv6 and the holds of RFC 9520 (D199): on a host booted with `ipv6.disable=1`, binding `[::]` fails
   with EAFNOSUPPORT, which is a `LocalError::Bind` that never reaches the infra cache, so IPv6 servers are tried
