@@ -80,6 +80,14 @@ fn decoded(rtype: RecordType, rdata: &[u8]) -> RData<'static> {
 /// D206: a server answers with the RDATA of its zone without a copy; the borrow is the same record data.
 #[test]
 fn d206_reborrowed_rdata_is_the_same_data_over_the_same_bytes() {
+    fn record(rdata: WireRdata<'_>) -> Record<'_> {
+        Record {
+            name: dns("_s._tcp.example."),
+            class: Class::IN,
+            ttl: Ttl::ZERO,
+            rdata,
+        }
+    }
     let owned = WireRdata::new(&RData::A(Ipv4Addr::new(192, 0, 2, 1)));
     let borrowed = owned.reborrow();
     assert_eq!(borrowed, owned);
@@ -88,6 +96,23 @@ fn d206_reborrowed_rdata_is_the_same_data_over_the_same_bytes() {
         borrowed.wire().as_ptr(),
         owned.wire().as_ptr()
     ));
+    // A type whose names may be compressed in a message is no different: the bytes are flat, so they are
+    // borrowed as they are, not decoded to be given again, and encode as the owned record does.
+    let srv = WireRdata::new(&RData::Srv(Srv {
+        priority: 1,
+        weight: 2,
+        port: 3,
+        target: dns("h.example."),
+    }));
+    let first = srv.reborrow();
+    let again = first.reborrow();
+    assert!(matches!(again.wire(), Cow::Borrowed(_)));
+    assert!(std::ptr::eq(again.wire().as_ptr(), srv.wire().as_ptr()));
+    assert_eq!(
+        encode_record(&record(again.clone())),
+        encode_record(&record(srv.clone()))
+    );
+    assert_eq!(again.into_owned(), srv);
     // Bytes in a message stay in it.
     let wire = record_wire(RecordType::A, &[192, 0, 2, 2]);
     let decoded = decode_record(&wire).unwrap();
