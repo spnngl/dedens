@@ -329,6 +329,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - Equal caches in `recurse` (D201): `dedensd`'s default RRset cache is 128 MiB, Unbound's 4 MiB (message cache 4
   MiB too), so a million unique names fill one and not the other (128 and 20 MiB loaded at 3 cores); `dedensd-8mib`
   runs both small, as shipped is the default. Default: report both, as D183 reports `dedensd-8mib`.
+- A host without IPv6 (D190, D199): each IPv6 address of a server still costs one of `Limits::queries` and
+  `Limits::servers` per back-off period (the UDP bind fails at once, no wait, EAFNOSUPPORT or EADDRNOTAVAIL, in
+  `crates/dedens-net/src/authoritative.rs` `open`). Unbound skips IPv6 targets altogether with `do-ip6: no`
+  (`iterator/iterator.c`, `ie->supports_ipv6`). Default: as is; a process-wide "no IPv6" latch set on the first
+  EAFNOSUPPORT (the resolution then draws no IPv6 address), or a `do_ipv6`-like setting of the recurse stage, if a
+  deployment sees queries or server slots spent on IPv6 addresses.
 
 ## Authoritative answers
 
