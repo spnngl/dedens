@@ -84,6 +84,8 @@ enum Repr<'a> {
     },
     /// Bytes without compression pointers.
     Owned { bytes: Box<[u8]>, rtype: RecordType },
+    /// Bytes without compression pointers, borrowed from an [`Repr::Owned`]: [`WireRdata::reborrow`].
+    Flat { bytes: &'a [u8], rtype: RecordType },
 }
 
 impl<'a> WireRdata<'a> {
@@ -130,7 +132,9 @@ impl<'a> WireRdata<'a> {
     #[must_use]
     pub const fn rtype(&self) -> RecordType {
         match &self.0 {
-            Repr::InMessage { rtype, .. } | Repr::Owned { rtype, .. } => *rtype,
+            Repr::InMessage { rtype, .. }
+            | Repr::Owned { rtype, .. }
+            | Repr::Flat { rtype, .. } => *rtype,
         }
     }
 
@@ -157,7 +161,9 @@ impl<'a> WireRdata<'a> {
             Repr::InMessage { rtype, .. } if RData::may_hold_compressed_names(*rtype) => {
                 Cow::Owned(self.data().with_wire(<[u8]>::to_vec))
             }
-            Repr::InMessage { .. } | Repr::Owned { .. } => Cow::Borrowed(self.reader().rest()),
+            Repr::InMessage { .. } | Repr::Owned { .. } | Repr::Flat { .. } => {
+                Cow::Borrowed(self.reader().rest())
+            }
         }
     }
 
@@ -166,6 +172,10 @@ impl<'a> WireRdata<'a> {
     pub fn into_owned(self) -> WireRdata<'static> {
         match self.0 {
             Repr::Owned { bytes, rtype } => WireRdata(Repr::Owned { bytes, rtype }),
+            Repr::Flat { bytes, rtype } => WireRdata(Repr::Owned {
+                bytes: Box::from(bytes),
+                rtype,
+            }),
             Repr::InMessage { rtype, .. } if RData::may_hold_compressed_names(rtype) => {
                 WireRdata::new(&self.data())
             }
@@ -184,8 +194,9 @@ impl<'a> WireRdata<'a> {
         }
     }
 
-    /// The same RDATA borrowing this one's bytes, as a server answers with the RDATA of its zone without a copy;
-    /// only bytes longer than a message are copied.
+    /// The same RDATA borrowing this one's bytes, as a server answers with the RDATA of its zone without a copy.
+    /// Owned bytes hold no compression pointer, so the borrow is encoded like them, and [`WireRdata::wire`]
+    /// does not allocate.
     #[must_use]
     pub fn reborrow(&self) -> WireRdata<'_> {
         WireRdata(match &self.0 {
@@ -200,17 +211,13 @@ impl<'a> WireRdata<'a> {
                 end: *end,
                 rtype: *rtype,
             },
-            Repr::Owned { bytes, rtype } => match u16::try_from(bytes.len()) {
-                Ok(end) => Repr::InMessage {
-                    msg: bytes,
-                    start: 0,
-                    end,
-                    rtype: *rtype,
-                },
-                Err(_) => Repr::Owned {
-                    bytes: bytes.clone(),
-                    rtype: *rtype,
-                },
+            Repr::Owned { bytes, rtype } => Repr::Flat {
+                bytes,
+                rtype: *rtype,
+            },
+            Repr::Flat { bytes, rtype } => Repr::Flat {
+                bytes,
+                rtype: *rtype,
             },
         })
     }
@@ -222,6 +229,7 @@ impl<'a> WireRdata<'a> {
                 msg, start, end, ..
             } => Reader::range(msg, usize::from(*start), usize::from(*end)),
             Repr::Owned { bytes, .. } => Reader::new(bytes),
+            Repr::Flat { bytes, .. } => Reader::new(bytes),
         }
     }
 
@@ -231,7 +239,7 @@ impl<'a> WireRdata<'a> {
         let rtype = self.rtype();
         let copy = match self.0 {
             Repr::InMessage { .. } => !RData::may_hold_compressed_names(rtype),
-            Repr::Owned { .. } => !RData::compressed_on_write(rtype),
+            Repr::Owned { .. } | Repr::Flat { .. } => !RData::compressed_on_write(rtype),
         };
         if copy {
             w.put_bytes(self.reader().rest())
