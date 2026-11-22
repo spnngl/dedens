@@ -137,7 +137,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D128 [server](server.md) (amended by D200): the `tlds` stage answers special-use TLDs per their RFCs, absent ones NXDOMAIN without DO while the list is under 30 days; dedensd refreshes TLD list and root anchors, kept verified in `state_dir`
 - D129 [CLI](cli.md) (amended by D130): `+tld NAME` asks IANA's RDAP server; JSON and YAML as received; a 404 explained by the TLD list
 - D130 [CLI](cli.md): `+rdap NAME` asks the TLD's server from IANA's bootstrap file, walking up parents; no PSL; HTTPS only
-- D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182): simulation tests of the sans-IO cores on `turmoil`
+- D133 [simulation tests](simulation-tests.md) (amended by D134, D162, D164, D182, D202): simulation tests of the sans-IO cores on `turmoil`
 - D134 [simulation tests](simulation-tests.md) (amended by D182): the client's compio layer behind an `Io` seam, for simulation
 - D135 [server](server.md): loom checks the reload wake-up and the query flights
 - D136 [server](server.md): Server Cookie hash compared in constant time with `subtle`
@@ -166,7 +166,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D161 [performance and safety](performance-and-safety.md): shared test data in `testdata/`, read through `dedens-testkit`
 - D162 [performance and safety](performance-and-safety.md) (amended by D170): a package's integration tests are one binary, a module per topic
 - D163 [performance and safety](performance-and-safety.md): the repository checks are a package of their own, `dedens-repo`
-- D164 [simulation tests](simulation-tests.md) (amended by D165, D167): the simulation time budget is measured, outside the gate
+- D164 [simulation tests](simulation-tests.md) (amended by D165, D167, D202): the simulation time budget is measured, outside the gate
 - D165 [simulation tests](simulation-tests.md): a simulation family over its 2 s budget splits in two
 - D166 [scope](scope.md): macOS targets link with Apple's `ld`
 - D167 [simulation tests](simulation-tests.md) (amended by D172): `DEDENS_SIM_TIME_SCALE` scales the simulation time budgets
@@ -203,3 +203,4 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D199 [server](server.md): negative caching in the recursive resolver: negative answers by name and type for the least of the SOA's TTL and MINIMUM, RFC 8020 below a secure NXDOMAIN only, RFC 8198 from secure NSEC and NSEC3 spans (on by default, never opt-out, never DS), failures held per name, type and server set (RFC 9520), against Unbound
 - D200 [server](server.md): RFC 5011 root key rollover followed from the resolver's own `. DNSKEY` queries, seeded by the signed download, which it wins over; state `root-5011` in `state_dir`; 30-day hold-downs, 366 days missing, queries every 1 h to 15 d
 - D201 [performance and safety](performance-and-safety.md): the recursive resolver against Unbound: a mini Internet of three Knot authorities (root, TLD, signed zone), unique names, `root_hints`; TelltaleDNS and CoreDNS not measured
+- D202 [simulation tests](simulation-tests.md): `just sim-time`'s crate budget is 12 s (84 s on CI), a family's 2 s; 10 s was set for nine families, fifteen now
