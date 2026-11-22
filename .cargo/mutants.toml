@@ -8,7 +8,7 @@ test_tool = "nextest"
 # its parameters (`Client(<N>)?`). Checked 2026-11-03 at 92db76d.
 exclude_re = [
   # `Debug` output is for logs and failing tests: no test reads it.
-  '<impl (std::)?(fmt::)?Debug for ',
+  '<impl ((std|core)::)?(fmt::)?Debug for ',
   # Kani's proofs, in a `proofs` module beside the code they reach or dedens-proto's `src/proofs.rs`, built only
   # under `cfg(kani)` and checked by `just kani` (D145, D179).
   '\bproofs(::|\.rs:)',

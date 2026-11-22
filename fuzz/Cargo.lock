@@ -784,6 +784,7 @@ dependencies = [
  "dedens-scenario",
  "dedens-server",
  "dedens-testkit",
+ "dedens-tsig",
  "dedens-zone",
  "dedensd",
  "hickory-proto",
@@ -910,6 +911,17 @@ dependencies = [
  "dedens-proto",
  "serde",
  "serde-saphyr",
+]
+
+[[package]]
+name = "dedens-tsig"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "ring",
+ "subtle",
+ "thiserror",
+ "zeroize",
 ]
 
 [[package]]

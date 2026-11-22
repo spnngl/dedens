@@ -1194,6 +1194,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dedens-tsig"
+version = "0.1.0"
+dependencies = [
+ "dedens-proto",
+ "dedens-testkit",
+ "proptest",
+ "ring",
+ "subtle",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "dedens-zone"
 version = "0.1.0"
 dependencies = [

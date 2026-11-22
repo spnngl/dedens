@@ -440,8 +440,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   through a table): `core::arch` per CPU, since `std::simd` is nightly-only. Default: when a
   profile shows zone-text decoding, bench the `base64-simd` crate and our table against a signed zone; `unsafe` only if
   it wins.
-- `RecordType` constants for TKEY, TSIG, MAILA and MAILB: the cache tests and its meta-type check use the raw
-  numbers. Default: add them with TSIG, in the authoritative phase.
+- `RecordType` constants for MAILA and MAILB (TKEY and TSIG came with D205): the cache tests and its meta-type
+  check use the raw numbers. Default: add them when a stage needs them.
 - A second OPT from `Edns::append` (D21): it writes after `buf[..len]` without reading it, so bytes that already hold an
   OPT get two, which RFC 6891 §6.1.1 forbids. Its caller (`crates/dedens-server/src/reply.rs:247`) keeps the rule by
   hand: the bytes come from `Message::to_vec_without_edns` (`crates/dedens-cache/src/response.rs:184`). Default: as is,
