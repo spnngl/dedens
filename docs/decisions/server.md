@@ -2343,6 +2343,67 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
     over a finished `Zone` (the errors would lose their lines).
 
+- D205 TSIG (RFC 8945, `dedens-tsig`): sans-I/O, in a crate of its own: the keys and the signing belong to the
+  authoritative server (steps 09 to 15) and to `dedens` (transfers, updates), not to the wire format, and the crate
+  adds `ring`'s HMAC, `subtle` and `zeroize` to what depends on it only. `dedens-proto` has what is the wire format:
+  `RecordType::TKEY` and `TSIG`, `TsigError` (BADSIG 16, BADKEY 17, BADTIME 18, BADTRUNC 22: the TSIG error field is
+  16 bits, apart from the 12 bits of an `Rcode`), `Tsig` (the RDATA) and `find_tsig` (the last record of the
+  additional section, which a second TSIG, one anywhere else or bytes after it make an error). TSIG is a meta type
+  (RFC 6895 §3.1): it has no text form, the reader refuses it, and `Message::decode` leaves it an opaque record.
+  - Algorithms (`Algorithm`): `hmac-sha256`, `hmac-sha384`, `hmac-sha512`, and `hmac-sha1` for interoperability
+    (RFC 8945 §6: the one implementation that cannot do better); no `hmac-md5`, which the RFC makes optional. A key
+    names one algorithm, a TSIG that names another gets BADKEY (§5.2.1). Names compare without case (§4.3.3: the
+    key's, the algorithm's), and the MAC takes the key's name in lowercase. A `Key` zeroes its secret when dropped
+    and its `Debug` never shows it; the HMAC key `ring` derives from the secret for each message is not zeroed
+    (`ring` has no way: a limit, not a leak through the crate's API). Secrets are base64 as `kdig -y` and Knot
+    write them, empty ones refused. The key files and the read before the privilege drop are step 09's.
+  - Server, `verify_request(&Keyring, wire, now)`, in RFC 8945 §5.2's order: a TSIG that does not parse, of a class
+    other than ANY or with a TTL, or a MAC longer than the hash or shorter than the larger of 10 bytes and half of it
+    (§5.2.2.1) is FORMERR, unsigned; an unknown key or algorithm is NOTAUTH with BADKEY, unsigned; a MAC that does
+    not match is BADSIG, unsigned, compared in constant time (`subtle`); a time more than the fudge from the clock
+    is BADTIME, signed, with the request's time and fudge and the server's time in Other Data (§5.2.3); only then
+    the truncation policy. Each refusal says what to answer: `Refusal::Format`, or `NotAuth` which signs the answer
+    in place (`sign`). A message with no TSIG gives `None`: whether to serve it is the server's policy (step 09).
+    Knot answers the unsigned errors as this does, in its captures (`axfr-tsig-bad-secret`), and BADTIME signed
+    (`axfr-tsig-bad-time`); for an unknown key it sends NOTAUTH with no TSIG at all (`axfr-tsig-unknown-key`, and
+    for a key not allowed by the ACL), which RFC 8945 §5.2.1 does not say (it asks for BADKEY, unsigned): the
+    server here follows the RFC, and a client takes both.
+  - Truncation: a MAC shorter than the algorithm's full length that passes the length rule and matches its prefix
+    is refused BADTRUNC, signed with the full MAC over the truncated request MAC (§5.2.4, §5.4.4: the digest takes
+    the MAC as it came). No configuration: Knot refuses every truncated MAC too (`knot_tsig_server_check`'s
+    "MAC truncation isn't supported", as FORMERR); a client of this crate never truncates and refuses a server's
+    truncated MAC. Rejected: accepting truncation (the policy is the receiver's, §5.2.4; a truncated MAC weakens the
+    key and nothing in the captured exchanges uses one).
+  - Time: `FUDGE` is 300 s on what the crate signs (§10 recommends it; Knot's `KNOT_TSIG_FUDGE_DEFAULT`); the
+    check takes the sender's fudge, either side of the clock, edges included, and never moves the clock (§5.4.3). A
+    time signed has 48 bits at most (`MAX_TIME_SIGNED`). `now` is a parameter, so the tests pin it (`captures`
+    replays Knot's exchanges at their own times).
+  - Responses: `Request::signer` gives a `ResponseSigner`, which signs every message of a response: the first over
+    the request's MAC, the message and the variables (§5.3), the next ones over the MAC before and the message and
+    the timers alone (§5.3.1); every message, as §5.3.1 requires (a client accepts unsigned ones, below). The
+    message must have room for the record: the signer refuses (`SignError::TooLong`) a message that the record
+    would take past 65535 bytes and does not shorten it; fitting a UDP response (§5.3: the answer cut, TC set, the
+    question and the TSIG kept) is the serving stage's job, step 09.
+  - Client: `sign_request` gives the `ResponseVerifier` of its response, and `ResponseVerifier::new` the one of a
+    request signed elsewhere. `verify` takes each message of the response in order: the first must carry a TSIG
+    (`Missing`), key and algorithm are the request's (`Key`), a MAC is full length (`MacSize`), the time is within
+    the fudge (`BadTime`: no clock adjustment). Unsigned messages between signed ones are accepted, up to
+    `MAX_UNSIGNED` = 99 in a row (§5.3.1: a client MUST accept them); the next signed MAC covers them,
+    so a changed one fails it, and `finish` refuses a stream whose last message is unsigned. An error from the server
+    is `Refused` with its code and whether its MAC checked: an empty MAC (BADSIG, BADKEY from Knot) is not
+    authenticated, a BADTIME or BADTRUNC verifies over the request's MAC. Any failure ends the stream; the caller
+    closes the connection and takes none of it as an answer. The caller still checks the ID and the question.
+  - Tests: Knot's captures (D203: AXFR, IXFR, UPDATE signed; bad secret, unknown key, key not allowed, bad time):
+    its requests verify, its responses verify, and ours, signed at its times, are its bytes; every bit of a signed
+    request and response flipped, and only the ID and the case bits of the names stay valid (§4.3.2, §4.3.3); the
+    algorithms against a second computation of the digest from RFC 8945 §4.3; a stream as long as the root AXFR's
+    (82 messages) signed and verified, with a message dropped, repeated, swapped or changed, and with up to 99 unsigned
+    messages; fuzz target `tsig_verify`. No signed NOTIFY was captured (D203's NOTIFY recordings are unsigned): the
+    request is a message like any other to sign (RFC 1996 §3.7), and step 11 tests it.
+  - Rejected: TSIG in `dedens-proto` (its keys and clock are not the wire format's); MD5 (the RFC deprecates it, no
+    interoperability need); `ring::hmac::verify` alone (it compares the whole tag: a truncated MAC needs the prefix
+    compared in constant time); the system clock inside the crate (untestable, and the server owns its clock).
+
 - D206 (amends D204) The answer of a zone (`dedens-zone`, the authoritative phase): `Zone::answer(&Question) -> Answer`
   is RFC 1034 §4.3.2 as a loop over the name asked, with RFC 4592 wildcards, RFC 6672 DNAME and RFC 9471 glue, no
   DNSSEC record (step 07 adds them from what the answer carries). The answer refers to the zone and copies nothing:

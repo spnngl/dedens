@@ -1,0 +1,28 @@
+[package]
+name = "dedens-tsig"
+description = "TSIG (RFC 8945): signing and verifying DNS messages, requests, responses and TCP response streams, server and client side."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+dedens-proto.workspace = true
+ring.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+dedens-testkit = { workspace = true, features = ["authoritative"] }
+proptest.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/tests.rs"
+
+[lints]
+workspace = true
