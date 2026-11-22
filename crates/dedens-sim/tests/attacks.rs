@@ -1408,93 +1408,114 @@ fn ghost_domain_a_delegation_the_parent_revoked_is_gone_at_its_ns_ttl() {
     // (NXDOMAIN). The zone's server answers each query with the NS set at 86 400 s and glue to match: asked for the
     // NS set at 12 s it would renew the delegation for a day (D193: a set replacing an unexpired one lives no longer
     // than it had left, glue pinned). Asked for the address at 25 s, the answer is the parent's, NXDOMAIN, and the
-    // zone's servers were not asked after the 20 s. The cache's floor on TTLs (60 s) is off, for the run to be short.
+    // zone's servers were not asked after the 20 s. The second run is the renewal of "ghost 2.0": the NS set the zone
+    // renews names a server the parent never delegated to (`ns.renewed`, at the zone's own address), which the cache
+    // may use no longer than the delegation it replaced. The cache's floor on TTLs (60 s) is off, for the run to be
+    // short.
     const NS_TTL: u32 = 20;
     seed::each(SEEDS, |seed| {
         let unsigned = Resolution::read("unsigned");
-        let (com, google) = (dns("com."), dns("google.com."));
-        let google_servers = servers_of(&unsigned, &google);
-        let revoked = Duration::from_secs(15);
-        let parent = living(captured(&unsigned, &com), NS_TTL);
-        let ghost = living(parent.clone(), 86_400);
-        let leaf = captured(&unsigned, &google);
-        let plot = {
-            let (com, google) = (com.clone(), google.clone());
-            let mut plot = Plot::new(vec![unsigned]).deriving(move |zone, question| {
-                if !question.name.is_within(&google) {
-                    return None;
-                }
-                if *zone == com {
-                    let mut response = to(parent.clone(), question);
-                    if turmoil::sim_elapsed().unwrap_or_default() >= revoked {
-                        response.header.rcode = Rcode::NXDOMAIN;
-                        response.header.flags = response.header.flags.with(Flags::AA);
-                        response.authority = vec![Record::new(
-                            com.clone(),
-                            Class::IN,
-                            Ttl::new(5).expect("a TTL"),
-                            &RData::Soa(Soa {
-                                mname: dns("a.gtld-servers.net."),
-                                rname: dns("nstld.verisign-grs.com."),
-                                serial: 1,
-                                refresh: 1800,
-                                retry: 900,
-                                expire: 604_800,
-                                minimum: 5,
-                            }),
-                        )];
-                        response.additional.clear();
+        for new_names in [false, true] {
+            let (com, google) = (dns("com."), dns("google.com."));
+            let google_servers = servers_of(&unsigned, &google);
+            let revoked = Duration::from_secs(15);
+            let parent = living(captured(&unsigned, &com), NS_TTL);
+            let ghost = living(parent.clone(), 86_400);
+            let (renewal, glue) = if new_names {
+                let renewed = dns("ns.renewed.google.com.");
+                let day = Ttl::new(86_400).expect("a TTL");
+                (
+                    vec![Record::new(
+                        google.clone(),
+                        Class::IN,
+                        day,
+                        &RData::Ns(renewed.clone()),
+                    )],
+                    vec![Record::new(renewed, Class::IN, day, &RData::A(LEAF))],
+                )
+            } else {
+                (ghost.authority.clone(), ghost.additional.clone())
+            };
+            let leaf = captured(&unsigned, &google);
+            let plot = {
+                let (com, google) = (com.clone(), google.clone());
+                let mut plot = Plot::new(vec![unsigned.clone()]).deriving(move |zone, question| {
+                    if !question.name.is_within(&google) {
+                        return None;
                     }
-                    return Some(response);
-                }
-                if *zone == google {
-                    let mut response = to(living(leaf.clone(), 2), question);
-                    if question.qtype == RecordType::NS {
-                        response.answer = ghost.authority.clone();
-                        response.authority.clear();
-                    } else {
-                        response.authority = ghost.authority.clone();
+                    if *zone == com {
+                        let mut response = to(parent.clone(), question);
+                        if turmoil::sim_elapsed().unwrap_or_default() >= revoked {
+                            response.header.rcode = Rcode::NXDOMAIN;
+                            response.header.flags = response.header.flags.with(Flags::AA);
+                            response.authority = vec![Record::new(
+                                com.clone(),
+                                Class::IN,
+                                Ttl::new(5).expect("a TTL"),
+                                &RData::Soa(Soa {
+                                    mname: dns("a.gtld-servers.net."),
+                                    rname: dns("nstld.verisign-grs.com."),
+                                    serial: 1,
+                                    refresh: 1800,
+                                    retry: 900,
+                                    expire: 604_800,
+                                    minimum: 5,
+                                }),
+                            )];
+                            response.additional.clear();
+                        }
+                        return Some(response);
                     }
-                    response.additional = ghost.additional.clone();
-                    return Some(response);
+                    if *zone == google {
+                        let mut response = to(living(leaf.clone(), 2), question);
+                        if question.qtype == RecordType::NS {
+                            response.answer = renewal.clone();
+                            response.authority.clear();
+                        } else {
+                            response.authority = renewal.clone();
+                        }
+                        response.additional = glue.clone();
+                        return Some(response);
+                    }
+                    None
+                });
+                plot.duration = Some(Duration::from_secs(60));
+                plot.config.min_ttl = 0;
+                plot
+            };
+            let mut lab = lab(seed, plot);
+            let resolver = lab.world.resolver;
+            let rcodes = Rc::new(RefCell::new(Vec::new()));
+            let slot = Rc::clone(&rcodes);
+            lab.world.client_direct(async move |client| {
+                for (pause, rtype) in [
+                    (0, RecordType::A),
+                    (12, RecordType::NS),
+                    (13, RecordType::A),
+                ] {
+                    tokio::time::sleep(Duration::from_secs(pause)).await;
+                    let (answer, _) =
+                        ask(&client, resolver, &question("google.com", rtype)).await?;
+                    slot.borrow_mut().push(answer.rcode());
                 }
-                None
+                Ok(())
             });
-            plot.duration = Some(Duration::from_secs(60));
-            plot.config.min_ttl = 0;
-            plot
-        };
-        let mut lab = lab(seed, plot);
-        let resolver = lab.world.resolver;
-        let rcodes = Rc::new(RefCell::new(Vec::new()));
-        let slot = Rc::clone(&rcodes);
-        lab.world.client_direct(async move |client| {
-            for (pause, rtype) in [
-                (0, RecordType::A),
-                (12, RecordType::NS),
-                (13, RecordType::A),
-            ] {
-                tokio::time::sleep(Duration::from_secs(pause)).await;
-                let (answer, _) = ask(&client, resolver, &question("google.com", rtype)).await?;
-                slot.borrow_mut().push(answer.rcode());
-            }
-            Ok(())
-        });
-        let Ran { heard, .. } = lab.run();
-        let late = (paid(&heard).iter())
-            .filter(|(server, _, at)| {
-                google_servers.contains(server) && *at > Duration::from_secs(u64::from(NS_TTL))
-            })
-            .count();
-        println!(
-            "ghost seed {}: {:?}, {late} queries to the zone after its NS TTL",
-            seed.0,
-            rcodes.borrow()
-        );
-        assert_eq!(
-            *rcodes.borrow(),
-            [Rcode::NOERROR, Rcode::NOERROR, Rcode::NXDOMAIN]
-        );
-        assert_eq!(late, 0);
+            let Ran { heard, .. } = lab.run();
+            let late = (paid(&heard).iter())
+                .filter(|(server, _, at)| {
+                    google_servers.contains(server) && *at > Duration::from_secs(u64::from(NS_TTL))
+                })
+                .count();
+            println!(
+                "ghost seed {} (new names {new_names}): {:?}, {late} queries to the zone after its NS TTL",
+                seed.0,
+                rcodes.borrow()
+            );
+            assert_eq!(
+                *rcodes.borrow(),
+                [Rcode::NOERROR, Rcode::NOERROR, Rcode::NXDOMAIN]
+            );
+            assert_eq!(late, 0);
+        }
     });
 }
