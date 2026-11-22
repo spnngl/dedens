@@ -487,6 +487,109 @@ fn a_file_over_the_limits_is_cut_down_when_it_is_opened() {
     );
 }
 
+#[test]
+fn several_of_the_oldest_go_when_the_limit_on_opening_is_far_below_the_file() {
+    let (_dir, path) = directory();
+    let changesets = chain();
+    fs::write(&path, file_of(&changesets).0).expect("writes");
+    let journal = Journal::open(
+        &path,
+        JournalLimits {
+            changesets: 2,
+            ..JournalLimits::default()
+        },
+    )
+    .expect("opens");
+    assert_eq!(serials(&journal, 3), Some(vec![(3, 4), (4, 5)]));
+    assert_eq!(journal.len(), 2);
+}
+
+/// A changeset that fills the bytes to the last one is kept; one byte less room and it is over.
+#[test]
+fn a_changeset_that_fits_the_bytes_exactly_is_kept() {
+    let changesets = chain();
+    let (_, starts) = file_of(&changesets);
+    let first = starts[1];
+    for (room, kept) in [(first, true), (first - 1, false)] {
+        let (_dir, path) = directory();
+        let limits = JournalLimits {
+            bytes: room,
+            ..JournalLimits::default()
+        };
+        let mut journal = Journal::open(&path, limits).expect("opens");
+        let stored = journal.append(&changesets[0]).expect("appends");
+        assert_eq!(stored == (Stored::Kept { dropped: 0 }), kept, "{room}");
+        assert_eq!(journal.is_empty(), !kept);
+    }
+}
+
+/// A journal within its limits is opened without rewriting it: the leftover of a rewrite stays.
+#[test]
+fn a_journal_within_its_limits_is_not_rewritten_when_it_is_opened() {
+    let (_dir, path) = directory();
+    let changesets = chain();
+    fs::write(&path, file_of(&changesets).0).expect("writes");
+    let leftover = path.with_extension("journal.tmp");
+    fs::write(&leftover, b"left by a crash").expect("writes");
+    let journal = open(&path);
+    assert_eq!(journal.len(), changesets.len());
+    assert_eq!(
+        fs::read(&leftover).expect("still there"),
+        b"left by a crash"
+    );
+}
+
+/// Only a missing file is a new journal: another error is the caller'"'"'s to see.
+#[test]
+fn a_path_that_cannot_be_read_is_an_error_and_a_missing_one_is_a_new_journal() {
+    let (dir, path) = directory();
+    fs::create_dir(&path).expect("a directory where the file should be");
+    assert!(matches!(
+        Journal::open(&path, JournalLimits::default()),
+        Err(JournalError::Io(_))
+    ));
+    assert!(path.is_dir());
+    let missing = dir.path().join("none").join("example.journal");
+    assert!(matches!(
+        Journal::open(&missing, JournalLimits::default()),
+        Err(JournalError::Io(_))
+    ));
+}
+
+/// The bound is on the size: a file of exactly [`MAX_FILE`] bytes is read (and is no journal), one longer says
+/// how long it is.
+#[test]
+fn a_file_of_the_bound_is_read_and_a_longer_one_says_its_size() {
+    let (_dir, path) = directory();
+    let file = fs::File::create(&path).expect("creates");
+    file.set_len(MAX_FILE).expect("a sparse file");
+    drop(file);
+    assert!(matches!(
+        Journal::open(&path, JournalLimits::default()),
+        Err(JournalError::NotAJournal)
+    ));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("opens");
+    file.set_len(MAX_FILE + 10).expect("a sparse file");
+    drop(file);
+    let error = Journal::open(&path, JournalLimits::default()).expect_err("refused");
+    assert!(
+        matches!(error, JournalError::TooLarge { size } if size == MAX_FILE + 10),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_journal_with_a_changeset_is_not_empty() {
+    let (_dir, path) = directory();
+    let mut journal = open(&path);
+    assert!(journal.is_empty());
+    journal.append(&chain()[0]).expect("appends");
+    assert!(!journal.is_empty());
+}
+
 // --- reading bytes ---
 
 #[test]

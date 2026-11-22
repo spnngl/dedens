@@ -6,7 +6,7 @@
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Record, RecordType, Serial, Ttl};
 use dedens_testkit::dns;
-use dedens_zone::{Changeset, ChangesetError, ErrorKind, Kind, Limits, Node, Zone};
+use dedens_zone::{Changeset, ChangesetError, ErrorKind, Kind, Limits, Node, RrSet, Zone};
 
 use crate::util::{APEX, load, load_files, zone_file};
 
@@ -199,6 +199,29 @@ fn s4_zones_of_two_apexes_have_no_difference() {
     .zone;
     assert_eq!(
         Zone::diff(&version(1, ""), &other),
+        Err(ChangesetError::DifferentZone)
+    );
+}
+
+/// A zone of another class is another zone though its apex is the same.
+#[test]
+fn s4_zones_of_two_classes_have_no_difference() {
+    let chaos = |serial: u32| {
+        let text = format!(
+            "$ORIGIN example.\n$TTL 1h\n@ CH SOA ns hostmaster {serial} 1d 2h 4w 1h\n@ CH NS ns\n"
+        );
+        load_files("example.", &text, None, &[], &Limits::default())
+            .expect("a zone")
+            .zone
+    };
+    assert_eq!(chaos(1).class(), Class::CH);
+    assert_eq!(
+        Zone::diff(&chaos(1), &chaos(2)).map(|c| Changeset::to_serial(&c)),
+        Ok(Serial::new(2)),
+        "two zones of one class"
+    );
+    assert_eq!(
+        Zone::diff(&version(1, ""), &chaos(2)),
         Err(ChangesetError::DifferentZone)
     );
 }
@@ -494,6 +517,72 @@ fn a_change_that_breaks_the_zone_is_refused_by_the_checks_of_a_load() {
     let no_ns = Changeset::new(soa(1), soa(2), vec![apex_ns], vec![]).expect("valid");
     let report = zone.apply(&no_ns, &Limits::default()).expect_err("no NS");
     assert_eq!(kinds(report), [(None, ErrorKind::NoApexNs)]);
+}
+
+/// The RDATA bytes of every record of `zone`, as `Limits::rdata_bytes` counts them.
+fn rdata_bytes(zone: &Zone) -> usize {
+    zone.nodes()
+        .flat_map(|(_, node)| {
+            node.rrsets()
+                .map(|(_, set)| set)
+                .chain(node.signature_sets())
+        })
+        .flat_map(RrSet::rdatas)
+        .map(|rdata| rdata.wire().len())
+        .sum()
+}
+
+/// Removing counts: a change that takes out as many bytes as it puts in fits the limit that the zone fills, one that
+/// puts in more does not.
+#[test]
+fn a_change_past_the_rdata_bytes_is_refused_and_removals_make_room() {
+    let zone = version(1, "t TXT \"ab\"\n");
+    let limits = Limits {
+        rdata_bytes: rdata_bytes(&zone),
+        ..Limits::default()
+    };
+    let same = changeset(1, 2, &["t TXT \"ab\""], &["t TXT \"cd\""]).expect("valid");
+    assert!(zone.apply(&same, &limits).is_ok());
+    let bigger = changeset(1, 2, &["t TXT \"ab\""], &["t TXT \"cdef\""]).expect("valid");
+    let report = zone
+        .apply(&bigger, &limits)
+        .expect_err("two bytes too many");
+    assert!(matches!(
+        report.errors.first().map(|e| &e.kind),
+        Some(ErrorKind::Limit { limit, .. }) if *limit == limits.rdata_bytes
+    ));
+    let room = Limits {
+        rdata_bytes: limits.rdata_bytes + 2,
+        ..limits
+    };
+    assert!(zone.apply(&bigger, &room).is_ok());
+}
+
+/// The line of a record in an error is its place in the sequence of RFC 1995 §4: after the old SOA, the removed
+/// records, the new SOA, and the added ones before it.
+#[test]
+fn s4_an_added_record_has_its_place_in_the_sequence_as_its_line() {
+    let zone = version(1, "www A 192.0.2.1\nold A 192.0.2.2\n");
+    let change = changeset(
+        1,
+        2,
+        &["old A 192.0.2.2"],
+        &["a A 192.0.2.5", "b A 192.0.2.6", "www CNAME ns"],
+    )
+    .expect("valid");
+    let report = zone
+        .apply(&change, &Limits::default())
+        .expect_err("CNAME beside A");
+    // Old SOA 1, removed 2, new SOA 3, added 4, 5 and 6.
+    assert_eq!(
+        kinds(report),
+        [(
+            Some((1, 6)),
+            ErrorKind::CnameWithOtherData {
+                other: RecordType::A
+            }
+        )]
+    );
 }
 
 #[test]
