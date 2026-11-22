@@ -6,7 +6,7 @@
 //! TTL has run out, the delegations' have not): the resolution sends one query, to the zone's server, reads its
 //! response and ends; the clock is on the three calls of that exchange, the transport being the caller's. `cold` is
 //! the same from empty caches: priming, the root's referral, `com.`'s referral and the answer, the delegations
-//! the other one starts from.
+//! the other one starts from. `warm_wire` is `warm` with the response decoded from its wire inside the clock.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -155,6 +155,39 @@ fn warm(bencher: Bencher<'_, '_>) {
                 Next::Send(query) if query.zone == zone
             ));
             resolution.receive(reply(black_box(&response)), now);
+            assert!(matches!(resolution.step(now, &mut Fixed), Next::Done(_)));
+            resolution
+        });
+}
+
+/// A miss as `dedensd` takes it from the transport: [`warm`] with the response decoded from its wire first, as the
+/// recurse stage's `hand` does.
+#[divan::bench]
+fn warm_wire(bencher: Bencher<'_, '_>) {
+    let capture = Capture::read("signed-com");
+    let authorities = Authorities::new(&capture);
+    let at = Duration::from_secs(capture.captured_at);
+    let wire = capture
+        .exchanges
+        .iter()
+        .find(|e| e.zone == capture.name && e.name == capture.name && e.rtype == capture.rtype)
+        .expect("the zone's answer")
+        .response
+        .clone();
+    bencher
+        .with_inputs(|| {
+            let caches = caches();
+            authorities.resolve(&capture, &caches, at);
+            start(&capture, &caches, at + LATER)
+        })
+        .bench_local_values(|mut resolution| {
+            let now = at + LATER;
+            assert!(matches!(
+                black_box(&mut resolution).step(now, &mut Fixed),
+                Next::Send(_)
+            ));
+            let decoded = Message::decode(black_box(&wire)).expect("a message");
+            resolution.receive(reply(&decoded.message), now);
             assert!(matches!(resolution.step(now, &mut Fixed), Next::Done(_)));
             resolution
         });
