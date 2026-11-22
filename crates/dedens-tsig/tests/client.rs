@@ -44,6 +44,39 @@ fn s5_4_a_round_trip() {
     assert_eq!(verifier.finish(), Ok(()));
 }
 
+/// §5.4: a response that fails verification is not accepted and the client keeps waiting for the real one: every
+/// refusal leaves the verifier as it was, so the real response still verifies.
+#[test]
+fn s5_4_a_refused_message_leaves_the_verifier_as_it_was() {
+    let mac = [1; 32];
+    let real = response(&mac, T, 32);
+    let bare = strip(&real);
+    let forged = reference().record(&bare, &[0; 32], T, 300, 0, &[]);
+    let unsigned = reference().record(&bare, &[], T, 300, 17, &[]);
+    let mut v = verifier(&mac);
+    assert_eq!(v.verify(&forged, T), Err(ResponseError::BadSig));
+    assert_eq!(
+        v.verify(&unsigned, T),
+        Err(ResponseError::Refused {
+            error: TsigError::BADKEY,
+            authenticated: false
+        })
+    );
+    assert_eq!(
+        v.verify(&real, T + 1000),
+        Err(ResponseError::BadTime {
+            time_signed: T,
+            now: T + 1000
+        })
+    );
+    assert_eq!(
+        v.verify(&query(0x1234, "example.org."), T),
+        Err(ResponseError::Missing)
+    );
+    assert_eq!(v.verify(&real, T), Ok(Verified::Signed));
+    assert_eq!(v.finish(), Ok(()));
+}
+
 /// §5.4: a response with no TSIG is discarded, and a response that never came is no success either.
 #[test]
 fn s5_4_no_tsig_is_missing() {

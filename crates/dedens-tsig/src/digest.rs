@@ -1,5 +1,7 @@
 //! The MAC computation (RFC 8945 §4.3) and appending the TSIG record to a message (§5.1, §5.3).
 
+use std::fmt;
+
 use dedens_proto::{
     Class, HEADER_LEN, MAX_MESSAGE_LEN, MAX_NAME_LEN, Name, RecordType, Tsig, TsigDataError,
     TsigError, TsigRecord,
@@ -7,6 +9,7 @@ use dedens_proto::{
 use ring::hmac;
 use subtle::ConstantTimeEq;
 
+use crate::algorithm::MIN_MAC_LEN;
 use crate::key::{Key, canonical};
 
 /// Why a message cannot be signed.
@@ -28,7 +31,9 @@ pub enum SignError {
     Data(#[from] TsigDataError),
 }
 
-/// The bytes a MAC is computed over, fed in the order of RFC 8945 §4.3.
+/// The bytes a MAC is computed over, fed in the order of RFC 8945 §4.3. A clone is the same digest so far: the
+/// client checks a message on one and keeps it only when the message is accepted.
+#[derive(Clone)]
 pub(crate) struct Digest(hmac::Context);
 
 impl Digest {
@@ -92,18 +97,20 @@ impl Digest {
 }
 
 // `ring`'s context is not `Debug`, and holds no secret worth showing.
-impl core::fmt::Debug for Digest {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for Digest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Digest")
     }
 }
 
-/// Whether `received`, possibly truncated, is the start of `computed` (RFC 8945 §5.2.2.1), in constant time.
+/// Whether `received`, possibly truncated, is the start of `computed`, in constant time. A MAC under 10 bytes never
+/// matches (RFC 8945 §5.2.2.1).
 pub(crate) fn matches(computed: &hmac::Tag, received: &[u8]) -> bool {
     let computed = computed.as_ref();
-    computed
-        .get(..received.len())
-        .is_some_and(|prefix| bool::from(prefix.ct_eq(received)))
+    received.len() >= MIN_MAC_LEN
+        && computed
+            .get(..received.len())
+            .is_some_and(|prefix| bool::from(prefix.ct_eq(received)))
 }
 
 /// What a signature is made of besides the message.

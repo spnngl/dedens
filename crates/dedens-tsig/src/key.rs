@@ -125,8 +125,9 @@ impl Keyring {
     /// The key named `name`, in any case.
     #[must_use]
     pub fn get(&self, name: &Name<'_>) -> Option<&Key> {
-        self.keys
-            .get(canonical(name, &mut [0; MAX_NAME_LEN]) as &[u8])
+        let mut buf = [0; MAX_NAME_LEN];
+        let wire: &[u8] = canonical(name, &mut buf);
+        self.keys.get(wire)
     }
 
     /// How many keys.

@@ -39,6 +39,8 @@ pub struct NotAuth<'k> {
     error: TsigError,
     owner: Name<'static>,
     algorithm: Name<'static>,
+    /// The request's Time Signed, which both kinds of answer carry.
+    time: u64,
     signed: Option<Signed<'k>>,
 }
 
@@ -47,8 +49,6 @@ pub struct NotAuth<'k> {
 struct Signed<'k> {
     key: &'k Key,
     request_mac: Vec<u8>,
-    /// The request's Time Signed.
-    time: u64,
     fudge: u16,
 }
 
@@ -67,8 +67,9 @@ impl NotAuth<'_> {
 
     /// Appends the TSIG record to the response `wire`, at time `now`.
     ///
-    /// An unsigned error has an empty MAC. A BADTIME carries the request's Time Signed and Fudge and the server's
-    /// time as Other Data (RFC 8945 §5.2.3).
+    /// An unsigned error has an empty MAC and the request's Time Signed, as Knot's `knot_tsig_add` writes it (RFC
+    /// 8945 §5.3.2 gives none). A BADTIME carries the request's Time Signed and Fudge and the server's time as Other
+    /// Data (§5.2.3); a BADTRUNC the request's Fudge and `now`.
     ///
     /// # Errors
     ///
@@ -76,14 +77,22 @@ impl NotAuth<'_> {
     pub fn sign(&self, wire: &mut Vec<u8>, now: u64) -> Result<(), SignError> {
         let Some(signed) = &self.signed else {
             let id = original_id(wire)?;
-            let tsig = Tsig::new(self.algorithm.clone(), now, FUDGE, &[], id, self.error, &[])?;
+            let tsig = Tsig::new(
+                self.algorithm.clone(),
+                self.time,
+                FUDGE,
+                &[],
+                id,
+                self.error,
+                &[],
+            )?;
             return append(wire, &self.owner, &tsig);
         };
         let mut digest = Digest::new(signed.key);
         digest.mac(&signed.request_mac);
         let server_time = now.to_be_bytes();
         let (time_signed, other) = if self.error == TsigError::BADTIME {
-            (signed.time, &server_time[2..])
+            (self.time, &server_time[2..])
         } else {
             (now, &[][..])
         };
@@ -125,6 +134,7 @@ pub fn verify_request<'k>(
             error,
             owner: record.name.clone().into_owned(),
             algorithm: tsig.algorithm.clone().into_owned(),
+            time: tsig.time_signed(),
             signed,
         })
     };
@@ -147,7 +157,6 @@ pub fn verify_request<'k>(
         Some(Signed {
             key,
             request_mac: mac.to_vec(),
-            time: tsig.time_signed(),
             fudge: tsig.fudge,
         })
     };

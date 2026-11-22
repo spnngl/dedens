@@ -6,6 +6,9 @@ use core::str::FromStr;
 use dedens_proto::{MAX_NAME_LEN, Name};
 use ring::hmac;
 
+/// The shortest MAC a message may carry, whatever the algorithm (RFC 8945 §5.2.2.1).
+pub(crate) const MIN_MAC_LEN: usize = 10;
+
 /// An HMAC algorithm of TSIG.
 ///
 /// `hmac-md5` is not here: RFC 8945 §6 makes it optional, and a key naming it gets the BADKEY of an algorithm
@@ -78,7 +81,7 @@ impl Algorithm {
     /// §5.2.2.1).
     #[must_use]
     pub fn min_mac_len(self) -> usize {
-        (self.mac_len() / 2).max(10)
+        (self.mac_len() / 2).max(MIN_MAC_LEN)
     }
 
     pub(crate) fn ring(self) -> hmac::Algorithm {

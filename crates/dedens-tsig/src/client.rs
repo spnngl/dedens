@@ -60,6 +60,15 @@ pub enum ResponseError {
         /// The client's time.
         now: u64,
     },
+    /// A message of a stream is signed at a time before the one before it (RFC 8945 §5.3.1: successive Time
+    /// Signed values do not decrease).
+    #[error("the TSIG time signed {time_signed} is before the previous message's {previous}")]
+    TimeDecreased {
+        /// The time signed in the message.
+        time_signed: u64,
+        /// The time signed of the message before.
+        previous: u64,
+    },
     /// More than 99 messages in a row without a TSIG (RFC 8945 §5.3.1).
     #[error("more than {MAX_UNSIGNED} messages in a row without a TSIG")]
     TooManyUnsigned,
@@ -82,7 +91,9 @@ pub enum ResponseError {
 pub enum Verified {
     /// A signed message, which verifies it and the unsigned ones before it.
     Signed,
-    /// A message with no TSIG, within the 99 a client accepts; the next TSIG covers it.
+    /// A message with no TSIG, within the 99 a client accepts; the next TSIG covers it. It is **not yet
+    /// authenticated**: the caller does not act on it (apply an AXFR's records, say) until a later
+    /// [`Verified::Signed`], and the response is complete only after [`ResponseVerifier::finish`].
     Unsigned,
 }
 
@@ -95,6 +106,8 @@ pub struct ResponseVerifier<'k> {
     digest: Digest,
     first: bool,
     unsigned: usize,
+    /// The Time Signed of the last signed message: a stream's never decrease (RFC 8945 §5.3.1).
+    last_time: u64,
 }
 
 impl<'k> ResponseVerifier<'k> {
@@ -108,6 +121,7 @@ impl<'k> ResponseVerifier<'k> {
             digest: Digest::new(key),
             first: true,
             unsigned: 0,
+            last_time: 0,
         };
         verifier.digest.mac(&verifier.prior);
         verifier
@@ -115,7 +129,8 @@ impl<'k> ResponseVerifier<'k> {
 
     /// Accepts or refuses the next message of the response, at time `now`.
     ///
-    /// After an error the verifier is spent: the connection is closed.
+    /// A refused message leaves the verifier as it was: over UDP keep waiting for the real response (RFC 8945
+    /// §5.4), over TCP close the connection.
     ///
     /// # Errors
     ///
@@ -148,7 +163,7 @@ impl<'k> ResponseVerifier<'k> {
         if tsig.mac().len() != self.key.algorithm().mac_len() {
             return Err(ResponseError::MacSize);
         }
-        let mut digest = std::mem::replace(&mut self.digest, Digest::new(self.key));
+        let mut digest = self.digest.clone();
         digest.stripped(wire, &record);
         if self.first {
             digest.variables(&record.name, tsig);
@@ -164,6 +179,12 @@ impl<'k> ResponseVerifier<'k> {
                 now,
             });
         }
+        if !self.first && tsig.time_signed() < self.last_time {
+            return Err(ResponseError::TimeDecreased {
+                time_signed: tsig.time_signed(),
+                previous: self.last_time,
+            });
+        }
         if tsig.error != TsigError::NOERROR {
             return Err(ResponseError::Refused {
                 error: tsig.error,
@@ -171,7 +192,9 @@ impl<'k> ResponseVerifier<'k> {
             });
         }
         self.prior = tsig.mac().to_vec();
+        self.digest = Digest::new(self.key);
         self.digest.mac(&self.prior);
+        self.last_time = tsig.time_signed();
         self.first = false;
         self.unsigned = 0;
         Ok(Verified::Signed)

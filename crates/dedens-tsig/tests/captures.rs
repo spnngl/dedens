@@ -3,6 +3,7 @@
 //! Knot's response, byte for byte.
 
 use dedens_proto::TsigError;
+use dedens_testkit::authoritative::{Packet, Peer, Recording};
 use dedens_tsig::{ResponseError, ResponseVerifier, Verified, verify_request};
 
 use crate::util::{capture_key, exchanges, keyring, strip, tsig};
@@ -51,6 +52,67 @@ fn s5_4_knots_responses_verify() {
     }
 }
 
+/// §5.3.1: a stream of five messages from Knot: the client accepts each, and the server's signer at Knot's times
+/// writes Knot's bytes for each: the first over the request's MAC, the next ones over the MAC before and the timers.
+#[test]
+fn s5_3_1_knots_stream_verifies_and_is_reproduced() {
+    let recording = Recording::read("axfr-tsig-stream");
+    let request = &recording.messages[0];
+    assert_eq!(request.from, Peer::Client);
+    let responses: Vec<&Packet> = recording.messages[1..].iter().collect();
+    assert!(responses.len() >= 3, "{} messages", responses.len());
+    assert!(responses.iter().all(|packet| packet.from == Peer::Server));
+
+    let key = capture_key();
+    let mut verifier = ResponseVerifier::new(&key, tsig(&request.message).tsig.mac());
+    for packet in &responses {
+        let time = tsig(&packet.message).tsig.time_signed();
+        assert_eq!(verifier.verify(&packet.message, time), Ok(Verified::Signed));
+    }
+    assert_eq!(verifier.finish(), Ok(()));
+
+    let keys = keyring();
+    let time = tsig(&request.message).tsig.time_signed();
+    let mut signer = verify_request(&keys, &request.message, time)
+        .expect("a valid request")
+        .expect("signed")
+        .signer();
+    for (i, packet) in responses.iter().enumerate() {
+        let mut ours = strip(&packet.message);
+        signer
+            .sign(&mut ours, tsig(&packet.message).tsig.time_signed())
+            .expect("room");
+        assert_eq!(ours, packet.message, "message {i}");
+    }
+}
+
+/// §5.3.1: Knot's stream does not verify with a message dropped, or swapped with the next.
+#[test]
+fn s5_3_1_knots_stream_detects_a_dropped_or_swapped_message() {
+    let recording = Recording::read("axfr-tsig-stream");
+    let key = capture_key();
+    let mac = tsig(&recording.messages[0].message).tsig.mac().to_vec();
+    let responses: Vec<&[u8]> = recording.messages[1..]
+        .iter()
+        .map(|packet| packet.message.as_slice())
+        .collect();
+    let run = |order: &[usize]| {
+        let mut verifier = ResponseVerifier::new(&key, &mac);
+        order.iter().try_for_each(|&i| {
+            let time = tsig(responses[i]).tsig.time_signed();
+            verifier.verify(responses[i], time).map(drop)
+        })
+    };
+    let all: Vec<usize> = (0..responses.len()).collect();
+    assert_eq!(run(&all), Ok(()));
+    let mut dropped = all.clone();
+    dropped.remove(1);
+    assert_eq!(run(&dropped), Err(ResponseError::BadSig));
+    let mut swapped = all;
+    swapped.swap(1, 2);
+    assert_eq!(run(&swapped), Err(ResponseError::BadSig));
+}
+
 /// §5.2.1: a response must be of the request's key: Knot's response to another request does not verify.
 #[test]
 fn s5_4_a_response_to_another_request_does_not_verify() {
@@ -65,7 +127,8 @@ fn s5_4_a_response_to_another_request_does_not_verify() {
     );
 }
 
-/// §5.2.2, §5.3.2: a wrong secret is BADSIG, answered unsigned: Knot's response has an empty MAC, and so has ours.
+/// §5.2.2, §5.3.2: a wrong secret is BADSIG, answered unsigned: Knot's response has an empty MAC and the request's
+/// Time Signed (`knot_tsig_add`), and so has ours, whatever the server's clock says.
 #[test]
 fn s5_3_2_bad_secret_is_unsigned_badsig() {
     let keys = keyring();
@@ -78,9 +141,10 @@ fn s5_3_2_bad_secret_is_unsigned_badsig() {
         };
         assert_eq!(not_auth.error(), TsigError::BADSIG);
         assert!(!not_auth.is_signed());
-        // Knot's response: the request's time, an empty MAC, error 16.
+        // Knot's response: the request's time, an empty MAC, error 16. The clock is not the request's, to show that
+        // the time in the answer is the request's and not the clock's.
         let mut ours = strip(&response.message);
-        not_auth.sign(&mut ours, time).expect("room");
+        not_auth.sign(&mut ours, time + 1000).expect("room");
         assert_eq!(ours, response.message, "{id}");
 
         let key = capture_key();

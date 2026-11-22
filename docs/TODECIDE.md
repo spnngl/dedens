@@ -563,3 +563,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   kinds name servers of transports we have (certificate hashes, host names with ports, bootstrap addresses, a DoH
   path), so `@sdns://...` could be an upstream of `dedens` and of the `forward` stage. Default: not read.
   Alternative: read them, as the published lists hold 497 of them, and map each to the transport's upstream.
+- Replay of a signed UPDATE inside the TSIG fudge window (D205, step 14): RFC 8945 §5.2.3 recommends the server to
+  keep the last Time Signed of each key and refuse an earlier one; `dedens-tsig` keeps none, as Knot and NSD, so a
+  captured UPDATE is accepted again for up to 300 s either side of its time (a read-only AXFR or IXFR replayed gains
+  nothing). Default: as is, until step 14 serves UPDATE. Alternative: the server's per-key last Time Signed, checked
+  after `verify_request` for UPDATE only, or for every signed request.
