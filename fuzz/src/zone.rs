@@ -1,6 +1,7 @@
-//! Targets of dedens-zone: zone text on its way into a checked zone.
+//! Targets of dedens-zone: zone text on its way into a checked zone, and a journal file into changesets.
 
 use dedens_proto::{Name, RecordType, Ttl};
+use dedens_zone::journal::format::{self, MAGIC, Tail};
 use dedens_zone::{Kind, Limits, Source, Zone};
 
 /// How many `$INCLUDE`s the callback gives the text of: each one reads the same bytes again, so a file that
@@ -53,6 +54,37 @@ pub fn load_zone(data: &[u8]) {
             }
         }
     }
+}
+
+/// Arbitrary bytes as a journal file (D207): reading never panics, a journal it does not refuse is made of whole
+/// changesets that each start where the one before ends, `valid` bytes of it are exactly those records, and the
+/// changesets written again read back the same, to the last byte.
+///
+/// # Panics
+///
+/// On a file that reads as something else than its bytes say, or a bug in the reader.
+pub fn journal_read(data: &[u8]) {
+    let Ok(scan) = format::scan(data) else {
+        return;
+    };
+    assert!(scan.valid <= data.len());
+    assert_eq!(scan.changesets.len(), scan.sizes.len());
+    assert_eq!(scan.tail == Tail::Clean, scan.valid == data.len());
+    if scan.valid > 0 {
+        assert_eq!(MAGIC.len() + scan.sizes.iter().sum::<usize>(), scan.valid);
+    } else {
+        assert!(scan.changesets.is_empty());
+    }
+    for pair in scan.changesets.windows(2) {
+        assert_eq!(pair[0].to_serial(), pair[1].from_serial());
+    }
+    let mut again = MAGIC.to_vec();
+    for changeset in &scan.changesets {
+        format::encode(changeset, &mut again).expect("a changeset read from wire form fits it");
+    }
+    let read = format::scan(&again).expect("the header is ours");
+    assert_eq!(read.changesets, scan.changesets);
+    assert_eq!((read.valid, read.tail), (again.len(), Tail::Clean));
 }
 
 /// The invariants of a loaded `zone` of `apex`.

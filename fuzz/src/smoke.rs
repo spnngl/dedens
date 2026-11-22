@@ -72,6 +72,11 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         "root-5011.state".into(),
         include_bytes!("../seeds/root-5011.state").to_vec(),
     ));
+    // A journal of three versions of the RFC 4035 appendix A zone, as `Journal` writes it (D207).
+    seeds.push((
+        "example.journal".into(),
+        include_bytes!("../seeds/example.journal").to_vec(),
+    ));
     seeds.sort();
     seeds
 }

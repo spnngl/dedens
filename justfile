@@ -349,7 +349,7 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots target/seeds/recursion"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots target/seeds/recursion target/seeds/journal"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
@@ -358,14 +358,16 @@ fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdat
 # fuzz/target/seeds/configs (D181); the root's DS records, the root hints, the test copy of the TLD list (D126),
 # ICANN's CA bundle (D127) and the root key rollover state of fuzz/seeds/root-5011.state (D200) in
 # fuzz/target/seeds/roots; the responses of the captured resolutions of testdata/recursion and
-# testdata/recursion/minimised (D188), kept there in base64, one to a file in fuzz/target/seeds/recursion.
+# testdata/recursion/minimised (D188), kept there in base64, one to a file in fuzz/target/seeds/recursion; the journal file
+# of fuzz/seeds/example.journal (D207) in fuzz/target/seeds/journal.
 # `seeds()` of fuzz/src/smoke.rs reads the same.
 [private]
 fuzz-seeds:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion
-    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion
+    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal
+    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal
+    cp fuzz/seeds/example.journal fuzz/target/seeds/journal/
     cp crates/dedens-dnssec/src/root.ds crates/dedens-roots/src/named.root crates/dedens-roots/tests/data/tlds.json \
         crates/dedens-dnssec/src/icannbundle.pem fuzz/seeds/root-5011.state fuzz/target/seeds/roots/
     perl -ne 'next if /^#/; my $hex = (split)[2]; open my $out, ">", "fuzz/target/seeds/coap/$." or die; print $out pack "H*", $hex' testdata/coap/*.txt
