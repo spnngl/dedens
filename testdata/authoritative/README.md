@@ -11,6 +11,7 @@ authoritative-images` builds the two images of the [`Containerfile`](Containerfi
 | `answers` | `answers/<zone>.yaml` | one Knot and one NSD container per zone |
 | `exchanges` | `recordings/<scenario>.yaml` | a Knot container, a recording proxy between it and `kdig` or `knsupdate` |
 | `root-ixfr` | `recordings/root-ixfr.yaml` | Knot loading the previous root zone, then the current one as a difference, and `kdig` asking IXFR |
+| `signed-stream` | `recordings/axfr-tsig-stream.yaml` | Knot serving the first 1200 records of the root zone to a key's holder, and `kdig` signing the AXFR |
 
 ## Zones
 
@@ -49,6 +50,7 @@ varies by run: IDs, TSIG times and MACs, times between messages.
 | `axfr-root`, `axfr-zonetransfer.me` | The AXFR a client sees from a public server (RFC 5936 §2) |
 | `axfr-open` | AXFR without TSIG |
 | `axfr-tsig` | AXFR signed: the one response carries a TSIG (RFC 8945 §5.3, RFC 5936 §2.2) |
+| `axfr-tsig-stream` | AXFR signed, 1200 records of the root: five messages, each signed over the one before (RFC 8945 §5.3.1) |
 | `axfr-tsig-bad-secret`, `axfr-tsig-unknown-key`, `axfr-tsig-bad-time` | NOTAUTH with BADSIG, BADKEY, BADTIME (a clock 600 s behind) |
 | `axfr-unsigned-refused` | A zone for a key's holder, asked without TSIG: REFUSED |
 | `ixfr-uptodate`, `ixfr-tsig-uptodate` | IXFR from the serial held: one SOA |
