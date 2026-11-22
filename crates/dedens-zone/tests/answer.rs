@@ -540,6 +540,16 @@ fn s2_2_only_whole_labels_are_replaced() {
 }
 
 #[test]
+fn s2_2_a_name_the_zone_holds_below_a_dname_is_redirected_not_referred() {
+    // RFC 6672 §2.4: data below a DNAME owner is occluded; the load warns and keeps it, the answer never gives it.
+    let zone = example(&format!("{}x.d A 192.0.2.5\n", dname("d", "other.")));
+    let r = ask(&zone, "x.d.example.", RecordType::A);
+    assert!(r.aa);
+    assert_eq!(r.answer[1], "x.d.example. 3600 IN CNAME x.other.");
+    assert_eq!(r.authority, Vec::<String>::new());
+}
+
+#[test]
 fn s2_2_a_longer_target_makes_a_longer_name() {
     let zone = example(&dname("@", "y.net."));
     let r = ask(&zone, "a.example.", RecordType::A);
