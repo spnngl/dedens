@@ -11,9 +11,8 @@ use dedens_proto::{Message, Name, RecordType};
 use dedens_testkit::authoritative::{Answers, Reference, Server, Transport};
 
 use crate::engine::{self, Container, Mount};
-use crate::proxy;
 use crate::zones::{self, ZONES};
-use crate::{Result, now, queries, write};
+use crate::{Result, now, proxy, queries, write};
 
 /// How long a server has to answer a datagram, or a stream to deliver.
 const ANSWER_WAIT: Duration = Duration::from_secs(5);
