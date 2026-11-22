@@ -1045,11 +1045,17 @@ fn glueless(
         })
         .collect();
     to_google.additional.clear();
+    let asked: HashSet<IpAddr> = capture.exchanges.iter().map(|e| e.server).collect();
+    let google = answered(&capture);
     let server = |query: &Query| {
         let question = &query.question;
         if question.name == capture.name {
             if is(&query.zone, "com.") {
                 return Answered::Response(to(to_google.clone(), question));
+            }
+            // A server the capture never asked, one a lookup gave, answers as google.com's.
+            if !asked.contains(&query.server.ip()) {
+                return Answered::Response(to(google.clone(), question));
             }
             return Answered::Response(captured(&authorities, query));
         }
@@ -1564,6 +1570,16 @@ fn rfc1034_5_3_3_a_server_without_ipv4_reached_over_ipv6() {
     );
 }
 
+/// The SOA of nl, captured: a record to give a NODATA, its owner changed to the zone asked.
+fn nl_soa() -> Record<'static> {
+    let nx = recursion::Resolution::read("nxdomain-nsec3");
+    (response(&nx, "nl.", "dedens-nxdomain.nl.")
+        .authority
+        .into_iter())
+    .find(|r| r.rtype() == RecordType::SOA)
+    .expect("nl's SOA")
+}
+
 #[test]
 fn d191_the_aaaa_of_the_third_name_is_reached_within_the_default_bound() {
     // Three server names without glue, looked up in any order: two have no address, A or AAAA, the third only an
@@ -1573,12 +1589,7 @@ fn d191_the_aaaa_of_the_third_name_is_reached_within_the_default_bound() {
     let capture = recursion::Resolution::read("unsigned");
     let answer = answered(&capture);
     let (class, ttl) = (answer.answer[0].class, answer.answer[0].ttl);
-    let nx = recursion::Resolution::read("nxdomain-nsec3");
-    let soa = (response(&nx, "nl.", "dedens-nxdomain.nl.")
-        .authority
-        .into_iter())
-    .find(|r| r.rtype() == RecordType::SOA)
-    .expect("nl's SOA");
+    let soa = nl_soa();
     let working = name("ns2.dedens-targets.example.");
     let v6 = RData::Aaaa(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
     let lookup = |query: &Query| {
@@ -1600,18 +1611,23 @@ fn d191_the_aaaa_of_the_third_name_is_reached_within_the_default_bound() {
         .map(|i| name(&format!("ns{i}.dedens-targets.example.")))
         .collect();
     for seed in 0..16 {
-        let (_, sent) = glueless(&names, Limits::default(), seed, &lookup);
+        let (outcome, sent) = glueless(&names, Limits::default(), seed, &lookup);
         let aaaa = (working.to_string(), RecordType::AAAA);
         assert!(looked_up(&sent).contains(&aaaa), "seed {seed}: {sent:?}");
+        assert!(
+            matches!(outcome, Resolved::Answer { .. }),
+            "seed {seed}: {outcome:?}"
+        );
     }
     // A bound of one name still takes the name's A and its AAAA.
     let limits = Limits {
         targets: 1,
         ..Limits::default()
     };
-    let (_, sent) = glueless(&names[2..], limits, SEED, &lookup);
+    let (outcome, sent) = glueless(&names[2..], limits, SEED, &lookup);
     let aaaa = (working.to_string(), RecordType::AAAA);
     assert!(looked_up(&sent).contains(&aaaa), "{sent:?}");
+    assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
 }
 
 #[test]
@@ -2163,6 +2179,114 @@ fn d191_an_address_found_is_kept_when_the_aaaa_lookup_loops() {
         referral
     });
     assert!(matches!(outcome, Resolved::Answer { .. }), "{outcome:?}");
+}
+
+#[test]
+fn d191_the_aaaa_of_a_name_found_before_is_counted_and_bound() {
+    // google.com's one server, `ns1`, is named without glue; its A (TTL 0, so that only the resolution's memory holds
+    // it) is looked up, and the server answers with a CNAME to www.google.com, whose delegation names `ns1` and `ns2`.
+    // `ns1`'s A is found, not looked up: its AAAA, drawn with the A, is the name's one lookup, counted and bound. With
+    // `targets` 1 one of the two names is looked up, whichever is drawn first, where an AAAA taken for free made it two.
+    let capture = recursion::Resolution::read("unsigned");
+    let answer = answered(&capture);
+    let (class, ttl) = (answer.answer[0].class, answer.answer[0].ttl);
+    let soa = nl_soa();
+    let to_google = response(&capture, "com.", "google.com.");
+    let ns = (to_google.authority.iter())
+        .find(|r| r.rtype() == RecordType::NS)
+        .expect("an NS record")
+        .clone();
+    let (ns1, ns2) = (
+        name("ns1.dedens-targets.example."),
+        name("ns2.dedens-targets.example."),
+    );
+    let www = name("www.google.com.");
+    let address = Ipv4Addr::new(192, 0, 2, 53);
+    let referral = |question: &Question<'static>, servers: &[&Name<'static>]| {
+        let mut response = to(to_google.clone(), question);
+        response.authority = (servers.iter())
+            .map(|&server| {
+                let data = RData::Ns(server.clone());
+                Record::new(ns.name.clone(), ns.class, ns.ttl, &data)
+            })
+            .collect();
+        response.additional.clear();
+        response
+    };
+    let direct = |owner: &Name<'static>, ttl: Ttl, data: &RData<'_>| {
+        let mut response = answer.clone();
+        response.answer = vec![Record::new(owner.clone(), class, ttl, data)];
+        response
+    };
+    let limits = Limits {
+        targets: 1,
+        ..Limits::default()
+    };
+    let mut firsts = HashSet::new();
+    for seed in 0..16 {
+        let caches = caches(false);
+        steer(&caches, &capture);
+        let authorities = Authorities::new([&capture]);
+        let timed_out = Cell::new(false);
+        let server = |query: &Query| {
+            let question = &query.question;
+            if question.name == ns1 || question.name == ns2 {
+                let mut response = to(answer.clone(), question);
+                response.answer.clear();
+                response.authority = vec![Record {
+                    name: query.zone.clone(),
+                    ..soa.clone()
+                }];
+                if question.name == ns1 && question.qtype == RecordType::A {
+                    let data = RData::A(address);
+                    response = to(direct(&ns1, Ttl::from_wire(0), &data), question);
+                }
+                return Answered::Response(response);
+            }
+            if query.server.ip() == IpAddr::from(address) {
+                if question.name == capture.name {
+                    let cname = RData::Cname(www.clone());
+                    return Answered::Response(to(direct(&capture.name, ttl, &cname), question));
+                }
+                // The first query of the delegation of www.google.com is lost: the AAAA comes before its retry.
+                if !timed_out.replace(true) {
+                    return Answered::Timeout;
+                }
+                let data = RData::A(address);
+                return Answered::Response(to(direct(&www, ttl, &data), question));
+            }
+            if is(&query.zone, "com.") && question.name == capture.name {
+                return Answered::Response(referral(question, &[&ns1]));
+            }
+            if is(&query.zone, "com.") && question.name == www {
+                return Answered::Response(referral(question, &[&ns1, &ns2]));
+            }
+            Answered::Response(captured(&authorities, query))
+        };
+        let (outcome, sent) = seeded(
+            &mut start(&capture, &caches, limits),
+            &server,
+            at(&capture),
+            seed,
+        );
+        assert!(
+            matches!(outcome, Resolved::Answer { .. }),
+            "seed {seed}: {outcome:?} {sent:?}"
+        );
+        let lookups: Vec<(String, RecordType)> = looked_up(&sent)
+            .into_iter()
+            .filter(|(name, _)| name.ends_with(".example."))
+            .collect();
+        assert_eq!(
+            lookups[0],
+            (ns1.to_string(), RecordType::A),
+            "seed {seed}: {lookups:?}"
+        );
+        let names: HashSet<&String> = lookups[1..].iter().map(|(name, _)| name).collect();
+        assert_eq!(names.len(), 1, "seed {seed}: {lookups:?}");
+        firsts.insert(lookups[1].0.clone());
+    }
+    assert_eq!(firsts.len(), 2, "both orders drawn: {firsts:?}");
 }
 
 /// A referral to `child` naming `server`, without glue, answering `question`: com's referral to google.com, the NS

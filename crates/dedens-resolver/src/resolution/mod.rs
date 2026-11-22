@@ -77,8 +77,8 @@ pub struct Limits {
     pub servers: usize,
     /// Server names looked up per delegation, a name's A and AAAA counting as one: 5, Unbound's `MAX_TARGET_NX`
     /// (`iterator/iterator.h`) against `NXNSAttack` (CVE-2020-12662). Unbound counts the lookups answered NXDOMAIN,
-    /// per client question, and allows 16 names per delegation (`MAX_DP_TARGET_COUNT`, counted once for each set of
-    /// a name's lookups: `target_count_increase`); here a name whose A is NXDOMAIN has its AAAA skipped (D191).
+    /// per client question, and allows 17 fetch rounds per delegation (`MAX_DP_TARGET_COUNT` 16, checked `>`), each of
+    /// one or more names, a name's A and AAAA in one round (`target_count_increase`); here a name whose A is NXDOMAIN has its AAAA skipped (D191).
     pub targets: usize,
     /// Queries sent for the validator's questions, beside [`Limits::queries`]: 32, as Unbound gives each of its
     /// validator's fetches a `max-sent-count` of its own within its global quota of 200 (`MAX_GLOBAL_QUOTA`,
@@ -776,13 +776,22 @@ struct Delegation {
     asked: usize,
     /// Servers without an address, to look up in random order.
     missing: Vec<Name<'static>>,
-    /// The server whose A was looked up last, whose AAAA comes next.
-    aaaa: Option<Name<'static>>,
+    /// The server whose A was drawn last, whose AAAA comes next.
+    aaaa: Option<NextAaaa>,
     /// Server names looked up, each once for its A and its AAAA ([`Limits::targets`]).
     looked_up: usize,
     heard: Heard,
     /// Whether its servers at local addresses are asked ([`Resolution::asking_local_addresses`]).
     local: bool,
+}
+
+/// The AAAA lookup that follows an A's.
+#[derive(Debug)]
+struct NextAaaa {
+    name: Name<'static>,
+    /// Whether the A was counted in [`Delegation::looked_up`]: not when it was found in an earlier lookup of the
+    /// resolution, and then the AAAA is counted, and bound, for the name.
+    counted: bool,
 }
 
 impl Delegation {
@@ -2047,8 +2056,8 @@ fn ask(
         // a datagram lost costs a try, not the server (RFC 1035 §7.2, Unbound's `outbound-msg-retry`). They come
         // after a name's AAAA, whose A was looked up, and before a name not looked up yet, which costs queries (D196).
         let mut follows = false;
-        let lookup = if let Some(name) = delegation.aaaa.take() {
-            follows = true;
+        let lookup = if let Some(NextAaaa { name, counted }) = delegation.aaaa.take() {
+            follows = counted;
             Some(Question::new(name, RecordType::AAAA))
         } else if let Some(choice) =
             pick(&mut delegation.timed_out, zone, infra, remaining, now, rng)
@@ -2059,7 +2068,10 @@ fn ask(
         } else {
             let at = infra_cache::draw(rng, delegation.missing.len());
             let name = delegation.missing.swap_remove(at);
-            delegation.aaaa = Some(name.clone());
+            delegation.aaaa = Some(NextAaaa {
+                name: name.clone(),
+                counted: false,
+            });
             Some(Question::new(name, RecordType::A))
         };
         let mut limit = None;
@@ -2073,8 +2085,15 @@ fn ask(
             } else if !follows && delegation.looked_up >= limits.targets {
                 limit = Some(Limit::Targets);
             } else {
-                // A name counts once, for its A and its AAAA: the AAAA follows the A that was counted.
-                delegation.looked_up += usize::from(!follows);
+                // A name counts once, for its A and its AAAA: the AAAA follows the A that was counted. An A is
+                // sent as it is counted, and the AAAA drawn with it is then free; an AAAA whose A was not counted
+                // (`delegation.aaaa` is taken by then) counts itself.
+                if !follows {
+                    delegation.looked_up += 1;
+                    if let Some(next) = delegation.aaaa.as_mut() {
+                        next.counted = true;
+                    }
+                }
                 return Ask::Lookup(lookup);
             }
         }
