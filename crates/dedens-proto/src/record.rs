@@ -10,7 +10,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::codes::{Class, RecordType};
 use crate::error::{DecodeError, DecodeErrorKind, EncodeError};
-use crate::name::Name;
+use crate::name::{MAX_NAME_LEN, Name};
 use crate::rdata::{Opaque, RData};
 use crate::text::{self, TextError};
 use crate::wire::{Reader, Writer};
@@ -340,6 +340,39 @@ impl<'a> Record<'a> {
             ttl: self.ttl,
             rdata: self.rdata.into_owned(),
         }
+    }
+
+    /// Appends the record as it is on the wire (RFC 1035 §3.2.1, §4.1.3), nothing compressed: owner, type, class,
+    /// TTL, RDLENGTH and RDATA. A record outside a message, as a journal keeps it; [`Record::from_wire`] reads it.
+    pub fn write_wire(&self, out: &mut Vec<u8>) {
+        let mut buf = [0; MAX_NAME_LEN];
+        out.extend_from_slice(self.name.to_wire(&mut buf));
+        let rdata = self.rdata.wire();
+        let fixed = Fixed {
+            rtype: self.rtype().0.into(),
+            class: self.class.0.into(),
+            ttl: self.ttl.get().into(),
+            rdlength: u16::try_from(rdata.len())
+                .expect("RDATA is at most 65535 bytes by construction (D125)")
+                .into(),
+        };
+        out.extend_from_slice(fixed.as_bytes());
+        out.extend_from_slice(&rdata);
+    }
+
+    /// Reads the record [`Record::write_wire`] wrote at the start of `wire`, and how many bytes it took.
+    ///
+    /// Bytes outside data: anything wrong is an error, never a panic. RDATA invalid for its type is kept opaque
+    /// and reported, as in a message (D9).
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError`] when `wire` ends inside the record, or as [`Name::decode`] and the RDATA of a type with
+    /// compressible names say.
+    pub fn from_wire(wire: &'a [u8]) -> Result<(DecodedRecord<'a>, usize), DecodeError> {
+        let mut r = Reader::new(wire);
+        let decoded = Self::from_raw(Self::read_raw(&mut r)?)?;
+        Ok((decoded, r.position()))
     }
 
     /// Reads the owner name and the fixed fields, and delimits the RDATA without parsing it.

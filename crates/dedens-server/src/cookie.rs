@@ -10,6 +10,7 @@ use std::hash::Hasher as _;
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use dedens_proto::Serial;
 use dedens_proto::edns::Cookie;
 use siphasher::sip::SipHasher24;
 use subtle::ConstantTimeEq as _;
@@ -231,9 +232,9 @@ impl Reading<'_> {
             return Standing::Invalid;
         };
         let stamp = u32::from_be_bytes([t0, t1, t2, t3]);
-        // Serial arithmetic (RFC 1982): a difference above 2^31 is negative, the timestamp ahead of us.
-        let age = low32(self.seconds()).wrapping_sub(stamp).cast_signed();
-        if version != VERSION || !(-MAX_AHEAD..=MAX_AGE).contains(&age) {
+        // Serial arithmetic (RFC 1982): a negative age is a timestamp ahead of us; one 2^31 away has no order.
+        let age = Serial::new(low32(self.seconds())).since(Serial::new(stamp));
+        if version != VERSION || !age.is_some_and(|age| (-MAX_AHEAD..=MAX_AGE).contains(&age)) {
             return Standing::Invalid;
         }
         let fields = [version, r1, r2, r3];

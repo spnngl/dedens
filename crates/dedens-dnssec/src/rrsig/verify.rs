@@ -2,7 +2,7 @@
 
 use std::cell::OnceCell;
 
-use dedens_proto::{Name, RecordType, Ttl};
+use dedens_proto::{Name, RecordType, Serial, Ttl};
 
 use super::canonical;
 use super::error::SigError;
@@ -30,8 +30,8 @@ pub struct Verified {
 }
 
 /// Whether `a` is before `b` in serial number arithmetic (RFC 1982 §3.2).
-const fn serial_lt(a: u32, b: u32) -> bool {
-    a != b && b.wrapping_sub(a) < 0x8000_0000
+fn serial_lt(a: u32, b: u32) -> bool {
+    Serial::new(a) < Serial::new(b)
 }
 
 /// One RRSIG against an `RRset`, with what its checks share however many keys it is tried with: the owner as the

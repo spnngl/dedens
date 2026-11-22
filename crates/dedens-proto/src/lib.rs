@@ -54,6 +54,7 @@ mod proofs;
 mod query;
 mod question;
 mod record;
+mod serial;
 mod text;
 mod transport;
 mod wire;
@@ -69,6 +70,7 @@ pub use name::{Labels, MAX_LABEL_LEN, MAX_LABELS, MAX_NAME_LEN, Name, NameError}
 pub use query::Query;
 pub use question::Question;
 pub use record::{DecodedRecord, GenericRecord, Record, Ttl, WireRdata};
+pub use serial::Serial;
 pub use text::{
     Hex, TextError, TextErrorKind, ZoneEntry, ZoneReader, decode_base64url, decode_hex,
     encode_base64url,
