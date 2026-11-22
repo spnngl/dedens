@@ -2337,7 +2337,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Test data: the RFC example zones of `testdata/zones/` (RFC 1035 §5.3 with its `$INCLUDE`, RFC 4035 and RFC 5155
     appendix A), each refused in a broken variant by the check naming it. `every_type.zone`, the fuzzing seed, is not
     a zone for the loader: it holds records of the classes CH, HS and CLASS32 and a name outside the zone, so the
-    tests show its refusals and load it with them made right. The root zone's capture is not loaded here. Fuzz target `load_zone`; bench `load_dedens` (`crates/dedens-bench/benches/zone.rs`).
+    tests show its refusals and load it with them made right. The root zone's capture is not loaded here (D207's tests load it). Fuzz target `load_zone`; bench `load_dedens` (`crates/dedens-bench/benches/zone.rs`).
   - Rejected: a `Zone` edited in place (a query would see half a change; a lock on the read path); the first or
     last TTL (the file's order would decide); an error for differing TTLs (BIND, NSD and Knot accept them); refusing
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
@@ -2401,8 +2401,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the one before with a change written next to the test; the journal file as a crash leaves it, cut at every byte
     of its last record and flipped at every byte of each. `fuzz/seeds/example.journal` is a journal of three
     versions of the RFC 4035 zone, made again with `DEDENS_WRITE_SEED=1 cargo test -p dedens-zone fuzz_seed`. Fuzz
-    target `journal_read` (reading, then writing again what was read). Root zone captures: see the step's open
-    questions in `docs/TODECIDE.md`.
+    target `journal_read` (reading, then writing again what was read). The root zone at two serials and the IXFR
+    Knot 3.6.2 sent between them (D203, `tests/captures.rs`): Knot's changeset applied to the older zone gives the
+    newer, the difference of the two zones is Knot's (the same records removed and added), and a journal of it
+    reopened takes the older serial to the newer.
   - Rejected: a changeset applied in place (D204); a database for the journal (a dependency for a log that is
     written once and read whole); a header rewritten per append (BIND: two syncs, and a crash between them needs
     recovery logic); a CRC-less record with a length only (a flipped byte in a name would apply a wrong change); a

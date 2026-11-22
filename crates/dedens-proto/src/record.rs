@@ -371,8 +371,8 @@ impl<'a> Record<'a> {
     ///
     /// # Errors
     ///
-    /// [`DecodeError`] when `wire` ends inside the record, or as [`Name::decode`] and the RDATA of a type with
-    /// compressible names say.
+    /// [`DecodeError`] when `wire` ends inside the record, its owner is no name, or its RDATA is what a
+    /// type with names in it refuses.
     pub fn from_wire(wire: &'a [u8]) -> Result<(DecodedRecord<'a>, usize), DecodeError> {
         let mut r = Reader::new(wire);
         let decoded = Self::from_raw(Self::read_raw(&mut r)?)?;
