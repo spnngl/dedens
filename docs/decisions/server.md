@@ -2175,7 +2175,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     anchor's name, `topname`, which a cache has not), and a wildcard answer is not synthesised.
   - RFC 9520 §3.2: a resolution that ends `Unreachable`, `Network` or `Unusable` (every server of the delegation
     asked, nothing usable: `Heard::failure`) holds the failure under (name, type, server set): the zone and the first
-    `Limits::servers` of its NS names, hashed in any order with a keyed hash, the delegation the resolution would ask:
+    `Limits::servers` of its NS names (an `Rrset` sorts its RDATA: the same first names whatever the order they
+    came in), hashed in any order with a keyed hash, the delegation the resolution would ask:
     the closest one with an address, and each cached one closer with none, which `closest` goes by and a lookup of
     the question would ask the parent about again (the zones of TsuNAME and NXNSAttack have no address). The next resolution of the same question to the same set ends at once with that failure,
     logged and counted (`dedens_resolver_failure_holds_total{outcome=recorded | served}`), until the hold expires.

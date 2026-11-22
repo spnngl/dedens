@@ -1758,6 +1758,66 @@ fn rfc9520_3_2_a_hold_is_of_the_servers_that_failed_not_of_the_next_delegation()
 }
 
 #[test]
+fn rfc9520_3_2_a_hold_is_of_the_same_servers_whatever_the_order_of_their_names() {
+    // Four NS names with `Limits::servers` 2, the cache holding the zone's set as a referral gave it, then as the
+    // zone's own answer, in another order: an `Rrset` sorts its RDATA, so the first two names are the same ones and
+    // the hold of the failure (D199) is found, with names beyond the cut too.
+    let caches = configured(false, Config::default());
+    let base = Duration::from_secs(1_760_000_000);
+    let now = u32::try_from(base.as_secs()).expect("a time in 32 bits");
+    let zone = "victim.example.";
+    let servers = [1_u8, 2, 3, 4].map(|n| name(&format!("ns{n}.{zone}")));
+    let store = |order: [usize; 4], rank: Rank| {
+        let record = |owner: &Name<'static>, rdata: RData<'_>| Record {
+            name: owner.clone(),
+            class: Class::IN,
+            ttl: Ttl::from_wire(3600),
+            rdata: (&rdata).into(),
+        };
+        let mut records: Vec<_> = order
+            .map(|n| record(&name(zone), RData::Ns(servers[n].clone())))
+            .to_vec();
+        for (n, server) in (1_u8..).zip(&servers) {
+            records.push(record(
+                server,
+                RData::A(std::net::Ipv4Addr::new(9, 9, 9, n)),
+            ));
+        }
+        for set in Rrset::group(&records) {
+            caches
+                .rrsets
+                .insert(set, rank, Checked::Unchecked, now)
+                .expect("stored");
+        }
+    };
+    let fails = || {
+        let limits = Limits {
+            queries: 1000,
+            servers: 2,
+            ..Limits::default()
+        };
+        let mut resolution = Resolution::start(
+            Question::new(name("www.victim.example."), RecordType::A),
+            Arc::clone(&caches),
+            base,
+            limits,
+            Minimisation::Off,
+        )
+        .expect("an IN question");
+        let (resolved, sent) = run(&mut resolution, &|_| Answered::ServerError, base);
+        (resolved, sent.len())
+    };
+    store([0, 1, 2, 3], Rank::AuthorityNonAuthoritative);
+    let (resolved, sent) = fails();
+    assert_eq!(resolved, Resolved::Failed(Failure::Network));
+    assert!(sent > 0, "asked");
+    store([2, 3, 0, 1], Rank::AnswerAuthoritative);
+    let (resolved, sent) = fails();
+    assert_eq!(resolved, Resolved::Failed(Failure::Network));
+    assert_eq!(sent, 0, "held");
+}
+
+#[test]
 fn rfc9520_3_2_a_clock_gone_back_does_not_extend_a_hold() {
     let capture = capture("unsigned");
     let caches = configured(false, Config::default());
