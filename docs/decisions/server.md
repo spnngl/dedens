@@ -1545,12 +1545,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `max-delegation-servers`, no address looked up once 13 were asked; `targets` 5 server names looked up
     per delegation, a name's A and its AAAA counting as one, after Unbound's `MAX_TARGET_NX` 5 (NXNSAttack,
     CVE-2020-12662), which counts NXDOMAIN lookups per client question, and its `MAX_DP_TARGET_COUNT` 16 per
-    delegation, which counts a name's lookups once too (`target_count_increase` runs once for each set it sends;
-    BIND counts them within its 13). Counted by lookup, a delegation of three names without glue, two failing to
+    delegation, checked `>`: 17 fetch rounds, each of one or more names, a name's A and AAAA in one round
+    (`target_count_increase` runs once for each round; BIND counts them within its 13). Counted by lookup, a delegation of three names without glue, two failing to
     resolve, spent the bound before the AAAA of the one that worked and failed on a silent IPv4 server: the bound
     is on names, not on queries, which `queries` caps (up to 10 lookups, 5 names, for names whose A does not
     answer NXDOMAIN; one A for each name denied, the AAAA skipped, so the NXNSAttack of D189's simulation costs
-    what it did);
+    what it did; the AAAA is free only after an A that was counted: a name whose A the resolution found from an
+    earlier lookup counts, and is bound, at its AAAA);
     `MAX_ADDRESSES` 100 addresses known per delegation, not per server name, glue, lookups and cache together,
     Unbound's `delegpt_max_addr` (the scrubber keeps 100 glue records already), the servers shunned (D197) not
     counted, so that a bogus answer does not take an address from the retry: an answer of thousands costs the draw
