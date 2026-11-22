@@ -107,7 +107,8 @@
 //!     infra_cache_bytes: 4194304     # the servers' round-trip times and quirks (D194)
 //!     # root_hints: /etc/dedensd/root.hints  # a private root's servers, zone text as named.root, in place of
 //!     #                                      # the bundled hints and the TLD hints (D201)
-//!     dnssec: off                    # or validate, with trust_anchors and insecure as a forward stage's (D197)
+//!     dnssec: validate               # or off; trust_anchors and insecure as a forward stage's (D197), the root's
+//!                                    # keys from `roots.anchors` and `state_dir` (D128, D200)
 //! ```
 
 mod access;
@@ -953,6 +954,10 @@ mod tests {
         let validating = "pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n    dnssec: validate\n";
         let plain =
             "pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['192.0.2.1']\n";
+        // A recurse stage validates unless told not to (D197).
+        let recursing = "pipeline: [root]\nstages:\n  root:\n    type: recurse\n";
+        let unvalidating =
+            "pipeline: [root]\nstages:\n  root:\n    type: recurse\n    dnssec: off\n";
         let iana = "https://data.iana.org";
         let ours = "roots:\n  tlds: 'https://example.net/t.json'\n  anchors: 'https://example.net/a.xml'\n";
         let pair = |xml: String, p7s: String| (None, Some((xml, p7s)));
@@ -968,6 +973,16 @@ mod tests {
             ),
             ("", plain, (None, None)),
             ("roots: off\n", tlds, (None, None)),
+            (
+                "",
+                recursing,
+                pair(
+                    format!("{iana}/root-anchors/root-anchors.xml"),
+                    format!("{iana}/root-anchors/root-anchors.p7s"),
+                ),
+            ),
+            ("", unvalidating, (None, None)),
+            ("roots: off\n", recursing, (None, None)),
             ("roots: false\n", validating, (None, None)),
             ("roots: 'off'\n", validating, (None, None)),
             (
@@ -996,11 +1011,13 @@ mod tests {
             let state = dir.path().join("state");
             let dirs = [
                 used.tlds.as_ref().map(|_| dir.path()),
-                used.anchors.as_ref().map(|_| state.as_path()),
+                // The rollover a recurse stage follows is kept there too (D200), `roots: off` or not.
+                (used.anchors.is_some() || downloads.followed.is_some()).then_some(state.as_path()),
             ];
             let dirs: Vec<_> = dirs.into_iter().flatten().collect();
             assert_eq!(downloads.roots_dirs(), dirs, "{text}");
-            assert_eq!(downloads.is_empty(), dirs.is_empty(), "{text}");
+            let fetched = used.tlds.is_some() || used.anchors.is_some();
+            assert_eq!(downloads.is_empty(), !fetched, "{text}");
         }
     }
 

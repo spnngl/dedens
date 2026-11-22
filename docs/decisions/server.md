@@ -1920,8 +1920,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: the resolution inside `Upstream` (its forward accessors would mean nothing for it); stepping it in
     `Pipeline::query` (no clock nor randomness there); D86's process-wide flights (a lock across threads); waiters
     without bound (one slow server holding every client).
-- D197 (amends D190, D191, D195; builds on D73, D75, D77, D86, D93, D114, D117, D128, D186, D193) DNSSEC validation in
-  the recursive resolver (recursive step 10): the resolution judges its answer (RFC 4035 §5), each question of the
+- D197 (amends D188, D190, D191, D195; builds on D73, D75, D77, D86, D93, D114, D117, D128, D186, D193)
+  DNSSEC validation in the recursive resolver (recursive step 10): the resolution judges its answer (RFC 4035 §5), each question of the
   validator iterated by the resolution itself.
   - Shape: `Resolution::validated(Validator, unix)`. When the client question ends `Answer`, `NoData` or
     `NxDomain`, `Resolved::message(question, true)` rebuilds the response (chain, data, SOA, and the `denials` the
@@ -2011,8 +2011,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the bucket in debt SERVFAIL with EDE 14, not parked (D186: a parked resolution would hold its state and
     queries; the client asks again). The share is the validation's (`DEFAULT_SHARE`, D117), the stage's
     `client_share` stays the queries'.
-  - Configuration: a recurse stage takes `dnssec` (`off` by default, as a forward stage: `docs/TODECIDE.md`),
-    `trust_anchors` and `insecure` as a forward stage (D77, D127, D128: the root's anchors from `state_dir`) and
+  - Configuration: a recurse stage takes `dnssec` (`validate` by default, where a forward stage's is `off`, D77:
+    a resolver from the root is the one that tells a client what the Internet answers, as Unbound's and BIND's
+    are by default, and has no upstream to leave the judgement to; `off` is written to leave it), `trust_anchors`
+    and `insecure` as a forward stage (D77, D127, D128: the root's anchors from `state_dir`, fetched with `roots`
+    on, bundled with it `off`, D200) and
     `limits.validation`. A reload validating the same way keeps the validator (its key cache, D86) and the caches;
     one validating otherwise flushes the `RRset` cache and the cache stage, which hold the old verdicts.
   - Deviations from the step file: no `start_referral` at each referral: the walk of the final answer asks the DS
@@ -2025,6 +2028,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     recaptured). The captures made for the validation's tests (`cname-to-signed`, `cname-signed`, `wildcard`,
     `wildcard-optout`) stay out of the `recursion` family: they took its time on GitHub's runners from 7.6 s to
     13.5 s and the crate past D133's budget, for shapes the iteration does not tell apart.
+  - The default holds no test to the clock (D188): the captures' signatures end within days (`signed-com`'s, in 1 to 2
+    days of its capture, the root's and the others' in 8 to 12; `just captures-expiry` says how many are left), so each test validating them
+    runs at the capture's `captured_at` (the simulation's clock, `Validating::new`'s injected time), and `dedensd`'s
+    tests on the real clock use a stage that validates nothing, `dnssec: off` written, or no capture at all.
+    `just recapture-signed` makes them anew.
   - A query moved to TCP that times out there (`ServerError::TcpTimedOut`, `Reply::TcpTimeout`) has the next server
     asked, as a timeout, but leaves the server's timeout over UDP as it was, as Unbound's `serviced_tcp_callback`
     backs off only a query over TCP from the start: the server answered over UDP. A server whose TCP times out is

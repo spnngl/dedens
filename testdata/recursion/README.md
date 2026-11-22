@@ -5,7 +5,8 @@ exchange an iterator had to resolve one name, as `just capture-recursion` wrote 
 `dedens_testkit::recursion` reads it, its `Authorities` replays it. Each starts with priming (RFC 8109 §3) and the
 root's DNSKEY, then asks each zone's DS at its parent and its DNSKEY at the zone. A question goes to one server of
 each family; queries set DO alone and advertise 1232 bytes. `captured_at` is the Unix time of the end of the run:
-the signatures of the responses are valid then. A recapture keeps the cases, not the bytes, nor always the servers. The
+the signatures of the responses are valid then, and only then: they end within days (`just captures-expiry`), so a
+test validates them at `captured_at`, never on the real clock (D197). A recapture keeps the cases, not the bytes, nor always the servers. The
 resolver's own minimised resolutions are in [`minimised/`](minimised/README.md) (D198).
 
 | Id | Question | Shows |

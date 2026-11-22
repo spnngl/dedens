@@ -113,6 +113,22 @@ impl Resolution {
             .collect()
     }
 
+    /// The earliest end of validity among the RRSIGs of the responses, `None` for an unsigned resolution: past it
+    /// the signatures fail on the real clock, so a test validating the capture runs at [`Resolution::captured_at`]
+    /// (D197).
+    ///
+    /// # Panics
+    ///
+    /// When a response does not decode or breaks a rule.
+    #[must_use]
+    #[track_caller]
+    pub fn earliest_expiration(&self) -> Option<u32> {
+        let responses: Vec<Message<'static>> = (self.exchanges.iter())
+            .map(|exchange| crate::message(&exchange.response))
+            .collect();
+        crate::dnssec::earliest_expiration(&responses)
+    }
+
     /// The resolution `text` writes.
     ///
     /// # Errors

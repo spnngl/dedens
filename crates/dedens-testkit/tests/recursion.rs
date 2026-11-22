@@ -63,6 +63,21 @@ fn each_resolution_primes_and_asks_the_key_of_each_zone() {
     }
 }
 
+/// D197: a test validating a capture runs at its time, so each capture, the root's signed DNSKEY included, is signed
+/// for it: the earliest end of its signatures is past `captured_at`, as `just captures-expiry` reads it.
+#[test]
+fn each_capture_is_signed_at_its_time() {
+    for (id, resolution) in Resolution::all() {
+        let end = resolution
+            .earliest_expiration()
+            .expect("the root's signatures");
+        assert!(
+            u64::from(end) > resolution.captured_at,
+            "{id}: expired at capture"
+        );
+    }
+}
+
 #[test]
 fn a_resolution_reads_back_as_written() {
     let resolution = Resolution::read("priming");

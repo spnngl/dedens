@@ -296,10 +296,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   (`crates/dedens-resolver/src/resolution/mod.rs`, `Resolution::ask`); Unbound goes up instead when the delegation
   point is useless (`iterator/iterator.c` `iter_dp_is_useless`, then the parent side or the root). Default: once from
   the root hints, within the same `Limits` (D191), in `Resolution::ask` (the recurse stage, D195, left it as is).
-- Validation by default in a recurse stage (D197): `dnssec` is `off` unless set, as a forward stage's (D77), where
-  Unbound and BIND validate a recursive resolver by default. The simulation runs the captures validated (D197), but
-  at their own time: a test of `dedensd` on its own clock needs captures signed now, recaptured as their signatures
-  end. Default: off, as the forwarder; `validate` the default once a recipe keeps the captures fresh.
 - A wildcard expansion in the `RRset` cache (D197): the cache keeps the answer's RRsets, not the denial proving the
   expansion, so with a validator `Resolution::begin` takes no expansion not judged insecure from the cache and asks
   the authorities each time: a wildcard name costs a resolution per query. Default: keep the proof with the
