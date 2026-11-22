@@ -1087,14 +1087,18 @@ mod tests {
         assert!(n.ancestor(0).is_root());
         assert_eq!(n.parent(), Some(parse("b.c.example.")));
         assert_eq!(Name::root().parent(), None);
-        assert_eq!(parse("c.example.").wildcard().unwrap(), parse("*.c.example."));
+        assert_eq!(
+            parse("c.example.").wildcard().unwrap(),
+            parse("*.c.example.")
+        );
         assert_eq!(n.shared_labels(&parse("x.C.example.")), 2);
     }
 
     #[test]
     fn a_wildcard_needs_room_for_its_label() {
         // 63 + 63 + 63 + 61 label bytes and their length bytes, and the root: the 255 bytes of the longest name.
-        let long = Name::from_labels([&[b'a'; 63][..], &[b'a'; 63], &[b'a'; 63], &[b'a'; 61]]).unwrap();
+        let long =
+            Name::from_labels([&[b'a'; 63][..], &[b'a'; 63], &[b'a'; 63], &[b'a'; 61]]).unwrap();
         assert_eq!(long.wildcard(), Err(NameError::NameTooLong));
     }
 

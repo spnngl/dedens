@@ -2,6 +2,7 @@
 
 #[cfg(verus_only)]
 use core::cmp::Ordering;
+
 #[cfg(verus_only)]
 use vstd::{prelude::*, std_specs::cmp::PartialOrdSpec};
 

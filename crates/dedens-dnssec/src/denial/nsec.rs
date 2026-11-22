@@ -22,12 +22,7 @@ impl Link<'_> {
         let below_cut = name.is_within(self.owner)
             && (self.types.contains(RecordType::DNAME)
                 || self.types.contains(RecordType::NS) && !self.types.contains(RecordType::SOA));
-        !below_cut
-            && covers(
-                self.owner,
-                &self.next,
-                name,
-            )
+        !below_cut && covers(self.owner, &self.next, name)
     }
 }
 
@@ -64,7 +59,9 @@ pub(super) fn prove(links: &[Link<'_>], question: &Question<'_>) -> Result<Proof
     }
     // The closest encloser is the longest ancestor of the name that the NSEC shows to exist: the owner and
     // the next name are both names of the zone, so their common ancestors with the name are.
-    let depth = qname.shared_labels(covering.owner).max(qname.shared_labels(&covering.next));
+    let depth = qname
+        .shared_labels(covering.owner)
+        .max(qname.shared_labels(&covering.next));
     let wildcard = qname.ancestor(depth).wildcard()?;
     if let Some(link) = links.iter().find(|l| *l.owner == wildcard) {
         return Ok(Proof::new(
