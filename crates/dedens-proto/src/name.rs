@@ -1080,6 +1080,15 @@ mod tests {
     }
 
     #[test]
+    fn names_of_more_labels_than_the_short_buffers_share_labels_from_the_root() {
+        let deep = parse("a.b.c.d.e.f.g.h.i.example.");
+        let short = parse("x.i.EXAMPLE.");
+        assert_eq!(deep.shared_labels(&short), 2);
+        assert_eq!(short.shared_labels(&deep), 2);
+        assert_eq!(deep.shared_labels(&deep.clone()), 10);
+    }
+
+    #[test]
     fn ancestors_parents_and_wildcards() {
         let n = parse("a.b.c.example.");
         assert_eq!(n.ancestor(2), parse("c.example."));
