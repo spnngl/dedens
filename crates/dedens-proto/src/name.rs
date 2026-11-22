@@ -281,6 +281,20 @@ impl<'a> Name<'a> {
         }
     }
 
+    /// The same name borrowing this one's bytes, as a server answers with names of its zone without a copy.
+    #[must_use]
+    pub fn reborrow(&self) -> Name<'_> {
+        Name(match &self.0 {
+            Repr::Slice(wire) => Repr::Slice(wire),
+            Repr::Owned(wire) => Repr::Slice(wire),
+            Repr::Packed { msg, start, len } => Repr::Packed {
+                msg,
+                start: *start,
+                len: *len,
+            },
+        })
+    }
+
     /// The name a reverse lookup of `addr` asks for, in lowercase: the four octets of an IPv4 address in decimal,
     /// last first, under `in-addr.arpa` (RFC 1035 §3.5); the 32 nibbles of an IPv6 address in hexadecimal,
     /// low-order first, under `ip6.arpa` (RFC 3596 §2.5, RFC 3152).
@@ -1036,6 +1050,19 @@ mod tests {
 
     fn parse(text: &str) -> Name<'static> {
         text.parse().unwrap()
+    }
+
+    /// A reborrowed name is the name, over the same bytes, whatever its representation.
+    #[test]
+    fn reborrow_is_the_same_name() {
+        let owned = parse("Www.Example.");
+        let borrowed = owned.reborrow();
+        assert_eq!(borrowed, owned);
+        assert_eq!(borrowed.to_string(), "Www.Example.");
+        let msg = [&[0; 12][..], b"\x03www\x07example\x00", &[0xC0, 16]].concat();
+        let packed = Name::decode(&mut Reader::range(&msg, 12 + 13, msg.len())).unwrap();
+        assert_eq!(packed.reborrow(), packed);
+        assert_eq!(packed.reborrow().to_string(), "example.");
     }
 
     /// RFC 4034 §6.1: the example order, whose labels all differ only past the first byte, in case or in depth.

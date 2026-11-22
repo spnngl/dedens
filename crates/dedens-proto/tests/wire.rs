@@ -77,6 +77,25 @@ fn decoded(rtype: RecordType, rdata: &[u8]) -> RData<'static> {
     d.record.data().into_owned()
 }
 
+/// D206: a server answers with the RDATA of its zone without a copy; the borrow is the same record data.
+#[test]
+fn d206_reborrowed_rdata_is_the_same_data_over_the_same_bytes() {
+    let owned = WireRdata::new(&RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+    let borrowed = owned.reborrow();
+    assert_eq!(borrowed, owned);
+    assert_eq!(borrowed.data(), owned.data());
+    assert!(std::ptr::eq(
+        borrowed.wire().as_ptr(),
+        owned.wire().as_ptr()
+    ));
+    // Bytes in a message stay in it.
+    let wire = record_wire(RecordType::A, &[192, 0, 2, 2]);
+    let decoded = decode_record(&wire).unwrap();
+    let again = decoded.record.rdata.reborrow();
+    assert_eq!(again, decoded.record.rdata);
+    assert_eq!(again.wire().as_ref(), [192, 0, 2, 2]);
+}
+
 /// RFC 1035 §3.2.1: RDLENGTH is 16 bits. Pins the boundary of each constructor with a long field (D125): the
 /// largest RDATA is a record that reads back, one byte more is refused; `tests/text.rs` checks the same from text.
 /// `Record::new` has nothing to refuse, and this test never reaches the fallback of `RData::with_wire`.
