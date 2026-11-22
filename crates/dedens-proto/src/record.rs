@@ -184,6 +184,37 @@ impl<'a> WireRdata<'a> {
         }
     }
 
+    /// The same RDATA borrowing this one's bytes, as a server answers with the RDATA of its zone without a copy;
+    /// only bytes longer than a message are copied.
+    #[must_use]
+    pub fn reborrow(&self) -> WireRdata<'_> {
+        WireRdata(match &self.0 {
+            Repr::InMessage {
+                msg,
+                start,
+                end,
+                rtype,
+            } => Repr::InMessage {
+                msg,
+                start: *start,
+                end: *end,
+                rtype: *rtype,
+            },
+            Repr::Owned { bytes, rtype } => match u16::try_from(bytes.len()) {
+                Ok(end) => Repr::InMessage {
+                    msg: bytes,
+                    start: 0,
+                    end,
+                    rtype: *rtype,
+                },
+                Err(_) => Repr::Owned {
+                    bytes: bytes.clone(),
+                    rtype: *rtype,
+                },
+            },
+        })
+    }
+
     /// A reader over the RDATA, inside its message when decoded.
     fn reader(&self) -> Reader<'_> {
         match &self.0 {
