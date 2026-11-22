@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, DecodedRecord, Name, RecordType, Ttl, WireRdata};
+use dedens_proto::{Class, DecodedRecord, Name, Record, RecordType, Ttl, WireRdata};
 
 use crate::{
     Bound, ErrorKind, Kind, Limits, Node, Place, Report, RrSet, Warning, WarningKind, Zone,
@@ -80,6 +80,96 @@ impl<'l> Builder<'l> {
             warnings: Vec::new(),
             stopped: false,
         }
+    }
+
+    /// A builder holding the records of `zone`, to change it: each record's place is the zone's, line 0.
+    ///
+    /// The zone's nodes are taken apart and put together again by [`Builder::finish`], so every check runs on the
+    /// changed zone, and the empty non-terminals and kinds are found again (D207).
+    pub(crate) fn from_zone(zone: &Zone, file: String, limits: &'l Limits) -> Self {
+        let at = Place {
+            file: 0,
+            line: 0,
+            column: 0,
+        };
+        let building = |set: &RrSet| Building {
+            at,
+            ttl: set.ttl,
+            mixed_ttls: false,
+            rdatas: set.rdatas.clone(),
+        };
+        let mut builder = Self::new(zone.apex.clone(), file, limits);
+        builder.class = Some(zone.class);
+        builder.records = zone.records;
+        for (name, node) in &zone.nodes {
+            let pending = Pending {
+                sets: node.rrsets.iter().map(|(t, s)| (*t, building(s))).collect(),
+                signatures: node
+                    .signatures
+                    .iter()
+                    .map(|(t, s)| (*t, building(s)))
+                    .collect(),
+            };
+            builder.rdata_bytes += pending
+                .sets
+                .values()
+                .chain(pending.signatures.values())
+                .flat_map(|b| &b.rdatas)
+                .map(|r| r.wire().len())
+                .sum::<usize>();
+            if pending.types() > 0 {
+                builder.names.insert(name.clone(), pending);
+            }
+        }
+        builder
+    }
+
+    /// Removes the record of `record`'s owner, type and RDATA; its TTL and class are not compared (RFC 1995 §4
+    /// deletes by data: the TTL a server changed is the difference's other half, an addition). A record the zone
+    /// does not have is an error.
+    pub(crate) fn remove(&mut self, at: Place, record: &Record<'static>) {
+        let rtype = record.rtype();
+        let covered = match record.rdata.data() {
+            RData::Rrsig(sig) => Some(sig.type_covered),
+            _ => None,
+        };
+        let pending = self.names.get_mut(&record.name);
+        let found = pending.and_then(|p| {
+            let set = match covered {
+                Some(c) => p.signatures.get_mut(&c),
+                None => p.sets.get_mut(&rtype),
+            };
+            let set = set?;
+            let at = set.rdatas.iter().position(|r| *r == record.rdata)?;
+            set.rdatas.remove(at);
+            Some(set.rdatas.is_empty())
+        });
+        let Some(emptied) = found else {
+            self.error(
+                Some(at),
+                ErrorKind::RemoveAbsent {
+                    owner: record.name.clone(),
+                    rtype,
+                },
+            );
+            return;
+        };
+        self.records -= 1;
+        self.rdata_bytes -= record.rdata.wire().len();
+        if emptied && let Some(p) = self.names.get_mut(&record.name) {
+            match covered {
+                Some(c) => p.signatures.remove(&c),
+                None => p.sets.remove(&rtype),
+            };
+            if p.types() == 0 {
+                self.names.remove(&record.name);
+            }
+        }
+    }
+
+    /// What was reported so far, when the builder goes no further.
+    pub(crate) fn into_report(self) -> Report {
+        self.report
     }
 
     /// Whether the error limit stopped the load: nothing more is read.

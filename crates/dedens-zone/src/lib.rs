@@ -6,12 +6,15 @@
 //! never changes: a change loads a new one.
 
 mod builder;
+mod changeset;
+mod difference;
 mod error;
 mod limits;
 mod load;
 mod node;
 mod zone;
 
+pub use changeset::{Changeset, ChangesetError};
 pub use error::{Bound, ErrorKind, Place, Report, Warning, WarningKind, ZoneError};
 pub use limits::Limits;
 pub use load::{Include, Loaded, Source};
