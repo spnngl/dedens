@@ -261,6 +261,10 @@ exclude_re = [
   # (D207); and its fallback for a path with no directory part, the working directory, which is the process's and
   # not a test's to change under threads.
   'journal/mod\.rs:\d+:\d+: (replace sync_directory -> io::Result<\(\)> with Ok\(\(\)\)|delete ! in sync_directory)$',
+  # The links of a proof-only or an occluded node (D209): no answer is built from either (an NSEC3 owner is absent
+  # when asked, a name below a cut is a referral), so the links computed for it are never read; the guard only
+  # saves the two hashes a name costs at load.
+  'denial\.rs:\d+:\d+: replace \|\| with && in Denial::links$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
