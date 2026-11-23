@@ -106,7 +106,8 @@ mod networks {
     }
 
     /// What the pipeline says of a client, to a caller that serves it something else than a query (D91): `denial` tells the
-    /// action of a denied client, `drops` whether it gets nothing, `denies` whether it is denied at all.
+    /// action of a denied client, `drops` whether it gets nothing, `denies` whether it is denied at all, `silences`
+    /// whether its sealed packets are left unread (D99, D208).
     #[test]
     fn the_access_lists_tell_what_is_done_to_a_client() {
         let denied = addr("192.0.2.1");
@@ -118,21 +119,33 @@ mod networks {
                     pipeline.denial(from),
                     pipeline.drops(from),
                     pipeline.denies(from),
+                    pipeline.silences(from),
                 )
             })
         };
         assert_eq!(
             said(Denial::Refuse),
-            [(Some(Denial::Refuse), false, true), (None, false, false)]
+            [
+                (Some(Denial::Refuse), false, true, true),
+                (None, false, false, false)
+            ]
         );
         assert_eq!(
             said(Denial::Drop),
-            [(Some(Denial::Drop), true, true), (None, false, false)]
+            [
+                (Some(Denial::Drop), true, true, true),
+                (None, false, false, false)
+            ]
         );
         let open = Pipeline::default();
         assert_eq!(
-            (open.denial(denied), open.drops(denied), open.denies(denied)),
-            (None, false, false)
+            (
+                open.denial(denied),
+                open.drops(denied),
+                open.denies(denied),
+                open.silences(denied)
+            ),
+            (None, false, false, false)
         );
     }
 
