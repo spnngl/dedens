@@ -4,9 +4,9 @@
 //! person editing the zone file would: a record added, removed, retimed, a delegation cut in, the serial raised.
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, Record, RecordType, Serial, Ttl};
+use dedens_proto::{Class, Question, Record, RecordType, Serial, Ttl};
 use dedens_testkit::dns;
-use dedens_zone::{Changeset, ChangesetError, ErrorKind, Kind, Limits, Node, RrSet, Zone};
+use dedens_zone::{Changeset, ChangesetError, End, ErrorKind, Kind, Limits, Node, RrSet, Zone};
 
 use crate::util::{APEX, load, load_files, zone_file};
 
@@ -492,6 +492,40 @@ fn s4_a_record_is_removed_whatever_its_ttl() {
         .expect("applies")
         .zone;
     assert!(applied.node(&dns("www.example.")).is_none());
+}
+
+/// RFC 5155 §7.2.8: a node holding only NSEC3 records is no name unless a node is below it, which a change can add
+/// or remove, so the mark of the applied zone is that of a load of it (D206).
+#[test]
+fn s7_2_8_the_proof_only_mark_follows_the_changes_applied() {
+    let nsec3 = "hash NSEC3 1 1 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX\n";
+    let child = "child.hash A 192.0.2.5";
+    let proof_only = |zone: &Zone| {
+        zone.node(&dns("hash.example."))
+            .expect("the hash")
+            .is_proof_only()
+    };
+    let no_data = |zone: &Zone| {
+        let question = Question::new(dns("hash.example."), RecordType::A);
+        matches!(zone.answer(&question).end, End::NoData { .. })
+    };
+    let old = version(1, nsec3);
+    assert!(proof_only(&old));
+    assert!(!no_data(&old));
+
+    let add = changeset(1, 2, &[], &[child]).expect("valid");
+    let with_child = old.apply(&add, &Limits::default()).expect("applies").zone;
+    assert!(!proof_only(&with_child));
+    assert!(no_data(&with_child));
+    assert_eq!(with_child, version(2, &format!("{nsec3}{child}\n")));
+
+    let remove = changeset(2, 3, &[child], &[]).expect("valid");
+    let without = with_child
+        .apply(&remove, &Limits::default())
+        .expect("applies")
+        .zone;
+    assert!(proof_only(&without));
+    assert!(!no_data(&without));
 }
 
 /// The checks of a load run on the zone after the change: RFC 2181 §10.1, RFC 1035 §5.2.
