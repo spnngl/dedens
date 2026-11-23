@@ -47,7 +47,16 @@ pub(crate) struct Stamp {
 impl Stamp {
     /// The stamp of `file`, as its handle shows it.
     pub(crate) fn of(file: &File) -> io::Result<Self> {
-        let meta = file.metadata()?;
+        Self::of_metadata(&file.metadata()?)
+    }
+
+    /// The stamp of the file at `path`, as a `stat` shows it: it needs no access to the file, only to its
+    /// directory.
+    pub(crate) fn at(path: &Path) -> io::Result<Self> {
+        Self::of_metadata(&std::fs::metadata(path)?)
+    }
+
+    fn of_metadata(meta: &std::fs::Metadata) -> io::Result<Self> {
         #[cfg(unix)]
         let (file, changed) = {
             use std::os::unix::fs::MetadataExt as _;
