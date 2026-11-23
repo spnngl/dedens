@@ -173,7 +173,7 @@ fn scenarios(serial: u32, open_serial: u32) -> Vec<Scenario> {
         ),
         tool(
             "axfr-unsigned-refused",
-            "AXFR without TSIG of a zone that is for the key's holder: REFUSED",
+            "AXFR without TSIG of a zone that is for the key's holder: NOTAUTH, unsigned",
             SIGNED,
             None,
             vec![kdig(SIGNED, "AXFR")],
