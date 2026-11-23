@@ -207,6 +207,14 @@ fn a_zone_answers_every_client_ra_only_for_those_recursion_serves() {
             "the zones answer every client"
         );
         assert!(!pipeline.drops(addr(OUTSIDE)));
+        assert!(
+            !pipeline.silences(addr(OUTSIDE)),
+            "sealed packets are opened"
+        );
+        assert!(
+            pipeline.denies(addr(OUTSIDE)),
+            "the ODoH proxy's requests are not"
+        );
         for (from, ra) in [(INSIDE, true), (OUTSIDE, false)] {
             let reply = replied(&pipeline, ("ns1.example", RecordType::A), Flags::RD, from);
             assert_eq!(reply.rcode, Rcode::NOERROR);
