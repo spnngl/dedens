@@ -11,7 +11,7 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Header, Message, Name, Opcode, Record, RecordType, Ttl};
 use dedens_testkit::authoritative::{Answers, QUERY_ID, Reference, Server, Transport};
 use dedens_testkit::{message, path};
-use dedens_zone::{Include, Kind, Limits, Source, Zone};
+use dedens_zone::{Dnssec, Include, Kind, Limits, Source, Zone};
 
 /// The `$INCLUDE` of the ISI zone (RFC 1035 §5.3), and the file that holds it.
 const ISI_INCLUDE: (&str, &str) = (
@@ -64,7 +64,12 @@ fn respond(zone: &Zone, reference: &Reference, limit: usize) -> Vec<u8> {
         edns: query.edns.clone(),
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut response, limit);
+    let glue = answer.fill(
+        zone,
+        &mut response,
+        limit,
+        Dnssec::asked(query.edns.as_ref()),
+    );
     let mut buf = vec![0; limit];
     let len = glue.encode(&response, &mut buf).expect("encodes");
     buf.truncate(len);

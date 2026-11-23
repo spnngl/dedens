@@ -19,7 +19,7 @@ use dedens_proto::{
 };
 use dedens_testkit::authoritative::Answers;
 use dedens_testkit::{dns, message};
-use dedens_zone::{Limits, Zone};
+use dedens_zone::{Dnssec, Limits, Zone};
 use proptest::prelude::*;
 
 use crate::util::{load_files, zone_file};
@@ -57,7 +57,7 @@ fn respond(zone: &Zone, question: &Question<'_>) -> Message<'static> {
         }),
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut response, MAX_MESSAGE_LEN);
+    let glue = answer.fill(zone, &mut response, MAX_MESSAGE_LEN, Dnssec::With);
     let mut buf = vec![0; MAX_MESSAGE_LEN];
     let len = glue.encode(&response, &mut buf).expect("encodes");
     message(&buf[..len])
