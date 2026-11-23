@@ -2357,9 +2357,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   borrowing the zone's names and RDATA (`Name::reborrow`, `WireRdata::reborrow`, no copy) and `Glue::encode` encodes
   it; no zone data is allocated for a query (the `Vec`s of the message are).
   - Algorithm: the name or its closest encloser, found with one bisection when the name is a node and at most two
-    when it is not (`Zone::locate`), and one more for the wildcard of an absent name, whatever its depth. A node is found first:
-    an authoritative one, or an empty non-terminal, answers at once, and an `Occluded` one carries the index of its
-    cut, set by the loader (the outermost delegation or DNAME owner above it), so no walk finds the cut. A name that is no node ends the bisection where it would sort;
+    when it is not (`Zone::locate`), and one more for the wildcard of an absent name, whatever its depth. A node is
+    found first: an authoritative one, or an empty non-terminal, answers at once, and an `Occluded` one carries the
+    index of its cut, set by the loader (the outermost delegation or DNAME owner above it), so no walk finds the
+    cut. A name that is no node ends the bisection where it would sort;
     every ancestor of a node is a node (D204), so its closest encloser is the ancestor it shares the most labels with
     the node before it (the apex, the first node, without a second bisection; the node before itself when it is the
     ancestor), and that node's kind says whether a cut is above the name: the cut of an `Occluded` node, or the node
@@ -2370,12 +2371,19 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     120 labels, 490 µs (`docs/benchmarks.md`). A node that holds only NSEC3 records and has no node below it
     is no name (RFC 5155 §7.2.8: the server acts as if its owner did not exist; Knot keeps NSEC3 records in a tree
     of their own, so its main tree has none): the builder marks it (`Node::is_proof_only`), asked for it is absent,
-    and as the closest encloser of a name below it, its parent takes its place, one more bisection on that path
-    only (a name that is not there is no closest encloser, and no NSEC3 record could prove it as one, §7.2.1). The
+    and as the closest encloser of a name below it, its parent takes its place, with no more bisection when the
+    parent is the apex (the label count is one less) and one more otherwise
+    (a name that is not there is no closest encloser, and no NSEC3 record could prove it as one, §7.2.1). The
     trigger is the query's shape, not the zone's: any client can ask `x.<hash>.<zone>.` of an NSEC3 zone, and with
     a wildcard at the apex the answer is its synthesis, as Knot's (NSD handles the exact name only, so differs
     below it; D203 takes Knot). One with a node below it exists, as an empty non-terminal: no data for any type, the
-    NSEC3 records included, and no wildcard (RFC 4592 §2.2.1). An existing name, an empty
+    NSEC3 records included, and no wildcard (RFC 4592 §2.2.1). A proof-only node is no wildcard source either.
+    The marking is Knot's for an NSEC3 owner one label below the apex (RFC 5155 §3, §7.1), the only place a
+    conforming zone puts one; the loader warns (`WarningKind::Nsec3Owner`) of any other. For a deeper owner dedens
+    still differs: an empty non-terminal that exists only for it (`<hash>.a.b.` makes `a.b.` one, D204) answers
+    NODATA here, and Knot, which has no such name, NXDOMAIN with another closest encloser. Marking proof-only
+    the subtrees in the builder's reverse pass would close it (TODECIDE); no client can cause it, only the
+    operator's zone. An existing name, an empty
     non-terminal included, answers itself: no wildcard (RFC 4592 §2.2.1), no data when the type is absent. An absent
     name: `*.<encloser>` answers if it exists (its owner is the name asked, the case as asked), else NXDOMAIN. A
     wildcard that is itself a delegation (`*.a NS`) refers, as Knot, but for DS (RFC 4592 §4.2 leaves it undefined,

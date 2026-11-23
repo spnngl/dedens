@@ -34,6 +34,8 @@ what it answers (`answer.rs`, `reply.rs`, D206); `src/lib.rs` says what each typ
   closest encloser is the ancestor it shares the most labels with that node. `fn address_node` reads an occluded
   node's cut the same way, with no walk.
 - A node holding only NSEC3 records with no node below it is no name for `answer` (RFC 5155 §7.2.8): the builder
-  marks it (`Node::is_proof_only`), it is absent when asked for, and `locate` replaces it by its parent as the
-  closest encloser of a name below it. With a node below it, it is an empty non-terminal like any other. Any client
-  can ask for a name below a hash owner, so this is a query shape, not an odd zone (D206).
+  marks it (`Node::is_proof_only`), it is absent when asked for and no wildcard source, and `locate` takes its
+  parent as the closest encloser of a name below it (the label count less one: no bisection more when the parent is
+  the apex, one otherwise). With a node below it, it is an empty non-terminal like any other. Any client
+  can ask for a name below a hash owner, so this is a query shape, not an odd zone (D206). An NSEC3 owner that is
+  not one label below the apex is warned of at load (`WarningKind::Nsec3Owner`) and still differs from Knot (TODECIDE).

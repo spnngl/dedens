@@ -1,6 +1,6 @@
 //! The checks of a load, each on a broken variant of a valid zone: RFC 1035 §5.2 (one class, one SOA at the apex, an
 //! NS there, records inside the zone), RFC 2181 §5.2 (TTLs of an `RRset`) and §10.1 (CNAME), RFC 6672 §2.3 and §2.4
-//! (DNAME).
+//! (DNAME), RFC 5155 §3 and §7.1 (the owner of an NSEC3 record).
 
 use dedens_proto::{Class, RecordType};
 use dedens_testkit::dns;
@@ -104,6 +104,40 @@ fn rdata_invalid_for_its_type_is_refused() {
         refused("x A \\# 3 010203\n").as_slice(),
         [(Some(NEXT_LINE), ErrorKind::InvalidRdata(_))]
     ));
+}
+
+// --- RFC 5155 §3, §7.1 ---
+
+const NSEC3: &str = "NSEC3 1 1 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX";
+
+#[test]
+fn s3_an_nsec3_owner_that_is_not_one_label_below_the_apex_is_warned_of() {
+    // The hash is "prepended as a single label to the zone name": at the apex, or two labels down, it is not.
+    for owner in ["@", "a.b", "*.c.a.c"] {
+        let loaded = load_extra(&format!("{owner} {NSEC3}\n")).expect("a warning only");
+        let name = if owner == "@" {
+            "example.".to_owned()
+        } else {
+            format!("{owner}.example.")
+        };
+        let warnings: Vec<_> = loaded
+            .report
+            .warnings
+            .iter()
+            .map(|w| (w.at.line, &w.kind))
+            .collect();
+        assert_eq!(
+            warnings,
+            [(NEXT_LINE, &WarningKind::Nsec3Owner { owner: dns(&name) })],
+            "{owner}"
+        );
+    }
+}
+
+#[test]
+fn s3_an_nsec3_owner_one_label_below_the_apex_is_not() {
+    let loaded = load_extra(&format!("hash {NSEC3}\n")).expect("a zone");
+    assert_eq!(loaded.report.warnings, []);
 }
 
 // --- RFC 2181 §5.2 ---

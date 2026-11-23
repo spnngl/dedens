@@ -176,6 +176,16 @@ pub enum WarningKind {
         /// The first name below, in canonical order.
         first: Name<'static>,
     },
+    /// An NSEC3 record whose owner is not one label below the apex: the owner is the hash "prepended as a single
+    /// label to the zone name" (RFC 5155 §3, §7.1). It is served, but answers may differ from other servers' for
+    /// names around it (D206).
+    #[error(
+        "{owner} holds an NSEC3 record but is not one label below the apex (RFC 5155 §3, §7.1)"
+    )]
+    Nsec3Owner {
+        /// The owner of the record.
+        owner: Name<'static>,
+    },
 }
 
 /// An error and where it is; `at` is `None` for what the zone lacks.
