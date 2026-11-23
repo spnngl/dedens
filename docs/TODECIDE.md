@@ -353,8 +353,8 @@ Open questions, each with its proposed default. Once answered, record the outcom
   6672 §2.4: the data there is occluded, and the zone's own answers redirect it). Glue below a delegation is added, as
   Knot (the root zone's `. NS` priming answer carries the root servers' addresses, below `net.`). Default: none;
   alternative: Knot's, if a client needs them.
-- A wildcard that is a delegation (`*.a NS ns.x.`, D206): dedens refers, as Knot; RFC 4592 §4.2 says a wildcard NS
-  is not a delegation for names it synthesises. Default: refer; alternative: answer NS data as for any type.
+- A wildcard that is a delegation (`*.a NS ns.x.`, D206): dedens refers, as Knot; RFC 4592 §4.2 leaves a wildcard
+  owning NS undefined (§4.2.1's discarded notions include treating it as data). Default: refer; alternative: answer NS data as for any type.
 
 ## Later
 
