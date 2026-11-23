@@ -55,18 +55,22 @@ pub(super) fn keys(files: &[KeyFile], kept: Option<&Keyring>) -> anyhow::Result<
         files.len()
     );
     if let Some(kept) = kept {
-        let same = kept.len() == files.len()
-            && (files.iter()).all(|file| {
-                kept.get(&file.name.0)
-                    .is_some_and(|key| key.algorithm() == file.algorithm)
-            });
-        if !same {
+        if differ(files, kept) {
             tracing::warn!("changes to `keys` take a restart: the keys read at start are kept");
         }
         return Ok(kept.clone());
     }
     let keys = files.iter().map(read).collect::<anyhow::Result<Vec<_>>>()?;
     Ok(Keyring::new(keys)?)
+}
+
+/// Whether `files` names other keys than `kept`, or other algorithms: the secrets are not read again.
+fn differ(files: &[KeyFile], kept: &Keyring) -> bool {
+    kept.len() != files.len()
+        || (files.iter()).any(|file| {
+            kept.get(&file.name.0)
+                .is_none_or(|key| key.algorithm() != file.algorithm)
+        })
 }
 
 /// The key `file` describes, its secret read from its file.
@@ -96,4 +100,35 @@ fn read(file: &KeyFile) -> anyhow::Result<Key> {
     // Moved, not copied: the key wipes it on drop too.
     let secret = std::mem::take(&mut *secret);
     Ok(Key::new(file.name.0.clone(), file.algorithm, secret)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(name: &str, algorithm: Algorithm) -> KeyFile {
+        KeyFile {
+            name: Domain(name.parse().unwrap()),
+            algorithm,
+            secret_file: PathBuf::from("/nonexistent"),
+        }
+    }
+
+    /// A reload names the keys read at start, or others: a name, an algorithm or a count that changed.
+    #[test]
+    fn the_keys_differ_by_name_algorithm_and_count() {
+        let sha256 = Algorithm::HmacSha256;
+        let kept = Keyring::new([
+            Key::new("a.".parse().unwrap(), sha256, vec![1; 32]).unwrap(),
+            Key::new("b.".parse().unwrap(), sha256, vec![2; 32]).unwrap(),
+        ])
+        .unwrap();
+        assert!(!differ(&[file("B.", sha256), file("a.", sha256)], &kept));
+        assert!(differ(&[file("a.", sha256)], &kept));
+        assert!(differ(&[file("a.", sha256), file("c.", sha256)], &kept));
+        assert!(differ(
+            &[file("a.", sha256), file("b.", Algorithm::HmacSha512)],
+            &kept
+        ));
+    }
 }

@@ -251,6 +251,18 @@ mod tests {
         let file = secret_file(&format!("{}\n", "ab".repeat(KEY_FILE_MAX)));
         let error = Service::new(Some(file.path()), Limits::default()).unwrap_err();
         assert!(format!("{error:#}").contains("longer"), "{error:#}");
+        // A file of `KEY_FILE_MAX` bytes is read, one byte more is not.
+        let pad = KEY_FILE_MAX - 2 * SECRET_LEN;
+        let file = secret_file(&format!("{}{}", "ab".repeat(SECRET_LEN), " ".repeat(pad)));
+        assert!(Service::new(Some(file.path()), Limits::default()).is_ok());
+        let file = secret_file(&format!(
+            "{}{}",
+            "ab".repeat(SECRET_LEN),
+            " ".repeat(pad + 1)
+        ));
+        let error = Service::new(Some(file.path()), Limits::default()).unwrap_err();
+        let message = format!("longer than {KEY_FILE_MAX} bytes");
+        assert!(format!("{error:#}").contains(&message), "{error:#}");
         let file = secret_file(&format!("  {}\n\n\n", "ab".repeat(SECRET_LEN)));
         assert!(
             Service::new(Some(file.path()), Limits::default()).is_ok(),

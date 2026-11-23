@@ -49,7 +49,7 @@ exclude_re = [
   # The same for the DNSCrypt provider's entry (D99): dedens-sim's `dnscrypt` test calls it.
   'dedensd/src/(lib|serve/mod)\.rs:\d+:\d+: replace simulated_dnscrypt(<N>)? (with \(\)|-> anyhow::Result<\(\)> with Ok\(\(\)\))$',
   # A key file is read in one `read` or a few: an interrupted read is retried, which no test makes a file do.
-  'secret\.rs:\d+:\d+: replace (match guard error\.kind\(\) == io::ErrorKind::Interrupted with (true|false)|== with !=) in read_secret$',
+  'keys\.rs:\d+:\d+: replace (match guard error\.kind\(\) == io::ErrorKind::Interrupted with (true|false)|== with !=) in read_key$',
   # `high << 4 | low`: the low nibble of the shifted one is clear, so `|`, `^` and `+` agree.
   'secret\.rs:\d+:\d+: replace \| with \^ in read_secret$',
   # Without the `dnscrypt` or `odoh` feature only: not built under `all_features`, so no test sees a change.
@@ -218,6 +218,8 @@ exclude_re = [
   # downloaded anchors, trusted either way. The conditions that feed it are in `Kept::anchors` and `newly_full`,
   # whose tests catch their mutants.
   'rollover\.rs:\d+:\d+: replace say with \(\)$',
+  # A log line only (D211): a TSIG secret shorter than its hash's output is warned of (RFC 8945 §8), read either way.
+  'config/tsig\.rs:\d+:\d+: replace < with (==|>|<=) in read$',
   # The state read at exactly `Rollover::MAX_LEN` bytes: lossy rather than strict UTF-8, which only changes the
   # message of a state set aside either way (a replacement character is no state, and the text outgrows the bound).
   'dedensd/src/rollover\.rs:\d+:\d+: replace > with >= in read$',
