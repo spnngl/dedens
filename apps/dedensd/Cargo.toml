@@ -27,6 +27,8 @@ dedens-resolver = { workspace = true, features = ["metrics"] }
 # IANA's TLD list of the `tlds` stage (D128).
 dedens-roots.workspace = true
 dedens-server = { workspace = true, features = ["metrics", "serde"] }
+# The zones of the `authoritative` stage (D208).
+dedens-zone.workspace = true
 flume.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true

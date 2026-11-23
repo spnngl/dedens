@@ -3,7 +3,7 @@
 //! digits, `_./:@+=%~#-`) but for a null (`~`, `null`) alone, single-quoted when alone as a value, escaped
 //! between the template's own quotes, refused anywhere else. A TLS, `ODoH` or `DNSCrypt` key file readable by
 //! others is refused, by its group warned about. After the drop (D122) a reload reads as `user`: the files it reads
-//! (the certificate and its key, lists, `upstream_ca`, saved downloads) must be readable by it, and `downloads.dir`
+//! (the certificate and its key, lists, zone files, `upstream_ca`, saved downloads) must be readable by it, and `downloads.dir`
 //! writable. The start reads the configuration again as `user` right after the drop, and ends if it cannot. A
 //! reload warns of a change to `user` or `group` as written: `user: 990` for `user: dedens` warns too.
 //!
@@ -110,8 +110,26 @@
 //!     dnssec: validate               # or off; trust_anchors and insecure as a forward stage's (D197), the root's
 //!                                    # keys from `roots.anchors` and `state_dir` (D128, D200)
 //! ```
+//!
+//! An authoritative server (D208) has an authoritative stage first, alone or before the others: its zones are
+//! answered to every client, with AA; the names outside them go on to the next stages for the clients `access`
+//! permits, REFUSED (or dropped) for the others.
+//!
+//! ```yaml
+//! listen: ["0.0.0.0:53", "[::]:53"]
+//! access: {allow: ["10.0.0.0/8"]}     # who the stages after the zones answer
+//! pipeline: [zones, cache, root]
+//! stages:
+//!   zones:
+//!     type: authoritative
+//!     zones:                         # up to 10000; each loaded again on reload when a file it reads changed
+//!       - {name: example.com, file: /etc/dedensd/zones/example.com.zone}   # $INCLUDE: in the file's directory
+//!   cache: {type: cache}
+//!   root: {type: recurse}
+//! ```
 
 mod access;
+mod authoritative;
 #[cfg_attr(
     not(feature = "dnscrypt"),
     expect(
@@ -146,6 +164,7 @@ use dedens_server::{Allowance, Pipeline, Stage};
 use serde::Deserialize;
 
 use self::access::{AccessFile, AccessSource};
+use self::authoritative::authoritative;
 use self::dnscrypt::DnscryptFile;
 #[cfg(feature = "dnscrypt")]
 pub(crate) use self::dnscrypt::provider;
@@ -518,6 +537,7 @@ fn stages(
                     .transpose()?;
                 recurse(name, file, (&built, previous), (root, allowance))?
             }
+            StageFile::Authoritative(file) => authoritative(name, &file, store)?,
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
                 downloads.tlds(store)?,
                 Ttl::from_wire(PLUGIN_TTL),
@@ -587,7 +607,8 @@ const MAX_REFRESH_MINUTES: u64 = 366 * 1440;
 /// # Errors
 ///
 /// Any stage after a forward or recurse stage, which answers every query; a second cache stage, which would never be
-/// filled; a hosts, blocklist or tlds stage after a cache stage, whose answers a reload keeps (D64).
+/// filled; a hosts, blocklist or tlds stage after a cache stage, whose answers a reload keeps (D64); an
+/// authoritative stage after any, which would answer its zones for the clients of the stages before only (D208).
 fn placed(name: &str, stage: &StageFile, built: &[Stage]) -> anyhow::Result<()> {
     match built.last() {
         Some(Stage::Forward(_)) => {
@@ -600,6 +621,11 @@ fn placed(name: &str, stage: &StageFile, built: &[Stage]) -> anyhow::Result<()> 
     }
     let cached = built.iter().any(|stage| matches!(stage, Stage::Cache(_)));
     match stage {
+        StageFile::Authoritative(_) if !built.is_empty() => {
+            bail!(
+                "stage `{name}` comes after another: an authoritative stage comes first in `pipeline`"
+            )
+        }
         StageFile::Cache(_) if cached => {
             bail!("stage `{name}` is a second cache stage, which upstream answers would never fill")
         }

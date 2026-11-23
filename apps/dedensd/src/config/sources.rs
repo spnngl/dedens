@@ -17,6 +17,7 @@ use dedens_server::{Pipeline, Stage};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 
+use super::authoritative::AuthoritativeFile;
 use super::limits::BudgetFile;
 use super::recurse::RecurseFile;
 use super::roots::RootsFile;
@@ -106,6 +107,10 @@ pub(super) enum StageFile {
     /// (RFC 6303 §3), and `client_share` is the queries to authoritative servers a client network may send, a
     /// second and at once (D117).
     Recurse(RecurseFile),
+    /// Answers the names of `zones`, each a `name` and the `file` holding it, read at start and on reload (D208): AA
+    /// set whatever RD says, to every client; the other names go on to the next stages for the clients `access`
+    /// permits. It comes first; a zone that fails to load at a reload keeps its last version.
+    Authoritative(AuthoritativeFile),
 }
 
 /// A cache stage, as written: the settings of `dedens_cache::Config` and, beside them, the names to keep answered
@@ -250,6 +255,7 @@ impl StageFile {
                 file.is_some() || !urls.is_empty() || allow.file.is_some() || !allow.urls.is_empty()
             }
             Self::Recurse(file) => file.names_files(),
+            Self::Authoritative(_) => true,
             Self::Tlds {} => false,
         }
     }
