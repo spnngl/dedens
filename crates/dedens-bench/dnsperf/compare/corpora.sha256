@@ -7,3 +7,7 @@ fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f  cache-hot.txt
 175849826dfed50733b1e58d1e37c75e5672ddc9bde86d6ddd3cdee8d429dfde  blocked.txt
 # The `recurse` modes' (D201): compare.py's own, `u{i:06x}.recurse.bench A` for i below a million.
 d9524ac9368522859d28f91912547cc6bc98cde675d7ed72710a9dd29c68732c  recurse-unique.txt
+# The `authoritative` modes' (D213): authzones.py's `corpus` over the zones served, 1M lines, seed 213.
+1ac36e7249045a78fe968560f489d9b4201271cb0b8178b6f90d3afd69dcfcd2  authoritative-root-big.txt
+895848424973f5605094a43ea054d6e80d2b8a81acc053c7c5305d844b4a56e9  authoritative-root.txt
+de160f7e923eeb8f3dd93d0567ee03a043250cfca4d1addf2b5244031d4ce9e1  authoritative-big.txt

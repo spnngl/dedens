@@ -1,6 +1,6 @@
 # The image of compare.sh: dnsperf, dig, openssl and python for the loader, and Unbound and CoreDNS built at the
-# versions compare.sh pins, as each ships them (Unbound's default `configure`, CoreDNS's `make`). Every container
-# of the comparison but Knot's runs it; dedensd and TelltaleDNS are static, mounted from target/compare/bin.
+# versions compare.sh pins, as each ships them (Unbound's default `configure`, CoreDNS's `make`), and NSD. Every
+# container of the comparison but Knot's runs it; dedensd and TelltaleDNS are static, mounted from target/compare/bin.
 ARG COREDNS_GO
 FROM docker.io/library/golang:${COREDNS_GO}-trixie AS coredns
 ARG COREDNS_VERSION
@@ -17,10 +17,28 @@ RUN curl -fsSLO "https://nlnetlabs.nl/downloads/unbound/unbound-${UNBOUND_VERSIO
     && tar xzf "unbound-${UNBOUND_VERSION}.tar.gz" \
     && cd "unbound-${UNBOUND_VERSION}" && ./configure -q && make -s -j"$(nproc)" && make -s install
 
+# NSD as testdata/authoritative/Containerfile builds it for the captures (D203), at the version compare.sh pins.
+FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS nsd
+ARG NSD_VERSION
+ARG NSD_SHA256
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl \
+    libssl-dev libevent-dev libexpat1-dev bison flex pkg-config >/dev/null
+RUN curl -fsSLO "https://nlnetlabs.nl/downloads/nsd/nsd-${NSD_VERSION}.tar.gz" \
+    && echo "${NSD_SHA256}  nsd-${NSD_VERSION}.tar.gz" | sha256sum -c - \
+    && tar xzf "nsd-${NSD_VERSION}.tar.gz" \
+    && cd "nsd-${NSD_VERSION}" \
+    && ./configure -q --prefix=/usr/local --sysconfdir=/etc --localstatedir=/var --with-user=root --disable-dnstap \
+    && make -s -j"$(nproc)" && make -s install DESTDIR=/out
+
+# The authoritative modes' image (`--target authoritative`): the loader and NSD, without Unbound and CoreDNS.
 # git: TelltaleDNS's bench.py records its checkout's commit (crosscheck).
-FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS authoritative
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends dnsperf bind9-dnsutils python3 openssl \
-    libssl3t64 libexpat1 ca-certificates git >/dev/null && rm -rf /var/lib/apt/lists/*
+    libssl3t64 libexpat1 libevent-2.1-7t64 ca-certificates git >/dev/null && rm -rf /var/lib/apt/lists/*
+COPY --from=nsd /out/usr/local /usr/local
+RUN ldconfig && nsd -v 2>&1 | head -1
+
+FROM authoritative
 COPY --from=unbound /usr/local /usr/local
 COPY --from=coredns /src/coredns /usr/local/bin/coredns
 RUN ldconfig && unbound -V >/dev/null && coredns -version >/dev/null

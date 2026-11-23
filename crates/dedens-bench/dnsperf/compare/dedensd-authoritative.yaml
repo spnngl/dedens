@@ -1,0 +1,12 @@
+# dedensd for the `authoritative` modes (D213): the authoritative stage alone, serving the zones of compare.py
+# (`/w/zones`), on the bench's address; the signed zones are served as they are (D209). It logs nothing per query
+# and keeps no statistics, shipped and lean alike. Rendered by compare.py: a `#@tag ` line is kept, uncommented,
+# when the run serves that zone (`root`, `big`).
+listen: ["127.0.0.1:5301"]
+pipeline: [zones]
+stages:
+  zones:
+    type: authoritative
+    zones:
+#@root       - {name: ".", file: /w/zones/root.zone}
+#@big       - {name: big.example, file: /w/zones/big.example.zone}
