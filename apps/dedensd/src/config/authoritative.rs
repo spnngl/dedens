@@ -7,10 +7,10 @@ use std::path::PathBuf;
 use anyhow::{Context as _, bail, ensure};
 use dedens_proto::{Name, Question, RecordType};
 use dedens_server::{Action, Authoritative, Grant, Network, Stage, ZoneAccess};
-use dedens_tsig::Keyring;
 use dedens_zone::End;
 use serde::Deserialize;
 
+use super::tsig::Keys;
 use crate::lists::Store;
 
 /// The most zones an `authoritative` stage serves: 10 000 (D115). Each is a file read and stamped at every reload
@@ -81,7 +81,7 @@ impl TryFrom<String> for Domain {
 pub(super) fn authoritative(
     name: &str,
     file: &AuthoritativeFile,
-    keys: &Keyring,
+    keys: &Keys,
     store: &mut Store,
 ) -> anyhow::Result<Stage> {
     let count = file.zones.len();
@@ -104,7 +104,7 @@ pub(super) fn authoritative(
 }
 
 /// The access lists of `zone`, their keys from `keys`.
-fn access(zone: &ZoneFile, keys: &Keyring) -> anyhow::Result<ZoneAccess> {
+fn access(zone: &ZoneFile, keys: &Keys) -> anyhow::Result<ZoneAccess> {
     let lists = [
         (Action::Transfer, "transfer", &zone.transfer),
         (Action::Notify, "notify", &zone.notify),
@@ -127,8 +127,12 @@ fn access(zone: &ZoneFile, keys: &Keyring) -> anyhow::Result<ZoneAccess> {
                     );
                     let key = match &grant.key {
                         None => None,
-                        Some(name) => match keys.get(&name.0) {
+                        Some(name) => match keys.ring.get(&name.0) {
                             Some(key) => Some(key),
+                            None if keys.skipped(&name.0) => bail!(
+                                "`{setting}`: key `{}` is not read: a key added or changed takes a restart",
+                                name.0
+                            ),
                             None => bail!("`{setting}`: key `{}` is not in `keys`", name.0),
                         },
                     };
@@ -163,11 +167,14 @@ mod tests {
     use std::fmt::Write as _;
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
 
     use dedens_proto::Message;
     use dedens_server::{Pipeline, VerifiedKey};
+    use dedens_tsig::Keyring;
 
     use super::super::tests::env;
+    use super::super::unix_seconds;
     use super::*;
 
     /// A configuration of an authoritative stage alone, serving `zones`, each a name and a file.
@@ -269,10 +276,12 @@ mod tests {
     }
 
     /// [`serving`] `example` from `path` with `keys` and the zone's access lists `lists`, a key file of the captures'
-    /// secret (D203) written to `dir` as `secret.key`.
+    /// secret (D203) written to `dir` as `secret.key`, once: a file written again is a file changed (D211).
     fn guarded(dir: &Path, path: &Path, keys: &str, lists: &str) -> String {
         let secret = dir.join("secret.key");
-        private(&secret, dedens_testkit::authoritative::TSIG_KEY.secret);
+        if !secret.exists() {
+            private(&secret, dedens_testkit::authoritative::TSIG_KEY.secret);
+        }
         let keys = keys.replace("SECRET", &secret.display().to_string());
         format!(
             "{keys}listen: ['127.0.0.1:53']\npipeline: [zones]\nstages:\n  zones:\n    type: authoritative\n    zones:\n      - name: example\n        file: {}\n{lists}",
@@ -297,13 +306,14 @@ mod tests {
             .unwrap()
     }
 
-    /// The key `name` of `ring`, of a request signed with it and verified: the one way to get a `VerifiedKey`.
-    fn verified<'k>(ring: &'k Keyring, name: &str) -> VerifiedKey<'k> {
+    /// The key `name` of `pipeline`, of a request signed with it now and verified: the one way to get a
+    /// `VerifiedKey`.
+    fn verified<'p>(pipeline: &'p Pipeline, name: &str) -> VerifiedKey<'p> {
         let query = Message::query(7, Question::new(name.parse().unwrap(), RecordType::SOA));
         let mut request = query.to_vec().unwrap();
         let key = key(name, "hmac-sha256");
-        dedens_tsig::sign_request(&key, &mut request, 1_750_000_000).unwrap();
-        VerifiedKey::from_request(ring, &request, 1_750_000_000).unwrap()
+        dedens_tsig::sign_request(&key, &mut request, unix_seconds()).unwrap();
+        pipeline.verified_key(&request).unwrap()
     }
 
     /// D211: the keys are read from their files, the access lists of a zone built with them, a line of a key
@@ -324,9 +334,11 @@ mod tests {
             panic!("{:?}", pipeline.stages());
         };
         let (_, access) = stage.access(&"www.example.".parse().unwrap()).unwrap();
-        let ring = pipeline.keys().unwrap();
-        let other = Keyring::new([key("other", "hmac-sha256")]).unwrap();
-        let secondary = verified(ring, "secondary");
+        let other = Pipeline::default().with_keys(
+            Keyring::new([key("other", "hmac-sha256")]).unwrap(),
+            Arc::new(unix_seconds),
+        );
+        let secondary = verified(&pipeline, "secondary");
         let inside = "192.0.2.7".parse().unwrap();
         assert!(access.permits(Action::Transfer, inside, Some(secondary)));
         assert!(!access.permits(Action::Transfer, inside, None));
@@ -470,7 +482,7 @@ mod tests {
     }
 
     /// D211, D122: the key files are read at start only; a reload, or the build after the privileges are dropped,
-    /// keeps the keys read then, its files gone or unreadable.
+    /// keeps the keys read then while their files are as they were, and revokes them when a file cannot be stat.
     #[test]
     fn the_keys_read_at_start_are_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -480,7 +492,6 @@ mod tests {
         let text = guarded(dir.path(), &path, keys, lists);
         let mut store = Store::default();
         let started = read(&text, &mut store).unwrap();
-        fs::remove_file(dir.path().join("secret.key")).unwrap();
         let reloaded = crate::config::read(&text, env, (&started, Some(1)), &mut store)
             .unwrap()
             .pipeline;
@@ -502,7 +513,15 @@ mod tests {
         );
         let error = crate::config::read(&added, env, (&started, Some(1)), &mut store).unwrap_err();
         assert!(
-            format!("{error:#}").contains("key `j.` is not in `keys`"),
+            format!("{error:#}")
+                .contains("key `j.` is not read: a key added or changed takes a restart"),
+            "{error:#}"
+        );
+        // The file gone, so that it cannot be stat: the key is revoked, the fail-safe; a line naming it is refused.
+        fs::remove_file(dir.path().join("secret.key")).unwrap();
+        let error = crate::config::read(&text, env, (&started, Some(1)), &mut store).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("key `k.` is not read"),
             "{error:#}"
         );
     }
@@ -554,6 +573,14 @@ mod tests {
             &dir.path().join("other.key").display().to_string(),
         );
         let text = guarded(dir.path(), &path, &moved, "");
+        assert_eq!(names(&reload(&text, &mut store).unwrap()), [false, false]);
+        // The secret file rewritten in place, the same path: changed, so not read, and dropped.
+        let text = guarded(dir.path(), &path, same, "");
+        assert_eq!(names(&reload(&text, &mut store).unwrap()), [true, true]);
+        private(
+            &dir.path().join("secret.key"),
+            "b3RoZXIgc2VjcmV0IG9mIHRoaXJ0eS10d28gYnl0ZXM=",
+        );
         assert_eq!(names(&reload(&text, &mut store).unwrap()), [false, false]);
         // No `keys` at all: every key revoked.
         let text = guarded(dir.path(), &path, "", "");

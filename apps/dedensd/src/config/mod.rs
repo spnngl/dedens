@@ -119,7 +119,7 @@
 //! ```yaml
 //! listen: ["0.0.0.0:53", "[::]:53"]
 //! access: {allow: ["10.0.0.0/8"]}     # who the stages after the zones answer
-//! keys:                              # up to 1000, read at start, as root; a reload revokes those removed
+//! keys:                              # up to 1000, read at start, as root; a reload revokes those removed or rewritten
 //!   - {name: secondary, algorithm: hmac-sha256, secret_file: /etc/dedensd/secondary.key}  # base64, chmod 600
 //! pipeline: [zones, cache, root]
 //! stages:
@@ -199,7 +199,7 @@ use self::sources::{
     CacheFile, DownloadsFile, Sources, StageFile, blocklist, cache, flush, hosts, prewarm,
 };
 pub(crate) use self::tsig::Origins as KeyOrigins;
-use self::tsig::{KeyFile, keys};
+use self::tsig::{KeyFile, Keys, keys};
 use self::upstream::{Dnssec, Validation, forward};
 use crate::lists::Store;
 use crate::privileges::{Account, Identity};
@@ -405,11 +405,11 @@ fn build(
     // The keys are read at start, as root: a reload keeps those it still names, unchanged (D211).
     let none = Keyring::default();
     let kept = started.map(|_| previous.keys().unwrap_or(&none));
-    let keyring = keys(&file.keys, kept, &mut store.key_files)?;
+    let keys = keys(&file.keys, kept, &mut store.key_files)?;
     let (mut built, warmed) = stages(
         &file.pipeline,
         file.stages,
-        (previous, allowance, &keyring),
+        (previous, allowance, &keys),
         &mut downloads,
         store,
     )?;
@@ -432,7 +432,7 @@ fn build(
     );
     let mut pipeline = guard.around(built, previous)?.with_prewarm(warmed);
     if authoritative {
-        pipeline = pipeline.with_keys(keyring, Arc::new(unix_seconds));
+        pipeline = pipeline.with_keys(keys.ring, Arc::new(unix_seconds));
     }
     Ok(Config {
         listen: file.listen,
@@ -488,7 +488,7 @@ const MAX_THREADS: usize = 1024;
 fn stages(
     order: &[String],
     mut defined: BTreeMap<String, StageFile>,
-    (previous, allowance, keys): (&Pipeline, Allowance, &Keyring),
+    (previous, allowance, keys): (&Pipeline, Allowance, &Keys),
     downloads: &mut Downloads,
     store: &mut Store,
 ) -> anyhow::Result<(Vec<Stage>, Vec<Question<'static>>)> {

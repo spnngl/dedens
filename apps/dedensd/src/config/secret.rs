@@ -23,7 +23,7 @@ pub(crate) fn read_secret(
     let shown = file.display();
     // One byte more than the most, to tell a file that is too long.
     let mut buffer = Zeroizing::new([0; KEY_FILE_MAX + 1]);
-    let text = read_key(file, setting, &mut *buffer)?;
+    let (_, text) = read_key(file, setting, &mut *buffer)?;
     let (pairs, rest) = text.as_chunks::<2>();
     let mut secret = Zeroizing::new([0; SECRET_LEN]);
     ensure!(

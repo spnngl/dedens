@@ -15,6 +15,7 @@ use serde::Deserialize;
 use super::limits::BudgetFile;
 #[cfg(feature = "odoh")]
 use super::listen::Listen;
+use crate::lists::Stamp;
 use crate::roots::read_capped;
 
 /// The longest PEM file read at configuration: a chain of a hundred certificates is about 200 KiB, a key a few KiB.
@@ -191,6 +192,8 @@ pub(crate) fn guard_key(_file: &fs::File, _setting: &str, _path: &Path) -> anyho
 /// The text of the key file `file`, surrounding whitespace aside, read into `buffer`, one byte longer than the
 /// longest file: a buffer of its size, wiped on drop by the caller, leaves no copy of the secret where a growing
 /// buffer was. A file others can access is refused, one its group can access warned about ([`guard_key`], D115).
+/// With the file's [`Stamp`], taken before the reading, for a caller that keeps what it read and must tell that the
+/// file changed.
 ///
 /// # Errors
 ///
@@ -199,11 +202,13 @@ pub(super) fn read_key<'b>(
     file: &Path,
     setting: &str,
     buffer: &'b mut [u8],
-) -> anyhow::Result<&'b [u8]> {
+) -> anyhow::Result<(Stamp, &'b [u8])> {
     let shown = file.display();
     let mut input =
         fs::File::open(file).with_context(|| format!("{setting}: cannot read the key {shown}"))?;
     guard_key(&input, setting, file)?;
+    let stamp =
+        Stamp::of(&input).with_context(|| format!("{setting}: cannot read the key {shown}"))?;
     let mut len = 0;
     while let Some(rest) = buffer.get_mut(len..).filter(|rest| !rest.is_empty()) {
         match input.read(rest) {
@@ -221,7 +226,7 @@ pub(super) fn read_key<'b>(
         len <= most,
         "{setting}: the key {shown} is longer than {most} bytes"
     );
-    Ok(buffer.get(..len).unwrap_or_default().trim_ascii())
+    Ok((stamp, buffer.get(..len).unwrap_or_default().trim_ascii()))
 }
 
 /// The certificate authorities of the PEM file `path`, the system's without one.
