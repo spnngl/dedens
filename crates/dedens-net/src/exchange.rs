@@ -29,6 +29,7 @@ use dedens_proto::edns::{Cookie, EdnsOption, EdnsView, OptionCode};
 use dedens_proto::{
     EncodeError, Flags, HEADER_LEN, MAX_NAME_LEN, Message, Name, Query, Rcode, Transport, Violation,
 };
+use dedens_tsig::{Key, ResponseError, ResponseVerifier, sign_request};
 
 use crate::doh::Method;
 
@@ -154,6 +155,9 @@ pub struct Response {
     /// With [`CaseMismatch::Tcp`], whether the response came over TCP with the question in another case than
     /// the query's: the server does not repeat the case (D190).
     pub case_changed: bool,
+    /// With a signed query ([`Exchange::signed`]), whether the response verifies as the answer to it (RFC 8945
+    /// §5.4), or why not: a response that does not verify is still the response, for the caller to show (D212).
+    pub tsig: Option<Result<(), ResponseError>>,
 }
 
 /// Why an exchange moved its query from UDP to TCP.
@@ -292,6 +296,41 @@ pub struct Exchange {
     folded: bool,
     /// Why the query moved from UDP to TCP.
     moved: Option<Moved>,
+    /// How the query is signed, if it is; boxed, a key holds a name, and an exchange is held across awaits.
+    signing: Option<Box<Signing>>,
+}
+
+/// A TSIG key and the clock of its signatures, sans-IO: the Unix time of the start and the instant it was read, so
+/// that a query sent again is signed at the time it goes.
+#[derive(Debug)]
+struct Signing {
+    key: Key,
+    /// The MAC of the last query signed: the one the response is verified against.
+    mac: Vec<u8>,
+    unix: u64,
+    at: Instant,
+}
+
+impl Signing {
+    /// The Unix time at `now`.
+    fn unix(&self, now: Instant) -> u64 {
+        self.unix + now.saturating_duration_since(self.at).as_secs()
+    }
+
+    /// Signs `wire` at `now`. The only failure is a message with no room for the TSIG record, an encoding error.
+    fn sign(&mut self, wire: &mut Vec<u8>, now: Instant) -> Result<(), EncodeError> {
+        let verifier =
+            sign_request(&self.key, wire, self.unix(now)).map_err(|_| EncodeError::BufferFull)?;
+        self.mac = verifier.request_mac().to_vec();
+        Ok(())
+    }
+
+    /// Whether `wire`, received at `now`, answers the last query signed.
+    fn verify(&self, wire: &[u8], now: Instant) -> Result<(), ResponseError> {
+        ResponseVerifier::new(&self.key, &self.mac)
+            .verify(wire, self.unix(now))
+            .map(|_| ())
+    }
 }
 
 impl Exchange {
@@ -344,7 +383,26 @@ impl Exchange {
             forged: false,
             folded: false,
             moved: None,
+            signing: None,
         })
+    }
+
+    /// The exchange with its query signed with `key` (RFC 8945 §5.3), `unix` being the Unix time at `now`, and every
+    /// query a fallback changes signed again. Whether the response verifies is [`Response::tsig`].
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::BufferFull`] when the TSIG record does not fit in the message.
+    pub fn signed(mut self, key: &Key, unix: u64, now: Instant) -> Result<Self, EncodeError> {
+        let mut signing = Signing {
+            key: key.clone(),
+            mac: Vec::new(),
+            unix,
+            at: now,
+        };
+        signing.sign(&mut self.wire, now)?;
+        self.signing = Some(Box::new(signing));
+        Ok(self)
     }
 
     /// The query to send.
@@ -480,6 +538,10 @@ impl Exchange {
                 .zip(self.query.questions.first())
                 .is_some_and(|(got, sent)| !got.name.labels().eq(sent.name.labels()));
         let opt = response.edns().is_some();
+        let tsig = self
+            .signing
+            .as_ref()
+            .map(|signing| signing.verify(&bytes, now));
         let mut bytes = bytes;
         if let Some(given) = &self.given {
             give_case(&mut bytes, given);
@@ -501,6 +563,7 @@ impl Exchange {
                 EdnsState::Untested | EdnsState::Known => None,
             },
             case_changed,
+            tsig,
         }))
     }
 
@@ -617,7 +680,13 @@ impl Exchange {
                 .filter(|&id| id != before)
                 .unwrap_or_else(|| before.wrapping_add(1));
         }
-        match encode(&mut self.query, transport) {
+        let encoded = encode(&mut self.query, transport).and_then(|mut wire| {
+            if let Some(signing) = &mut self.signing {
+                signing.sign(&mut wire, now)?;
+            }
+            Ok(wire)
+        });
+        match encoded {
             Ok(wire) => {
                 self.wire = wire;
                 self.transport = transport;

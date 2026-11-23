@@ -19,7 +19,8 @@ use std::num::NonZeroU8;
 use dedens_net::exchange::{Failure, Options, Progress};
 use dedens_proto::edns::{Cookie, EdnsOption, OptionCode, UnknownOption};
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, Flags, Message, Rcode, Record, RecordType, Transport, Ttl};
+use dedens_proto::{Class, Flags, Message, Rcode, Record, RecordType, Transport, Ttl, find_tsig};
+use dedens_tsig::{Algorithm, Key, Keyring, ResponseError, verify_request};
 use proptest::prelude::*;
 
 use crate::util::{
@@ -708,4 +709,89 @@ fn timeouts_keep_edns_and_the_cookie() {
         expect_failure(exchange.time_out(now + secs(15))),
         Failure::TimedOut { sends: 3 }
     );
+}
+
+// --- RFC 8945 §5 (D212) ---
+
+fn tsig_key() -> Key {
+    Key::from_base64(name("k.example."), Algorithm::HmacSha256, "c2VjcmV0").expect("a key")
+}
+
+/// [`response`] to the signed query `sent`, without the query'"'"'s TSIG record.
+fn answer_to(sent: &Message<'_>, rcode: Rcode) -> Message<'static> {
+    let mut answer = response(sent, rcode);
+    answer
+        .additional
+        .retain(|record| record.rtype() != RecordType::TSIG);
+    answer
+}
+
+/// `message` signed the way a server holding [`tsig_key`] signs its answer to `query`, `unix` being the time.
+fn signed_by_server(query: &[u8], message: &Message<'_>, unix: u64) -> Vec<u8> {
+    let keys = Keyring::new([tsig_key()]).expect("one key");
+    let request = verify_request(&keys, query, unix)
+        .expect("a request signed with the key")
+        .expect("signed");
+    let mut answer = wire(message);
+    request.signer().sign(&mut answer, unix).expect("signed");
+    answer
+}
+
+#[test]
+fn a_signed_exchange_sends_a_signed_query_and_verifies_the_response() {
+    let now = t0();
+    let exchange = start(&query(), Options::default(), now)
+        .signed(&tsig_key(), 1_000, now)
+        .expect("room for the TSIG");
+    assert!(find_tsig(exchange.wire()).expect("well formed").is_some());
+    let answer = signed_by_server(
+        exchange.wire(),
+        &answer_to(&sent(&exchange), Rcode::NOERROR),
+        1_000,
+    );
+    let response = expect_response(udp(exchange, &answer, now + secs(1)));
+    assert_eq!(response.tsig, Some(Ok(())));
+}
+
+/// A response that does not verify is still the response, for the caller to show.
+#[test]
+fn an_unsigned_response_to_a_signed_query_is_returned_with_its_verdict() {
+    let now = t0();
+    let exchange = start(&query(), Options::default(), now)
+        .signed(&tsig_key(), 1_000, now)
+        .expect("room for the TSIG");
+    let unsigned = wire(&answer_to(&sent(&exchange), Rcode::NOERROR));
+    let response = expect_response(udp(exchange, &unsigned, now));
+    assert_eq!(response.tsig, Some(Err(ResponseError::Missing)));
+    assert_eq!(response.rcode, Rcode::NOERROR);
+}
+
+/// A fallback changes the query, so it is signed again, and the response is verified against that one.
+#[test]
+fn a_query_changed_by_a_fallback_is_signed_again() {
+    let now = t0();
+    let exchange = start(&query(), Options::default(), now)
+        .signed(&tsig_key(), 1_000, now)
+        .expect("room for the TSIG");
+    let mut formerr = answer_to(&sent(&exchange), Rcode::FORMERR);
+    formerr.edns = None;
+    let answer = signed_by_server(exchange.wire(), &formerr, 1_000);
+    let exchange = expect_send(udp(exchange, &answer, now));
+    assert!(sent(&exchange).edns.is_none());
+    assert!(find_tsig(exchange.wire()).expect("well formed").is_some());
+    let answer = signed_by_server(
+        exchange.wire(),
+        &answer_to(&sent(&exchange), Rcode::NOERROR),
+        1_002,
+    );
+    let response = expect_response(udp(exchange, &answer, now + secs(2)));
+    assert_eq!(response.tsig, Some(Ok(())));
+}
+
+#[test]
+fn an_unsigned_exchange_has_no_verdict() {
+    let now = t0();
+    let exchange = start(&query(), Options::default(), now);
+    let answer = wire(&response(&sent(&exchange), Rcode::NOERROR));
+    assert_eq!(expect_response(udp(exchange, &answer, now)).tsig, None);
 }

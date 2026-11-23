@@ -392,6 +392,7 @@ impl Resolver {
                             moved: None,
                             edns_dropped: None,
                             case_changed: false,
+                            tsig: None,
                         });
                     }
                 }
