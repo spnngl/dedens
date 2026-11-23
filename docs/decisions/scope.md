@@ -389,7 +389,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `ConflictingNsec3Parameters`, for the caller to make bogus (RFC 5155 §8.2 allows it; no order of records picks
   the set). `Name` orders canonically (RFC 4034 §6.1) since D204; it was private to `denial` before. NSEC3 hashes are paid from
   the `Budget`, one per name a proof tries, none kept between calls. Iterations above `MaxIterations`, default 150
-  as Unbound and BIND (RFC 9276 §3.2 recommends 0 but tells validators to accept some; the limit is a parameter),
+  as Unbound's `val-nsec3-keysize-iterations` for 1024-bit keys (BIND 9.21's `DNS_NSEC3_MAXITERATIONS` is 50;
+  RFC 9276 §3.2 recommends 0 but tells validators to accept some; the limit is a parameter),
   are `IterationsAboveLimit` in any record's set, refused before any hashing: the response is insecure, with EDE 27
   (`info_code`). Compact denial (RFC 9824): an NSEC or NSEC3 matching the name with NXNAME in its bitmap is a
   `NameError { compact: true }` for any type, so 06 and 08 tell it from an NXDOMAIN (the response is NOERROR,

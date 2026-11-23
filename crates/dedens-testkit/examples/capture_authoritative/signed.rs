@@ -76,7 +76,8 @@ pub(crate) fn signed(dir: &Path) -> Result<()> {
         zones::render(
             &signed,
             &format!(
-                "{}, signed by Knot's kzonesign at {SIGNED_AT} (ECDSA P-256, NSEC3 with 0 iterations, no salt, opt-out).",
+                "{}, signed by Knot's kzonesign at {SIGNED_AT} \
+                 (ECDSA P-256, NSEC3 with 0 iterations, no salt, opt-out).",
                 UNSIGNED.file
             ),
         )

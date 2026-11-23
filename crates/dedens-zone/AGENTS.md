@@ -46,5 +46,5 @@ D209); `src/lib.rs` says what each type is.
   (`Node::nsec3`, found by hashing at load). A query hashes the next closer name only, the one that is no node;
   never hash another at query time (an NXDOMAIN's cost is the client's to choose, D209).
 - With DO every proof `fill` adds is checked twice in `tests/signed.rs`: by `dedens-dnssec`'s validator where the
-  keys verify (RFC 4035 zone, root) and by `denial::prove` everywhere. A new proof case gets a case there; the
-  RFC Appendix B responses are read from `docs/rfc/archive/`, never copied into the test.
+  keys verify (RFC 4035 zone, root, the NSEC3 zone Knot signed) and by `denial::prove` everywhere. A new proof case
+  gets a case there; the RFC Appendix B responses are read from `docs/rfc/archive/`, never copied into the test.
