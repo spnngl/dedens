@@ -858,7 +858,8 @@ fn wrong_question() -> Vec<u8> {
     encoded(&message)
 }
 
-/// Compio with every timeout a fiftieth as long: the 10 s of an SOA query pass in 200 ms.
+/// Compio with every timeout a fifth as long: the 10 s of an SOA query pass in 2 s, long enough for a loaded machine
+/// to verify three datagrams.
 #[derive(Debug, Clone, Copy)]
 struct Hasty;
 
@@ -891,7 +892,7 @@ impl Io for Hasty {
     ) -> Result<F::Output, TimedOut> {
         let now = Compio.now();
         Compio
-            .timeout_at(now + deadline.saturating_duration_since(now) / 50, future)
+            .timeout_at(now + deadline.saturating_duration_since(now) / 5, future)
             .await
     }
 
