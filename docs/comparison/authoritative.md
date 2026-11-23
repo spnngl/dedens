@@ -55,12 +55,13 @@ How:
 
 Where dedens is behind, and what lands in the authoritative phase:
 
-- Transfers out and in, XoT, NOTIFY, UPDATE, catalog zones: planned, each its own step with its own decision (D214
-  onwards), with per-zone access lists and TSIG on every one of them (D211).
+- Transfers out and in, XoT, NOTIFY, UPDATE, catalog zones: planned, each its own step of the authoritative phase,
+  with its own decision, per-zone access lists and TSIG on every one of them.
 - Signing: not planned. A pre-signed zone is what the stage serves (D209); keys and rollovers belong to a signer
   (`kzonesign` and `keymgr` of Knot sign this bench's zone).
-- Speed: on one core, `dedensd` answers at about half the rate of Knot and NSD in `just bench-compare
-  authoritative`, [`../TODECIDE.md`](../TODECIDE.md) has the measurements.
+- Speed: on one core, `dedensd` answers at a third to six tenths of the rate of Knot and NSD in `just
+  bench-compare authoritative`, [`../benchmarks.md`](../benchmarks.md) has the measurements and
+  [`../TODECIDE.md`](../TODECIDE.md) the question.
 
 Where dedens differs by design: no per-answer rate limit (D113), DNAME chains of 11 where Knot stops at 5 and NSD
 at 18 (D206), no glue or authority sections added to a positive answer.
