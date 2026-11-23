@@ -952,20 +952,34 @@ fn s4_3_2_a_name_with_the_most_labels_is_found_from_the_apex_down() {
     assert_eq!(r.rcode, Rcode::NXDOMAIN);
 }
 
-// --- The additional section of an answer: authoritative names only ---
+// --- The additional section of an answer: authoritative names and glue, not below a DNAME ---
 
 #[test]
-fn s2_4_an_answer_has_no_address_from_below_a_dname_or_a_delegation_point() {
+fn s2_4_an_answer_has_the_glue_below_a_delegation_point_but_no_address_below_a_dname() {
+    // The first cut on the way down decides: glue below a delegation even where a DNAME is further down,
+    // nothing below a DNAME even where a delegation is further down. An address at the delegation point itself
+    // is no data of the zone.
     let zone = example(&format!(
-        "{}x.d A 192.0.2.7\nsub NS ns.other.\nh.sub A 192.0.2.8\n\
-         a MX 10 x.d\nb MX 10 h.sub\nc MX 10 ns\n",
-        dname("d", "other.")
+        "{}x.d A 192.0.2.7\ng.d NS ns.other.\nh.g.d A 192.0.2.9\n\
+         sub NS ns.other.\nh.sub A 192.0.2.8\nsub A 192.0.2.10\n{}y.e.sub A 192.0.2.11\n\
+         a MX 10 x.d\nf MX 10 h.g.d\nb MX 10 h.sub\np MX 10 sub\nq MX 10 y.e.sub\nc MX 10 ns\n",
+        dname("d", "other."),
+        dname("e.sub", "other."),
     ));
-    for name in ["a.example.", "b.example."] {
+    for name in ["a.example.", "f.example.", "p.example."] {
         let r = ask(&zone, name, RecordType::MX);
         assert_eq!(r.answer.len(), 1, "{name}");
         assert_eq!(r.additional, Vec::<String>::new(), "{name}");
+        assert_eq!(r.required_glue, 0, "{name}");
     }
-    let r = ask(&zone, "c.example.", RecordType::MX);
-    assert_eq!(r.additional, ["ns.example. 3600 IN A 192.0.2.1"]);
+    for (name, address) in [
+        ("b.example.", "h.sub.example. 3600 IN A 192.0.2.8"),
+        ("q.example.", "y.e.sub.example. 3600 IN A 192.0.2.11"),
+        ("c.example.", "ns.example. 3600 IN A 192.0.2.1"),
+    ] {
+        let r = ask(&zone, name, RecordType::MX);
+        assert_eq!(r.additional, [address], "{name}");
+        // Glue in an answer is optional: TC is never set for it.
+        assert_eq!(r.required_glue, 0, "{name}");
+    }
 }
