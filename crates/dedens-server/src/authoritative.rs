@@ -4,8 +4,8 @@
 use std::fmt;
 use std::sync::Arc;
 
-use dedens_proto::{MAX_NAME_LEN, Name, Question, RecordType};
-use dedens_zone::{End, Zone};
+use dedens_proto::{Class, MAX_NAME_LEN, Name, Question, RecordType};
+use dedens_zone::Zone;
 
 use crate::Step;
 use crate::metrics::Answers;
@@ -58,15 +58,18 @@ impl Authoritative {
     #[must_use]
     pub fn zone(&self, name: &Name<'_>) -> Option<&Arc<Zone>> {
         let mut buf = [0; MAX_NAME_LEN];
-        let wire = name.to_wire(&mut buf);
-        let mut labels = name.label_count();
+        self.find(name.to_wire(&mut buf), name.label_count())
+    }
+
+    /// [`Authoritative::zone`] of the name `wire`, uncompressed, of `count` labels.
+    fn find(&self, wire: &[u8], count: usize) -> Option<&Arc<Zone>> {
+        let mut labels = count;
         let mut end = self.zones.len();
         loop {
-            // The suffix of `labels` labels of `name`: names within an apex follow it in canonical order with no
-            // other name between, so the zone just before the suffix holds it, or the apex it shares with that
+            // The suffix of `labels` labels of the name: names within an apex follow it in canonical order with
+            // no other name between, so the zone just before the suffix holds it, or the apex it shares with that
             // zone's is the longest that can.
-            let suffix =
-                Name::from_uncompressed(skip_labels(wire, name.label_count() - labels)).ok()?;
+            let suffix = Name::from_uncompressed(skip_labels(wire, count - labels)).ok()?;
             end = self.zones[..end].partition_point(|zone| *zone.apex() <= suffix);
             let before = self.zones[..end].last()?;
             if suffix.is_within(before.apex()) {
@@ -80,26 +83,30 @@ impl Authoritative {
     /// zone holds (RFC 4035 §3.1.4.1): the zone of the name's parent when there is one, else the name's own. Knot
     /// and NSD search the zone for a DS the same way (`process_query.c:186-201`, `query.c:1497-1535`).
     fn zone_of(&self, question: &Question<'_>) -> Option<&Arc<Zone>> {
+        let mut buf = [0; MAX_NAME_LEN];
+        let wire = question.name.to_wire(&mut buf);
+        let count = question.name.label_count();
         if question.qtype == RecordType::DS
-            && let Some(zone) = question.name.parent().and_then(|parent| self.zone(&parent))
+            && count > 0
+            && let Some(zone) = self.find(skip_labels(wire, 1), count - 1)
         {
             return Some(zone);
         }
-        self.zone(&question.name)
+        self.find(wire, count)
     }
 
     /// The reply to `client`, written into `out`, when a zone answers its question; `None` passes the query on.
     ///
     /// The zone answers, AA set (RFC 1034 §4.3.2), whatever RD says: a referral too, without AA, as Knot and NSD
     /// answer it; the name is never resolved from the zone's cut (D208). Only a name of another class than the
-    /// zone's passes on.
+    /// zone's passes on: the zone refuses any other name it is not the authority for.
     pub(crate) fn reply(&self, client: &Client<'_>, out: &mut [u8]) -> Option<Step> {
         let question = client.question.as_ref()?;
         let zone = self.zone_of(question)?;
-        let answer = zone.answer(question);
-        if matches!(answer.end, End::NotAuth) {
+        if question.qclass != zone.class() && question.qclass != Class::ANY {
             return None;
         }
+        let answer = zone.answer(question);
         self.answers.count(&answer.end);
         Some(
             client

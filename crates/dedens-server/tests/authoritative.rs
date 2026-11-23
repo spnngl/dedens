@@ -305,6 +305,111 @@ fn rfc4035_3_1_4_1_a_ds_is_the_parent_zones_when_both_are_served() {
     }
 }
 
+/// The stage serving the zones `apexes`, each from the ISI zone file but for `example.`, the zone of RFC 4035
+/// Appendix A: the SOA of each tells which of them answered.
+fn nested(apexes: &[&str]) -> Pipeline {
+    let zones = apexes.iter().map(|apex| match *apex {
+        "example" => example(),
+        apex => load("rfc1035_isi.zone", apex),
+    });
+    Pipeline::new(vec![Stage::Authoritative(
+        Authoritative::new(zones).expect("no apex twice"),
+    )])
+}
+
+/// The owners of the SOA records of `reply`, lowercased.
+fn soa_owners(reply: &Replied) -> Vec<String> {
+    (reply.records.iter())
+        .filter(|record| record.contains(" IN SOA "))
+        .filter_map(|record| record.split(' ').next())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+#[test]
+fn rfc4035_3_1_4_1_the_root_zone_answers_its_own_ds() {
+    // The root has no parent: its DS is not another zone's.
+    let reply = replied(&nested(&["."]), (".", RecordType::DS), Flags::RD, OUTSIDE);
+    assert_eq!(reply.rcode, Rcode::NOERROR);
+    assert!(reply.flags.contains(Flags::AA), "{:?}", reply.flags);
+    assert_eq!(soa_owners(&reply), ["."], "{:?}", reply.records);
+}
+
+#[test]
+fn rfc4035_3_1_4_1_the_parent_of_a_ds_is_found_whatever_the_case() {
+    let pipeline = nested(&["example", "a.example"]);
+    let reply = replied(&pipeline, ("A.EXAMPLE", RecordType::DS), Flags::RD, OUTSIDE);
+    assert!(reply.flags.contains(Flags::AA), "{:?}", reply.flags);
+    assert!(
+        reply.records.iter().any(|r| r
+            .to_lowercase()
+            .starts_with("a.example. 3600 in ds 57855 5 1 ")),
+        "{:?}",
+        reply.records
+    );
+}
+
+#[test]
+fn rfc4035_3_1_4_1_the_parent_zone_answers_a_ds_not_the_grandparent() {
+    // `venera.a.example.` is no cut of `a.example.` but a name it holds: its DS is NODATA with the SOA of the
+    // parent, not of the zone of that name, nor the referral the grandparent `example.` would give.
+    let pipeline = nested(&["example", "a.example", "venera.a.example"]);
+    let reply = replied(
+        &pipeline,
+        ("venera.a.example", RecordType::DS),
+        Flags::RD,
+        OUTSIDE,
+    );
+    assert_eq!(reply.rcode, Rcode::NOERROR);
+    assert!(reply.flags.contains(Flags::AA), "{:?}", reply.flags);
+    assert_eq!(soa_owners(&reply), ["a.example."], "{:?}", reply.records);
+    // Any other type there is the zone of that name's.
+    let reply = replied(
+        &pipeline,
+        ("venera.a.example", RecordType::SOA),
+        Flags::RD,
+        OUTSIDE,
+    );
+    assert!(
+        reply
+            .records
+            .iter()
+            .any(|r| r.starts_with("venera.a.example. 3600 IN SOA ")),
+        "{:?}",
+        reply.records
+    );
+}
+
+#[test]
+fn rfc4035_3_1_4_1_a_ds_below_a_cut_of_the_parent_is_a_referral() {
+    // The parent of `x.a.example.` is `a.example.`, a cut of `example.`: no zone of its own is served.
+    let reply = replied(
+        &nested(&["example"]),
+        ("x.a.example", RecordType::DS),
+        Flags::RD,
+        OUTSIDE,
+    );
+    assert_eq!(reply.rcode, Rcode::NOERROR);
+    assert!(!reply.flags.contains(Flags::AA), "{:?}", reply.flags);
+    assert!(has(&reply.records, "a.example. 3600 IN NS ns1.a.example."));
+}
+
+#[test]
+fn a_name_of_class_any_is_answered() {
+    let mut question = Question::new(dns("ns1.example"), RecordType::A);
+    question.qclass = Class::ANY;
+    let mut query = Message::query(7, question);
+    query.header.flags = Flags::RD;
+    let mut out = vec![0; 65535];
+    let step = authoritative().query(&wire(&query), Transport::Udp, addr(OUTSIDE), 0, &mut out);
+    let Step::Reply(len) = step else {
+        panic!("{step:?}")
+    };
+    let reply = decode(&out[..len]);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert_eq!(reply.answer.len(), 1);
+}
+
 #[test]
 fn a_cache_hit_has_ra_only_where_recursion_follows() {
     // The cache is shared by a pipeline that forwards, which fills it, and one that does not: its hits are no
