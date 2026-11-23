@@ -40,5 +40,17 @@ The `recurse` modes (D201) differ from the others:
 - A DNSSEC run signs the three zones fresh (`keymgr` in the Knot image), DS records and all, and the validators'
   anchor is the root's key-signing key.
 
+The `authoritative` and `authoritative-dnssec` modes (D213) differ again:
+
+- They run on a Mac too: `compare.sh` accepts Darwin and takes the engine's VM as the machine. The loader container
+  probes (`compare/probe.py`) and runs `dnsperf`, so the clock of `/w/start` and of the first answer is one.
+- The servers are Knot (pinned by digest), NSD (built into the compare image, target `authoritative`) and dedensd, each
+  serving the root zone of `testdata/authoritative/zones/` and `big.example.`, which `compare/authzones.py` makes and
+  Knot's `kzonesign` signs. A change to `authzones.py`'s mix or seed changes the corpus: regenerate the hashes of
+  `authoritative-*.txt` in `corpora.sha256` (the run stops on a mismatch and prints the one it computed).
+- The generated zone writes each DNAME in the generic form (RFC 3597 §5): `dedens-zone` has no text form for the type.
+- NSD adds the apex NS set to a positive answer, which Knot and dedensd do not: the sample compares a positive
+  answer's authority and additional only when the answer is empty.
+
 The allocator experiment (D152) is not in the tree: check out the tag `alloc-experiment-2026-11-06` for `dnsperf/alloc.sh`,
 `dnsperf/alloc-vps/` and the `alloc-*` features, and `alloc-security-2026-11-06` for `alloc-probe/`; each has its AGENTS.md.

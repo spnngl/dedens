@@ -4,7 +4,12 @@
 `compare.py <mode> <cores> <work>`: renders the configurations beside it into <work> (mounted as /w in every
 container), generates the corpora with TelltaleDNS's own bench/corpus.py, starts Knot, then each server in turn in
 its own container on its own cores, as many times as rounds and run kinds need, and drives it with dnsperf from a
-loader container on other cores. The standard library only: it runs on the host.
+loader container on other cores. The standard library only: it runs on the host, which may be a Mac whose engine
+runs the containers in a Linux VM: everything that touches a server (its first answer, its cgroup, its cores) is
+asked from inside the containers.
+
+The `authoritative` modes (D213) differ: the servers compared are the authorities (dedensd, Knot, NSD), serving the
+zones of authzones.py, so there is no upstream Knot, and Knot's answers to the sample are the reference.
 
 A server is measured only after it answers right: every query of a check pass with the mode's rcode, nothing lost,
 and a sample of answers, asked by `dedens`, equal to Knot's (DNSSEC: with AD set). A server failing it fails the
@@ -24,14 +29,15 @@ import pathlib
 import platform
 import re
 import shutil
-import socket
 import statistics
-import struct
 import subprocess
 import sys
 import time
 
+import authzones
+
 HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parents[3]
 PORT, TLS_PORT = 5301, 8531
 KNOT = ("127.0.0.1", 5300)
 # The mini Internet of the `recurse` modes (D201): one Knot authority per zone, each on its own loopback address and
@@ -46,10 +52,8 @@ VOID_BUSY = 0.90
 # The wait for the last answers, in the seconds of a run that sent its whole corpus (0.01-0.22 s on the VPS, D183).
 DRAIN_S = 0.25
 VOID_SHARE = 0.01
-START_TIMEOUT = 120
-WRONG_FOR = 10
 SAT_RETRIES = 2
-RCODES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED"}
+SIGN_THREADS = 4  # kzonesign's, for the generated zone
 
 # corpus: TelltaleDNS's; transport: dnsperf's -m; cached: primed by a pass, the server kept between runs, else
 # started anew before each run, which then makes a single pass (-n 1) over the corpus; tags: the template lines kept.
@@ -67,7 +71,13 @@ MODES = {
     "recurse-dnssec": {"corpus": "recurse-unique", "transport": "udp", "cached": False, "recursive": True,
                        "tags": {"dnssec"}},
     "crosscheck": {"corpus": None, "transport": "udp", "cached": False},
+    # authoritative: the servers serve the zones of authzones.py (`DEDENS_ZONES`: root, big or both, default both);
+    # the corpus is theirs, every name asked of the server itself. dnssec asks with DO set.
+    "authoritative": {"corpus": "authoritative", "transport": "udp", "cached": True, "authoritative": True},
+    "authoritative-dnssec": {"corpus": "authoritative", "transport": "udp", "cached": True, "authoritative": True,
+                             "tags": {"dnssec"}},
 }
+AUTHORITATIVE_SERVERS = "knot nsd dedensd"
 
 # A server's configuration template per configuration (`recursion`: those of the recursive modes, which a server
 # without them does not serve), its command line in the container, and the modes it has no way to serve: its row
@@ -76,7 +86,19 @@ SERVERS = {
     "dedensd": {
         "configs": {"lean": "dedensd.yaml", "shipped": "dedensd.yaml"},
         "recursion": {"lean": "dedensd-recurse.yaml", "shipped": "dedensd-recurse.yaml"},
+        "authoritative": {"lean": "dedensd-authoritative.yaml", "shipped": "dedensd-authoritative.yaml"},
         "command": ["/w/bin/dedensd", "--config", "{conf}"],
+    },
+    # The authorities dedensd is compared with (D213). Knot runs in its own image, whose entrypoint is `sh` to stamp
+    # the start; NSD is in the compare image.
+    "knot": {
+        "authoritative": {"lean": "knot-authoritative.conf", "shipped": "knot-authoritative.conf"},
+        "command": ["-c", "date +%s%N >/w/start; exec knotd -c {conf}"],
+        "image": "DEDENS_KNOT_IMAGE", "entrypoint": "sh",
+    },
+    "nsd": {
+        "authoritative": {"lean": "nsd-authoritative.conf", "shipped": "nsd-authoritative.conf"},
+        "command": ["nsd", "-d", "-c", "{conf}"],
     },
     # dedensd with an 8 MiB cache, Unbound's order of size (4 MiB of messages, 4 of RRsets) against its default
     # 64 MiB (D116): what the memory columns owe to the cache. `file+tag`: the file rendered with that tag too.
@@ -231,37 +253,6 @@ def corpora(work, mode, telltale_src):
     return path, hashes
 
 
-def query(qid, name, qtype=1):
-    labels = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".") if p)
-    return struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0) + labels + b"\0" + struct.pack(">HH", qtype, 1)
-
-
-def first_answer(names, rcode):
-    """Asks the server, every 2 ms, until it answers one of the names with the rcode; the time of that answer.
-    An answer later than 2 ms counts as well: the IDs are those of the questions asked. Answers with another rcode
-    only, WRONG_FOR seconds after the first, fail: a list still loading answers NOERROR for a while, not forever."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(0.002)
-    want = next(n for n, name in RCODES.items() if name == rcode)
-    deadline = time.monotonic() + START_TIMEOUT
-    first_wrong = None
-    i = 0
-    while time.monotonic() < deadline:
-        try:
-            sock.sendto(query(i & 0xFFFF, names[i % len(names)]), ("127.0.0.1", PORT))
-            data = sock.recv(4096)
-            if len(data) >= 4 and struct.unpack(">H", data[:2])[0] <= min(i, 0xFFFF):
-                if data[3] & 0xF == want:
-                    return time.time_ns()
-                first_wrong = first_wrong or time.monotonic()
-                if time.monotonic() - first_wrong > WRONG_FOR:
-                    raise Fail(f"rcode {RCODES.get(data[3] & 0xF, data[3] & 0xF)} for {WRONG_FOR} s, not {rcode}")
-        except OSError:
-            pass
-        i += 1
-    raise Fail(f"no {rcode} answer in {START_TIMEOUT} s")
-
-
 def parse_dnsperf(out):
     """dnsperf's statistics, as TelltaleDNS's bench.py reads them; percentiles at a histogram bucket's upper edge."""
     def num(pattern):
@@ -300,20 +291,29 @@ class Bench:
         self.rounds = int(os.environ.get("DEDENS_ROUNDS", "2"))
         self.duration = int(os.environ.get("DEDENS_DURATION", "10"))
         self.outstanding = int(os.environ.get("DEDENS_OUTSTANDING", "500"))
-        self.servers = os.environ.get("DEDENS_SERVERS", "dedensd telltale unbound coredns").split()
-        self.configs = os.environ.get("DEDENS_CONFIGS", "lean shipped").split()
+        # The authorities compared are the servers, and Knot is one of them: no neutral upstream, no Knot core.
+        self.authoritative = bool(self.spec.get("authoritative"))
+        self.servers = os.environ.get("DEDENS_SERVERS", AUTHORITATIVE_SERVERS if self.authoritative
+                                      else "dedensd telltale unbound coredns").split()
+        self.configs = os.environ.get("DEDENS_CONFIGS", "shipped" if self.authoritative
+                                      else "lean shipped").split()
         for s in self.servers:
             if s not in SERVERS:
                 raise SystemExit(f"unknown server {s}: {', '.join(SERVERS)}")
-        n = os.cpu_count() or 1
+        # The cores the containers see: the engine's Linux VM's on a Mac, not the host's.
+        n = int(subprocess.run([os.environ.get("DEDENS_CONTAINER", "docker"), "run", "--rm", os.environ["DEDENS_IMAGE"],
+                                "nproc"], check=True, capture_output=True, text=True).stdout)
+        needed = cores + 1 if self.authoritative else cores + 2
         cpus = {
             "server": os.environ.get("DEDENS_SERVER_CPUS", f"0-{cores - 1}"),
-            "knot": os.environ.get("DEDENS_KNOT_CPUS", str(n - 1)),
-            "loader": os.environ.get("DEDENS_LOAD_CPUS", f"{cores}-{n - 2}"),
+            "loader": os.environ.get("DEDENS_LOAD_CPUS", f"{cores}-{n - 1 if self.authoritative else n - 2}"),
         }
+        if not self.authoritative:
+            cpus["knot"] = os.environ.get("DEDENS_KNOT_CPUS", str(n - 1))
         self.count = {role: count_cpus(c) for role, c in cpus.items()}
-        if min(self.count.values()) < 1 or n < cores + 2:
-            raise SystemExit(f"{n} cores: not enough for {cores} server cores, a loader core and a Knot core")
+        if min(self.count.values()) < 1 or n < needed:
+            raise SystemExit(f"{n} cores: not enough for {cores} server cores, a loader core"
+                             + ("" if self.authoritative else " and a Knot core"))
         low = pathlib.Path("/proc/sys/net/ipv4/ip_unprivileged_port_start")
         if self.spec.get("recursive") and int(low.read_text()) > 53:
             raise SystemExit("the authorities listen on port 53: `sudo sysctl net.ipv4.ip_unprivileged_port_start=53`, "
@@ -321,10 +321,11 @@ class Bench:
         self.engine = Engine(os.environ.get("DEDENS_CONTAINER", "docker"), work, os.environ["DEDENS_IMAGE"], cpus)
         self.rcode = self.spec.get("rcode", "NOERROR")
         self.tags = set(self.spec.get("tags", set()))
+        self.knot = None
         self.result = {
             "mode": mode, "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "versions": dict(kv.split("=") for kv in os.environ["DEDENS_VERSIONS"].split()),
-            "host": host(), "engine": self.engine("--version").strip(), "pinning": self.engine.pinning,
+            "host": host(self.engine) | {"container_cores": n}, "engine": self.engine("--version").strip(), "pinning": self.engine.pinning,
             "servers": self.servers, "config_names": self.configs, "cpus": cpus, "rounds": self.rounds, "duration_s": self.duration, "outstanding": self.outstanding,
             "configs": {}, "corpora": {}, "starts": [], "checks": [], "runs": [],
         }
@@ -337,6 +338,9 @@ class Bench:
             (w / d).mkdir(exist_ok=True)
         subprocess.run(["rm", "-rf", str(w / "knot")], check=True)
         (w / "knot").mkdir()
+        shutil.copy(HERE / "probe.py", w / "probe.py")
+        if self.authoritative:
+            return self.setup_authoritative()
         if self.spec["corpus"]:
             self.corpus, self.result["corpora"] = corpora(w, self.mode, os.environ["DEDENS_TELLTALE_SRC"])
             self.corpus_lines = len(self.corpus.read_text().splitlines())
@@ -389,6 +393,55 @@ class Bench:
                 (w / "conf" / template).write_text(text)
                 self.result["configs"][template] = hashlib.sha256(text.encode()).hexdigest()
 
+    def setup_authoritative(self):
+        """The zones (D213) in <work>/zones: the root zone of the capture and the generated zone, signed by
+        `kzonesign`; their query file, its pinned hash and the expected rcodes of its check pass; the loader;
+        the configurations of the servers, serving the zones of `DEDENS_ZONES`."""
+        w = self.work
+        zones = self.zones = os.environ.get("DEDENS_ZONES", "root big").replace(",", " ").split()
+        if not zones or any(z not in ("root", "big") for z in zones):
+            raise SystemExit(f"DEDENS_ZONES is `root`, `big` or both, not {zones}")
+        self.loader = self.engine.start("loader", ["sleep", "infinity"])
+        for d in ("zones", "gen", "corpora"):
+            subprocess.run(["rm", "-rf", str(w / d)], check=True)
+            (w / d).mkdir()
+        root_text = (REPO / "testdata/authoritative/zones/root.zone").read_text()
+        (w / "zones/root.zone").write_text(root_text)
+        big_text, hosts = authzones.big_zone()
+        (w / "gen/big.example.zone").write_text(big_text)
+        sign = render("knot-sign.conf", {"THREADS": str(SIGN_THREADS)}, set())
+        (w / "conf/knot-sign.conf").write_text(sign)
+        self.engine("run", "--rm", "-v", f"{w}:/w", *self.engine.user, "--entrypoint", "sh",
+                    os.environ["DEDENS_KNOT_IMAGE"], "-c",
+                    "mkdir -p /tmp/sign && kzonesign -c /w/conf/knot-sign.conf -o /w/zones big.example.")
+        signed = w / "zones/big.example.zone"
+        signed.write_text(authzones.generic_dnames(signed.read_text()))
+        self.result["zones"] = {
+            name: {"bytes": (w / f"zones/{file}").stat().st_size,
+                   "records": sum(1 for ln in (w / f"zones/{file}").read_text().splitlines()
+                                  if ln.strip() and not ln.startswith((";", "$")))}
+            for name, file in (("root", "root.zone"), ("big", "big.example.zone"))}
+        self.result["zones"]["big"] |= {"unsigned_records": authzones.BIG_RECORDS, "hosts": hosts}
+        lines, self.expected_rcodes = authzones.corpus(zones, root_text, hosts)
+        name = f"authoritative-{'-'.join(zones)}.txt"
+        data = "".join(f"{ln}\n" for ln in lines).encode()
+        self.corpus = w / "corpora" / name
+        self.corpus.write_bytes(data)
+        self.corpus_lines = len(lines)
+        (w / "corpora/check.txt").write_text("".join(f"{ln}\n" for ln in lines[:CHECK_QUERIES]))
+        digest = hashlib.sha256(data).hexdigest()
+        self.result["corpora"] = {name: digest}
+        pinned = dict(ln.split()[::-1] for ln in (HERE / "corpora.sha256").read_text().splitlines()
+                      if ln.strip() and not ln.startswith("#"))
+        if pinned.get(name) != digest:
+            raise SystemExit(f"{name}: sha256 {digest}, corpora.sha256 says {pinned.get(name)}")
+        values = {"CORES": str(self.count["server"])}
+        for server in self.servers:
+            for template in {config_of(server, c, self.mode) for c in self.configs}:
+                text = render(template, values, set(zones))
+                (w / "conf" / template).write_text(text)
+                self.result["configs"][template] = hashlib.sha256(text.encode()).hexdigest()
+
     def mini_internet(self):
         """The root, the TLD and the zone of the corpus (D201), each served by its own Knot process on its own address
         in one container; for `dnssec` signed, each zone's DS in its parent, from keys made before the parent is
@@ -418,13 +471,17 @@ class Bench:
         subprocess.run(["rm", "-rf", str(self.work / "data")], check=True)
         (self.work / "data").mkdir()
         command = [a.format(conf=f"/w/conf/{template}") for a in SERVERS[server]["command"]]
-        name = self.engine.start("server", command)
+        image = os.environ[SERVERS[server]["image"]] if "image" in SERVERS[server] else None
+        name = self.engine.start("server", command, image, SERVERS[server].get("entrypoint"))
         if self.mode == "blocked":
-            names = (self.work / "lists/blocklist.txt").read_text().split("\n", 1000)[:1000]
+            probes = [((self.work / "lists/blocklist.txt").read_text().split("\n", 1000)[:1000], 1)]
+        elif self.authoritative:  # every zone served answers, at its SOA: the load is over when the last does
+            probes = [(["."] if z == "root" else [authzones.BIG_APEX], 6) for z in self.zones]
         else:
-            names = [f"c{i}.cold-start.{'recurse.bench' if self.spec.get('recursive') else 'net'}" for i in range(1000)]
+            probes = [([f"c{i}.cold-start.{'recurse.bench' if self.spec.get('recursive') else 'net'}"
+                        for i in range(1000)], 1)]
         try:
-            answered = first_answer(names, self.rcode)
+            answered = max(self.first_answer(names, qtype) for names, qtype in probes)
         except Fail as e:
             raise Fail(f"{label} {template}: {e}\n" + self.engine.logs(name)[-3000:]) from e
         started = int((self.work / "start").read_text())
@@ -442,6 +499,15 @@ class Bench:
             self.dnsperf(self.corpus, once=True)  # primes the cache
         return name
 
+    def first_answer(self, names, qtype):
+        """The time (ns) of the server's first answer to one of the names with the mode's rcode, asked by probe.py in
+        the loader: its clock is that of the `/w/start` stamp."""
+        try:
+            return int(self.engine("exec", self.loader, "python3", "/w/probe.py", str(PORT), self.rcode, str(qtype),
+                                   *names))
+        except RuntimeError as e:
+            raise Fail(str(e)) from e
+
     def dnsperf(self, path, rate=None, once=False, transport=None):
         transport = transport or self.spec["transport"]
         port = TLS_PORT if transport == "dot" else PORT
@@ -452,6 +518,8 @@ class Bench:
                "-O", "suppress=timeout,unexpected"]
         if transport != "udp":
             cmd += ["-m", transport]
+        if self.authoritative and "dnssec" in self.tags:
+            cmd += ["-D"]  # DO set, which turns EDNS on
         if rate:
             cmd += ["-Q", str(int(rate))]
         if once:
@@ -467,7 +535,8 @@ class Bench:
         r = self.dnsperf(self.work / "corpora/check.txt", rate=CHECK_RATE, once=True)
         asked = {a: {t: n - asked[a].get(t, 0) for t, n in types.items()}
                  for a, types in self.authority_questions().items()}
-        ok = r["lost"] == 0 and r["rcodes"] == {self.rcode: r["sent"]} and r["sent"] == CHECK_QUERIES
+        expected = dict(self.expected_rcodes) if self.authoritative else {self.rcode: CHECK_QUERIES}
+        ok = r["lost"] == 0 and r["rcodes"] == expected and r["sent"] == CHECK_QUERIES
         sample = self.sample(PORT if self.spec["transport"] != "dot" else TLS_PORT, self.spec["transport"])
         wrong = {q: a for q, a in sample.items() if a != self.reference[q]}
         self.result["checks"].append({"label": label, "server": server, "template": template, "rcodes": r["rcodes"],
@@ -478,7 +547,7 @@ class Bench:
         if not ok or wrong:
             logs = self.engine.logs(name)[-2000:]
             raise Fail(f"{label} {template} answers wrong: rcodes {r['rcodes']}, {r['lost']} lost of "
-                       f"{r['sent']}, expected {self.rcode} for all {CHECK_QUERIES}; sample differs from Knot's on "
+                       f"{r['sent']}, expected {expected}; sample differs from {'Knot' if not self.authoritative else 'Knot (the reference)'}'s on "
                        f"{sorted(wrong)[:5]}\n{logs}")
 
     def authority_questions(self):
@@ -493,22 +562,41 @@ class Bench:
 
     def sample(self, port, transport, upstream=False, host="127.0.0.1"):
         """`dedens` asking the first SAMPLE questions of the check file: question -> (rcode, answers, AD). With
-        DNSSEC, asked with DO and AD set (TelltaleDNS sets AD for DO only), signatures left out of the answers."""
+        DNSSEC, asked with DO and AD set (TelltaleDNS sets AD for DO only), signatures left out of the answers.
+        An authority's (`authoritative` modes): (rcode, AA, answer, authority, additional), the signatures kept: the
+        servers serve the same signed zones, so equal sets are the right answer, DO set or not; the last two are
+        left out of a positive answer."""
         questions = list(dict.fromkeys((self.work / "corpora/check.txt").read_text().splitlines()))[:SAMPLE]
         cmd = ["/w/bin/dedens", f"@{host}", "-p", str(port), "--json"]
         cmd += {"udp": [], "tcp": ["--tcp"], "dot": ["--tls", "--tls-insecure"]}[transport]
-        if "dnssec" in self.tags and not upstream:
+        if self.authoritative:
+            cmd += ["--dnssec"] if "dnssec" in self.tags else []
+        elif "dnssec" in self.tags and not upstream:
             cmd += ["--dnssec", "--adflag"]
         out = self.engine("exec", self.loader, *cmd, *(w for q in questions for w in q.split()), check=False)
         got = {}
         for line in out.splitlines():
             m = json.loads(line)
             q = m.get("question", [{}])[0]
+            if self.authoritative:
+                def section(name):
+                    return frozenset((a["name"].lower(), a["type"], a["data"]) for a in m.get(name, [])
+                                     if a["type"] != "OPT")
+
+                answer = section("answer")
+                # NSD adds the apex NS set and its addresses to a positive answer, Knot does not (RFC 2181
+                # section 9 lets either): the authority and additional sections count when the answer is empty.
+                got[f"{q.get('name', '').rstrip('.')} {q.get('type')}"] = (
+                    m["header"]["rcode"], "aa" in m["header"]["flags"], answer,
+                    frozenset() if answer else section("authority"),
+                    frozenset() if answer else section("additional"))
+                continue
             answers = frozenset((a["name"].lower(), a["type"], a["data"]) for a in m.get("answer", [])
                                 if a["type"] != "RRSIG")
             got[f"{q.get('name', '').rstrip('.')} {q.get('type')}"] = (
                 m["header"]["rcode"], answers, "ad" in m["header"]["flags"])
-        return {q: got.get(q, ("no answer", frozenset(), False)) for q in questions}
+        # The check file of an authority's zones writes its names absolute, the answers' keys do not.
+        return {q: got.get(q.replace(". ", " ", 1), ("no answer",)) for q in questions}
 
     def measure(self, session, name, kind, rate=None):
         """One run: dnsperf's numbers, and the CPU of the server, the loader and Knot over it."""
@@ -516,7 +604,7 @@ class Bench:
         if not self.spec["cached"]:
             self.engine.stop(name)
             name = self.start(session)
-        roles = {"server": name, "loader": self.loader, "knot": self.knot}
+        roles = {"server": name, "loader": self.loader, **({"knot": self.knot} if self.knot else {})}
         before = {k: self.engine.cgroup(c) for k, c in roles.items()}
         t0 = time.monotonic()
         r = self.dnsperf(self.corpus, rate=rate, once=not self.spec["cached"])
@@ -531,9 +619,11 @@ class Bench:
               "server_system_us_per_query": system / max(r["completed"], 1),
               "server_busy": cpu["server"] / (wall * 1e6 * self.count["server"]),
               "loader_busy": cpu["loader"] / (wall * 1e6 * self.count["loader"]),
-              "knot_busy": cpu["knot"] / (wall * 1e6 * self.count["knot"]),
+              "knot_busy": cpu["knot"] / (wall * 1e6 * self.count["knot"]) if self.knot else 0.0,
               "loaded_mib": after["server"]["anon"] / 2**20, "peak_mib": after["server"]["peak"] / 2**20}
-        others = r["completed"] - r["rcodes"].get(self.rcode, 0)
+        # An authority answers NXDOMAIN to the names the corpus holds that are not in a zone: right, not another rcode.
+        right = r["rcodes"].get(self.rcode, 0) + (r["rcodes"].get("NXDOMAIN", 0) if self.authoritative else 0)
+        others = r["completed"] - right
         # dnsperf held to a rate spins between sends, so its CPU tells nothing: a rate it fell short of does. A run
         # that sent the whole corpus before its time was up counts the wait for its last answers in its seconds.
         whole = not self.spec["cached"] and r["sent"] >= self.corpus_lines
@@ -546,21 +636,34 @@ class Bench:
             ("rcodes", others > VOID_SHARE * max(r["completed"], 1))] if bad]
         r["void"] = reasons
         self.result["runs"].append(r)
+        knot = "" if self.authoritative else f"  Knot {r['knot_busy']:4.0%}"
         log(f"  {label:10} {template:24} {kind:6} {r['qps']:10.0f} q/s  lost {r['lost']:6}  "
-            f"dnsperf {r['loader_busy']:4.0%}  Knot {r['knot_busy']:4.0%}  {' '.join(reasons)}")
+            f"dnsperf {r['loader_busy']:4.0%}{knot}  {' '.join(reasons)}")
         return name, r
 
     def run(self):
         self.setup()
         if self.mode == "crosscheck":
             return self.crosscheck()
-        ref = self.sample(self.auth[1], "udp", upstream=True, host=self.auth[0])
-        if self.mode == "blocked":
-            ref = {q: ("NXDOMAIN", frozenset(), False) for q in ref}
-        elif "dnssec" in self.tags:
-            ref = {q: (rcode, answers, True) for q, (rcode, answers, _) in ref.items()}
-        self.reference = ref
         sessions = sessions_of(self.servers, self.configs, self.mode)
+        if self.authoritative:  # Knot's own answers, sampled once, are the reference the others must give
+            knot = next((s for s in sessions if s[1] == "knot"), None)
+            if not knot:
+                raise SystemExit("the reference is Knot's answers: `knot` is in DEDENS_SERVERS")
+            name = self.start(knot)
+            try:
+                self.reference = self.sample(PORT, "udp")
+            finally:
+                self.engine.stop(name)
+            if missing := [q for q, a in self.reference.items() if a == ("no answer",)]:
+                raise Fail(f"Knot gave no answer to {missing[:5]} of the sample")
+        else:
+            ref = self.sample(self.auth[1], "udp", upstream=True, host=self.auth[0])
+            if self.mode == "blocked":
+                ref = {q: ("NXDOMAIN", frozenset(), False) for q in ref}
+            elif "dnssec" in self.tags:
+                ref = {q: (rcode, answers, True) for q, (rcode, answers, _) in ref.items()}
+            self.reference = ref
         for rnd in range(self.rounds):  # the order reversed every other round
             log(f"round {rnd + 1}/{self.rounds}")
             for session in sessions if rnd % 2 == 0 else sessions[::-1]:
@@ -626,16 +729,20 @@ def sessions_of(servers, configs, mode):
     return out
 
 
+def templates_of(mode):
+    """The key of SERVERS holding a mode's templates: a recursive mode and an authoritative one have their own."""
+    return "authoritative" if MODES[mode].get("authoritative") else "recursion" if MODES[mode].get("recursive") \
+        else "configs"
+
+
 def serves(server, mode):
-    """Whether the server has a way to serve the mode: a recursive one needs a recursion template."""
-    if MODES[mode].get("recursive"):
-        return "recursion" in SERVERS[server]
-    return mode not in SERVERS[server].get("lacks", ())
+    """Whether the server has a way to serve the mode: it has templates for it, and does not lack it."""
+    return templates_of(mode) in SERVERS[server] and mode not in SERVERS[server].get("lacks", ())
 
 
 def config_of(server, config, mode):
-    """The template of the server's `config` (lean, shipped) for the mode: a recursive mode has its own."""
-    return SERVERS[server]["recursion" if MODES[mode].get("recursive") else "configs"][config]
+    """The template of the server's `config` (lean, shipped) for the mode."""
+    return SERVERS[server][templates_of(mode)][config]
 
 
 def count_cpus(spec):
@@ -646,10 +753,17 @@ def count_cpus(spec):
     return n
 
 
-def host():
-    cpu = next((ln.split(":", 1)[1].strip() for ln in pathlib.Path("/proc/cpuinfo").read_text().splitlines()
-                if ln.startswith("model name")), "") if pathlib.Path("/proc/cpuinfo").exists() else ""
-    return {"kernel": platform.release(), "cpu": cpu, "cores": os.cpu_count()}
+def host(engine):
+    """The machine and the kernel the containers run on: on a Mac the host's CPU, and the kernel of the engine's VM.
+    The load average is the host's at the start: a run shares the machine with whatever else runs on it."""
+    if platform.system() == "Darwin":
+        cpu = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], check=True, capture_output=True,
+                             text=True).stdout.strip()
+    else:
+        cpu = next((ln.split(":", 1)[1].strip() for ln in pathlib.Path("/proc/cpuinfo").read_text().splitlines()
+                    if ln.startswith("model name")), "")
+    return {"system": platform.system(), "kernel": engine("run", "--rm", engine.image, "uname", "-r").strip(),
+            "cpu": cpu, "cores": os.cpu_count(), "load_avg_start": os.getloadavg()}
 
 
 def fmt(x, spec=".2f"):
@@ -694,7 +808,8 @@ def table(result):
                 f"{statistics.median(s['start_ms'] for s in st):.0f} |")
     busy = [(r["loader_busy"], r["knot_busy"]) for r in runs]
     if busy:
-        lines.append(f"\nbusiest dnsperf {max(b[0] for b in busy):.0%}, busiest Knot {max(b[1] for b in busy):.0%};"
+        knot = "" if result["mode"].startswith("authoritative") else f", busiest Knot {max(b[1] for b in busy):.0%}"
+        lines.append(f"\nbusiest dnsperf {max(b[0] for b in busy):.0%}{knot};"
                      f" void runs: {sum(1 for r in runs if r['void'])} of {len(runs)}")
     return "\n".join(lines)
 
@@ -712,6 +827,7 @@ def main():
     finally:
         for role in ("server", "loader", "knot"):
             bench.engine.stop(f"dedens-compare-{role}")
+        bench.result["host"]["load_avg_end"] = os.getloadavg()
         out = work / "results" / f"{bench.result['time'].replace(':', '')}-{mode}.json"
         out.parent.mkdir(exist_ok=True)
         out.write_text(json.dumps(bench.result, indent=1, default=str))
