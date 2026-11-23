@@ -260,7 +260,7 @@ impl Head {
                 && let Ok(c) = Class::from_bytes(token.raw)
                 && (c != Class::ANY || f.peek()?.is_some_and(|next| starts_head(next.raw)))
             {
-                if !is_data_class(c) {
+                if !c.is_data() {
                     return Err(token.error(TextErrorKind::Invalid("class: a query or meta class")));
                 }
                 class = Some(c);
@@ -268,7 +268,7 @@ impl Head {
             }
             let rtype = RecordType::from_bytes(token.raw)
                 .map_err(|_| token.error(TextErrorKind::Invalid("record type")))?;
-            if !is_data_type(rtype) {
+            if !rtype.is_data() {
                 return Err(
                     token.error(TextErrorKind::Invalid("record type: a query or meta type"))
                 );
@@ -322,18 +322,6 @@ pub(crate) fn write_generic(f: &mut fmt::Formatter<'_>, data: &[u8]) -> fmt::Res
     } else {
         write!(f, "\\# {} {}", data.len(), encoding::Hex(data))
     }
-}
-
-/// Whether a record can have type `rtype`: not 0, OPT, a QTYPE or meta type of 128 to 255, or the reserved 65535
-/// (RFC 6895 section 3.1).
-fn is_data_type(rtype: RecordType) -> bool {
-    rtype != RecordType::OPT && !matches!(u16::from(rtype), 0 | 128..=255 | 65535)
-}
-
-/// Whether a record can have class `class`: not 0, a QCLASS or meta class (128 to 255 with NONE and ANY, 57344 to
-/// 65279), or the reserved 65535 (RFC 6895 section 3.2).
-fn is_data_class(class: Class) -> bool {
-    !matches!(u16::from(class), 0 | 128..=255 | 0xE000..=0xFEFF | 65535)
 }
 
 /// Whether a token can be a TTL or a type, so that an `ANY` before it is a class.

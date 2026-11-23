@@ -96,6 +96,16 @@ pub enum ErrorKind {
         /// The owner of the record.
         owner: Name<'static>,
     },
+    /// A record of a type or class that is no data: OPT, TSIG, TKEY, a QTYPE or another meta type, a QCLASS or
+    /// meta class (RFC 6895 §3.1, §3.2). Zone text cannot write one; the records of a transfer or a changeset can
+    /// carry it.
+    #[error("a record of type {rtype} and class {class} is no data (RFC 6895 §3.1, §3.2)")]
+    NotData {
+        /// The type of the record.
+        rtype: RecordType,
+        /// Its class.
+        class: Class,
+    },
     /// An SOA that is not at the apex (RFC 1035 §5.2: exactly one SOA, at the top of the zone).
     #[error("SOA below the apex (RFC 1035 §5.2)")]
     SoaNotAtApex,
@@ -207,6 +217,14 @@ pub enum WarningKind {
     BelowDname {
         /// The first name below, in canonical order.
         first: Name<'static>,
+    },
+    /// A record of a transfer at neither the apex nor below it, dropped (RFC 5936 says nothing of it; Knot drops it
+    /// with a warning, `zonefile.c:zcreator_step`, D210). Only the first [`Limits::errors`](crate::Limits::errors)
+    /// are reported.
+    #[error("{owner} is outside the zone: its record is dropped (D210)")]
+    OutsideZone {
+        /// The owner of the record.
+        owner: Name<'static>,
     },
     /// An NSEC3 record whose owner is not one label below the apex: the owner is the hash "prepended as a single
     /// label to the zone name" (RFC 5155 §3, §7.1). It is served, but answers may differ from other servers' for
