@@ -23,7 +23,7 @@ use dedens_proto::rdata::Soa;
 use dedens_proto::{
     Flags, Header, Message, Name, Opcode, Question, Rcode, Record, RecordType, Serial,
 };
-use dedens_tsig::{Key, ResponseError, ResponseVerifier, SignError, sign_request};
+use dedens_tsig::{Key, ResponseVerifier, SignError, sign_request};
 use dedens_zone::{Changeset, Loaded};
 use stream::{Asked, Reader, Step, StreamError, ixfr_soa, soa_response};
 
@@ -129,16 +129,23 @@ pub enum TransferError {
     /// The primary's response was refused.
     #[error(transparent)]
     Stream(#[from] StreamError),
+    /// Past [`SOA_TIMEOUT`], no UDP response accepted: the last datagram waited past was refused so, as a response
+    /// signed at a time too far from ours is.
+    #[error("no response accepted before the deadline, the last refused: {0}")]
+    Unanswered(#[source] StreamError),
 }
 
 /// The SOA of `zone` at `primary`, the query signed with `key` if any: over UDP, then over TCP when truncated,
-/// within [`SOA_TIMEOUT`]. A datagram that is no response to the query, or a response whose TSIG fails to verify,
-/// is waited past: anyone can send one, and the real response may follow (RFC 8945 §5.4, RFC 5452). Over TCP, a
-/// response that fails to verify ends the query.
+/// within [`SOA_TIMEOUT`]. Over UDP, a datagram that does not come from an authenticated response is waited past:
+/// anyone can send one, and the real response may follow (RFC 8945 §5.4, RFC 5452 §9.1). With a key, that is every
+/// datagram before its TSIG verifies, one that does not decode included; without, one that does not decode or does
+/// not repeat the question. Only a verified response, or a TSIG error that verifies, ends the query. Over TCP, a
+/// response refused ends it.
 ///
 /// # Errors
 ///
-/// [`TransferError`]; [`TransferError::Limit`] with [`Limit::Time`] past [`SOA_TIMEOUT`].
+/// [`TransferError`]; [`TransferError::Limit`] with [`Limit::Time`] past [`SOA_TIMEOUT`] when nothing came,
+/// [`TransferError::Unanswered`] when datagrams were waited past, with the last one's refusal.
 pub async fn soa<N: Io>(
     io: &N,
     primary: SocketAddr,
@@ -155,11 +162,16 @@ pub async fn soa<N: Io>(
     udp.connect(primary).await.map_err(TransferError::Socket)?;
     let BufResult(sent, _) = udp.send(wire.clone()).await;
     sent.map_err(TransferError::Io)?;
+    // The last datagram waited past, the cause of a deadline that no response answers.
+    let mut last = None;
     loop {
         let BufResult(received, response) = io
             .timeout_at(deadline, udp.recv(Vec::with_capacity(MAX_DATAGRAM)))
             .await
-            .map_err(|_| TransferError::Limit(Limit::Time))?;
+            .map_err(|_| {
+                last.take()
+                    .map_or(TransferError::Limit(Limit::Time), TransferError::Unanswered)
+            })?;
         received.map_err(TransferError::Io)?;
         let Some(flags) = response_flags(&response, id) else {
             trace!(%primary, "not a response to the soa query, waiting on");
@@ -168,16 +180,9 @@ pub async fn soa<N: Io>(
         if !flags.contains(Flags::TC) {
             // A failed verification leaves the verifier as it was, but `soa_response` takes it: a copy.
             match soa_response(&response, id, zone, verifier.clone(), io.unix_time()) {
-                Err(StreamError::Tsig { error, .. })
-                    if !matches!(
-                        error,
-                        ResponseError::Refused {
-                            authenticated: true,
-                            ..
-                        }
-                    ) =>
-                {
-                    debug!(%primary, %error, "soa response not verified, waiting on");
+                Err(error) if error.spoofable(key.is_some()) => {
+                    debug!(%primary, %error, "soa response not accepted, waiting on");
+                    last = Some(error);
                     continue;
                 }
                 done => return Ok(done?),

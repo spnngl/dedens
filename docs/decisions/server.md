@@ -2835,17 +2835,21 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   wall clock of the TSIG `Io::unix_time` (the seam's, so the simulation owns both; a limit too far to add to the
   clock is none).
   - The stream (`transfer::stream::Reader`, sans-IO, a message in, the reader or the `Transfer` out; fuzz target
-    `transfer_stream`, and `transfer_signed` for the verifier): each message decoded, of the query's ID, its TSIG verified when the query was signed
-    (`dedens_tsig::ResponseVerifier`, D205, the last message signed; an error RCODE in a message with no TSIG
-    after the first is a TSIG failure, as a forged one cannot be told from the primary's, no AXFR after it), a response of opcode QUERY, NOERROR, of the
+    `transfer_stream`, and `transfer_signed` for the verifier): each message decoded, of the query's ID, its TSIG
+    verified when the query was signed (`dedens_tsig::ResponseVerifier`, D205, the last message signed; an error
+    RCODE in a message with no TSIG after the first is a TSIG failure, as a forged one cannot be told from the
+    primary's, no AXFR after it), a response of opcode QUERY, NOERROR, of the
     query's question (the first message repeats it, the next ones repeat it or leave it out, RFC 5936 §2.2.1), no
     answer record of invalid RDATA. The answer records go through a state machine: the zone's SOA first; an SOA
     second starts IXFR changesets (old SOA, removed, new SOA, added, RFC 1995 §4), each checked by
     `Changeset::new` and following the one before, the first from the client's serial, up to the opening SOA again,
     which is ahead of the client's serial (`NotNewer`) and which no `to_serial` before it passes
-    (`BadMiddleSerial`, NSD's "bad middle serial": a chain of steps under 2^31 may go round the serial space); the
-    closing SOA is matched on its serial alone, as Knot and NSD do; a message of another ID ends the stream, though RFC 5936
-    §2.2.1 (note a) lets a client discard it: on a connection to the one primary, aborting is safe;
+    (`BadMiddleSerial`, the RFC 1982 form of NSD's "bad middle serial", which `xfrd.c` compares as plain integers:
+    a chain of steps under 2^31 may go round the serial space); the closing SOA is matched on its serial alone, as
+    NSD does (`xfrd.c`; Knot ends an AXFR at any second SOA of the apex and an IXFR at a record equal to the
+    opening one, `axfr_consume_rr` and `ixfr_next_state` in `refresh.c`; BIND not checked); a message of another ID
+    ends the stream, though RFC 5936 §2.2.1 (note a) lets a client discard it: on a connection to the one primary,
+    aborting is safe;
     anything else is the AXFR form, every record up to the opening SOA's serial again, an SOA of another serial
     inside refused. An IXFR answered by the opening SOA alone is up to date when its serial is the client's,
     refused (`NotNewer`) when behind it; a full zone not ahead of the client's serial is refused too (RFC 1982). A
@@ -2855,13 +2859,20 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     from records, not text, through the same `Builder`, each record's number its line): the checks of a load
     run, warnings are kept in the `Loaded`, an error refuses the transfer (secondary severity, step 13). A record
     of an owner outside the zone is dropped with a warning (`WarningKind::OutsideZone`, as Knot's
-    `zone_contents_add_rr` does with a warning; the first `errors` of them are kept) where a zone file refuses it.
+    `zone_contents_add_rr` does with a warning; the first `errors` of them are kept, the rest counted in one
+    last warning) where a zone file, and a changeset at `Zone::apply`, refuse it.
     Records of a meta or question-only type or class (RFC 6895 §3.1-3.2: OPT, TSIG, TKEY, IXFR, AXFR, MAILA,
     MAILB, ANY, `RecordType::is_data`, `Class::is_data`) are refused by `Builder::add` whatever the source, the
     files, a transfer and the changesets `Zone::apply` takes.
-  - The SOA over UDP (RFC 8945 §5.4, RFC 5452): a datagram of the query's ID that fails verification (a forged
-    or no MAC) is logged at debug and waited past, up to the deadline, for anyone can send one; the verifier is
-    cloned for each datagram, as one that verifies advances. Over TCP such a response ends the query.
+  - The SOA over UDP (RFC 8945 §5.4, RFC 5452 §9.1): anyone can send a datagram of the query's ID, so one that
+    does not come from an authenticated response is logged at debug and waited past, up to the deadline
+    (`StreamError::spoofable`). Signed, that is every error before the TSIG verifies: no decode, no or a forged
+    MAC, a key, a time off our clock; only a response that verifies ends the query, with its refusal (an RCODE,
+    no AA, no SOA) or a TSIG error it signed (BADTIME from the primary's clock). Unsigned, a datagram that does not
+    decode or whose question is not the query's is discarded; any other is taken, as a forged SOA would be. The
+    verifier is cloned for each datagram, as one that verifies advances. At the deadline the last datagram waited
+    past is the cause (`TransferError::Unanswered`), `Limit::Time` when none came: a response refused for our own
+    clock is not a silent timeout. Over TCP a response refused ends the query.
   - Fallback: an IXFR refused for what the primary sent (an error RCODE, NOTIMP included, no answer, a wrong
     question, a malformed sequence, changes from another serial) is asked again as an AXFR, once, in the same
     time budget, as Knot (`try_refresh` in `src/knot/events/handlers/refresh.c`, once, on all but I/O failures)
@@ -2883,8 +2894,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     signed it; Knot's refusals (an unsigned request NOTAUTH without TSIG, a bad key, secret or time); faults made
     from the captures (a stream cut within a message, the closing SOA missing, a wrong ID, the last message
     unsigned, a serial going back, changes that go round the serial space), each a typed error; a signed IXFR of
-    changes verified and applied; a TSIG failure mid-stream not asked again as an AXFR; the query IDs random; a
-    forged datagram then the real one. The fuzz seeds are the transfers of
+    changes verified and applied; a TSIG failure mid-stream not asked again as an AXFR; the query IDs random; over
+    UDP, a datagram of another ID, one that does not decode, a wrong question, a forged MAC, then the real
+    response, signed and not, and the deadline's cause. The fuzz seeds are the transfers of
     `testdata/authoritative/recordings/` but the unsigned root's, too large to vary.
   - Memory: a transfer holds its records, names decompressed, until the zone is built. Measured on the root's
     AXFR (1.3 MB of wire, about 22 000 records, an unoptimised build, `/usr/bin/time -l` on the test, the recording

@@ -220,11 +220,18 @@ pub enum WarningKind {
     },
     /// A record of a transfer at neither the apex nor below it, dropped (RFC 5936 says nothing of it; Knot drops it
     /// with a warning, `zonefile.c:zcreator_step`, D210). Only the first [`Limits::errors`](crate::Limits::errors)
-    /// are reported.
+    /// are reported one by one; [`WarningKind::OutsideZoneMore`] counts the rest.
     #[error("{owner} is outside the zone: its record is dropped (D210)")]
     OutsideZone {
         /// The owner of the record.
         owner: Name<'static>,
+    },
+    /// The records outside the zone dropped past the first [`Limits::errors`](crate::Limits::errors), which
+    /// [`WarningKind::OutsideZone`] reports one by one: the place is the first of them.
+    #[error("{count} more records outside the zone dropped (D210)")]
+    OutsideZoneMore {
+        /// How many.
+        count: usize,
     },
     /// An NSEC3 record whose owner is not one label below the apex: the owner is the hash "prepended as a single
     /// label to the zone name" (RFC 5155 §3, §7.1). It is served, but answers may differ from other servers' for

@@ -6,9 +6,9 @@
 use std::io::{Read as _, Write as _};
 use std::net::{Shutdown, SocketAddr, TcpListener, UdpSocket};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use dedens_net::io::Compio;
+use dedens_net::io::{Compio, Io, TimedOut};
 use dedens_net::tcp::frame;
 use dedens_net::transfer::stream::{Asked, Reader, Step, StreamError, soa_response};
 use dedens_net::transfer::{Limit, Limits, Transfer, TransferError, soa, transfer};
@@ -822,21 +822,184 @@ async fn rfc7766_5_truncated_soa_goes_over_tcp() {
     assert_eq!(Serial::new(soa.serial), serial(&root_soa()));
 }
 
-/// Knot's SOA response to `query`, a signed one, signed for it: its MAC changed when `corrupt`.
-fn signed_soa(query: &[u8], corrupt: bool) -> Vec<u8> {
+/// `response`, with the ID of `query`, signed for it at `at`.
+fn signed_at(query: &[u8], response: &[u8], at: u64) -> Vec<u8> {
     let keys = Keyring::new([key()]).expect("one key");
     let request = verify_request(&keys, query, unix_now())
         .expect("a request signed with the key")
         .expect("signed");
-    let mut response = with_id(&root_soa(), query);
-    request
-        .signer()
-        .sign(&mut response, unix_now())
-        .expect("signed");
+    let mut response = with_id(response, query);
+    request.signer().sign(&mut response, at).expect("signed");
+    response
+}
+
+/// Knot's SOA response to `query`, a signed one, signed for it: its MAC changed when `corrupt`.
+fn signed_soa(query: &[u8], corrupt: bool) -> Vec<u8> {
+    let mut response = signed_at(query, &root_soa(), unix_now());
     if corrupt {
         corrupt_mac(&mut response);
     }
     response
+}
+
+/// Knot's SOA response with the ID of `query` cut after its header: it does not decode, its question being
+/// counted but gone.
+fn undecodable(query: &[u8]) -> Vec<u8> {
+    with_id(&root_soa(), query)[..12].to_vec()
+}
+
+/// Knot's SOA response with the ID of `query`, to the question of another name.
+fn wrong_question() -> Vec<u8> {
+    let mut message = Message::decode(&root_soa())
+        .expect("a message")
+        .message
+        .into_owned();
+    message.questions[0].name = dns("other.");
+    encoded(&message)
+}
+
+/// Compio with every timeout a fiftieth as long: the 10 s of an SOA query pass in 200 ms.
+#[derive(Debug, Clone, Copy)]
+struct Hasty;
+
+impl Io for Hasty {
+    type Udp = <Compio as Io>::Udp;
+    type Stream = <Compio as Io>::Stream;
+    type Listener = <Compio as Io>::Listener;
+    type Task = <Compio as Io>::Task;
+
+    fn now(&self) -> Instant {
+        Compio.now()
+    }
+
+    fn unix_time(&self) -> u64 {
+        Compio.unix_time()
+    }
+
+    fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
+        Compio.spawn(task)
+    }
+
+    fn detach(&self, task: impl Future<Output = ()> + 'static) {
+        Compio.detach(task);
+    }
+
+    async fn timeout_at<F: Future>(
+        &self,
+        deadline: Instant,
+        future: F,
+    ) -> Result<F::Output, TimedOut> {
+        let now = Compio.now();
+        Compio
+            .timeout_at(now + deadline.saturating_duration_since(now) / 50, future)
+            .await
+    }
+
+    fn random(&self, bytes: &mut [u8]) -> std::io::Result<()> {
+        Compio.random(bytes)
+    }
+
+    async fn udp_bind(&self, addr: SocketAddr) -> std::io::Result<Self::Udp> {
+        Compio.udp_bind(addr).await
+    }
+
+    async fn tcp_connect(&self, addr: SocketAddr) -> std::io::Result<Self::Stream> {
+        Compio.tcp_connect(addr).await
+    }
+}
+
+/// RFC 5452 §9.1: an unsigned query's response that does not decode or repeat the question is not one to the query:
+/// the datagrams after it are waited for, and the real response is the answer.
+#[compio::test]
+async fn rfc5452_9_1_udp_soa_waits_past_a_datagram_that_does_not_decode_or_match() {
+    let datagrams = |query: &[u8]| {
+        vec![
+            undecodable(query),
+            with_id(&wrong_question(), query),
+            with_id(&root_soa(), query),
+        ]
+    };
+    let primary = primary(Some(datagrams), Vec::new());
+    let soa = soa(&Compio, primary, &Name::root(), None)
+        .await
+        .expect("an SOA");
+    assert_eq!(Serial::new(soa.serial), serial(&root_soa()));
+}
+
+/// RFC 8945 §5.4: with a key, a datagram that does not decode proves nothing either: anyone can send one of the
+/// query's ID, so the real response after it is the answer.
+#[compio::test]
+async fn rfc8945_5_4_udp_soa_waits_past_a_datagram_that_does_not_decode() {
+    let datagrams = |query: &[u8]| vec![undecodable(query), signed_soa(query, false)];
+    let key = key();
+    let primary = primary(Some(datagrams), Vec::new());
+    let soa = soa(&Compio, primary, &Name::root(), Some(&key))
+        .await
+        .expect("an SOA");
+    assert_eq!(Serial::new(soa.serial), serial(&root_soa()));
+}
+
+/// A signed response that verifies but whose question is not the query's comes from the primary, whose word ends the
+/// query: only an unsigned query waits past it.
+#[compio::test]
+async fn rfc8945_5_4_udp_soa_a_verified_wrong_question_ends_the_query() {
+    let datagrams = |query: &[u8]| vec![signed_at(query, &wrong_question(), unix_now())];
+    let key = key();
+    let primary = primary(Some(datagrams), Vec::new());
+    let result = soa(&Compio, primary, &Name::root(), Some(&key)).await;
+    assert!(
+        matches!(
+            result,
+            Err(TransferError::Stream(StreamError::WrongQuestion))
+        ),
+        "{result:?}"
+    );
+}
+
+/// At the deadline the last datagram waited past is the cause: a response signed at a time too far from ours
+/// verifies but for the clock, which a silent timeout would hide. With no datagram it is a timeout.
+#[compio::test]
+async fn rfc8945_5_2_3_udp_soa_deadline_reports_the_last_datagram_refused() {
+    let datagrams = |query: &[u8]| {
+        vec![
+            signed_soa(query, true),
+            signed_at(query, &root_soa(), unix_now() + 3600),
+            undecodable(query),
+        ]
+    };
+    let key = key();
+    let server = primary(Some(datagrams), Vec::new());
+    let result = soa(&Hasty, server, &Name::root(), Some(&key)).await;
+    // The last in the order sent is the one that does not decode, which this client reads before the others only
+    // when it is the last to arrive: loopback keeps the order.
+    assert!(
+        matches!(
+            result,
+            Err(TransferError::Unanswered(StreamError::Malformed(_)))
+        ),
+        "{result:?}"
+    );
+
+    let datagrams = |query: &[u8]| vec![signed_at(query, &root_soa(), unix_now() + 3600)];
+    let server = primary(Some(datagrams), Vec::new());
+    let result = soa(&Hasty, server, &Name::root(), Some(&key)).await;
+    assert!(
+        matches!(
+            result,
+            Err(TransferError::Unanswered(StreamError::Tsig {
+                error: ResponseError::BadTime { .. },
+                ..
+            }))
+        ),
+        "{result:?}"
+    );
+
+    let server = primary(Some(|_: &[u8]| Vec::new()), Vec::new());
+    let result = soa(&Hasty, server, &Name::root(), Some(&key)).await;
+    assert!(
+        matches!(result, Err(TransferError::Limit(Limit::Time))),
+        "{result:?}"
+    );
 }
 
 /// RFC 8945 §5.4, RFC 5452: anyone can send a datagram of the right ID, so one that fails verification, forged MAC

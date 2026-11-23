@@ -106,7 +106,7 @@ pub fn pipeline_validating(upstreams: &[Server], validating: Validating) -> Pipe
 /// what a validating stage reads in place of the system time, as `dedensd` does (D77).
 #[must_use]
 pub fn wall_clock() -> Clock {
-    Arc::new(|| turmoil::since_epoch().map_or(0, |since| since.as_secs()))
+    Arc::new(crate::io::wall_seconds)
 }
 
 /// The resolver's settings, and what its software starts from.

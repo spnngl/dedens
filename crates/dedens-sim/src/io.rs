@@ -35,6 +35,13 @@ use crate::trace::{Trace, What};
 /// as there.
 const DATAGRAM_LEN: usize = 4096;
 
+/// The wall clock of a host, Unix seconds: the run's epoch ([`Topology::epoch`](crate::topology::Topology::epoch))
+/// and the simulated time since. [`Sim::unix_time`](Io::unix_time) and
+/// [`wall_clock`](crate::resolver::wall_clock) read it.
+pub(crate) fn wall_seconds() -> u64 {
+    turmoil::since_epoch().map_or(0, |since| since.as_secs())
+}
+
 /// Errors to inject into the connected UDP sockets of one [`Sim`], a client's: the next `n` sends, or the next `n`
 /// arrivals.
 #[derive(Debug, Default)]
@@ -129,7 +136,7 @@ impl Io for Sim {
     }
 
     fn unix_time(&self) -> u64 {
-        turmoil::since_epoch().map_or(0, |since| since.as_secs())
+        wall_seconds()
     }
 
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> SimTask {

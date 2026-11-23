@@ -1367,10 +1367,11 @@ async fn tickets_are_not_used_unless_asked_for() {
 }
 
 /// Compio on a clock that stands still until the test moves it: `now` is `start` plus the offset the test sets, so a
-/// ticket expires at an instant the test names.
+/// ticket expires at an instant the test names; `unix_time` moves with it.
 #[derive(Debug, Clone)]
 struct Stepped {
     start: Instant,
+    unix_start: u64,
     offset: Rc<Cell<Duration>>,
 }
 
@@ -1378,6 +1379,7 @@ impl Stepped {
     fn new() -> Self {
         Self {
             start: Compio.now(),
+            unix_start: Compio.unix_time(),
             offset: Rc::default(),
         }
     }
@@ -1398,7 +1400,7 @@ impl Io for Stepped {
     }
 
     fn unix_time(&self) -> u64 {
-        Compio.unix_time()
+        self.unix_start + self.offset.get().as_secs()
     }
 
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
