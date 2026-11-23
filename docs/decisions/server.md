@@ -2923,9 +2923,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     replies are signed (below). Files, not secrets in the configuration as Knot, NSD and BIND have them: the
     configuration is read again as the user and at each reload, and may be readable by more than root.
   - Read once (amends D122): at start, as root, before the drop; the read as the user after the drop and every
-    reload keep the keys of the running pipeline (`Pipeline::keys`), so a key may be root's 0600 alone. A `keys`
-    that names other keys or algorithms at reload is warned ("changes to `keys` take a restart") and the old keys
-    serve; a line naming a key added then is an error, which fails the reload (D55).
+    reload keep the keys of the running pipeline (`Pipeline::keys`) that `keys` still names, with the name, the
+    algorithm and the secret file read at start (the `Store` remembers the files), so a key may be root's 0600
+    alone. A key `keys` no longer names is revoked by the reload: it verifies nothing, signs nothing, and a line
+    naming it is an error. A key it adds or changes is not read (a warning: it takes a restart), and a line
+    naming it is an error too, which fails the reload (D55). A reload that leaves the authoritative stage drops
+    every key; `keys` is refused in a file without the stage, not for the keys kept.
   - Verification (`Pipeline::with_keys`, amends D41): `dedensd` sets it, its keys or none, whenever an
     authoritative stage opens the pipeline. After the read, the QR check, cookies and the rate limit (D113: a
     flood of signed requests is limited before it costs an HMAC; a slip stays unsigned), before D41's checks,

@@ -1,11 +1,11 @@
 //! The `keys` section (D211): the TSIG keys signed requests are verified with (RFC 8945), each a name, an algorithm
 //! and a file holding the secret in base64. The files are read once, at start, before the privileges are dropped
-//! (D122): a reload keeps the keys read then.
+//! (D122): a reload keeps the keys read then that its file still names, unchanged, and revokes the others.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, ensure};
-use dedens_proto::decode_base64;
+use dedens_proto::{Name, decode_base64};
 use dedens_tsig::{Algorithm, Key, Keyring};
 use serde::Deserialize;
 use zeroize::Zeroizing;
@@ -41,36 +41,63 @@ fn algorithm<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Algori
     text.parse().map_err(serde::de::Error::custom)
 }
 
-/// The keys of `files`: read from their files at start, when `kept` is `None`; else `kept`, the keys read at start,
-/// with a warning when `files` names others, or algorithms that are not theirs.
+/// The file each key read at start came from, by the key's name, kept by the [`Store`](crate::lists::Store): what
+/// a reload compares a key to, to tell it unchanged. The secrets are not read again after the drop (D122).
+#[derive(Debug, Default)]
+pub(crate) struct Origins(Vec<(Name<'static>, PathBuf)>);
+
+impl Origins {
+    /// Whether the key `name` was read from `file`.
+    fn read_from(&self, name: &Name<'_>, file: &Path) -> bool {
+        self.0
+            .iter()
+            .any(|(key, origin)| key == name && origin == file)
+    }
+}
+
+/// The keys of `files`: read from their files at start, when `kept` is `None`, their files recorded in `origins`;
+/// else those of `kept`, the keys of the running pipeline, that `files` still names with their algorithm and
+/// their secret file as at start. A key `files` no longer names is revoked; one it adds or changes is not read
+/// (a warning: it takes a restart).
 ///
 /// # Errors
 ///
 /// More than [`MAX_KEYS`] keys, a name given twice; at start, a file that cannot be read, others can access
 /// (D115), longer than [`MAX_SECRET_FILE`] bytes or that is not base64 of a secret.
-pub(super) fn keys(files: &[KeyFile], kept: Option<&Keyring>) -> anyhow::Result<Keyring> {
+pub(super) fn keys(
+    files: &[KeyFile],
+    kept: Option<&Keyring>,
+    origins: &mut Origins,
+) -> anyhow::Result<Keyring> {
     ensure!(
         files.len() <= MAX_KEYS,
         "`keys` lists {} keys, over {MAX_KEYS}",
         files.len()
     );
-    if let Some(kept) = kept {
-        if differ(files, kept) {
-            tracing::warn!("changes to `keys` take a restart: the keys read at start are kept");
+    let Some(kept) = kept else {
+        let keys = files.iter().map(read).collect::<anyhow::Result<Vec<_>>>()?;
+        let keyring = Keyring::new(keys)?;
+        origins.0 = (files.iter())
+            .map(|file| (file.name.0.clone(), file.secret_file.clone()))
+            .collect();
+        return Ok(keyring);
+    };
+    let mut keys = Vec::with_capacity(files.len());
+    for file in files {
+        match kept.get(&file.name.0) {
+            Some(key)
+                if key.algorithm() == file.algorithm
+                    && origins.read_from(&file.name.0, &file.secret_file) =>
+            {
+                keys.push(key.clone());
+            }
+            _ => tracing::warn!(
+                key = %file.name.0,
+                "a key added or changed in `keys` takes a restart: it is not read"
+            ),
         }
-        return Ok(kept.clone());
     }
-    let keys = files.iter().map(read).collect::<anyhow::Result<Vec<_>>>()?;
     Ok(Keyring::new(keys)?)
-}
-
-/// Whether `files` names other keys than `kept`, or other algorithms: the secrets are not read again.
-fn differ(files: &[KeyFile], kept: &Keyring) -> bool {
-    kept.len() != files.len()
-        || (files.iter()).any(|file| {
-            kept.get(&file.name.0)
-                .is_none_or(|key| key.algorithm() != file.algorithm)
-        })
 }
 
 /// The key `file` describes, its secret read from its file.
@@ -100,35 +127,4 @@ fn read(file: &KeyFile) -> anyhow::Result<Key> {
     // Moved, not copied: the key wipes it on drop too.
     let secret = std::mem::take(&mut *secret);
     Ok(Key::new(file.name.0.clone(), file.algorithm, secret)?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn file(name: &str, algorithm: Algorithm) -> KeyFile {
-        KeyFile {
-            name: Domain(name.parse().unwrap()),
-            algorithm,
-            secret_file: PathBuf::from("/nonexistent"),
-        }
-    }
-
-    /// A reload names the keys read at start, or others: a name, an algorithm or a count that changed.
-    #[test]
-    fn the_keys_differ_by_name_algorithm_and_count() {
-        let sha256 = Algorithm::HmacSha256;
-        let kept = Keyring::new([
-            Key::new("a.".parse().unwrap(), sha256, vec![1; 32]).unwrap(),
-            Key::new("b.".parse().unwrap(), sha256, vec![2; 32]).unwrap(),
-        ])
-        .unwrap();
-        assert!(!differ(&[file("B.", sha256), file("a.", sha256)], &kept));
-        assert!(differ(&[file("a.", sha256)], &kept));
-        assert!(differ(&[file("a.", sha256), file("c.", sha256)], &kept));
-        assert!(differ(
-            &[file("a.", sha256), file("b.", Algorithm::HmacSha512)],
-            &kept
-        ));
-    }
 }
