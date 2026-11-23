@@ -3,13 +3,14 @@
 //! within the client's UDP payload. The requests are Knot's, captured (D203), or signed by `dedens-tsig`'s client
 //! (D205), which verifies the replies.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption, InfoCode};
+use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Flags, Message, Opcode, Question, Rcode, RecordType, Transport, Tsig, TsigError, TsigRecord,
-    find_tsig,
+    Class, Flags, Message, Opcode, Question, Rcode, Record, RecordType, Transport, Tsig, TsigError,
+    TsigRecord, Ttl, find_tsig,
 };
 use dedens_server::{Cookies, Forward, Pipeline, Secret, Secrets, Stage, Step};
 use dedens_testkit::authoritative::{self, Peer, Recording, TSIG_KEY};
@@ -282,8 +283,28 @@ fn s5_2_a_tsig_of_another_class_is_formerr() {
 fn s5_1_a_tsig_that_is_not_last_is_formerr() {
     let (mut request, transport) = captured("axfr-tsig");
     let time = tsig(&request).tsig.time_signed();
-    // An A record of the root after the TSIG, counted in the additional section.
-    request.extend_from_slice(&[0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 192, 0, 2, 1]);
+    // An A record after the TSIG, counted in the additional section: the bytes of a message holding it alone, less
+    // the header.
+    let mut extra = Message::default();
+    let data = RData::A(Ipv4Addr::new(192, 0, 2, 1));
+    extra
+        .additional
+        .push(Record::new(dns("a."), Class::IN, Ttl::from_wire(60), &data));
+    request.extend_from_slice(&wire(&extra)[12..]);
+    let count = u16::from_be_bytes([request[10], request[11]]) + 1;
+    request[10..12].copy_from_slice(&count.to_be_bytes());
+    let reply = answer(&server(time), &request, transport);
+    assert_eq!(decode(&reply).rcode(), Rcode::FORMERR);
+    assert_eq!(find_tsig(&reply).ok().flatten(), None, "unsigned");
+}
+
+/// RFC 8945 §5.1: a request with two TSIGs is FORMERR, unsigned, not served as an unsigned one.
+#[test]
+fn s5_1_two_tsigs_are_formerr() {
+    let (mut request, transport) = captured("axfr-tsig");
+    let time = tsig(&request).tsig.time_signed();
+    let start = tsig(&request).start;
+    request.extend_from_within(start..);
     let count = u16::from_be_bytes([request[10], request[11]]) + 1;
     request[10..12].copy_from_slice(&count.to_be_bytes());
     let reply = answer(&server(time), &request, transport);
@@ -388,10 +409,11 @@ fn s5_3_a_reply_with_a_cookie_and_padding_is_signed_after_them() {
     let reply = decode(&reply);
     assert_eq!(reply.rcode(), Rcode::NOERROR);
     let options = reply.edns.expect("an OPT record").options;
-    assert!(
-        matches!(options.as_slice(), [EdnsOption::Cookie(cookie), EdnsOption::Padding(_)] if cookie.client() == client.client() && cookie.server().is_some()),
-        "{options:?}"
-    );
+    let [EdnsOption::Cookie(cookie), EdnsOption::Padding(_)] = options.as_slice() else {
+        panic!("{options:?}");
+    };
+    assert_eq!(cookie.client(), client.client());
+    assert!(cookie.server().is_some(), "{cookie:?}");
     assert_eq!(reply.additional.len(), 1, "the TSIG alone, past the OPT");
 }
 
