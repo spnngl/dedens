@@ -12,6 +12,7 @@ authoritative-images` builds the two images of the [`Containerfile`](Containerfi
 | `exchanges` | `recordings/<scenario>.yaml` | a Knot container, a recording proxy between it and `kdig` or `knsupdate` |
 | `root-ixfr` | `recordings/root-ixfr.yaml` | Knot loading the previous root zone, then the current one as a difference, and `kdig` asking IXFR |
 | `signed-stream` | `recordings/axfr-tsig-stream.yaml` | Knot serving the first 1200 records of the root zone to a key's holder, and `kdig` signing the AXFR |
+| `signed` (`just capture-signed`, not a default stage) | `zones/nsec3_signed.zone`, `answers/nsec3_signed.yaml` | Knot's `kzonesign` signing `../zones/nsec3_source.zone`, then one Knot and one NSD container serving the result |
 
 ## Zones
 
@@ -20,7 +21,11 @@ authoritative-images` builds the two images of the [`Containerfile`](Containerfi
 is the root zone of serial 2026111401 (2026-11-14 22:18 UTC), the first of the IXFR: the root changes twice a day, so the
 second serial of an IXFR cannot wait for a capture, and the archive's copy is the only one with a serial to go from. Its
 ZONEMD records are in generic form (`TYPE63 \# n hex`, RFC 3597 §5), as the other two's, because `dedens-proto`'s text
-parser does not know the type yet. The zones of `testdata/zones/` are served too: RFC 4035 and RFC 5155's appendices; the
+parser does not know the type yet. `zones/nsec3_signed.zone` is the NSEC3 chain of a real signer (D209): `testdata/zones/nsec3_source.zone`, RFC 5155
+Appendix A's names, signed by `kzonesign` with ECDSA P-256, NSEC3 of 0 iterations, no salt and the opt-out flag, with the
+signer's clock set to Unix time 1780000000 (2026-05-28 20:26:40 UTC), so every signature starts 90 minutes before it and
+lasts 14 days from it. The keys are new each run: the stage is run once and its files kept, and the tests of
+`dedens-zone` run the validator at that time. The zones of `testdata/zones/` are served too: RFC 4035 and RFC 5155's appendices; the
 RFC 1035 ISI zone is refused by Knot (MB and MG are obsolete types it does not load), and the zone of every type by both
 (Knot: `unsupported record type`; NSD: `only class IN is supported`), so no answers exist for it.
 

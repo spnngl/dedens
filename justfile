@@ -551,6 +551,13 @@ authoritative-images:
 capture-authoritative *stages="sources answers exchanges root-ixfr signed-stream":
     cargo run -q -p dedens-testkit --features authoritative --example capture_authoritative -- testdata/authoritative {{ stages }}
 
+# Sign testdata/zones/nsec3_source.zone with Knot (ECDSA P-256, NSEC3 with 0 iterations, no salt, opt-out, time pinned,
+# new keys each run) into testdata/authoritative/zones/nsec3_signed.zone and capture both servers' answers on it (D209).
+# Run once: the files are frozen, the tests of `dedens-zone` hold the validator to them. Needs the images of
+# `authoritative-images`.
+capture-signed:
+    cargo run -q -p dedens-testkit --features authoritative --example capture_authoritative -- testdata/authoritative signed
+
 # Capture the root's DNSKEY RRset through the KSK-2010 to KSK-2017 rollover (D200) into testdata/dnssec/rollover-*.zone:
 # the DNSKEY and RRSIG DNSKEY lines of the root zone IANA served at each moment, from the Internet Archive's copies
 # of https://www.internic.net/domain/root.zone, one file per snapshot named by its time (UTC), beside the other

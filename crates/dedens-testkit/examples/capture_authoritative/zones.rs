@@ -53,6 +53,7 @@ pub(crate) const ZONES: &[Zone] = &[
         default_ttl: None,
         includes: &[],
     },
+    SIGNED,
     Zone {
         id: "root",
         file: "authoritative/zones/root.zone",
@@ -61,6 +62,24 @@ pub(crate) const ZONES: &[Zone] = &[
         includes: &[],
     },
 ];
+
+/// The zone Knot signed in the `signed` stage, served by both servers as a pre-signed zone (D209).
+pub(crate) const SIGNED: Zone = Zone {
+    id: "nsec3_signed",
+    file: "authoritative/zones/nsec3_signed.zone",
+    origin: "example.",
+    default_ttl: None,
+    includes: &[],
+};
+
+/// The unsigned zone Knot signs into [`SIGNED`].
+pub(crate) const UNSIGNED: Zone = Zone {
+    id: "nsec3_source",
+    file: "zones/nsec3_source.zone",
+    origin: "example.",
+    default_ttl: None,
+    includes: &[],
+};
 
 /// The root zone as the Wayback Machine archived it, before [`ZONES`]' root: where the IXFR of `root-ixfr` starts.
 pub(crate) const PREVIOUS_ROOT: Zone = Zone {

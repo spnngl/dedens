@@ -11,7 +11,7 @@ use dedens_proto::{Message, Name, RecordType};
 use dedens_testkit::authoritative::{Answers, Reference, Server, Transport};
 
 use crate::engine::{self, Container, Mount};
-use crate::zones::{self, ZONES};
+use crate::zones::{self, ZONES, Zone};
 use crate::{Result, now, proxy, queries, write};
 
 /// How long a server has to answer a datagram, or a stream to deliver.
@@ -251,86 +251,92 @@ fn serve(
 
 /// The `answers` stage: for each of [`ZONES`], both servers answer every question of [`queries::list`].
 pub(crate) fn answers(dir: &Path) -> Result<()> {
-    let testdata = dir.parent().ok_or("no testdata directory")?;
     let versions = versions()?;
     for zone in ZONES {
-        let captured_at = now()?;
-        let apex = zone.apex()?;
-        let records = zone.load(testdata)?;
-        let questions = queries::list(&apex, &records)?;
-        let scratch = Scratch::new(zone.id)?;
-        scratch.put(
-            "zone.zone",
-            &zones::render(&records, &format!("{}, as the servers read it.", zone.file)),
-        )?;
-        let mut running = BTreeMap::new();
-        let mut refused = BTreeMap::new();
-        for server in [Server::Knot, Server::Nsd] {
-            match serve(server, &scratch, &apex)? {
-                Ok(container) => {
-                    running.insert(server, container);
-                }
-                Err(reason) => {
-                    eprintln!("{}: {server} refuses the zone: {reason}", zone.id);
-                    refused.insert(server, reason);
-                }
+        capture(dir, zone, &versions)?;
+    }
+    Ok(())
+}
+
+/// Both servers answer every question of [`queries::list`] on `zone`, into `answers/<id>.yaml`.
+pub(crate) fn capture(dir: &Path, zone: &Zone, versions: &BTreeMap<Server, String>) -> Result<()> {
+    let testdata = dir.parent().ok_or("no testdata directory")?;
+    let captured_at = now()?;
+    let apex = zone.apex()?;
+    let records = zone.load(testdata)?;
+    let questions = queries::list(&apex, &records)?;
+    let scratch = Scratch::new(zone.id)?;
+    scratch.put(
+        "zone.zone",
+        &zones::render(&records, &format!("{}, as the servers read it.", zone.file)),
+    )?;
+    let mut running = BTreeMap::new();
+    let mut refused = BTreeMap::new();
+    for server in [Server::Knot, Server::Nsd] {
+        match serve(server, &scratch, &apex)? {
+            Ok(container) => {
+                running.insert(server, container);
+            }
+            Err(reason) => {
+                eprintln!("{}: {server} refuses the zone: {reason}", zone.id);
+                refused.insert(server, reason);
             }
         }
-        let mut references = Vec::new();
-        if !running.is_empty() {
-            for (name, rtype) in &questions {
-                let mut ask = |variant: Variant| -> Result<usize> {
-                    let mut reference = Reference {
-                        name: name.clone(),
-                        rtype: *rtype,
-                        dnssec_ok: variant.dnssec_ok,
-                        edns_size: variant.edns_size,
-                        transport: variant.transport,
-                        responses: BTreeMap::new(),
-                    };
-                    let query = reference.query().to_vec()?;
-                    for (server, container) in &running {
-                        match exchange(container.port, &query, variant.transport) {
-                            Some(response) => {
-                                reference.responses.insert(*server, response);
-                            }
-                            None => {
-                                eprintln!("{}: {server} did not answer {name} {rtype}", zone.id);
-                            }
+    }
+    let mut references = Vec::new();
+    if !running.is_empty() {
+        for (name, rtype) in &questions {
+            let mut ask = |variant: Variant| -> Result<usize> {
+                let mut reference = Reference {
+                    name: name.clone(),
+                    rtype: *rtype,
+                    dnssec_ok: variant.dnssec_ok,
+                    edns_size: variant.edns_size,
+                    transport: variant.transport,
+                    responses: BTreeMap::new(),
+                };
+                let query = reference.query().to_vec()?;
+                for (server, container) in &running {
+                    match exchange(container.port, &query, variant.transport) {
+                        Some(response) => {
+                            reference.responses.insert(*server, response);
+                        }
+                        None => {
+                            eprintln!("{}: {server} did not answer {name} {rtype}", zone.id);
                         }
                     }
-                    let largest = reference
-                        .responses
-                        .values()
-                        .map(Vec::len)
-                        .max()
-                        .unwrap_or(0);
-                    references.push(reference);
-                    Ok(largest)
-                };
-                let mut largest = 0;
-                for variant in BASE {
-                    largest = largest.max(ask(variant)?);
                 }
-                if largest > LARGE || name == &apex {
-                    for variant in EXTRA {
-                        ask(variant)?;
-                    }
+                let largest = reference
+                    .responses
+                    .values()
+                    .map(Vec::len)
+                    .max()
+                    .unwrap_or(0);
+                references.push(reference);
+                Ok(largest)
+            };
+            let mut largest = 0;
+            for variant in BASE {
+                largest = largest.max(ask(variant)?);
+            }
+            if largest > LARGE || name == &apex {
+                for variant in EXTRA {
+                    ask(variant)?;
                 }
             }
         }
-        let file = Answers {
-            zone: apex,
-            file: zone.file.to_owned(),
-            captured_at,
-            versions: versions.clone(),
-            refused,
-            answers: references,
-        };
-        write(
-            &dir.join("answers").join(format!("{}.yaml", zone.id)),
-            file.to_yaml()?.as_bytes(),
-        )?;
     }
+    let file = Answers {
+        zone: apex,
+        file: zone.file.to_owned(),
+        captured_at,
+        versions: versions.clone(),
+        refused,
+        answers: references,
+    };
+    write(
+        &dir.join("answers").join(format!("{}.yaml", zone.id)),
+        file.to_yaml()?.as_bytes(),
+    )?;
     Ok(())
 }

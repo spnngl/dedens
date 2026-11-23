@@ -120,7 +120,7 @@ fn the_ixfr_of_the_root_zone_goes_from_the_previous_zone_to_the_current_one() {
 #[test]
 fn every_answer_decodes_and_answers_its_query() {
     let ids = Answers::ids();
-    assert_eq!(ids.len(), 5, "{ids:?}");
+    assert_eq!(ids.len(), 6, "{ids:?}");
     for id in ids {
         let answers = Answers::read(&id);
         assert!(!answers.versions.is_empty(), "{id}");
