@@ -2924,11 +2924,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     configuration is read again as the user and at each reload, and may be readable by more than root.
   - Read once (amends D122): at start, as root, before the drop; the read as the user after the drop and every
     reload keep the keys of the running pipeline (`Pipeline::keys`) that `keys` still names, with the name, the
-    algorithm and the secret file read at start (the `Store` remembers the files), so a key may be root's 0600
-    alone. A key `keys` no longer names is revoked by the reload: it verifies nothing, signs nothing, and a line
-    naming it is an error. A key it adds or changes is not read (a warning: it takes a restart), and a line
-    naming it is an error too, which fails the reload (D55). A reload that leaves the authoritative stage drops
-    every key; `keys` is refused in a file without the stage, not for the keys kept.
+    algorithm, the secret file and the file's `Stamp` (D120: device and inode, length, mtime, ctime, taken from the
+    handle at the read as root; the `Store` remembers them), so a key may be root's 0600 alone. The reload `stat`s
+    the file, which needs no access to it, only to its directory: a rewrite in place, the way a key is rotated
+    after a compromise, changes the stamp, and a file that cannot be `stat` (gone, or its directory closed to the
+    user) cannot be told unchanged, so the key is revoked, the fail-safe, with a warning. A key `keys` no longer
+    names or whose file changed is revoked by the reload (a warning for each): it verifies nothing, signs nothing,
+    and a line naming it is an error. A key it adds or changes is not read (a warning: it takes a restart), and a
+    line naming it is an error too, "not read" where the key is listed and "not in `keys`" where it is not, which
+    fails the reload (D55). A reload that leaves the authoritative stage drops every key; `keys` is refused in a
+    file without the stage, not for the keys kept. A `chmod` or `chown` of the file changes its ctime too: restart.
+    The directory of a secret file must stay searchable by the user the server runs as.
   - Verification (`Pipeline::with_keys`, amends D41): `dedensd` sets it, its keys or none, whenever an
     authoritative stage opens the pipeline. After the read, the QR check, cookies and the rate limit (D113: a
     flood of signed requests is limited before it costs an HMAC; a slip stays unsigned: a client that signed
@@ -2965,8 +2971,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     written `networks: ["0.0.0.0/0", "::/0"]`. A line has at least one network (Knot takes none as any: here it
     is written), a key one of `keys`; a list holds at most `MAX_LIST_NETWORKS` 1000 networks (D115; Knot, NSD and
     BIND bound none). `ZoneAccess::permits(action, address, key)`, found with the zone by
-    `Authoritative::access`; `key` is a `VerifiedKey`, which only a verification makes (`pipeline/signed.rs`), so
-    no caller asks the lists with a key it found by the name a request claims. The step's planned `transport`
+    `Authoritative::access`; `key` is a `VerifiedKey`, which only `Pipeline::verified_key` makes, with the
+    pipeline's own keyring and clock (`pipeline/signed.rs`), so no caller asks the lists with a key it found by the
+    name a request claims, or verified at another time or against another keyring. The step's planned `transport`
     parameter is dropped: no line says one (Knot's `protocol`, with XoT, RFC 9103 §9.4).
   - Refusal: steps 12 to 15 answer a request the list refuses REFUSED with EDE 18 (Prohibited), signed when the
     request is, as NSD's `answer_axfr_ixfr` (`axfr.c`) and RFC 2136 §3.3 for UPDATE. Knot answers NOTAUTH with no
@@ -2975,11 +2982,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Tests: `dedens-server`'s `tests/tsig.rs` takes Knot's signed AXFR, IXFR and UPDATE requests (D203) through a
     pipeline with an authoritative stage and verifies the signed replies with D205's client verifier; the bad
     secret, unknown key, bad time captures and a MAC cut to 16 bytes answered BADSIG, BADKEY, BADTIME and BADTRUNC;
-    a signed reply within 512 bytes; the replies' MACs of BADTIME and BADTRUNC; a TSIG not last; another algorithm
-    or case for a key's name; a COOKIE with Padding; a signed NOTIFY; an unsigned query; a signed query past the
-    zones. `tests/zone_access.rs` the lines by network
-    and key. `dedensd`'s `tests/authoritative.rs` a signed query over UDP and TCP to the binary, the config's tests
-    the keys, the lists and their bounds, the keys kept at reload. `kdig -y` accepts the signed answers (the
+    a signed reply within 512 bytes; the replies' MACs of BADTIME and BADTRUNC; a TSIG not last or twice; another
+    algorithm or case for a key's name; a COOKIE with Padding; a signed NOTIFY; an unsigned query; a signed query
+    past the zones. `tests/zone_access.rs` the lines by network and key, and what makes a `VerifiedKey`.
+    `dedensd`'s `tests/authoritative.rs` a signed query over UDP and TCP to the binary, the config's tests the
+    keys, the lists and their bounds, the keys kept at reload (`the_keys_read_at_start_are_kept`: a file gone
+    revokes), those a reload revokes, by name, algorithm, path or a file rewritten in place
+    (`a_reload_revokes_the_keys_it_drops`), and a reload to a forwarder
+    (`a_reload_may_drop_the_authoritative_stage_and_the_keys`). `kdig -y` accepts the signed answers (the
     commit's message).
   - Rejected: verifying only where a rule asks (Knot, above); reading the keys at every reload (the user would
     have to read the secrets); deny lines (Knot's `deny`, NSD's `BLOCKED`), until a user needs one: the lists
