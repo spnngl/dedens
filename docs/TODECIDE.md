@@ -9,12 +9,6 @@ Open questions, each with its proposed default. Once answered, record the outcom
   verified` and autopath): `Plugin::answer` takes the query alone (`crates/dedens-server/src/plugin.rs:14`), the
   client address reaches the access check only (D91). Default: pass the address to plugins with the Kubernetes
   stage, its first user.
-- A domain `dedensd` answers for (aardvark-dns gives NXDOMAIN to unknown names of its domain, never forwards them;
-  CoreDNS for `cluster.local`): the hosts stage passes an unknown name to the next stage
-  (`crates/dedens-plugins/src/hosts.rs:150-158`), so a private domain's misses go upstream. Default: a `zone:`
-  option on hosts (NXDOMAIN with AA and the zone's SOA, NODATA as today) with the Kubernetes stage. Zone files are
-  not a plugin's (TelltaleDNS answers from them, `crates/telltale-policy/src/local.rs`): they belong to the authoritative
-  stage, which loads them as `dedens-zone`'s `Zone` (D204).
 - Private names past the `tlds` stage: RFC 6761 §6.2 asks caching servers for an option to resolve `test` names
   upstream, and a network may delegate an `internal` zone to its own servers; the stage answers `test` names
   NXDOMAIN whatever DO, and `internal` names NXDOMAIN without DO, as an absent TLD, so only a stage before it (hosts)

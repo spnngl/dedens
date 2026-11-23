@@ -7,7 +7,7 @@
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale; its byte-budgeted `Store` (D193) | none, time passed in |
 | `crates/dedens-resolver` | Recursive resolver: the iteration (D191), a response scrubbed to what the zone asked may say, into ranked `RRsets` (D192); the `RRset` cache (D193), the infra cache of authoritative servers (D194); the answer validated by `dedens-dnssec`, its questions iterated (D197) | none (sans-IO), time and randomness passed in |
-| `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself, the recurse stage and the zones it serves locally (D195) | none (sans-IO) |
+| `crates/dedens-server` | Server core: client access lists (D91), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself, the recurse stage and the zones it serves locally (D195), the authoritative stage answering from `dedens-zone`'s zones (D208) | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`); the root's key rollover by RFC 5011 (D200) | none (sans-IO), time passed in |
 | `crates/dedens-zone` | A zone for the authoritative phase (D204): zone text loaded into an immutable `Zone`, its names in canonical order with the delegations, DNAMEs, wildcards and empty non-terminals marked, checked per RFC 1035 §5.2 and RFC 2181 §10.1, bounded by `Limits`; changesets between versions (`Zone::diff`, `Zone::apply`) and their journal file (D207); `Zone::answer` (D206): the answer to a question, RFC 1034 §4.3.2 with wildcards, DNAME and glue, filled into a `Message`, with DO the signatures and NSEC or NSEC3 proofs of a pre-signed zone (D209, hashing through `dedens-dnssec`) | the journal's file (blocking), `$INCLUDE` through a callback |
@@ -19,7 +19,7 @@
 | `crates/dedens-scenario` | Query files: queries, options, expectations; the JSON and YAML report | none |
 | `crates/dedens-bench` | Benches (divan) of the workspace, against hickory-proto, `domain`, Go's `miekg/dns`, Unbound; `dedensd` under dnsperf (`just bench-dnsperf`), and against TelltaleDNS, Unbound, CoreDNS (`just bench-compare`); the cache's hit ratio (`examples/hit_ratio.rs`, D116) | none |
 | `crates/dedens-testkit` | Test-only (D161): `testdata/` read and decoded, the RFC examples' keys, the test certificates, the loopback responder of the binaries' tests, the recursive resolver's captured resolutions and their replay (`recursion`, D188) | files, sockets (`responder`) |
-| `crates/dedens-sim` | Simulation tests (D133, D134, D182, D189): the sans-IO server core, `dedensd`'s serving loop and `dedens-net`'s client, pools included, as hosts of a seeded turmoil network, beside the captured Internet's authoritative servers | simulated |
+| `crates/dedens-sim` | Simulation tests (D133, D134, D182, D189): the sans-IO server core, `dedensd`'s serving loop and `dedens-net`'s client, pools included, as hosts of a seeded turmoil network, beside the captured Internet's authoritative servers and `dedensd` serving zones (D208) | simulated |
 | `crates/dedens-repo` | The repository checks of the gate (D140, D163), its tests alone: decisions, RFC coverage, `CLAUDE.md` links, crates' `clippy.toml`, pinned Rust | files (`git ls-files`) |
 | `apps/dedens` | The dig-like CLI; a library its binary and `fuzz/` call (D181) | via `dedens-net`, files |
 | `apps/dedensd` | The server: threads and sockets around `dedens-server`, upstream via `dedens-net`; drops root once bound (D122); a library its binary and `fuzz/` call (D181) | sockets, files, HTTP (lists) |
@@ -37,7 +37,8 @@
   bootstrap file, the client and printer both share (`src/run/rdap.rs`, D130).
 - Server, a query: `apps/dedensd/src/serve/` (a module per transport, D65, D66, D81, D84; ODoH in
   `apps/dedensd/src/odoh/`, D79, D94; DNSCrypt in `apps/dedensd/src/dnscrypt/` and `serve/dnscrypt.rs`, D99) → `crates/dedens-server/src/access.rs` (D91) → `Query::read` →
-  `cookie.rs` and `rrl.rs` (D113) → the stage pipeline (`pipeline/`, D23) of stages `plugin.rs`, `cache.rs` and
+  `cookie.rs` and `rrl.rs` (D113) → the stage pipeline (`pipeline/`, D23) of stages `authoritative.rs` (D208, its zones
+  loaded and kept across reloads by `apps/dedensd/src/zones.rs`, the access lists past it), `plugin.rs`, `cache.rs` and
   `forward.rs` or `recurse/` (D195; `apps/dedensd/src/serve/recurse.rs` steps the resolution, `dedens-resolver`,
   over `dedens-net`'s authoritative mode, D190); a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to the query by
   `reply.rs` → send (UDP: the socket's `Outbox`, D123).

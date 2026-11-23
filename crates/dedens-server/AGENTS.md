@@ -15,8 +15,9 @@ back, `Pipeline::resolved` writing the reply (D195). Measure a change to the rat
 - A query past its network's `Budget` share is shed in `Pipeline::query`, before any question (D117); one past the
   validator's `Allowance` is `Step::Park`, holding its share's unit until `Pipeline::unpark` or `Pipeline::shed`
   (D186).
-- A client the access lists deny is answered before any stage (D91); a valid Server Cookie skips the rate limit
-  (D113).
+- A client the access lists deny is answered before any stage (D91), but past the authoritative stages that open a
+  pipeline: they answer every client, so `Pipeline::denial` and `drops` say nothing then, and the RA of a reply is
+  `Pipeline::recursion`'s, never set by hand (D208). A valid Server Cookie skips the rate limit (D113).
 - A hit a `Plugin::reviewer` reviewed is marked with the pipeline's id (`Cache::mark`) and decoded once (D118).
 - ANY over UDP and DoC is answered empty with TC (D114).
 - A recurse stage's reply TTLs are bounded once (D195): `Resolved` holds them so, a TTL fresh from a reply bounded
