@@ -321,6 +321,20 @@ fn rfc5155_b_6_ds_at_the_apex_is_no_data() {
     reproduces(&rfc5155(), 5155, "B.6.  DS Child Zone No Data Error");
 }
 
+#[test]
+fn rfc5155_s4_the_records_of_another_chain_prove_nothing() {
+    // A chain being made beside the served one: same algorithm and salt, other iterations. Its record sorts
+    // between 0p9mhaveq…, the cover of B.1's next closer name, and that name's hash 0va5bpr2…; the NSEC3PARAM
+    // names the chain to serve (RFC 5155 §4): the load checks that one alone, and B.1 is still the answer.
+    let text = zone_file("rfc5155_appendix_a.zone")
+        + "0q000000000000000000000000000000.example. 3600 IN NSEC3 1 1 5 aabbccdd \
+           0q000000000000000000000000000000\n";
+    let zone = load_files("example.", &text, None, &[], &Limits::default())
+        .expect("the served chain closed")
+        .zone;
+    reproduces(&zone, 5155, "B.1.  Name Error");
+}
+
 /// What the NSEC or NSEC3 records of `response` prove about it, from `denial::prove`; `None` for a response that
 /// needs no proof: a positive answer of no wildcard, or a referral to a signed child.
 fn proven(apex: &Name<'_>, response: &Message<'_>) -> Option<Result<Fact, denial::Unproven>> {
