@@ -155,6 +155,45 @@ fn s5_3_2_an_unknown_key_or_a_wrong_mac_is_answered_unsigned() {
     }
 }
 
+/// A name of `labels`, each that many times `letter`.
+fn long(letter: char, labels: &[usize]) -> String {
+    let mut name = String::new();
+    for &len in labels {
+        name.extend(std::iter::repeat_n(letter, len));
+        name.push('.');
+    }
+    name
+}
+
+#[test]
+fn s5_3_2_an_error_that_cannot_fit_the_payload_is_dropped() {
+    // Without EDNS the reply holds 512 bytes: the header (12), the question (a name of 255 bytes, type and class),
+    // the unsigned TSIG (the key's name, 10, `hmac-sha256.` 13, and 16 without a MAC): 310 and the key's name.
+    let question = Question::new(dns(&long('q', &[63, 63, 63, 61])), RecordType::A);
+    let mut query = Message::query(7, question);
+    query.edns = None;
+    for (labels, fits) in [([63, 63, 63, 8], true), ([63, 63, 63, 9], false)] {
+        let unknown =
+            Key::new(dns(&long('k', &labels)), key().algorithm(), vec![7; 32]).expect("a key");
+        let (request, _) = signed(&query, &unknown);
+        let mut out = vec![0; 65535];
+        let from: IpAddr = "192.0.2.1".parse().expect("an address");
+        let step = server(NOW).query(&request, Transport::Udp, from, 0, &mut out);
+        if fits {
+            assert!(matches!(step, Step::Reply(512)), "{step:?}");
+            assert_eq!(tsig(&out[..512]).tsig.error, TsigError::BADKEY);
+        } else {
+            assert!(matches!(step, Step::Drop), "{step:?}");
+        }
+    }
+}
+
+#[test]
+fn the_keys_are_the_pipelines() {
+    assert_eq!(server(NOW).keys().map(Keyring::len), Some(1));
+    assert!(Pipeline::new(vec![zones()]).keys().is_none());
+}
+
 #[test]
 fn s5_2_3_a_time_outside_the_fudge_is_answered_badtime_signed() {
     let key = key();
