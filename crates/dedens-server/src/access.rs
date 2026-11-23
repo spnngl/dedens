@@ -84,6 +84,13 @@ impl FromStr for Network {
     }
 }
 
+impl Network {
+    /// Whether `address` is in the network, an IPv4-mapped IPv6 address being the IPv4 one.
+    pub(crate) fn contains(&self, address: IpAddr) -> bool {
+        self.0.contains(&address.to_canonical())
+    }
+}
+
 impl TryFrom<String> for Network {
     type Error = NetworkError;
 

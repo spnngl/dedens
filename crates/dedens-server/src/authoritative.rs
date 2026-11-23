@@ -1,5 +1,5 @@
 //! The authoritative stage (D208): the zones this server is the authority for, each answered from its
-//! [`Zone`] (D206).
+//! [`Zone`] (D206), with its access lists (D211).
 
 use std::fmt;
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use dedens_zone::Zone;
 use crate::Step;
 use crate::metrics::Answers;
 use crate::reply::Client;
+use crate::zone_access::ZoneAccess;
 
 /// The zones a server is the authority for, found by the longest apex a name is at or below (RFC 1034 §4.3.2
 /// step 2). Each is shared: a reload keeps the zones whose files did not change, and swaps in the others whole
@@ -18,6 +19,8 @@ use crate::reply::Client;
 pub struct Authoritative {
     /// Sorted by apex in canonical order (RFC 4034 §6.1), no apex twice.
     zones: Box<[Arc<Zone>]>,
+    /// The access lists of the zone at the same index of `zones`.
+    access: Box<[ZoneAccess]>,
     answers: Answers,
 }
 
@@ -33,16 +36,30 @@ impl Authoritative {
     ///
     /// [`Duplicate`] when two zones have the same apex, whatever their class.
     pub fn new(zones: impl IntoIterator<Item = Arc<Zone>>) -> Result<Self, Duplicate> {
+        Self::guarded(zones.into_iter().map(|zone| (zone, ZoneAccess::default())))
+    }
+
+    /// The stage answering from `zones`, each with its access lists: what it permits of transfers, NOTIFY and
+    /// UPDATE (D211). [`Authoritative::new`] permits nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Duplicate`] when two zones have the same apex, whatever their class.
+    pub fn guarded(
+        zones: impl IntoIterator<Item = (Arc<Zone>, ZoneAccess)>,
+    ) -> Result<Self, Duplicate> {
         let mut zones: Vec<_> = zones.into_iter().collect();
-        zones.sort_by(|a, b| a.apex().cmp(b.apex()));
+        zones.sort_by(|(a, _), (b, _)| a.apex().cmp(b.apex()));
         if let Some(pair) = zones
             .windows(2)
-            .find(|pair| pair[0].apex() == pair[1].apex())
+            .find(|pair| pair[0].0.apex() == pair[1].0.apex())
         {
-            return Err(Duplicate(pair[0].apex().clone()));
+            return Err(Duplicate(pair[0].0.apex().clone()));
         }
+        let (zones, access): (Vec<_>, Vec<_>) = zones.into_iter().unzip();
         Ok(Self {
             zones: zones.into(),
+            access: access.into(),
             answers: Answers::new(),
         })
     }
@@ -57,12 +74,25 @@ impl Authoritative {
     /// each label `name` shares with the zone just before it in canonical order, at most.
     #[must_use]
     pub fn zone(&self, name: &Name<'_>) -> Option<&Arc<Zone>> {
+        self.index(name).map(|index| &self.zones[index])
+    }
+
+    /// [`Authoritative::zone`] of `name`, with its access lists (D211): what a transfer, NOTIFY or UPDATE of the
+    /// zone asks.
+    #[must_use]
+    pub fn access(&self, name: &Name<'_>) -> Option<(&Arc<Zone>, &ZoneAccess)> {
+        self.index(name)
+            .map(|index| (&self.zones[index], &self.access[index]))
+    }
+
+    /// The index in `zones` of [`Authoritative::zone`] of `name`.
+    fn index(&self, name: &Name<'_>) -> Option<usize> {
         let mut buf = [0; MAX_NAME_LEN];
         self.find(name.to_wire(&mut buf), name.label_count())
     }
 
-    /// [`Authoritative::zone`] of the name `wire`, uncompressed, of `count` labels.
-    fn find(&self, wire: &[u8], count: usize) -> Option<&Arc<Zone>> {
+    /// [`Authoritative::index`] of the name `wire`, uncompressed, of `count` labels.
+    fn find(&self, wire: &[u8], count: usize) -> Option<usize> {
         let mut labels = count;
         let mut end = self.zones.len();
         loop {
@@ -73,7 +103,7 @@ impl Authoritative {
             end = self.zones[..end].partition_point(|zone| *zone.apex() <= suffix);
             let before = self.zones[..end].last()?;
             if suffix.is_within(before.apex()) {
-                return Some(before);
+                return Some(end - 1);
             }
             labels = suffix.shared_labels(before.apex());
         }
@@ -88,11 +118,11 @@ impl Authoritative {
         let count = question.name.label_count();
         if question.qtype == RecordType::DS
             && count > 0
-            && let Some(zone) = self.find(skip_labels(wire, 1), count - 1)
+            && let Some(index) = self.find(skip_labels(wire, 1), count - 1)
         {
-            return Some(zone);
+            return Some(&self.zones[index]);
         }
-        self.find(wire, count)
+        self.find(wire, count).map(|index| &self.zones[index])
     }
 
     /// The reply to `client`, written into `out`, when a zone answers its question; `None` passes the query on.

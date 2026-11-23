@@ -409,6 +409,11 @@ Open questions, each with its proposed default. Once answered, record the outcom
   can send, but a transfer holds about 1 KB a record while it runs (measured on the root's AXFR), so 2^24 records
   would peak at some 16 GB. Default: the limits as they are, a secondary sets those of each zone. Alternative:
   defaults of a few million records, or a bound on the memory of all the transfers at once.
+- Signed queries past the zones (D211): a signed request for a name no zone holds is REFUSED, EDE 20, signed. The
+  cache, forward and recurse stages answer later, from upstream, outside `Pipeline::query`, where the request's key
+  and MAC are gone, and a forwarder would have to pass the TSIG on unchanged (RFC 8945 §5.5). Default: refused;
+  alternative: carry the verified key with the parked query and sign the stage's reply, once a user signs queries
+  to a server that also resolves.
 
 ## Later
 

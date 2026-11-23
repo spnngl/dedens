@@ -15,12 +15,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D77, D111, D114, D185, D186, D208) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D77, D111, D114, D185, D186, D208, D211) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
   cannot read (the header alone, no OPT), that breaks a rule (D9) or has no question; NOTIMP to opcodes other than
-  QUERY; BADVERS to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. A reply has the
+  QUERY; BADVERS to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. With keys, a
+  request's TSIG is verified before these, and the replies to a signed request are signed (D211). A reply has the
   client's ID, opcode and question in its case; QR and RA set, RD and CD copied, AA clear, AD only for a query with
   AD or DO (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one (RFC 6891 §6.1.1, §7),
   so a FORMERR to OPT records breaking a rule has ours too: several (§6.1.1), one outside the additional section,
@@ -1126,7 +1127,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     100 restarts under load, Linux), `serve/isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
     noise (`docs/benchmarks.md`); not measured on `io_uring`.
 
-- D122 (amends D42, D44, D55, D66, D104, D107, D115; amended by D128) `dedensd` drops root once its sockets are bound, from the audit (S5): a
+- D122 (amends D42, D44, D55, D66, D104, D107, D115; amended by D128, D211) `dedensd` drops root once its sockets are bound, from the audit (S5): a
   server started as root to bind :53, :443 and :853 kept root while it parsed hostile input.
   - Configuration: top-level `user:` (a name or a numeric id, number or string) and `group:` (the same; only with
     `user`). Linux only: `PR_SET_NO_NEW_PRIVS` and the `/proc/PID/status` that the checks read are Linux's, and
@@ -2364,7 +2365,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
     over a finished `Zone` (the errors would lose their lines).
 
-- D205 TSIG (RFC 8945, `dedens-tsig`): sans-I/O, in a crate of its own: the keys and the signing belong to the
+- D205 (amended by D211) TSIG (RFC 8945, `dedens-tsig`): sans-I/O, in a crate of its own: the keys and the signing belong to the
   authoritative server (steps 09 to 15) and to `dedens` (transfers, updates), not to the wire format, and the crate
   adds `ring`'s HMAC, `subtle` and `zeroize` to what depends on it only. `dedens-proto` has what is the wire format:
   `RecordType::TKEY` and `TSIG`, `TsigError` (BADSIG 16, BADKEY 17, BADTIME 18, BADTRUNC 22: the TSIG error field is
@@ -2378,14 +2379,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     and its `Debug` never shows it; the HMAC key `ring` derives from the secret for each message is not zeroed
     (`ring` has no way: a limit, not a leak through the crate's API). The base64 of a secret is decoded by
     `dedens-proto`, which has no `zeroize`: the bytes of a decode that fails half way are not wiped (`Key::new`
-    wraps a successful decode at once). Secrets are base64 as `kdig -y` and Knot write them, empty ones refused. The key files and the read before the privilege drop are step 09's.
+    wraps a successful decode at once). Secrets are base64 as `kdig -y` and Knot write them, empty ones refused. The key files and the read before the privilege drop are D211's.
   - Server, `verify_request(&Keyring, wire, now)`, in RFC 8945 §5.2's order: a TSIG that does not parse, of a class
     other than ANY or with a TTL, or a MAC longer than the hash or shorter than the larger of 10 bytes and half of it
     (§5.2.2.1) is FORMERR, unsigned; an unknown key or algorithm is NOTAUTH with BADKEY, unsigned; a MAC that does
     not match is BADSIG, unsigned, compared in constant time (`subtle`); a time more than the fudge from the clock
     is BADTIME, signed, with the request's time and fudge and the server's time in Other Data (§5.2.3); only then
     the truncation policy. Each refusal says what to answer: `Refusal::Format`, or `NotAuth` which signs the answer
-    in place (`sign`). A message with no TSIG gives `None`: whether to serve it is the server's policy (step 09).
+    in place (`sign`). A message with no TSIG gives `None`: whether to serve it is the server's policy (D211).
     The unsigned answer carries the request's Time Signed and the server's fudge, whatever the clock: RFC 8945
     §5.3.2 gives neither, and Knot's `knot_tsig_add` writes the request's time. Knot answers the unsigned errors as
     this does, in its captures (`axfr-tsig-bad-secret`, tested with a clock that is not the request's, so that the
@@ -2411,7 +2412,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     the timers alone (§5.3.1); every message, as §5.3.1 requires (a client accepts unsigned ones, below). The
     message must have room for the record: the signer refuses (`SignError::TooLong`) a message that the record
     would take past 65535 bytes and does not shorten it; fitting a UDP response (§5.3: the answer cut, TC set, the
-    question and the TSIG kept) is the serving stage's job, step 09.
+    question and the TSIG kept) is the serving stage's job, D211's `Client::with_key`.
   - Client: `sign_request` gives the `ResponseVerifier` of its response, and `ResponseVerifier::new` the one of a
     request signed elsewhere. `verify` takes each message of the response in order: the first must carry a TSIG
     (`Missing`), key and algorithm are the request's (`Key`), a MAC is full length (`MacSize`), the time is within
@@ -2606,7 +2607,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     record after a refused one kept (a hole breaks the chain); one `Changeset` per RRset (RFC 1995 §4's sequence is
     per version); keeping a changeset over the limit alone and dropping the rest (the oldest of a chain is what
     goes first, NSD).
-- D208 (amends D41, D54, D55, D91, D99) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
+- D208 (amends D41, D54, D55, D91, D99; amended by D211) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
   `authoritative` stage): `dedensd` answers the zones it is the authority for, from `dedens-zone`'s `Zone` (D204,
   D206), in the same pipeline as its other stages (the phase's choice 1: no second binary). The stage holds its
   zones as `Arc<Zone>` sorted by apex in canonical order (RFC 4034 §6.1), no apex twice (`Duplicate`); the zone of a
@@ -2691,7 +2692,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     reads serial 0, the `metrics` recorder having no call to remove a series; every load logged with zone, file,
     serial and records (`info!`). The start and each reload log the zones every client can query (count and the
     first twenty apexes), and the warnings about `access` (D91) say that its lists apply to the names outside the
-    zones only: a zone has no `access` of its own (docs/TODECIDE.md).
+    zones only: a zone has no `access` of its own (docs/TODECIDE.md). Who may transfer, notify or update a zone,
+    and the signed requests the zones pass on, are D211's.
   - Closes the question of a private domain `dedensd` answers for (aardvark-dns, CoreDNS's `cluster.local`): its
     zone file in an authoritative stage gives NXDOMAIN with AA and the SOA to unknown names, never sent upstream.
     Zone files are no plugin's (amends D54): the stage, not a plugin, answers from them. A `zone:` option on hosts
@@ -2908,3 +2910,63 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     fallback after a TSIG failure or a limit (Knot does it on all but I/O; an AXFR is then refused the same and
     costs a second connection); the SOA query over TCP after a UDP timeout (the secondary's retry does it).
 
+- D211 (amends D41, D122, D205, D208) Signed requests and zone access lists: `dedensd` verifies the TSIG of a
+  request (RFC 8945, D205's `dedens-tsig`), signs its reply, and says per zone who may transfer it, notify the
+  server of it or update it, by network and key. Steps 12 to 15 ask the lists; this step answers nothing new.
+  - Keys: top-level `keys:`, a list of `{name, algorithm, secret_file}`, the algorithm one of D205's (any case), the
+    file the secret alone in base64, as `kdig -y` takes it and the `secret` `keymgr -t` and `tsig-keygen` print. A
+    file others can access is refused, its group warned of (D115's `guard_key`); it is read into a buffer of
+    `MAX_SECRET_FILE` 1024 bytes wiped on drop (a secret of 765 bytes, past SHA-512's 128-byte block; `keymgr -t`
+    makes 20 to 64), a secret shorter than the hash's output warned of (RFC 8945 §8, as `keymgr_generate_tsig`
+    does). At most `MAX_KEYS` 1000 (D115; Knot, NSD and BIND bound none); a name twice, whatever its case, is
+    refused (§10: one algorithm a name). `keys` without an authoritative stage first is refused: only the zones'
+    replies are signed (below). Files, not secrets in the configuration as Knot, NSD and BIND have them: the
+    configuration is read again as the user and at each reload, and may be readable by more than root.
+  - Read once (amends D122): at start, as root, before the drop; the read as the user after the drop and every
+    reload keep the keys of the running pipeline (`Pipeline::keys`), so a key may be root's 0600 alone. A `keys`
+    that names other keys or algorithms at reload is warned ("changes to `keys` take a restart") and the old keys
+    serve; a line naming a key added then is an error, which fails the reload (D55).
+  - Verification (`Pipeline::with_keys`, amends D41): `dedensd` sets it, its keys or none, whenever an
+    authoritative stage opens the pipeline. After the read, the QR check, cookies and the rate limit (D113: a
+    flood of signed requests is limited before it costs an HMAC; a slip stays unsigned), before D41's checks,
+    whatever the opcode: the FORMERR, NOTIMP (NOTIFY and UPDATE until steps 12 and 14), BADVERS and AXFR and
+    IXFR REFUSED (until 12 and 13) of a verified request are signed. Its failures are D205's, by RFC 8945 §5.3.2:
+    FORMERR unsigned; NOTAUTH with BADKEY or BADSIG, unsigned; BADTIME and BADTRUNC signed. NSD does the same, the
+    TSIG of every request before the opcode (`process_tsig`, `query_process`, `query.c`); Knot verifies only a
+    request an ACL rule with a key matched (`process_query_verify`, `process_query.c`), so a signed QUERY gets an
+    unsigned answer, which §5.3's MUST and a client's verifier refuse. Without `with_keys` (a forwarder) a TSIG
+    is a record like any other, as before: §5.5's forwarding of TSIGs is not done.
+  - Signed replies: every reply to a verified request is signed with its key, at the time it was verified, over
+    the request's MAC (§5.3). `Client::with_key` keeps the record's room (`Key::record_len`) out of what a reply
+    fills, so a UDP reply truncates by D10 and D206 (TC, the question kept) and the signed reply fits the client's
+    size; one that still does not is dropped, which only an error of a request with a 255-byte key name can be.
+    The signing copies the reply into a vector, `dedens-tsig`'s interface: signed requests are those of the
+    operator's peers, not of the many clients. Streams of signed messages (AXFR, IXFR) are step 12's.
+  - Past the zones: a signed request the zones pass on is REFUSED with EDE 20 (Not Authoritative, RFC 8914
+    §4.21), signed: a cache, forward or recurse stage answers from upstream, later, outside `Pipeline::query`,
+    and a stage's reply is not the zones' to sign (docs/TODECIDE.md, "Signed queries past the zones").
+  - Zone access lists (amends D208): each zone has `transfer` (AXFR and IXFR), `notify` and `update`, each a list
+    of `{networks, key}`, empty unless written: nothing is permitted by default (RFC 5936 §5: SHOULD NOT be open
+    by default; NSD's `provide-xfr` and Knot's `acl` none either). A line permits a request from one of its
+    networks (D91's `Network`: no bits past the length, an IPv4-mapped address compared as IPv4) signed with its
+    key, name and algorithm, or unsigned when it has none: a line without a key permits no signed request, as
+    Knot's `check_addr_key` (`src/knot/updates/acl.c`) and NSD's `acl_key_matches` (`nsd/options.c`). Open to all is
+    written `networks: ["0.0.0.0/0", "::/0"]`. A line has at least one network (Knot takes none as any: here it
+    is written), a key one of `keys`; a list holds at most `MAX_LIST_NETWORKS` 1000 networks (D115; Knot, NSD and
+    BIND bound none). `ZoneAccess::permits(action, address, key)`, found with the zone by
+    `Authoritative::access`: the step's planned `transport` parameter is dropped, no line says one (Knot's
+    `protocol`, with XoT, RFC 9103 §9.4).
+  - Refusal: steps 12 to 15 answer a request the list refuses REFUSED with EDE 18 (Prohibited), signed when the
+    request is, as NSD's `answer_axfr_ixfr` (`axfr.c`) and RFC 2136 §3.3 for UPDATE. Knot answers NOTAUTH with no
+    TSIG (D203's `axfr-unsigned-refused`, `update-signed-key-not-allowed`): NOTAUTH is RFC 5936 §2.2.1's code for
+    a server not authoritative for the zone, and TSIG's for a failed check (§5.2), neither of which this is.
+  - Tests: `dedens-server`'s `tests/tsig.rs` takes Knot's signed AXFR, IXFR and UPDATE requests (D203) through a
+    pipeline with an authoritative stage and verifies the signed replies with D205's client verifier; the bad
+    secret, unknown key, bad time captures and a MAC cut to 16 bytes answered BADSIG, BADKEY, BADTIME and BADTRUNC;
+    a signed reply within 512 bytes; a signed query past the zones. `tests/zone_access.rs` the lines by network
+    and key. `dedensd`'s `tests/authoritative.rs` a signed query over UDP and TCP to the binary, the config's tests
+    the keys, the lists and their bounds, the keys kept at reload. `kdig -y` accepts the signed answers (the
+    commit's message).
+  - Rejected: verifying only where a rule asks (Knot, above); reading the keys at every reload (the user would
+    have to read the secrets); deny lines (Knot's `deny`, NSD's `BLOCKED`), until a user needs one: the lists
+    permit, nothing else does.

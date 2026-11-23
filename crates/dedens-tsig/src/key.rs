@@ -83,6 +83,16 @@ impl Key {
         self.algorithm
     }
 
+    /// The length of the TSIG record a message signed with this key ends in, its MAC whole and no Other Data: the
+    /// room a response keeps for it (RFC 8945 §4.2, §5.3).
+    #[must_use]
+    pub fn record_len(&self) -> usize {
+        /// Type, class, TTL and RDATA length (RFC 1035 §3.2.1); Time Signed, Fudge, MAC Size, Original ID, Error
+        /// and Other Len (RFC 8945 §4.2).
+        const FIXED: usize = 10 + 16;
+        self.name.wire_len() + self.algorithm.wire().len() + self.algorithm.mac_len() + FIXED
+    }
+
     pub(crate) fn hmac(&self) -> hmac::Key {
         hmac::Key::new(self.algorithm.ring(), &self.secret)
     }

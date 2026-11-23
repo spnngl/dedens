@@ -3,6 +3,7 @@
 
 mod finish;
 mod prewarm;
+mod signed;
 
 use std::net::IpAddr;
 use std::num::NonZeroU8;
@@ -15,9 +16,11 @@ use dedens_proto::edns::{Cookie, EdnsOption, InfoCode};
 use dedens_proto::{
     Class, Decoded, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
 };
+use dedens_tsig::Keyring;
 
 use self::finish::{Finish, Refused, Ttls, prohibit, reply, servfail, slip};
 pub use self::prewarm::{Warm, Warmth};
+use self::signed::{Keys, Signed};
 use crate::access::{Access, Denial};
 use crate::authoritative::Authoritative;
 use crate::budget::Spent;
@@ -28,7 +31,7 @@ use crate::plugin::{Answer, Plugin};
 use crate::recurse::{Asker, Asking, Ended, Recurse, Resolving};
 use crate::reply::Client;
 use crate::rrl::{Admission, RateLimit};
-use crate::validate::{Check, Outcome, Payer, Progress, Source, Validating};
+use crate::validate::{Check, Clock, Outcome, Payer, Progress, Source, Validating};
 
 /// A stage of the pipeline (D23).
 #[derive(Debug)]
@@ -63,6 +66,8 @@ pub struct Pipeline {
     access: Option<Access>,
     rate_limit: Option<Arc<RateLimit>>,
     cookies: Option<Cookies>,
+    /// The keys signed requests are verified with (D211).
+    keys: Option<Keys>,
     /// This pipeline's mark in the cache entries it reviewed (D118): not 0, and not another pipeline's.
     id: u64,
     /// For each stage, whether a plugin before it reviews responses (`Plugin::reviewer`).
@@ -184,6 +189,7 @@ impl Pipeline {
             access: None,
             rate_limit: None,
             cookies: None,
+            keys: None,
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             reviews,
             warmed: Box::default(),
@@ -212,6 +218,22 @@ impl Pipeline {
     pub fn with_cookies(mut self, cookies: Cookies) -> Self {
         self.cookies = Some(cookies);
         self
+    }
+
+    /// Verifies the TSIG of each request with `keys`, its time against `clock` (Unix seconds), and signs the reply
+    /// to a signed request (RFC 8945, D211). Without it a TSIG is a record as any other, as a forwarder passes it on
+    /// (RFC 8945 §5.5).
+    #[must_use]
+    pub fn with_keys(mut self, keys: Keyring, clock: Clock) -> Self {
+        self.keys = Some(Keys::new(keys, clock));
+        self
+    }
+
+    /// The keys requests are verified with, if any: read once, before the privileges are dropped, a reload keeps
+    /// them (D211).
+    #[must_use]
+    pub fn keys(&self) -> Option<&Keyring> {
+        self.keys.as_ref().map(Keys::keyring)
     }
 
     /// The cookies made and checked, if any.
@@ -297,6 +319,11 @@ impl Pipeline {
     /// against the rate of its source network ([`Pipeline::with_rate_limit`]): over it, a query gets nothing, or
     /// every `slip`th an empty reply with TC=1, or BADCOOKIE with a Server Cookie when it had a Client Cookie.
     ///
+    /// Then, with keys ([`Pipeline::with_keys`]), the TSIG of a request is verified whatever its opcode, its
+    /// failures answered as RFC 8945 §5.3.2 says, and every reply to a signed request is signed with its key,
+    /// room kept for the record over UDP (§5.3). Past the zones a signed request is refused, REFUSED with EDE 20
+    /// (Not Authoritative): a later stage's reply comes from upstream (D211).
+    ///
     /// Then, before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
     /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
     /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
@@ -371,6 +398,38 @@ impl Pipeline {
         if admission == Admission::Slip {
             return slip(&client, out);
         }
+        let signed = match self
+            .keys
+            .as_ref()
+            .map(|keys| keys.verify(wire, &client, out))
+        {
+            None | Some(Ok(None)) => None,
+            Some(Ok(Some(signed))) => Some(signed),
+            Some(Err(step)) => return step,
+        };
+        let client = client.with_key(signed.as_ref().map(Signed::key));
+        match (
+            &signed,
+            self.check(&query, &client, standing, from, now, out),
+        ) {
+            (Some(signed), Step::Reply(len)) => signed.seal(&client, len, out),
+            // Only replies come of a signed request: the stages past the zones are refused it.
+            (Some(_), _) => Step::Drop,
+            (None, step) => step,
+        }
+    }
+
+    /// The core's checks of a query that is read, admitted and verified (D41), then the stages ([`Pipeline::run`]).
+    fn check(
+        &self,
+        query: &Query<'_>,
+        client: &Client<'_>,
+        standing: Standing,
+        from: IpAddr,
+        now: u32,
+        out: &mut [u8],
+    ) -> Step {
+        let header = query.header();
         let rcode = if !query.violations().is_empty() {
             Rcode::FORMERR
         } else if header.opcode != Opcode::QUERY {
@@ -393,16 +452,16 @@ impl Pipeline {
                 }
                 Some(_) => {
                     // A connection cannot be spoofed, nor a valid Server Cookie; a datagram, UDP or DoC, can (D113).
-                    let datagram = matches!(transport, Transport::Udp | Transport::Coap);
+                    let datagram = matches!(client.transport, Transport::Udp | Transport::Coap);
                     let source = Source {
                         address: from,
                         proven: !datagram || standing == Standing::Valid,
                     };
-                    return self.run(&query, &client, source, now, out);
+                    return self.run(query, client, source, now, out);
                 }
             }
         };
-        reply(&client, Message::default(), rcode, out)
+        reply(client, Message::default(), rcode, out)
     }
 
     /// Whether the client at `from` has recursion available, RA (D208): always, but when authoritative stages
@@ -481,7 +540,8 @@ impl Pipeline {
         now: u32,
         out: &mut [u8],
     ) -> Step {
-        if let Some(step) = self.zones(client, source.address, out) {
+        let zones = self.zones(client, source.address, out);
+        if let Some(step) = zones.or_else(|| signed::past_zones(client, out)) {
             return step;
         }
         let recursion = client.header.flags.contains(Flags::RD);
