@@ -289,6 +289,24 @@ impl Zone {
         Some(Located::Exact(encloser))
     }
 
+    /// The node of `host` whose addresses an answer may carry (D206): an authoritative one, or one below a
+    /// delegation point, whose addresses are glue and which Knot gives as optional additional data too. Not one
+    /// below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4), nor a delegation point.
+    ///
+    /// The first cut on the way down from the apex tells a delegation from a DNAME, the one walk `locate` does;
+    /// it runs for an occluded node only, so an authoritative host costs the one lookup.
+    pub(crate) fn address_node(&self, host: &Name<'_>) -> Option<&Node> {
+        let node = self.node(host)?;
+        match node.kind() {
+            Kind::Authoritative => Some(node),
+            Kind::Occluded => match self.locate(host)? {
+                Located::Cut(cut) if cut.node.kind() == Kind::Delegation => Some(node),
+                _ => None,
+            },
+            Kind::Delegation | Kind::EmptyNonTerminal => None,
+        }
+    }
+
     /// The wildcard that answers for a name whose closest encloser is `encloser`.
     fn wildcard<'a>(&'a self, encloser: &Name<'_>) -> Option<Entry<'a>> {
         let mut buf = [0; MAX_NAME_LEN];

@@ -2381,9 +2381,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Additional section: the A and AAAA of in-zone NS, MX and SRV targets, in answers and referrals, the A
     before the AAAA; none for a CNAME target (RFC 2181 §10.3); no apex NS in the authority of a positive answer
     (D203 difference 1, Knot). Knot adds SVCB and HTTPS records too: left to TODECIDE. An answer's addresses come
-    from authoritative nodes only (RFC 9471 §2.2: glue is a referral's): a target below a delegation or below a
-    DNAME has none, where Knot adds it (the root's `. NS` answer with the glue of `net.`'s servers): TODECIDE. A
-    referral takes them from anywhere in the zone.
+    from authoritative nodes, then, as optional data, from glue below a delegation point, as Knot does: the root
+    zone's `. NS` priming answer (RFC 8109 §3) carries the root servers' addresses, which sit below `net.`'s
+    delegation. The first cut on the way down from the apex decides (the one walk of `locate`, run for a host that
+    is occluded only, so an authoritative host costs one lookup): a host below a delegation point has its
+    addresses given, one below a DNAME owner never (RFC 6672 §2.4; Knot gives them, so `reference.rs` leaves them
+    out of its side), and an address at a delegation point itself is no data of the zone. It is never required,
+    so no TC. A referral takes them from anywhere in the zone.
   - Referral (RFC 9471): NS in the authority, glue first for the servers inside the delegated domain (required), then
     the other servers' addresses in the zone, glue below another cut included (RFC 9471 §2.2; optional). TC is set
     only when required glue does not fit (§3.1: a response without in-domain glue is useless); optional glue is
@@ -2405,7 +2409,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: following chains without bound (a loop is an infinite reply); Knot's 5 (a resolver of ours would
     take the chain for one it must ask again); every `RRset` for ANY (RFC 8482); TC for any glue that does not fit
     (resolvers would fall back to TCP for nothing, RFC 9471 §3.1); a wildcard for an empty non-terminal (RFC 4592
-    §2.2.1).
+    §2.2.1); authoritative addresses only in an answer (the first choice of review round 1: the root's priming
+    answer lost its servers' addresses, which RFC 8109 §3 has a resolver expect).
 
 - D207 (amends D204) Zone differences and the journal (`dedens-zone`): a `Changeset` is the difference between two
   versions of a zone as RFC 1995 §4 sends it: the old and the new SOA record and the records removed and added, each

@@ -4,7 +4,7 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{EncodeError, Flags, Message, Name, Record, RecordType, Ttl, WireRdata};
 
 use crate::answer::{Answer, End, Link};
-use crate::{Kind, RrSet, Zone};
+use crate::{RrSet, Zone};
 
 /// The bit of the header's flags word that is TC, in its first byte at offset 2.
 const TC_BYTE: u8 = 0x02;
@@ -54,8 +54,10 @@ impl Answer<'_> {
     /// answer that the zone has, A before AAAA, and for a referral first those of name servers at or below the
     /// delegation point, the glue it needs (RFC 9471 §2, §3.1). No alias is followed: the target of an NS or MX
     /// record must not be one (RFC 2181 §10.3). The additional section of `message` must be empty. An answer takes
-    /// addresses of authoritative names only: not data below a delegation point, which only a referral gives as
-    /// glue, nor below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4).
+    /// the addresses of authoritative names and, as optional data, the glue below a delegation point, as Knot
+    /// does (the root zone's `. NS` answer has the root servers' addresses, which sit below `net.`); never those
+    /// below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4).
+    /// A referral takes them from anywhere in the zone.
     pub fn fill<'m>(&'m self, zone: &'m Zone, message: &mut Message<'m>) -> Glue {
         let class = zone.class();
         if self.authoritative() {
@@ -168,10 +170,12 @@ fn additional<'m>(
             if pass.is_some_and(|wanted| wanted != below) {
                 continue;
             }
-            let Some(node) = zone
-                .node(&host)
-                .filter(|node| cut.is_some() || node.kind() == Kind::Authoritative)
-            else {
+            let node = if cut.is_some() {
+                zone.node(&host)
+            } else {
+                zone.address_node(&host)
+            };
+            let Some(node) = node else {
                 continue;
             };
             for rtype in [RecordType::A, RecordType::AAAA] {

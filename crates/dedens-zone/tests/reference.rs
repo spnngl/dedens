@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{Flags, Header, Message, Opcode, Record, RecordType, Ttl};
+use dedens_proto::{Flags, Header, Message, Name, Opcode, Record, RecordType, Ttl};
 use dedens_testkit::authoritative::{Answers, QUERY_ID, Reference, Server, Transport};
 use dedens_testkit::{message, path};
 use dedens_zone::{Include, Kind, Limits, Source, Zone};
@@ -124,19 +124,30 @@ fn fits(reference: &Reference, wire: &[u8]) -> bool {
     wire.len() <= limit(reference)
 }
 
-/// The records of `section` a response gives: not those of names below a delegation point or a DNAME owner in
-/// an answer, which dedens leaves out where Knot gives them, optional (D206). A referral has them as glue.
+/// Whether `name` is below a DNAME owner with no delegation point above that: the first cut on the way down from
+/// the apex is a DNAME's, so the data there is occluded by it (RFC 6672 §2.4).
+fn below_dname(zone: &Zone, name: &Name<'_>) -> bool {
+    for depth in zone.apex().label_count()..name.label_count() {
+        match zone.node(&name.ancestor(depth)) {
+            Some(node) if node.kind() == Kind::Delegation => return false,
+            Some(node) if node.is_dname_owner() => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The records of `section` a response gives: not those of names below a DNAME owner in an answer, which dedens
+/// leaves out where Knot gives them (D206); the glue below a delegation point is given, in a referral and in an
+/// answer.
 fn given<'a>(
     zone: &Zone,
     referral: bool,
     section: &'a [Record<'static>],
 ) -> impl Iterator<Item = &'a Record<'static>> {
-    section.iter().filter(move |record| {
-        referral
-            || zone
-                .node(&record.name)
-                .is_none_or(|node| node.kind() != Kind::Occluded)
-    })
+    section
+        .iter()
+        .filter(move |record| referral || !below_dname(zone, &record.name))
 }
 
 /// Compares `ours` with what `server` sent, `theirs`, as D203 says; `full` is ours without a limit.
@@ -260,4 +271,46 @@ fn every_captured_answer_is_the_one_of_knot_by_the_rules_of_d203() {
         }
     }
     assert!(compared > 500, "{compared}");
+}
+
+/// The priming answer, `. NS` of the root zone (RFC 8109 §3), has the addresses of the thirteen root servers,
+/// which sit below the delegation of `net.`: glue, which Knot gives as optional additional data and dedens
+/// does (D206).
+#[test]
+fn the_root_priming_answer_has_the_addresses_of_the_root_servers_as_knot_gives_them() {
+    let answers = Answers::read("root");
+    let zone = load(&answers);
+    let reference = answers
+        .answers
+        .iter()
+        .find(|r| {
+            r.name == *zone.apex()
+                && r.rtype == RecordType::NS
+                && !r.dnssec_ok
+                && r.edns_size == Some(1232)
+                && r.transport == Transport::Udp
+        })
+        .expect("the priming query of the captures");
+    let ours = message(&respond(&zone, reference, limit(reference)));
+    let theirs = message(&reference.responses[&Server::Knot]);
+    assert_eq!(ours.answer.len(), 13);
+    let (additional, their_additional) = (
+        rows(Server::Knot, &ours.additional),
+        rows(Server::Knot, &theirs.additional),
+    );
+    assert!(
+        same(&additional, &their_additional),
+        "{:?} {:?}",
+        show(&additional),
+        show(&their_additional)
+    );
+    for rtype in [RecordType::A, RecordType::AAAA] {
+        let count = ours
+            .additional
+            .iter()
+            .filter(|r| r.rtype() == rtype)
+            .count();
+        assert_eq!(count, 13, "{rtype}");
+    }
+    assert_eq!(ours.additional.len(), 26);
 }
