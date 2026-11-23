@@ -2620,3 +2620,76 @@ The profile of the last build at 4 000 a second (2 711 samples, self time): the 
 executor's and the driver's polls 1.5% to 1.8% each. Nothing is above 3% but the allocator and `memcpy`, which are
 spread over the callers, and the syscalls; mimalloc's secure mode (D154) is what a malloc costs here and stays.
 What is left is `docs/TODECIDE.md`'s entry.
+
+## Authoritative service against Knot and NSD (D213)
+
+`DEDENS_CONTAINER=podman just bench-compare authoritative 1` and `authoritative-dnssec`, 1 core, 2 rounds of 10 s
+(`DEDENS_ROUNDS` 2 and `DEDENS_DURATION` 10 are the defaults). The setup is D213's: `dedensd`'s `zones` stage, Knot
+and NSD each serving the signed root zone of `testdata/authoritative/zones/` (24 899 records, 2.2 MB) and the signed
+`big.example.` (100 000 records before signing, 268 362 after, 34 MB; ECDSA P-256, NSEC3 without iterations), a
+million queries of the mix of D213 (765 NOERROR and 235 NXDOMAIN in the 1 000 of the check pass), the first 1 000
+answered with the right rcodes and the same answers as Knot's by all three before any run counts. Both modes serve
+the same signed zones; `authoritative-dnssec` sets DO (`dnsperf -D`), so each answer carries its RRSIGs and proofs.
+
+**Not the run of record.** The run of record is the VPS of D183 and is left to the user (`just bench-compare
+authoritative 1`, `authoritative 3`, then `authoritative-dnssec` the same, on Linux with rootless podman); nothing
+below compares with D183's numbers. These ran on a Mac under `podman machine`, while other agents built and tested
+in the same machine: the host's load average was 20 to 44 in the first of the three runs, 11 to 22 in the others
+(the JSON has it at the start and the end), so a number moves by a third from one run to the next and the ratios are
+indicative. The runs are the files `2026-11-23T172559Z-authoritative.json`, `171701Z-authoritative-dnssec.json` and
+`173321Z-authoritative-dnssec.json` in [`comparison/results/`](comparison/results/).
+
+Machine: Apple M5, 10 cores and 24 GiB for the host; the engine's VM is 5 vCPUs and 5.9 GiB, Linux
+7.2.11-200.fc44.aarch64, podman 5.8.1 (`pinning`: `taskset`, as D183 on the VPS: the server on VM core 0, the
+loader's `dnsperf` 2.14.0 on cores 1 to 4). `dedensd` is `main` at `885c6762` (steps 01 to 07 of the phase) with
+this step's harness, on the `io_uring` driver; Knot 3.6.2 (`docker.io/cznic/knot:v3.6.2`, by digest); NSD 4.15.4
+(built in the compare image).
+
+Saturation, thousands of queries a second, medians (range) of the valid saturation runs of 2 rounds; void is of
+each server's 5 runs (a saturation and a half-rate run in each round, and one at the common rate), which `rate
+missed` or a `dnsperf` at 90% make:
+
+| Run | Knot | NSD | `dedensd` | `dedensd` / Knot |
+|---|---|---|---|---|
+| `authoritative` (load 20) | 301.7 (259.3-344.2), 0 void | 329.1 (257.6-400.5), 2 void | 182.3 (181.0-183.7), 0 void | 0.60 |
+| `authoritative-dnssec` (load 28 to 44) | 260.6 (218.5-302.7), 2 void | 300.9 (280.4-321.3), 1 void | 143.4 (117.3-169.5), 2 void | 0.55 |
+| `authoritative-dnssec` (load 11 to 22) | 317.6 (291.6-343.7), 1 void | 290.5 (258.8-322.1), 3 void | 102.5 (95.5-109.5), 2 void | 0.32 |
+
+- The noise is wide and not measured: Knot's two valid saturation runs of the third row are 291.6 and 343.7, NSD's
+  of the first 257.6 and 400.5. No A/A run was made (`DEDENS_SERVERS="knot knot"` would do it), so no threshold is
+  claimed. Only the gap, `dedensd` at a third to six tenths of the rate of both in each run, is outside the spread;
+  the third row, where it is widest, is also the run where `dedensd` missed its half-rate and common-rate targets,
+  which says the VM was short of CPU, not why `dedensd` suffered more.
+- CPU per query at saturation (the container's cgroup, user + system): Knot 1.9 to 2.9 µs (user 0.6 to 1.3), NSD 1.8 to
+  2.9 (user 0.6 to 1.2), `dedensd` 4.6 to 8.9 (user 2.9 to 6.3). The server's core is where the rate is limited:
+  `dedensd` is busy 0.83 to 0.86 of it, Knot and NSD 0.60 to 0.65 with the loader (`dnsperf`, 4 cores) the rest of the
+  limit. Knot's and NSD's rates are therefore floors, as D183's: more rounds on the VPS tell whether they are.
+- Latency at the common rate of the first run (91 158 q/s, a rate all three reached): average, p99 and p99.9 in ms,
+  Knot 0.06, 0.66, 2.81 at 5.4 µs a query; NSD 0.08, 1.09, 3.46 at 5.0; `dedensd` 0.20, 3.20, 6.78 at 6.2. At the
+  common rate of the second run (71 706 q/s, load 28 to 44): Knot 0.18 / 2.49 / 6.40 at 6.2 µs, `dedensd` 0.65 / 8.70
+  / 24.06 at 10.7 µs, NSD void. The third run's common rate (51 258 q/s) was reached by Knot alone.
+- Knot and NSD lose 940 to 1 670 queries a run (0.05% of 2.6 million; the harness counts a run void past 1%) and
+  `dedensd` none, in every run and at every rate, a count that does not follow the rate. Not explained (the same
+  `dnsperf`, the same queries); the 1 000 answers of the check pass are all there (`lost` 0 in `checks`).
+
+Memory and load, MiB of the container's anonymous memory (`memory.stat`) and ms from the container's start (the
+timestamp it writes to `/w/start`) to the first answer to the SOA of each zone, one start per server per round, the
+zone files in the VM's page cache after the first:
+
+| Server | At the first answer | After a saturation run | Peak (a run) | Start, ms (range of 4 to 6) |
+|---|---|---|---|---|
+| Knot | 58 | 58 | 95 | 540 (490-1090) |
+| NSD | 81 | 82 | 149 | 330 (280-630) |
+| `dedensd` | 226 | 95 | 269 | 540 (480-2060) |
+
+`dedensd` holds each zone as an `Arc<Zone>` of sorted `Vec`s of nodes (D204, D206) and loads the files one after the
+other before it listens (`apps/dedensd/src/zones.rs`). Right after the load its container holds 226 MiB, and 95 by
+the end of the first saturation run: what it holds at the start beyond that, which is not profiled, is given back, so
+the steady state is 95 MiB against Knot's 58 and NSD's 81, and the load costs 226 to 269 MiB at its peak, 2.8 times
+Knot's. The three servers load the 270 000 records in the same order of time, 0.3 to 1.2 s; the 1 to 2 s starts of
+`dedensd` (2.1 s in the first signed run, 1.1 s in the second) are the loaded host's noise, as Knot's 1.1 s in the
+first run.
+
+What `dedensd` is behind on, and what the comparison says of features (transfers, XoT, NOTIFY, UPDATE, catalog zones,
+signing: not yet), is [`comparison/authoritative.md`](comparison/authoritative.md). The speed gap, 2 to 3 times Knot's and
+NSD's CPU a query, is `docs/TODECIDE.md`'s entry: this step measures and does not optimise.
