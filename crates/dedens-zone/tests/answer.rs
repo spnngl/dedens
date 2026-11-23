@@ -8,7 +8,7 @@ use std::fmt::Write;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Header, MAX_MESSAGE_LEN, Message, Question, Rcode, RecordType};
 use dedens_testkit::dns;
-use dedens_zone::{Answer, End, Limits, Link, MAX_CHAIN, Zone};
+use dedens_zone::{Answer, Dnssec, End, Limits, Link, MAX_CHAIN, Zone};
 
 use crate::util::{load_files, zone_file};
 
@@ -62,7 +62,7 @@ fn reply(zone: &Zone, answer: &Answer<'_>, question: &Question<'_>) -> Reply {
         questions: vec![question.clone()],
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut message, MAX_MESSAGE_LEN);
+    let glue = answer.fill(zone, &mut message, MAX_MESSAGE_LEN, Dnssec::Without);
     Reply {
         rcode: message.rcode(),
         aa: message.header.flags.contains(Flags::AA),
@@ -745,7 +745,7 @@ fn s3_1_a_referral_whose_glue_does_not_fit_is_truncated_and_sibling_glue_is_drop
         questions: vec![question.clone()],
         ..Message::default()
     };
-    let glue = answer.fill(&zone, &mut message, MAX_MESSAGE_LEN);
+    let glue = answer.fill(&zone, &mut message, MAX_MESSAGE_LEN, Dnssec::Without);
     let full = message.to_vec().expect("encodes");
     let mut buf = vec![0; 4096];
     // Everything fits: no TC.
@@ -807,7 +807,7 @@ fn s3_1_a_referral_whose_glue_stops_the_collection_before_the_limit_is_truncated
         questions: vec![question.clone()],
         ..Message::default()
     };
-    let glue = answer.fill(&zone, &mut message, 512);
+    let glue = answer.fill(&zone, &mut message, 512, Dnssec::Without);
     // The collection stopped before the last servers' addresses, and what it took is more than 512 bytes.
     assert!((1..32).contains(&glue.required()), "{}", glue.required());
     assert_eq!(message.additional.len(), glue.required());
@@ -1140,7 +1140,7 @@ fn collected(zone: &Zone, limit: usize) -> usize {
     let question = Question::new(dns("mx.example."), RecordType::MX);
     let answer = zone.answer(&question);
     let mut message = Message::default();
-    answer.fill(zone, &mut message, limit);
+    answer.fill(zone, &mut message, limit, Dnssec::Without);
     assert_eq!(message.answer.len(), 100);
     message.additional.len()
 }

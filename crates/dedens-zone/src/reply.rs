@@ -1,6 +1,6 @@
 //! The sections of a response from an [`Answer`], and its encoding (D206).
 
-use dedens_proto::edns::EdnsFlags;
+use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::rdata::RData;
 use dedens_proto::{EncodeError, Flags, Message, Name, Record, RecordType, Ttl, WireRdata};
 
@@ -60,6 +60,29 @@ impl Glue {
     }
 }
 
+/// Whether a response carries the DNSSEC records of the zone: the requester's DO bit (RFC 3225 §3, RFC 4035
+/// §3.2.1). A server sets DO in its OPT record as the query did; the choice is passed apart, so that no response
+/// is signed or left unsigned by what its OPT record happens to hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dnssec {
+    /// No OPT record, or DO clear: the records asked for alone.
+    Without,
+    /// DO set: the signatures, and the proofs of what the answer lacks.
+    With,
+}
+
+impl Dnssec {
+    /// The choice of a query whose OPT record is `edns`.
+    #[must_use]
+    pub fn asked(edns: Option<&Edns<'_>>) -> Self {
+        if edns.is_some_and(|edns| edns.flags.contains(EdnsFlags::DO)) {
+            Self::With
+        } else {
+            Self::Without
+        }
+    }
+}
+
 impl Answer<'_> {
     /// Adds the records of the answer to `message`, a response whose header and question are the caller's: its
     /// answer, authority and additional sections, AA and the response code. Nothing but the synthesised CNAME of
@@ -78,7 +101,7 @@ impl Answer<'_> {
     /// many hosts with many addresses costs no more than a response can carry (D206). The returned [`Glue`]
     /// encodes `message` into a buffer of at most `limit` bytes.
     ///
-    /// With DO in the OPT record of `message`, which a response copies from its query (RFC 3225 §3), each
+    /// With [`Dnssec::With`], the requester's DO (RFC 3225 §3), each
     /// `RRset` has its signatures right after it, but for the NS of a referral and its glue, which the zone does
     /// not sign, and the CNAME a DNAME synthesises, which no one signs (RFC 4035 §3.1.1, RFC 6672 §5.3.1). The
     /// authority section then holds the NSEC or NSEC3 records that prove what the answer lacks or a wildcard
@@ -87,17 +110,22 @@ impl Answer<'_> {
     /// TC; a signature of an address, optional, is dropped first, without TC.
     ///
     /// [`MAX_MESSAGE_LEN`]: dedens_proto::MAX_MESSAGE_LEN
-    pub fn fill<'m>(&'m self, zone: &'m Zone, message: &mut Message<'m>, limit: usize) -> Glue {
+    pub fn fill<'m>(
+        &'m self,
+        zone: &'m Zone,
+        message: &mut Message<'m>,
+        limit: usize,
+        dnssec: Dnssec,
+    ) -> Glue {
         let class = zone.class();
         if self.authoritative() {
             message.header.flags = message.header.flags.with(Flags::AA);
         }
         message.header.rcode = self.rcode();
-        let dnssec = message
-            .edns
-            .as_ref()
-            .is_some_and(|edns| edns.flags.contains(EdnsFlags::DO));
-        let out = Out { zone, dnssec };
+        let out = Out {
+            zone,
+            dnssec: dnssec == Dnssec::With,
+        };
         let mut proofs = Proofs::new();
         for link in &self.chain {
             match link {
@@ -169,18 +197,7 @@ impl Answer<'_> {
                         &mut message.additional,
                     );
                 }
-                if out.dnssec {
-                    match cut.node.rrset(RecordType::DS) {
-                        Some(ds) => out.signed(
-                            &mut message.authority,
-                            cut.name,
-                            cut.node,
-                            RecordType::DS,
-                            ds,
-                        ),
-                        None => zone.prove_no_data(cut.name, &Match::Exact(*cut), &mut proofs),
-                    }
-                }
+                out.ds(cut, &mut message.authority, &mut proofs);
             }
             End::YxDomain { at, rrset, .. } => {
                 out.signed(
@@ -237,6 +254,20 @@ impl<'m> Out<'m> {
     fn prove_wildcard(self, name: &Name<'_>, at: &Match<'m>, proofs: &mut Proofs<'m>) {
         if let (true, Match::Wildcard { encloser, .. }) = (self.dnssec, at) {
             self.zone.prove_wildcard_answer(name, encloser, proofs);
+        }
+    }
+
+    /// Under DO, adds the DS of the delegation at `cut` with its signatures, or proves it has none (RFC 4035
+    /// §3.1.4, RFC 5155 §7.2.7).
+    fn ds(self, cut: &Entry<'m>, out: &mut Vec<Record<'m>>, proofs: &mut Proofs<'m>) {
+        if !self.dnssec {
+            return;
+        }
+        match cut.node.rrset(RecordType::DS) {
+            Some(ds) => self.signed(out, cut.name, cut.node, RecordType::DS, ds),
+            None => self
+                .zone
+                .prove_no_data(cut.name, &Match::Exact(*cut), proofs),
         }
     }
 

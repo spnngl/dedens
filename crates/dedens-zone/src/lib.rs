@@ -25,5 +25,5 @@ pub use error::{Bound, ErrorKind, Place, Report, Warning, WarningKind, ZoneError
 pub use limits::Limits;
 pub use load::{Include, Loaded, Source};
 pub use node::{Kind, Node, RrSet};
-pub use reply::Glue;
+pub use reply::{Dnssec, Glue};
 pub use zone::Zone;

@@ -442,7 +442,8 @@ impl<'l> Builder<'l> {
                 RData::Nsec3(n) if params.holds(&n) => Some(n.next_hashed_owner().to_vec()),
                 _ => None,
             });
-            // Records of other parameters are of another chain, one being made or retired (RFC 5155 §10.4).
+            // Records of other parameters are of another chain, one being made or retired: the NSEC3PARAM names
+            // the one to serve (RFC 5155 §4).
             let Some(next) = next else { continue };
             if name.label_count() != apex_labels + 1 {
                 // Off the chain, warned as WarningKind::Nsec3Owner.
