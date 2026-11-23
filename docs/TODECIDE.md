@@ -385,9 +385,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
   starts the resolver from the zone's NS and glue and answers the resolved data, so that such a client gets an
   answer where the zone delegates to servers it can reach. The same start would let an answer that ends in a CNAME
   out of the zone (`End::Open`, which D208 answers with the chain so far, AA and RA set, whose target the client
-  asks for in a second query) continue into the resolver. Default: none, the referral and the partial chain;
-  alternative: pass the question to the recursion stage with the zone's NS and glue as its starting servers, once a
-  user runs a resolver and zones in one `dedensd`.
+  asks for in a second query) continue into the resolver. The DS of a delegation, for a server of the child zone
+  alone, is the same case: RFC 4035 §3.1.4.1 asks a server without recursion for the child's NODATA with its SOA
+  (Knot, and D208), while BIND resolves the DS from the parent for a client that may recurse. Default: none, the
+  referral, the partial chain and the child's NODATA; alternative: pass the question to the recursion stage with the
+  zone's NS and glue as its starting servers (for the DS, with the parent's), once a user runs a resolver and zones
+  in one `dedensd`.
 - An `access` per authoritative stage (D208): the access lists are those of the server, applied to the names the
   zones pass on, and the zones answer every client. A server that serves a private zone to some networks and a
   public one to all cannot say so; a stage after another authoritative one is refused. Default: one `access`, the

@@ -2615,8 +2615,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   6303, D195) as the model: the first match, and an allocation. A DS query (and only DS) is looked up in the zone of
   the name's parent first, and in the zone of the name itself when no zone is the parent's: the DS of a delegation
   belongs to the parent (RFC 4035 §3.1.4.1), so a server of both zones answers it from the parent as Knot
-  (`process_query.c`) and NSD (`query.c`) do, and a server of the child alone answers NODATA with
-  the child's SOA, the answer RFC 4035 §3.1.4.1 asks for.
+  (`process_query.c`) and NSD (`query.c`) do. A server of the child alone answers NODATA with the child's SOA, as
+  Knot does: RFC 4035 §3.1.4.1 asks for this from a server without recursion, and one with recursion may resolve
+  the DS instead (BIND does); passing it on would leak the name, so the stage answers (docs/TODECIDE.md, "Recursion
+  from the zone's cut").
   - In the pipeline (choice 2, BIND's `allow-query` against `allow-recursion`): authoritative stages open it, and
     `dedensd` places one first or refuses the configuration. The checks before the stages stay: FORMERR, NOTIMP,
     BADVERS, AXFR and IXFR REFUSED (D41), the rate limit and cookies (D113); then a zone answers its names to every
@@ -2626,9 +2628,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     `Pipeline::silences`, which DNSCrypt asks where D99 had `denies`: a client denied is not read, sealed or not,
     unless zones answer every client, for whom the packets are opened and the queries the zones pass on denied as
     by every transport (`Pipeline::denies` stays for the ODoH proxy's requests, which are no queries the zones
-    answer). A name of another class than its zone's passes on. A referral never does: a client that asks with RD and
-    may recurse gets it, with no AA, as it does from Knot and NSD; BIND instead resolves it from the zone's own NS and
-    glue for a client `allow-recursion` permits (docs/TODECIDE.md, "Recursion from the zone's cut"). With no stage
+    answer). One exception: the DNSCrypt certificates, answered outside the pipeline and its rate limit (D99), stay
+    silent over UDP to a client `Pipeline::denies` refuses, whether zones are served or not; with zones every source
+    could otherwise have them, up to 512 bytes for a query of 50, reflected at a victim. Such a client fetches them
+    over TCP, where its address is proven, and then queries over either carrier. A name of another class than its
+    zone's passes on, and no other: the zone refuses any name it is not the authority for. A referral never passes
+    on: a client that asks with RD and may recurse gets it, with no AA, as it does from Knot and NSD; BIND instead
+    resolves it from the zone's own NS and glue for a client `allow-recursion` permits (docs/TODECIDE.md, "Recursion
+    from the zone's cut"). With no stage
     after, a name outside every zone is REFUSED, as D41's query no stage answers. A stage placed after another
     stage still answers, but with the access lists not applied to its answers (`Stage::Authoritative`'s docs);
     `dedensd` refuses such a pipeline. A chain that leaves the zone (`End::Open`: a CNAME to a name outside it) is
@@ -2662,11 +2669,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Knot and BIND take any path). The resolving and the opening are two steps: a link swapped between them in the
     zone's directory gets out, which takes a user that writes in it, who writes the zone (docs/TODECIDE.md: Linux's
     `openat2` with `RESOLVE_BENEATH`). A record without TTL before any `$TTL` gets 3600 s (RFC 2308 §4; Knot's
-    `default-ttl`, NSD's `DEFAULT_TTL`; BIND takes the SOA's MINIMUM). Zone files are among the files read again as the user after a
-    drop (D122): one the user cannot read refuses the start, at the check.
+    `default-ttl`, NSD's `DEFAULT_TTL`; BIND takes the SOA's MINIMUM). Zone files are among the files read again as
+    the user after a drop (D122): one the user cannot read refuses the start, at the check. Each build warns of a
+    zone served below another that has no NS at its apex: the parent then answers NXDOMAIN, with AA, for the apex of
+    its child, which RFC 8020 resolvers take for the whole subtree (Knot does the same; NSD answers NODATA from its
+    shared tree).
   - Reload (amends D55): the zones live in the `Store` of the lists (D120), by apex and file, with the `Stamp` of
     the zone file and of each file it included, a link followed as well as its target (a link retargeted shows), a
-    file that could not be opened with none. A reload loads again only the zones whose files changed, and keeps
+    file that was not read, whatever the cause (a read that failed for a reason of the moment must not make the zone
+    skipped), with none. A reload loads again only the zones whose files changed, and keeps
     the same `Arc` for the others; the new stage is swapped in with the pipeline. A zone that fails to load while
     `dedensd` serves keeps its last version, the error logged and counted (`dedensd_authoritative_loads_total
     {result="error"}`), and the other zones and the rest of the configuration are reloaded: one broken file of ten
@@ -2688,12 +2699,14 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Tests: `crates/dedens-server/tests/authoritative.rs` (AA whatever RD, NXDOMAIN with its SOA, a referral without
     AA, REFUSED outside the zones with no later stage, AXFR still refused, RA only for the clients recursion serves,
     on a cache hit too, the names outside the zones forwarded for permitted clients only, a referral never passed on
-    to recursion, the DS of a delegation from the parent zone when both are served); `dedensd`
+    to recursion, the DS of a delegation from the parent zone when both are served, at the root, in another case,
+    with three nested zones and below a cut of the parent, the class ANY answered); `dedensd`
     (`apps/dedensd/tests/authoritative.rs`: answers with AA from the RFC zones of `testdata/zones/`, a reload that
     loads the zone changed and keeps the one that fails, no query dropped across a reload, a client denied answered
-    for the zones over DNSCrypt; unit tests of the store, the `$INCLUDE` confinement and its links, the bounds, a
-    file that is no regular one, a failed load not tried again); `dedens-sim` (`tests/authoritative.rs`): `dedensd`
-    recursing from the root through four `dedensd` authoritative servers of the root zone of RFC 1034 §6.1
+    for the zones over DNSCrypt, over UDP and TCP, and the certificates over TCP only for it, the warning of a zone
+    its parent does not delegate; unit tests of the store, the `$INCLUDE` confinement and its links, the bounds, a
+    file that is no regular one, a failed load not tried again, the gauges kept by a reload that failed); `dedens-sim`
+    (`tests/authoritative.rs`): `dedensd` recursing from the root through four `dedensd` authoritative servers of the root zone of RFC 1034 §6.1
     (`testdata/zones/rfc1034_root.zone`) and `ISI.EDU.` of RFC 1035 §5.3 (D133). Fuzz: `serve_query` runs an
     authoritative stage before a forward stage with every client denied: a reply checked, nothing sent upstream.
   - Rejected: the access lists before the zones (an authoritative server must answer the Internet, and a resolver
