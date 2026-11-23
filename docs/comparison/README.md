@@ -5,6 +5,9 @@ dedens set against other DNS servers, feature by feature, from their code.
 - [`telltaledns.md`](telltaledns.md): [TelltaleDNS](https://github.com/paimonsoror/telltaledns), a Rust
   replacement for Pi-hole and Technitium: listeners, upstreams, cache, DNSSEC, recursion, filtering, local data,
   privacy, abuse limits, operations, packaging, tests, RFCs, and the gaps both ways.
+- [`authoritative.md`](authoritative.md): the authoritative stage against Knot DNS, NSD and BIND: zone checks,
+  wildcards, DNAME, NSEC3, signing, transfers, XoT, NOTIFY, UPDATE, TSIG, catalog zones, RRL. Speed is in
+  [`../benchmarks.md`](../benchmarks.md), section "Authoritative service against Knot and NSD" (D213).
 
 Read on 2026-11-14:
 

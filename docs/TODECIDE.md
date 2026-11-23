@@ -596,3 +596,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   captured UPDATE is accepted again for the fudge its signer chose (300 s from Knot's tools and this crate) either
   side of its time (a read-only AXFR or IXFR replayed gains nothing). Default: as is, until step 14 serves UPDATE. Alternative: the server's per-key last Time Signed, checked
   after `verify_request` for UPDATE only, or for every signed request.
+- The authoritative stage's speed (D213, step 11): on one core `dedensd` answers at about half the rate of Knot and
+  NSD (`docs/benchmarks.md`, "Authoritative service against Knot and NSD") and spends 2 to 3 times their CPU a query,
+  mostly in user time, and its peak memory while loading the 268 000-record signed zone is almost three times its
+  steady state. Not profiled: the step measures. Default: as is. Alternative: profile `serve_authoritative` and
+  the load under the `dnsperf` run (UDP path, `Zone::answer`'s allocations, the `Vec`s of the load), then a step with
+  its own bench, as D183 did.
+- A DNAME has no text form in `dedens-proto` (`crates/dedens-proto/src/text/mod.rs`): a zone file with one fails
+  ("write its RDATA as \# length hex"), so the bench's generated zone writes the generic form, and Knot's or NSD's
+  signed zone files, which use the mnemonic, cannot be loaded as they are. Default: as is. Alternative: a text form
+  for DNAME (RFC 6672 §2.1: one domain name), small, like `CNAME`'s.
