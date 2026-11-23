@@ -1,7 +1,9 @@
 //! RFC 8945 §4.2 (the TSIG record), §5.1 (its place in a message) and §5.2.1 (the MAC covers the message without
 //! it).
 
-use dedens_proto::{Class, MAX_TIME_SIGNED, RecordType, Tsig, TsigDataError, TsigError, find_tsig};
+use dedens_proto::{
+    Class, MAX_TIME_SIGNED, Query, RecordType, Tsig, TsigDataError, TsigError, find_tsig,
+};
 use dedens_testkit::dns;
 use proptest::prelude::*;
 
@@ -124,6 +126,18 @@ fn s5_2_3_other_data() {
 #[test]
 fn s5_1_no_tsig_is_none() {
     assert_eq!(find_tsig(&message(&[a_record()], &[a_record()])), Ok(None));
+}
+
+/// §5.1: a query read says whether it holds a TSIG, wherever it stands: `find_tsig` judges the place.
+#[test]
+fn s5_1_a_query_read_knows_it_holds_a_tsig() {
+    let rdata = tsig(&[7; 32], &[], TsigError::NOERROR).to_wire();
+    let tsig = tsig_record(&rdata);
+    let has = |wire: &[u8]| Query::read(wire).expect("reads").has_tsig();
+    assert!(!has(&message(&[a_record()], &[a_record()])));
+    assert!(has(&message(&[], std::slice::from_ref(&tsig))));
+    assert!(has(&message(&[a_record()], &[a_record(), tsig.clone()])));
+    assert!(has(&message(std::slice::from_ref(&tsig), &[a_record()])));
 }
 
 /// §5.1: a TSIG anywhere else, twice, or followed by anything is an error.

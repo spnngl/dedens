@@ -1,7 +1,7 @@
 //! The server's paths (D23, D43), as `dedensd` runs them for each datagram: a hit, `Pipeline::query` reading a
 //! query and answering it from the cache stage, and a miss, the query sent upstream and its response stored and
 //! answered; a plugin answering with records it holds (D54); and an authoritative stage answering from its zones
-//! (D208). The allocation counts show the hit and plugin paths allocate nothing.
+//! (D208), without keys and with them, its query unsigned and signed (D211). The allocation counts show the hit and plugin paths allocate nothing.
 
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -15,6 +15,7 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Message, Name, Query, Question, Record, RecordType, Transport, Ttl};
 use dedens_server::{Answer, Authoritative, Forward, Pipeline, Plugin, Records, Stage, Step};
 use dedens_testkit::{captured, query};
+use dedens_tsig::{Algorithm, Key, Keyring, sign_request};
 use dedens_zone::{Limits, Source, Zone};
 use divan::Bencher;
 
@@ -244,10 +245,12 @@ const AUTHORITATIVE: [(&str, RecordType); 4] = [
     ("www.example.com.", RecordType::A),
 ];
 
-/// A query answered by an authoritative stage serving the captured root zone and `ISI.EDU.` of RFC 1035 §5.3: read,
-/// its zone found, the answer filled and encoded into a 1232-byte buffer (D208).
-#[divan::bench(args = AUTHORITATIVE)]
-fn authoritative(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordType)) {
+/// The time the keyed benches' requests are signed and verified at.
+const NOW: u64 = 1_750_000_000;
+
+/// A pipeline of an authoritative stage serving the captured root zone and `ISI.EDU.` of RFC 1035 §5.3, verifying
+/// requests with one key if `keyed` (D211).
+fn serving(keyed: Option<&Key>) -> Pipeline {
     let zones = [
         zone(".", "authoritative/zones/root.zone"),
         zone("ISI.EDU.", "zones/rfc1035_isi.zone"),
@@ -255,13 +258,38 @@ fn authoritative(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordType)) {
     let pipeline = Pipeline::new(vec![Stage::Authoritative(
         Authoritative::new(zones).expect("two zones"),
     )]);
+    match keyed {
+        Some(key) => pipeline.with_keys(
+            Keyring::new([key.clone()]).expect("one key"),
+            Arc::new(|| NOW),
+        ),
+        None => pipeline,
+    }
+}
+
+/// The key the keyed benches sign with.
+fn key() -> Key {
+    let name = "transfer.".parse().expect("a name");
+    Key::new(name, Algorithm::HmacSha256, vec![7; 32]).expect("a key")
+}
+
+/// A query with EDNS for `name`, signed with `key` at `NOW` if there is one.
+fn authoritative_query(name: &str, qtype: RecordType, key: Option<&Key>) -> Vec<u8> {
     let mut query = Message::query(7, Question::new(name.parse().expect("a name"), qtype));
     query.edns = Some(Edns::default());
-    let query = query.to_vec().expect("a query fits");
+    let mut wire = query.to_vec().expect("a query fits");
+    if let Some(key) = key {
+        sign_request(key, &mut wire, NOW).expect("room for the TSIG");
+    }
+    wire
+}
+
+/// Answers `query` from `pipeline` into a 1232-byte buffer.
+fn answer(bencher: Bencher<'_, '_>, pipeline: &Pipeline, query: &[u8]) {
     let mut out = vec![0; 1232];
     bencher.bench_local(|| {
         let step = pipeline.query(
-            black_box(&query),
+            black_box(query),
             Transport::Udp,
             Ipv4Addr::LOCALHOST.into(),
             0,
@@ -269,4 +297,38 @@ fn authoritative(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordType)) {
         );
         assert!(matches!(step, Step::Reply(_)));
     });
+}
+
+/// A query answered by an authoritative stage serving the captured root zone and `ISI.EDU.` of RFC 1035 §5.3: read,
+/// its zone found, the answer filled and encoded into a 1232-byte buffer (D208).
+#[divan::bench(args = AUTHORITATIVE)]
+fn authoritative(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordType)) {
+    answer(
+        bencher,
+        &serving(None),
+        &authoritative_query(name, qtype, None),
+    );
+}
+
+/// `authoritative` with keys ([`Pipeline::with_keys`]) and an unsigned query: what a server with keys costs each
+/// query that carries no TSIG (D211).
+#[divan::bench(args = AUTHORITATIVE)]
+fn authoritative_with_keys(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordType)) {
+    let key = key();
+    answer(
+        bencher,
+        &serving(Some(&key)),
+        &authoritative_query(name, qtype, None),
+    );
+}
+
+/// `authoritative` with keys and a query signed with one: the TSIG verified and the reply signed (D211).
+#[divan::bench(args = AUTHORITATIVE)]
+fn authoritative_signed(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordType)) {
+    let key = key();
+    answer(
+        bencher,
+        &serving(Some(&key)),
+        &authoritative_query(name, qtype, Some(&key)),
+    );
 }

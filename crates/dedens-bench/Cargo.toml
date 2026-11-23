@@ -43,6 +43,7 @@ rand_core.workspace = true
 [dev-dependencies]
 # The shared test data (D161); `recursion`, the captured resolutions of `benches/scrub.rs`.
 dedens-testkit = { workspace = true, features = ["recursion"] }
+dedens-tsig.workspace = true
 # The loading of the zone of `benches/zone.rs`.
 dedens-zone.workspace = true
 

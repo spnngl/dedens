@@ -957,6 +957,7 @@ dependencies = [
  "dedens-roots",
  "dedens-server",
  "dedens-testkit",
+ "dedens-tsig",
  "dedens-zone",
  "divan",
  "domain",
