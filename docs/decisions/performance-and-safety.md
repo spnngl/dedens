@@ -396,7 +396,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   real root servers' addresses on loopback aliases (root rights, and `dedensd`'s bundled TLD hints would send it
   below the root); patching TelltaleDNS to read hints (a fork measured, not its tag).
 
-- D203 (builds on D161, D162, D188) The authoritative server's test data is captured from Knot DNS 3.6.2 and NSD 4.15.4
+- D203 (builds on D161, D162, D188; amended by D209) The authoritative server's test data is captured from Knot DNS 3.6.2 and NSD 4.15.4
   (images from `testdata/authoritative/Containerfile`, NSD built from its tarball by checksum; `just
   authoritative-images`) and from public servers, in `testdata/authoritative/` (README beside), by `just
   capture-authoritative [stages]`: the example `capture_authoritative` of `dedens-testkit`, read through its feature
@@ -429,7 +429,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     matching one; RFC 5155 §7.2.3 asks for the match alone, which is Knot's and `dedensd`'s. (6) `NSEC` asked at a
     name a wildcard expands to: NSD adds the NSEC proving that name absent, Knot does not; RFC 4035 §3.1.3.3
     requires the proof in any wildcard answer, so `dedensd` follows NSD. (7) Over 512 bytes, which parts each drops
-    before setting TC (RFC 2181 §9) differ; the answer algorithm's decision says.
+    before setting TC (RFC 2181 §9) differ; the answer algorithm's decision says. (8) Knot writes the names in NS
+    RDATA uncompressed, so its responses are longer: the root's `. NS` with DO at 1232 bytes holds 22 addresses in
+    Knot's 1 217 bytes and 26 in `dedensd`'s 1 097; where Knot's additional section has no room for one more
+    address (16 bytes), it is compared as a subset of ours (D209).
   - `dedens-proto` reads every capture except the UPDATE messages whose RDATA is empty (class ANY or NONE, RFC 2136
     §2.4, §2.5: an NS of it fails, other types read as invalid RDATA); the step of UPDATE parses them itself.
   - Rejected: BIND (not asked for; no image pinned); one Knot or NSD run for all zones (three are `example.`); the

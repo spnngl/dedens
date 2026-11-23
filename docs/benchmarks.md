@@ -1017,6 +1017,33 @@ bench:
   on short names (NXDOMAIN 1.04 → 0.71 µs) and 10-20% less on long ones (growth 57 → 48 µs); a canonical key per
   node, as Knot's, would stop at the first differing byte. Neither is done: `docs/TODECIDE.md`.
 
+### Answering with DO (D209)
+
+`reply_signed` in `crates/dedens-bench/benches/zone.rs`, `DO` false and true, the reply encoded in 1232 bytes:
+the generated zone of 100 000 records with a `*.wild` wildcard and an NSEC3 chain of no salt and 0 iterations over
+its names (unsigned: the load checks no signature, and the proofs are chosen the same), the zone of RFC 5155
+Appendix A (12 iterations and a salt) and the captured root zone (NSEC, signed). Medians of one run on a machine
+shared with other builds:
+
+| | without DO | with DO |
+|---|---|---|
+| NSEC3, data (`h4000.example.`, no signature in this zone) | 331 ns | 331 ns |
+| NSEC3, NXDOMAIN (`nothing.example.`): 3 records, 3 names hashed | 830 ns | 1.67 µs |
+| NSEC3, wildcard answer: 1 record, 2 names hashed | 1.12 µs | 1.84 µs |
+| RFC 5155, NXDOMAIN (`a.c.x.w.example.`), 12 iterations | 497 ns | 4.99 µs |
+| root, NXDOMAIN (`nothing.invalid.`): 2 NSEC, signatures | 663 ns | 1.28 µs |
+| root, referral to `com.` with its DS | 5.78 µs | 5.78 µs |
+
+- An NSEC3 NXDOMAIN costs 0.8 µs more with 0 iterations: three names hashed (the closest encloser, the next
+  closer, the wildcard), each one SHA-1 block and a bisection of the chain, and the records encoded. At 12
+  iterations each name is 13 blocks: 4.5 µs more. The iterations are the operator's (RFC 9276 §3.1 asks for 0;
+  the load warns of more), so the cost is theirs; a client's name moves it by its length only, the walk to the
+  closest provable encloser starting at a node of the zone.
+- NSEC costs no hash: two bisections, 0.6 µs with the signatures written.
+- The referral costs the same: the DS and its RRSIG take the room the optional glue had, and the glue stops being
+  collected at the limit (D206).
+- About 600 000 NSEC3 NXDOMAIN replies a second on one core at 0 iterations, 200 000 at 12.
+
 ## DNSSEC crypto (D71)
 
 `benches/dnssec.rs`, one call on the RFC example each (`ring`; keys of 1024 bits where RSA's size is not said).

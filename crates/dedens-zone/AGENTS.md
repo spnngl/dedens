@@ -1,7 +1,8 @@
 # dedens-zone
 
 Zone text into a checked, immutable `Zone` (D204), the changesets between versions and their journal file (D207), and
-what it answers (`answer.rs`, `reply.rs`, D206); `src/lib.rs` says what each type is.
+what it answers (`answer.rs`, `reply.rs`, D206), with the signatures and proofs of a pre-signed zone (`denial.rs`,
+D209); `src/lib.rs` says what each type is.
 
 - A check goes in `Builder`: `add` for what one record shows, `finish` for what the whole zone does. Never over a
   finished `Zone`, which has lost the lines. A new error or warning is a variant of `ErrorKind` or `WarningKind`
@@ -39,3 +40,10 @@ what it answers (`answer.rs`, `reply.rs`, D206); `src/lib.rs` says what each typ
   the apex, one otherwise). With a node below it, it is an empty non-terminal like any other. Any client
   can ask for a name below a hash owner, so this is a query shape, not an odd zone (D206). An NSEC3 owner that is
   not one label below the apex is warned of at load (`WarningKind::Nsec3Owner`) and still differs from Knot (TODECIDE).
+- The `Denial` index (D209) holds node places: built in `finish` from the final nodes, after the chain is checked,
+  so it is never patched; anything that moves nodes goes through `Builder`. Its NSEC3 hashes come from owner labels;
+  a name a query needs is hashed at query time with the zone's parameters, and never more than the closest
+  encloser, the next closer and the wildcard, plus the walk up from a node to the closest provable encloser.
+- With DO every proof `fill` adds is checked twice in `tests/signed.rs`: by `dedens-dnssec`'s validator where the
+  keys verify (RFC 4035 zone, root) and by `denial::prove` everywhere. A new proof case gets a case there; the
+  RFC Appendix B responses are read from `docs/rfc/archive/`, never copied into the test.
