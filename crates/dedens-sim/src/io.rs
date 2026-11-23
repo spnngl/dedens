@@ -128,6 +128,10 @@ impl Io for Sim {
         tokio::time::Instant::now().into_std()
     }
 
+    fn unix_time(&self) -> u64 {
+        turmoil::since_epoch().map_or(0, |since| since.as_secs())
+    }
+
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> SimTask {
         let task = tokio::task::spawn_local(task);
         let abort = task.abort_handle();
