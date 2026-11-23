@@ -9,11 +9,12 @@
 use std::fs;
 use std::sync::LazyLock;
 
-use dedens_proto::{Message, Record, RecordType, Serial};
+use dedens_proto::rdata::{Opaque, RData};
+use dedens_proto::{Class, Message, Record, RecordType, Serial, Ttl};
 use dedens_testkit::authoritative::{Peer, Recording};
 use dedens_testkit::dns;
 use dedens_zone::journal::{Journal, JournalLimits, Stored};
-use dedens_zone::{Changeset, Limits, Place, Source, Zone};
+use dedens_zone::{Changeset, ErrorKind, Limits, Place, Source, WarningKind, Zone};
 
 /// A root zone file of `testdata/authoritative/zones/`, loaded once for all the tests (a debug build takes seconds).
 fn root(file: &str) -> Zone {
@@ -96,27 +97,161 @@ fn from_records_of_the_root_is_its_zone() {
     assert_eq!(loaded.report.warnings, []);
 }
 
+/// A record of a type no zone holds, as a transfer can carry it.
+fn meta(rtype: RecordType, class: Class) -> Record<'static> {
+    let data = Opaque::new(rtype, &[]).expect("a type without RDATA");
+    Record::new(dns("."), class, Ttl::from_wire(0), &RData::Opaque(data))
+}
+
+fn at(line: usize) -> Place {
+    Place {
+        file: 0,
+        line,
+        column: 1,
+    }
+}
+
 /// A record refused by [`Zone::from_records`] is placed at its number, from 1; past the errors' limit, the load
 /// stops (D210).
 #[test]
 fn from_records_places_an_error_at_the_record_number() {
-    let records = dedens_testkit::authoritative::zone("root.zone");
+    let mut records = vec![
+        meta(RecordType::TKEY, Class::IN),
+        meta(RecordType::ANY, Class::IN),
+        meta(RecordType(254), Class::IN),
+    ];
+    records.extend(dedens_testkit::authoritative::zone("root.zone"));
     let limits = Limits {
         errors: 2,
         ..Limits::default()
     };
-    let report = Zone::from_records(dns("zonetransfer.me."), records, &limits)
-        .expect_err("the root's records are outside zonetransfer.me.");
+    let report = Zone::from_records(dns("."), records, &limits).expect_err("meta types");
     let places: Vec<_> = report.errors.iter().map(|error| error.at).collect();
-    let at = |line| {
-        Some(Place {
-            file: 0,
-            line,
-            column: 1,
-        })
-    };
-    assert_eq!(places, [at(1), at(2), None]);
+    assert_eq!(places, [Some(at(1)), Some(at(2)), None]);
     assert_eq!(report.files, ["transfer"]);
+}
+
+/// RFC 6895 §3.1, §3.2: a record of a transfer whose type or class is no data (OPT, TSIG, TKEY, a QTYPE, a QCLASS)
+/// refuses the zone, as in a zone file; a changeset's too (D210).
+#[test]
+fn rfc6895_a_meta_type_or_class_is_refused_in_a_transfer_and_a_changeset() {
+    let root = dedens_testkit::authoritative::zone("root.zone");
+    for (rtype, class) in [
+        (RecordType::OPT, Class::IN),
+        (RecordType::TSIG, Class::ANY),
+        (RecordType::TKEY, Class::IN),
+        (RecordType::IXFR, Class::IN),
+        (RecordType::AXFR, Class::IN),
+        (RecordType(253), Class::IN),
+        (RecordType::TXT, Class::NONE),
+        (RecordType::TXT, Class::ANY),
+    ] {
+        let mut records = root.clone();
+        records.push(meta(rtype, class));
+        let number = records.len();
+        let report =
+            Zone::from_records(dns("."), records, &Limits::default()).expect_err("a meta record");
+        let found: Vec<_> = report
+            .errors
+            .iter()
+            .map(|error| (error.at, error.kind.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            [(Some(at(number)), ErrorKind::NotData { rtype, class })],
+            "{rtype} {class}"
+        );
+
+        let changeset = Changeset::new(
+            root.iter()
+                .find(|r| r.rtype() == RecordType::SOA)
+                .expect("an SOA")
+                .clone(),
+            next_soa(&root),
+            Vec::new(),
+            vec![meta(rtype, class)],
+        )
+        .expect("a changeset");
+        let report = root_zone()
+            .apply(&changeset, &Limits::default())
+            .expect_err("a meta record");
+        assert_eq!(
+            report.errors.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+            [&ErrorKind::NotData { rtype, class }],
+            "{rtype} {class}"
+        );
+    }
+}
+
+/// A record of a transfer outside the zone is dropped with a warning, as Knot does, and the zone is the rest;
+/// beyond [`Limits::errors`] the drops are not warned of; a zone file's record outside the zone stays an error
+/// (D210).
+#[test]
+fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
+    let apex = dns("zonetransfer.me.");
+    let own = dedens_testkit::authoritative::zone("zonetransfer.me.zone");
+    let kept = Zone::from_records(apex.clone(), own.clone(), &Limits::default())
+        .map_err(|report| report.to_string())
+        .expect("the zone");
+    assert_eq!(kept.report.warnings, []);
+
+    let mut records = own.clone();
+    for name in ["a.example.", "b.example.", "c.example."] {
+        let mut stranger = own.last().expect("a record").clone();
+        stranger.name = dns(name);
+        records.push(stranger);
+    }
+    let loaded = Zone::from_records(apex.clone(), records.clone(), &Limits::default())
+        .map_err(|report| report.to_string())
+        .expect("the strangers are dropped");
+    assert_eq!(loaded.zone, kept.zone);
+    let warned: Vec<_> = loaded
+        .report
+        .warnings
+        .iter()
+        .map(|w| (w.at, w.kind.clone()))
+        .collect();
+    let warning = |line, name| {
+        let place = at(line);
+        (place, WarningKind::OutsideZone { owner: dns(name) })
+    };
+    let n = own.len();
+    assert_eq!(
+        warned,
+        [
+            warning(n + 1, "a.example."),
+            warning(n + 2, "b.example."),
+            warning(n + 3, "c.example."),
+        ]
+    );
+
+    let limits = Limits {
+        errors: 2,
+        ..Limits::default()
+    };
+    let loaded = Zone::from_records(apex, records, &limits)
+        .map_err(|report| report.to_string())
+        .expect("the strangers are dropped");
+    assert_eq!(loaded.zone, kept.zone);
+    assert_eq!(loaded.report.warnings.len(), 2);
+}
+
+/// A changeset's SOA of the zone, one serial ahead.
+fn next_soa(records: &[Record<'static>]) -> Record<'static> {
+    let soa = records
+        .iter()
+        .find(|r| r.rtype() == RecordType::SOA)
+        .expect("an SOA");
+    let RData::Soa(data) = soa.data() else {
+        unreachable!("an SOA")
+    };
+    let mut data = data.clone();
+    data.serial = data.serial.wrapping_add(1);
+    Record::new(soa.name.clone(), soa.class, soa.ttl, &RData::Soa(data))
+}
+
+fn root_zone() -> Zone {
+    root("root.zone")
 }
 
 /// A changeset's records as sorted lines, to compare as sets.

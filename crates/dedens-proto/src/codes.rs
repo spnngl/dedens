@@ -337,6 +337,24 @@ impl Default for Rcode {
     }
 }
 
+impl RecordType {
+    /// Whether records of this type are data a zone holds: not 0, OPT, TKEY, TSIG, the QTYPEs IXFR, AXFR, MAILB,
+    /// MAILA and ANY, nor the rest of 128 to 255, or the reserved 65535 (RFC 6895 §3.1).
+    #[must_use]
+    pub const fn is_data(self) -> bool {
+        !matches!(self.0, 0 | 41 | 128..=255 | 65535)
+    }
+}
+
+impl Class {
+    /// Whether records of this class are data a zone holds: not 0, a QCLASS or meta class (128 to 255, NONE and
+    /// ANY among them, and 57344 to 65279), nor the reserved 65535 (RFC 6895 §3.2).
+    #[must_use]
+    pub const fn is_data(self) -> bool {
+        !matches!(self.0, 0 | 128..=255 | 0xE000..=0xFEFF | 65535)
+    }
+}
+
 impl Rcode {
     /// The 12-bit code: the header's low 4 bits under the OPT record's upper 8, `ext` (RFC 6891 §6.1.3). A header
     /// code above 15, set by hand and refused on encoding, is kept whole: cut to its low bits, BADCOOKIE would
@@ -430,6 +448,50 @@ mod tests {
         ];
         assert_eq!(digests.map(u8::from), [1, 2, 3, 4]);
         assert_eq!(u8::from(Nsec3HashAlgorithm::SHA1), 1);
+    }
+
+    /// RFC 6895 §3.1, §3.2: the types and classes no zone holds are the first and last, the QTYPEs and meta types of
+    /// 128 to 255, OPT, and the QCLASSes and meta classes.
+    #[test]
+    fn rfc6895_meta_types_and_classes_are_no_data() {
+        let types = [
+            (0, false),
+            (1, true),
+            (41, false),
+            (127, true),
+            (128, false),
+            (249, false),
+            (250, false),
+            (251, false),
+            (252, false),
+            (253, false),
+            (254, false),
+            (255, false),
+            (256, true),
+            (65534, true),
+            (65535, false),
+        ];
+        for (code, data) in types {
+            assert_eq!(RecordType(code).is_data(), data, "type {code}");
+        }
+        let classes = [
+            (0, false),
+            (1, true),
+            (127, true),
+            (128, false),
+            (254, false),
+            (255, false),
+            (256, true),
+            (0xDFFF, true),
+            (0xE000, false),
+            (0xFEFF, false),
+            (0xFF00, true),
+            (65534, true),
+            (65535, false),
+        ];
+        for (code, data) in classes {
+            assert_eq!(Class(code).is_data(), data, "class {code}");
+        }
     }
 
     #[test]

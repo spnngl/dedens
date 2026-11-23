@@ -59,7 +59,8 @@ impl Zone {
 
     /// Builds the zone of `apex` from `records`, those of a transfer in the order received, the closing SOA left
     /// out (RFC 5936 §2.2), with every check of [`Zone::load`]; a place's line is the record's number in
-    /// `records`, from 1, in the file `transfer`.
+    /// `records`, from 1, in the file `transfer`. A record outside the zone is dropped with a warning, not
+    /// refused (D210).
     ///
     /// # Errors
     ///
@@ -69,7 +70,7 @@ impl Zone {
         records: impl IntoIterator<Item = Record<'static>>,
         limits: &Limits,
     ) -> Result<Loaded, Report> {
-        let mut builder = Builder::new(apex, "transfer".to_owned(), limits);
+        let mut builder = Builder::new(apex, "transfer".to_owned(), limits).dropping_outside_zone();
         for (n, record) in records.into_iter().enumerate() {
             if builder.stopped() {
                 break;

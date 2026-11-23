@@ -76,6 +76,10 @@ pub(crate) struct Builder<'l> {
     rdata_bytes: usize,
     report: Report,
     warnings: Vec<Warning>,
+    /// Whether a record outside the zone is dropped with a warning, not refused.
+    drops_outside: bool,
+    /// The records dropped for being outside the zone: only the first [`Limits::errors`] are warned of.
+    dropped: usize,
     stopped: bool,
 }
 
@@ -93,8 +97,17 @@ impl<'l> Builder<'l> {
                 ..Report::default()
             },
             warnings: Vec::new(),
+            drops_outside: false,
+            dropped: 0,
             stopped: false,
         }
+    }
+
+    /// A builder that drops a record outside the zone with a warning, as Knot does of a transfer's
+    /// (`zonefile.c:zcreator_step`): the primary's records are not the secondary's to refuse whole (D210).
+    pub(crate) const fn dropping_outside_zone(mut self) -> Self {
+        self.drops_outside = true;
+        self
     }
 
     /// A builder holding the records of `zone`, to change it: each record's place is the zone's, line 0.
@@ -237,6 +250,19 @@ impl<'l> Builder<'l> {
         }
     }
 
+    /// A record of `owner`, outside the zone: an error, or a warning when the source drops such records.
+    fn outside(&mut self, at: Place, owner: Name<'static>) {
+        if !self.drops_outside {
+            self.error(Some(at), ErrorKind::OutsideZone { owner });
+        } else if self.dropped < self.limits.errors {
+            self.dropped += 1;
+            self.warnings.push(Warning {
+                at,
+                kind: WarningKind::OutsideZone { owner },
+            });
+        }
+    }
+
     /// Checks a record as it is read and keeps it; a record in error is left out.
     pub(crate) fn add(&mut self, at: Place, decoded: DecodedRecord<'static>) {
         let DecodedRecord {
@@ -244,6 +270,11 @@ impl<'l> Builder<'l> {
             invalid_rdata,
         } = decoded;
         let rtype = record.rtype();
+        if !rtype.is_data() || !record.class.is_data() {
+            let class = record.class;
+            self.error(Some(at), ErrorKind::NotData { rtype, class });
+            return;
+        }
         let class = *self.class.get_or_insert(record.class);
         if record.class != class {
             self.error(
@@ -260,8 +291,7 @@ impl<'l> Builder<'l> {
             return;
         }
         if !record.name.is_within(&self.apex) {
-            let owner = record.name;
-            self.error(Some(at), ErrorKind::OutsideZone { owner });
+            self.outside(at, record.name);
             return;
         }
         if rtype == RecordType::SOA && record.name != self.apex {
