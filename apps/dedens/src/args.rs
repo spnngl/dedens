@@ -11,11 +11,13 @@ use clap::{Arg, Args, CommandFactory, FromArgMatches, Parser};
 use compio::rustls::pki_types::CertificateDer;
 use compio::rustls::pki_types::pem::PemObject;
 use dedens_net::tls::Trust;
-use dedens_proto::{Class, RecordType};
+use dedens_proto::{Class, RecordType, Serial};
 use dedens_scenario::{Id, Options};
+use dedens_tsig::Key;
 
 use crate::output::Format;
 use crate::run::refuse_conflicts;
+use crate::tsig;
 
 /// A dig-like DNS client.
 ///
@@ -27,6 +29,7 @@ use crate::run::refuse_conflicts;
 pub(crate) struct Cli {
     /// Names, types and classes, as dig reads them: a type or class mnemonic is one, anything else a name. Each
     /// name is asked the types after it, else those before the first name, else A; no name asks NS of the root.
+    /// `AXFR` transfers the zone, `IXFR=SERIAL` the changes since that serial, over TCP.
     #[arg(value_name = "NAME|TYPE|CLASS")]
     pub(crate) words: Vec<String>,
     /// A server: an address, with or without a port, or a host name; `tls://`, `quic://` or `https://HOST/PATH` before
@@ -76,6 +79,14 @@ pub(crate) struct Cli {
     /// parents up to one that is. JSON and YAML print the answer as received.
     #[arg(long, value_name = "NAME", conflicts_with = "tld")]
     pub(crate) rdap: Option<String>,
+    /// Sign each query with this TSIG key, `[ALGORITHM:]NAME:SECRET` with the secret in base64, as kdig: the algorithm
+    /// is hmac-sha256 when left out. The response's TSIG is verified and its result printed. The secret shows in the
+    /// process list: `-k` keeps it out.
+    #[arg(short = 'y', long, value_name = "[ALGORITHM:]NAME:SECRET", value_parser = tsig::parse, conflicts_with = "tsig_file")]
+    pub(crate) tsig: Option<Key>,
+    /// As `-y`, the key written in the first line of this file.
+    #[arg(short = 'k', long, value_name = "FILE")]
+    pub(crate) tsig_file: Option<PathBuf>,
     /// Print what the exchanges do on stderr: `-v` dropped messages, retries and fallbacks, `-vv` every message too.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub(crate) verbose: u8,
@@ -127,6 +138,40 @@ impl Output {
 }
 
 impl Cli {
+    /// The error of the first word written `IXFR=` that has no serial (D212).
+    fn bad_ixfr_word(&self) -> Option<String> {
+        let word = self.words.iter().find(|word| {
+            word.split_once('=')
+                .is_some_and(|(mnemonic, _)| mnemonic.eq_ignore_ascii_case("IXFR"))
+                && type_word(word).is_none()
+        })?;
+        Some(format!(
+            "{word}: IXFR=SERIAL takes a serial, 0 to 4294967295"
+        ))
+    }
+
+    /// Whether `+tld` or `+rdap` is given with what they cannot honour: only the timeout, the trust of TLS and the
+    /// output apply to an RDAP query.
+    fn refuses_rdap(&self) -> bool {
+        let timed = Options {
+            time: self.options.time,
+            ..Options::default()
+        };
+        (self.tld.is_some() || self.rdap.is_some())
+            && (!self.words.is_empty()
+                || !self.server.is_empty()
+                || self.port.is_some()
+                || !self.reverse.is_empty()
+                || self.file.is_some()
+                || self.save_wire.is_some()
+                || self.repeat > 1
+                || self.trace
+                || self.search
+                || self.signs()
+                || self.output.format() == Format::Short
+                || self.options != timed)
+    }
+
     /// Parses the command line, dig's tokens included; exits with code 2 on a usage error.
     pub(crate) fn parse_dig(args: impl IntoIterator<Item = OsString>) -> Self {
         Self::try_parse_dig(args).unwrap_or_else(|error| error.exit())
@@ -157,37 +202,24 @@ impl Cli {
                 || cli.options.odoh()
                 || cli.options.coap == Some(true)
                 || cli.options.dnscrypt()
-                || cli.options.validating())
+                || cli.options.validating()
+                || cli.signs())
         {
             return usage(
                 ErrorKind::ArgumentConflict,
-                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap, +dnscrypt-cert, +dnscrypt-relay, +dnscrypt-pq, +dnscrypt-resume or +validate"
+                "+trace goes with no @server, -f, +repeat, +search, +tls, +quic, +https, +odoh-proxy, +coap, +dnscrypt-cert, +dnscrypt-relay, +dnscrypt-pq, +dnscrypt-resume, +validate, -y or -k"
                     .to_owned(),
             );
         }
-        // Only the timeout, the trust of TLS and the output apply to an RDAP query.
-        let timed = Options {
-            time: cli.options.time,
-            ..Options::default()
-        };
-        if (cli.tld.is_some() || cli.rdap.is_some())
-            && (!cli.words.is_empty()
-                || !cli.server.is_empty()
-                || cli.port.is_some()
-                || !cli.reverse.is_empty()
-                || cli.file.is_some()
-                || cli.save_wire.is_some()
-                || cli.repeat > 1
-                || cli.trace
-                || cli.search
-                || cli.output.format() == Format::Short
-                || cli.options != timed)
-        {
+        if cli.refuses_rdap() {
             return usage(
                 ErrorKind::ArgumentConflict,
-                "+tld and +rdap go with no name, @server, -p, -x, -f, --save-wire, +repeat, +trace, +search, --short or query option but +time"
+                "+tld and +rdap go with no name, @server, -p, -x, -f, --save-wire, +repeat, +trace, +search, -y, -k, --short or query option but +time"
                     .to_owned(),
             );
+        }
+        if let Some(error) = cli.bad_ixfr_word() {
+            return usage(ErrorKind::InvalidValue, error);
         }
         for server in &cli.server {
             if let Err(error) = refuse_conflicts(server, &cli.options) {
@@ -266,6 +298,29 @@ impl Cli {
         }
     }
 
+    /// Whether the queries are signed (`-y`, `-k`).
+    pub(crate) fn signs(&self) -> bool {
+        self.tsig.is_some() || self.tsig_file.is_some()
+    }
+
+    /// The key that signs the queries, if any: `-y`'s, or the first line of `-k`'s file.
+    ///
+    /// # Errors
+    ///
+    /// The file of `-k` cannot be read or holds no key.
+    pub(crate) fn key(&self) -> anyhow::Result<Option<Key>> {
+        match (&self.tsig, &self.tsig_file) {
+            (Some(key), _) => Ok(Some(key.clone())),
+            (None, Some(path)) => tsig::read(path).map(Some),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// The serial the changes are asked from: that of the last `IXFR=SERIAL` word.
+    pub(crate) fn ixfr_serial(&self) -> Option<Serial> {
+        self.words.iter().rev().find_map(|word| type_word(word)?.1)
+    }
+
     /// The servers given, in order.
     pub(crate) fn servers(&self) -> &[String] {
         &self.server
@@ -293,13 +348,24 @@ impl Cli {
     }
 }
 
+/// The type a word names: a mnemonic, or dig's `IXFR=SERIAL` (RFC 1995 §3), IXFR and the serial it asks from.
+fn type_word(word: &str) -> Option<(RecordType, Option<Serial>)> {
+    match word.split_once('=') {
+        Some((mnemonic, serial)) => {
+            let qtype = mnemonic.parse().ok().filter(|t| *t == RecordType::IXFR)?;
+            Some((qtype, Some(Serial::new(serial.parse().ok()?))))
+        }
+        None => Some((word.parse().ok()?, None)),
+    }
+}
+
 /// The names of `words` with the types to ask each, and the class: each name the types after it, else those
 /// before the first name, else A. Without a name, and without `-x` (`reverse`), the root is asked NS, as in dig.
 pub(crate) fn lookups(words: &[String], reverse: bool) -> (Vec<(&str, Vec<RecordType>)>, Class) {
     let (mut leading, mut names, mut class) = (Vec::new(), Vec::<(&str, Vec<_>)>::new(), Class::IN);
     for word in words {
-        match (word.parse(), word.parse()) {
-            (Ok(qtype), _) => names
+        match (type_word(word), word.parse()) {
+            (Some((qtype, _)), _) => names
                 .last_mut()
                 .map_or(&mut leading, |(_, types)| types)
                 .push(qtype),
@@ -462,7 +528,7 @@ fn flag<'c>(command: &'c clap::Command, text: &str) -> Option<&'c Arg> {
 /// The word of `-t`, `-c` or `-q` (`letter`) and its `value`. A class that is also a type, as `ANY`, becomes its
 /// generic form, `CLASS255`, which [`lookups`] cannot take for a type.
 fn word(letter: char, value: String) -> Result<String, String> {
-    let qtype = value.parse::<RecordType>().is_ok();
+    let qtype = type_word(&value).is_some();
     let qclass = value.parse::<Class>();
     match (letter, qclass) {
         ('t', _) if !qtype => Err(format!("-t {value}: not a type")),
@@ -590,6 +656,30 @@ mod tests {
                 names.iter().map(|(n, t)| (*n, t.to_vec())).collect();
             assert_eq!((got, got_class), (expected, class), "{words:?}");
         }
+    }
+
+    /// D212: `IXFR=SERIAL` is the type IXFR with its serial, as dig writes it; no other type takes one.
+    #[test]
+    fn an_ixfr_word_carries_its_serial() {
+        let ixfr = RecordType::IXFR;
+        for (word, expected) in [
+            ("IXFR=7", Some((ixfr, Some(Serial::new(7))))),
+            ("ixfr=4294967295", Some((ixfr, Some(Serial::new(u32::MAX))))),
+            ("IXFR", Some((ixfr, None))),
+            ("AXFR", Some((RecordType::AXFR, None))),
+            ("IXFR=", None),
+            ("IXFR=-1", None),
+            ("IXFR=4294967296", None),
+            ("AXFR=1", None),
+            ("example.org=1", None),
+        ] {
+            assert_eq!(type_word(word), expected, "{word}");
+        }
+        let words = rewrite(&["-t", "IXFR=3", "example.org"]).expect("rewritten");
+        assert_eq!(
+            lookups(&words, false),
+            (vec![("example.org", vec![ixfr])], Class::IN)
+        );
     }
 
     /// `-c ANY` asks class ANY, as dig does, though `ANY` alone is the type.

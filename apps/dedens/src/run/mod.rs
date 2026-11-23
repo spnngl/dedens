@@ -5,6 +5,7 @@
 pub(crate) mod rdap;
 mod server;
 mod tld;
+mod transfer;
 
 use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
@@ -29,10 +30,11 @@ use dedens_net::quic::QuicError;
 #[cfg(feature = "dnscrypt")]
 use dedens_net::stamp::{DnsCrypt, Relay};
 use dedens_net::tcp::TcpError;
-use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Transport};
+use dedens_proto::{Class, Message, Name, Question, Rcode, RecordType, Serial, Transport};
 #[cfg(feature = "dnscrypt")]
 use dedens_scenario::{CertificateReport, DnsCryptReport};
 use dedens_scenario::{DnssecStatus, Expect, Id, Latency, Options, QueryFile, Report, server_text};
+use dedens_tsig::Key;
 
 pub(crate) use self::server::refuse_conflicts;
 use self::server::{resolv_conf, server, servers};
@@ -57,6 +59,10 @@ struct Job {
     expect: Option<Expect>,
     /// Set for a query that validates (`+validate`): its validator, which queries with the same anchors share.
     judge: Option<Judge>,
+    /// The serial an `IXFR` asks from (`IXFR=SERIAL`, D212).
+    ixfr: Option<Serial>,
+    /// The key that signs the query (`-y`, `-k`, D212).
+    key: Option<Key>,
 }
 
 /// Where a query goes.
@@ -86,6 +92,16 @@ struct Endpoint {
 }
 
 impl Endpoint {
+    /// Whether this is a server of plain DNS: at an address, on the transport the options choose, no proxy, no
+    /// stamp. What a signed query or a zone transfer goes to (D212).
+    fn plain(&self) -> bool {
+        #[cfg(feature = "dnscrypt")]
+        if self.dnscrypt.is_some() {
+            return false;
+        }
+        self.forced.is_none() && self.proxy.is_none()
+    }
+
     /// This server among several, as its reports name it: `1.1.1.1`, then `+tls`, `+quic`, `+https`, `+odoh` or
     /// `+coap` when forced, `+dnscrypt` for a stamp, then the path of its `DoH` template other than `/dns-query`, or
     /// of its CoAP URI, each `/`, `\` or NUL a `_`: `tls://`, `quic://`, `https://` and `coap://` to one address, and
@@ -259,14 +275,22 @@ fn jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
     for job in &mut jobs {
         job.judge = judges.of(&job.options).map_err(Usage)?;
     }
-    if let Some(job) = jobs
-        .iter()
-        .find(|job| matches!(job.qtype, RecordType::AXFR | RecordType::IXFR))
-    {
-        bail!(Usage(anyhow!(
-            "{}: zone transfers are not supported yet",
-            job.id
-        )));
+    for job in &jobs {
+        let Route::Servers(endpoints) = &job.route else {
+            continue;
+        };
+        for endpoint in endpoints {
+            transfer::check(job, endpoint)?;
+            if job.key.is_some() && !endpoint.plain() {
+                bail!(Usage(anyhow!(
+                    "{}: -y and -k go with a plain @server, not tls://, quic://, https://, coap://, sdns:// or +odoh-proxy",
+                    job.id
+                )));
+            }
+        }
+        if job.key.is_some() && job.judge.is_some() {
+            bail!(Usage(anyhow!("{}: -y and -k go with no +validate", job.id)));
+        }
     }
     // Each report its own id: its `--save-wire` file and its name among the servers (D177).
     let mut ids = HashSet::new();
@@ -361,6 +385,9 @@ enum Target {
 /// Asks `job` of a server `times` in a row (see [`repeat`]), or traces it from the roots.
 async fn query(client: Rc<Client>, job: Rc<Job>, target: Target, id: Id, times: u16) -> Trail {
     let endpoint = match target {
+        Target::Server(endpoint) if transfer::is(&job) => {
+            return transfer::run(&job, &endpoint, id).await;
+        }
         Target::Server(endpoint) => endpoint,
         Target::Trace(roots) => {
             let question = Question {
@@ -438,14 +465,17 @@ async fn ask(
             qclass: job.qclass,
         };
         let query = job.options.query(question.clone());
-        let response = exchange(client, endpoint, query, &options).await?;
+        let response = exchange(client, endpoint, query, &options, job.key.as_ref()).await?;
         let decoded = Message::decode(&response.wire)?;
         if index + 1 == job.names.len() || decoded.message.rcode() != Rcode::NXDOMAIN {
             let dnssec = match &job.judge {
                 // The verdict is on the response; its questions go to the same server, the same way.
                 Some(judge) => {
-                    let send =
-                        async |query| Ok(exchange(client, endpoint, query, &options).await?.wire);
+                    let send = async |query| {
+                        Ok(exchange(client, endpoint, query, &options, None)
+                            .await?
+                            .wire)
+                    };
                     Some(
                         judge
                             .judge(&job.options, &question, &decoded.message, send)
@@ -461,11 +491,15 @@ async fn ask(
             if status == Some(DnssecStatus::Secure) {
                 shown.message = covered(&shown.message);
             }
-            let failures = job.expect.as_ref().map_or_else(Vec::new, |expect| {
+            let mut failures = job.expect.as_ref().map_or_else(Vec::new, |expect| {
                 let mut failures = expect.check(&shown.message);
                 failures.extend(expect.check_dnssec(status));
                 failures
             });
+            // A response that does not verify is shown, and fails (D212): it is what a diagnosis is for.
+            if let Some(Err(error)) = &response.tsig {
+                failures.push(format!("TSIG: {error}"));
+            }
             let report = Report {
                 dnssec,
                 failures,
@@ -590,13 +624,20 @@ fn notices(client: &Client) {
     }
 }
 
-/// Sends `query` to `endpoint`, over the transport of `options`, through its proxy when it has one.
+/// Sends `query` to `endpoint`, over the transport of `options`, through its proxy when it has one, signed with
+/// `key` when given (a plain server, as [`jobs`] checked).
 async fn exchange(
     client: &Client,
     endpoint: &Endpoint,
     query: Message<'_>,
     options: &exchange::Options,
+    key: Option<&Key>,
 ) -> Result<Response, ClientError> {
+    if let Some(key) = key {
+        return client
+            .exchange_signed(query, endpoint.server.clone(), options, key)
+            .await;
+    }
     #[cfg(feature = "dnscrypt")]
     if let Some(stamp) = &endpoint.dnscrypt {
         return client
@@ -619,7 +660,7 @@ async fn exchange(
 
 /// Whether `error` is the server's silence, refusal or reset: dig's exit code 9.
 fn no_reply(error: &anyhow::Error) -> bool {
-    error.downcast_ref().is_some_and(silent)
+    error.downcast_ref().is_some_and(silent) || error.downcast_ref().is_some_and(transfer::silent)
 }
 
 /// Whether `error` is the server's silence, refusal or reset.
@@ -671,6 +712,7 @@ fn silent(error: &ClientError) -> bool {
 /// The queries of the command line: its words (see [`args::lookups`]), then the `-x` addresses asked PTR.
 fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
     let (lookups, qclass) = args::lookups(&cli.words, !cli.reverse.is_empty());
+    let key = cli.key().map_err(Usage)?;
     let conf = (cli.search || (cli.servers().is_empty() && !cli.trace))
         .then(resolv_conf)
         .transpose()?;
@@ -690,6 +732,8 @@ fn command_line_jobs(cli: &Cli) -> anyhow::Result<Vec<Job>> {
         options: cli.options.clone(),
         expect: None,
         judge: None,
+        ixfr: cli.ixfr_serial(),
+        key: key.clone(),
     };
     let mut jobs = Vec::new();
     for (text, types) in lookups {
@@ -737,6 +781,7 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
     {
         bail!(Usage(anyhow!("{}: no query with id {id}", path.display())));
     }
+    let key = cli.key().map_err(Usage)?;
     let missing = file.server.is_none() && file.queries.iter().any(|q| q.server.is_none());
     let conf = (cli.servers().is_empty() && missing)
         .then(resolv_conf)
@@ -780,6 +825,8 @@ fn file_jobs(cli: &Cli, path: &Path) -> anyhow::Result<Vec<Job>> {
                 options,
                 expect: query.expect,
                 judge: None,
+                ixfr: None,
+                key: key.clone(),
             })
         })
         .collect()

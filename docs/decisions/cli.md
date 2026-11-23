@@ -17,12 +17,12 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   RFC 3152). The `resolv.conf` search list (`search`, `domain`, `ndots`) applies only with `+search`, as in dig: a
   debugging tool asks for the name typed. Unicode names are converted to A-labels (IDNA2008, RFC 5891 and 5895) and
   shown as such, with labels mixing scripts flagged (IDN homographs).
-- D32 (amended by D76, D169) CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
+- D32 (amended by D76, D169, D212) CLI arguments: a pre-pass turns dig tokens into long flags (`@srv` → `--server srv`, `+opt` → `--opt`,
   `+noopt` → `--opt=false` for an on/off flag only, `+opt=v` → `--opt=v`, `opt` any unique prefix as in dig;
   `-t TYPE`, `-c CLASS`, `-q NAME` → words; `-p PORT` for a server without one), leaving the value of a flag and
   anything after `--` alone, then clap parses. One option set for both spellings (clap derived on
   `dedens_scenario::Options` behind its `clap` feature), one help. An option needing EDNS (`bufsize`, `dnssec`,
-  `nsid`, `cookie`) with `+noedns` is a usage error; AXFR/IXFR are refused until supported; several
+  `nsid`, `cookie`) with `+noedns` is a usage error; AXFR and `IXFR=SERIAL` transfer zones (D212); several
   `@servers`: D38. At most 64 queries in flight; each result prints, in argument order, as soon as it is ready.
   Several names and types per run go concurrently on one compio runtime; as in dig, a name is asked the types
   written after it, and one without any the types written before the first name, else A. Output formats: D37;
@@ -37,10 +37,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `dedens`'s output, its `-v` events (both after `--color`) and `dedensd`'s text log, so `CLICOLOR`,
   `CLICOLOR_FORCE` and `TERM=dumb` steer them alike. Rejected: any value (against the convention); a hand-written
   check for stderr (it took any value and drifted from anstream on the same run's stdout).
-- D33 Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage:
+- D33 (amended by D212) Exit codes of `dedens`: 0 a response came, whatever its rcode (as dig); 1 an expectation failed; 2 usage:
   each mistake in the user's input, of the command line or found by the run before any query (`run::Usage`): a
   name that is not one, a server the run reads (its port, its TLS name, `+doc-discover` without a CoAP server with
-  no path, D95), AXFR/IXFR, two queries with one id (D177), a file an option names that cannot be used (`-f` and its
+  no path, D95), an IXFR with no serial or a transfer with an option it cannot honour (D212), two queries with one id (D177), a file an option names that cannot be used (`-f` and its
   queries' servers, options and expectations, `--tls-ca`, `+trust-anchor`, `+odoh-config` D79, the `--save-wire`
   directory); 9 no reply (timeout, a refused or reset connection); 10 any other error: the network or a server
   failing (a certificate without the name asked for too), no server in `resolv.conf`, a host name without an
@@ -183,3 +183,31 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   runs of `s3_the_path_is_the_listeners` under load, `connected: TimedOut`); it now logs `serving` once every
   thread has its endpoints. A datagram that reaches a socket before its owner set the options stays a risk, a
   startup one on macOS only (a restart ends it), and for a client of a test too.
+- D212 (amends D32, D33; builds on D205, D210) Zone transfers and TSIG on the command line. `dedens ZONE AXFR @primary` and
+  `dedens ZONE IXFR=SERIAL @primary` (also `-t IXFR=SERIAL`; `SERIAL` is the one the client holds, as dig writes
+  it, and a bare `IXFR`, or one in a query file, which has no serial to give, is a usage error) transfer over TCP
+  and print the records as they arrive, in the sections' presentation (D37), then the counts: messages, records,
+  bytes. It does not use D210's reader: that one is a secondary's, which checks the whole stream and loads a zone
+  or fails, and a diagnosis has to show a primary that breaks the protocol, so the loop is `kdig`'s (Knot 3.6.2,
+  `kdig_exec.c`): the first record must be an SOA, the transfer ends on the SOA that repeats it (an IXFR whose first
+  message is that SOA alone is up to date), a message with an ID or an RCODE other than the first's is an error
+  that leaves what came shown, the first message's RCODE (a refusal) is the result, exit 0 as for any response,
+  records after the closing SOA are a violation, past 2^21 records the transfer stops. It shares D210's query,
+  framing and TSIG (`dedens_net::transfer`). A transfer goes with a plain `@server` and no query option but
+  `+time` (RFC 5936 §2.1: no EDNS, no RD), one zone, class IN, no `+search`, no expectation, no `+validate`: a usage
+  error, exit 2. TSIG: `-y [ALGORITHM:]NAME:SECRET` and `-k FILE` (the first line of a file, written alike; `-y`
+  shows in the process list), the secret in base64, the algorithm `hmac-sha256` when left out, as `kdig -y` and
+  `-k` (`knot_tsig_key_init`), those of D205. They sign any query: `Exchange::signed` signs the query and again each
+  one a fallback changes (a new ID, no EDNS, TCP), and `Response::tsig` carries whether the response verifies; a
+  stream is verified message by message (D205's chain, up to 99 unsigned). A response that fails is not dropped
+  as a secondary's client does, waiting for a real one (D210): the user diagnosing a key wants to see what came,
+  so it is shown with `failed TSIG: why` and exit 1, a failing message of a transfer's records not shown. The TSIG
+  record is not in the sections: the verdict is the footer's `TSIG verified`, and `exchange.tsig` in JSON and YAML
+  (`verified`, `error`). A transfer is one report: `transfer.messages`, the records in arrival order in `answer`,
+  `--save-wire` writing its messages as received, with their TCP lengths. A key goes with a plain server, no
+  `+trace`, `+tld`, `+rdap` or `+validate`, `-y` and `-k` excluding each other. Key files: dedensd's `keys:` (step 09)
+  files hold the secret alone, its name and algorithm being in the YAML next to the path, so the CLI's file, which
+  has no YAML, is `kdig`'s line, not the same file. Rejected: D210's reader for the CLI (hides what breaks, no
+  arrival order, no counts); BIND's key file format and `kdig`'s `+tsig` display (TODECIDE); a transfer over TLS
+  (XoT, RFC 9103: the client has none yet); dropping a response that fails TSIG (hides the failure that is the
+  question); the key on the command line only (the process list shows it).
