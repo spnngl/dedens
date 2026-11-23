@@ -220,6 +220,9 @@ exclude_re = [
   'rollover\.rs:\d+:\d+: replace say with \(\)$',
   # A log line only (D211): a TSIG secret shorter than its hash's output is warned of (RFC 8945 §8), read either way.
   'config/tsig\.rs:\d+:\d+: replace < with (==|>|<=) in read$',
+  # A log line only (D211): `warn_revoked` says once that a reload revoked a key `keys` no longer lists; the key is
+  # revoked by `keys` whether it is said or not, which the reload's tests see.
+  'config/tsig\.rs:\d+:\d+: (replace warn_revoked with \(\)|.* in warn_revoked)$',
   # The state read at exactly `Rollover::MAX_LEN` bytes: lossy rather than strict UTF-8, which only changes the
   # message of a state set aside either way (a replacement character is no state, and the text outgrows the bound).
   'dedensd/src/rollover\.rs:\d+:\d+: replace > with >= in read$',

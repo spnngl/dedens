@@ -132,15 +132,20 @@ pub(super) fn keys(
             }
         }
     }
+    warn_revoked(files, kept, origins);
+    Ok(Keys {
+        ring: Keyring::new(keys)?,
+        skipped,
+    })
+}
+
+/// Warns of each key of `kept` that `files` no longer lists: it is revoked, and says so once, not at every reload.
+fn warn_revoked(files: &[KeyFile], kept: &Keyring, origins: &Origins) {
     for (name, _, _) in &origins.0 {
         if kept.get(name).is_some() && !files.iter().any(|file| file.name.0 == *name) {
             tracing::warn!(key = %name, "a key `keys` no longer lists is revoked");
         }
     }
-    Ok(Keys {
-        ring: Keyring::new(keys)?,
-        skipped,
-    })
 }
 
 /// The key `file` describes, its secret read from its file, with the file's [`Stamp`].
