@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Flags, Message, Question, Rcode, RecordType, Transport};
+use dedens_proto::{Class, Flags, Message, Question, Rcode, RecordType, Transport};
 use dedens_server::{Access, Authoritative, Denial, Forward, Network, Pipeline, Stage, Step};
 use dedens_testkit::dns;
 use dedens_zone::{Limits, Source, Zone};
@@ -244,4 +244,17 @@ fn a_referral_goes_on_for_a_client_asking_for_recursion_it_has() {
     assert!(!reply.flags.contains(Flags::AA), "{:?}", reply.flags);
     assert!(!reply.flags.contains(Flags::RA), "{:?}", reply.flags);
     assert!(has(&reply.records, "a.example. 3600 IN NS ns1.a.example."));
+}
+
+#[test]
+fn rfc1034_4_3_2_a_name_of_another_class_goes_on() {
+    // Step 2 matches the class too: `example.` in CH is no zone of the stage, served or not by the stages after.
+    let mut question = Question::new(dns("ns1.example"), RecordType::A);
+    question.qclass = Class::CH;
+    let mut query = Message::query(7, question);
+    query.header.flags = Flags::RD;
+    let mut out = vec![0; 65535];
+    let pipeline = mixed(Denial::Refuse);
+    let step = pipeline.query(&wire(&query), Transport::Udp, addr(INSIDE), 0, &mut out);
+    assert!(matches!(step, Step::Upstream(_)), "{step:?}");
 }

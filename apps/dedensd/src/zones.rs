@@ -244,6 +244,50 @@ mod tests {
     }
 
     #[test]
+    fn the_zones_are_counted_and_a_reading_drops_those_it_did_not_use() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = isi(dir.path());
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        // Each metric: its name, whether it is described, its value.
+        let read = || {
+            let mut metrics: Vec<_> = (snapshotter.snapshot().into_vec().into_iter())
+                .map(|(key, _, description, value)| {
+                    let value = match value {
+                        DebugValue::Counter(count) => format!("{count}"),
+                        DebugValue::Gauge(gauge) => format!("{gauge}"),
+                        DebugValue::Histogram(_) => String::new(),
+                    };
+                    (key.key().name().to_owned(), description.is_some(), value)
+                })
+                .collect();
+            metrics.sort();
+            metrics
+        };
+        let mut held = Held::default();
+        metrics::with_local_recorder(&recorder, || {
+            describe();
+            held.begin();
+            held.zone(&apex(), &path).unwrap();
+            held.end();
+        });
+        let metric = |name: &str, value: &str| (name.to_owned(), true, value.to_owned());
+        assert_eq!(
+            read(),
+            [metric(LOADS, "1"), metric(SERIAL, "20"), metric(ZONES, "1")]
+        );
+        // A reading that does not name the zone drops it.
+        metrics::with_local_recorder(&recorder, || {
+            held.begin();
+            held.end();
+        });
+        assert_eq!(read()[2], metric(ZONES, "0"));
+        assert!(held.zones.is_empty());
+    }
+
+    #[test]
     fn a_zone_is_loaded_again_only_when_a_file_it_reads_changed() {
         let dir = tempfile::tempdir().unwrap();
         let path = isi(dir.path());
