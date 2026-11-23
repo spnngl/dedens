@@ -2829,7 +2829,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   5 s, `tcp-remote-io-timeout` in `src/knot/conf/schema.c`); its response must have the AA bit. `transfer(io,
   primary, zone, from, key, &Limits) -> Transfer` asks over TCP for an IXFR from `from` (its authority section an
   SOA of that serial, the only field servers read: Knot's `ixfr.c`) or, with no serial, an AXFR, and returns
-  `Transfer::Full(Loaded)`, `Incremental(Vec<Changeset>)` (D207) or `UpToDate`. Timers, retries, NOTIFY and the
+  `Transfer::Full(Box<Loaded>)`, `Incremental(Vec<Changeset>)` (D207) or `UpToDate`. Timers, retries, NOTIFY and the
   zone's storage are the secondary's (step 13: it `apply`s each changeset to its zone before journaling it, as a
   changeset built from a transfer may not apply); XoT and IXFR over UDP are out. Time is `Io::now` and the
   wall clock of the TSIG `Io::unix_time` (the seam's, so the simulation owns both; a limit too far to add to the

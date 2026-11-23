@@ -17,7 +17,7 @@ use dedens_proto::{Flags, Message, Name, Rcode, Record, RecordType, Serial, find
 use dedens_testkit::authoritative::{Answers, Peer, Recording, Server, TSIG_KEY, Transport};
 use dedens_testkit::dns;
 use dedens_tsig::{Key, Keyring, Refusal, ResponseError, ResponseVerifier, verify_request};
-use dedens_zone::{ChangesetError, Loaded, Source, WarningKind, Zone};
+use dedens_zone::{ChangesetError, ErrorKind, Loaded, Source, WarningKind, Zone};
 
 /// What a primary does on a connection once it read the query: writes `bytes`, then closes its side when `close`,
 /// or holds the connection open, until the client goes either way.
@@ -270,7 +270,7 @@ async fn from(
 #[expect(clippy::panic, reason = "a test's helper fails the test")]
 fn full(result: Result<Transfer, TransferError>) -> Loaded {
     match result {
-        Ok(Transfer::Full(loaded)) => loaded,
+        Ok(Transfer::Full(loaded)) => *loaded,
         other => panic!("not a full zone: {other:?}"),
     }
 }
@@ -506,24 +506,32 @@ fn rfc8945_5_3_1_captured_signed_stream_verifies() {
         &Limits::default(),
     );
     let mut messages = responses("axfr-tsig-stream").into_iter();
-    let transfer = loop {
+    // The capture is the first 1200 records of the root zone, so its NSEC chain is cut (RFC 4035 §2.1.2, D209): the
+    // last message, whose MAC verifies, ends the stream, and the zone's checks refuse what it made.
+    let error = loop {
         let message = messages.next().expect("a message before the end");
         let now = find_tsig(&message)
             .expect("well formed")
             .expect("signed")
             .tsig
             .time_signed();
-        match reader.message(&message, now).expect("accepted") {
-            Step::More(next) => reader = next,
-            Step::Done(transfer) => break transfer,
+        match reader.message(&message, now) {
+            Ok(Step::More(next)) => reader = next,
+            Ok(Step::Done(transfer)) => panic!("a cut zone is accepted: {transfer:?}"),
+            Err(error) => break error,
         }
     };
     assert!(messages.next().is_none());
-    let Transfer::Full(loaded) = transfer else {
-        panic!("not a full zone");
+    let StreamError::Zone(report) = error else {
+        panic!("not a zone refused: {error:?}");
     };
-    // The 1200 records the capture holds, besides its closing SOA.
-    assert_eq!(loaded.zone.record_count(), 1200);
+    assert!(
+        report.errors.iter().all(|e| matches!(
+            e.kind,
+            ErrorKind::MissingNsec { .. } | ErrorKind::BrokenChain { .. }
+        )),
+        "{report}"
+    );
 }
 
 /// `message` as wire bytes.
@@ -1153,9 +1161,13 @@ fn d210_a_record_outside_the_zone_in_an_axfr_is_dropped_with_a_warning() {
         .collect();
     assert_eq!(
         kinds,
-        [WarningKind::OutsideZone {
-            owner: dns("stranger.example."),
-        }]
+        [
+            WarningKind::OutsideZone {
+                owner: dns("stranger.example."),
+            },
+            // The captured zone has signatures and no NSEC chain (D209): the warning its file has too.
+            WarningKind::SignedWithoutChain,
+        ]
     );
 }
 

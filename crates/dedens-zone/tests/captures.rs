@@ -14,7 +14,7 @@ use dedens_proto::{Class, Message, Record, RecordType, Serial, Ttl};
 use dedens_testkit::authoritative::{Peer, Recording};
 use dedens_testkit::dns;
 use dedens_zone::journal::{Journal, JournalLimits, Stored};
-use dedens_zone::{Changeset, ErrorKind, Limits, Place, Source, WarningKind, Zone};
+use dedens_zone::{Changeset, ErrorKind, Limits, Place, Source, Warning, WarningKind, Zone};
 
 /// A root zone file of `testdata/authoritative/zones/`, loaded once for all the tests (a debug build takes seconds).
 fn root(file: &str) -> Zone {
@@ -193,7 +193,16 @@ fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
     let kept = Zone::from_records(apex.clone(), own.clone(), &Limits::default())
         .map_err(|report| report.to_string())
         .expect("the zone");
-    assert_eq!(kept.report.warnings, []);
+    // The captured zone is signed with no NSEC chain (D209): the one warning of its own, which the strangers' come with.
+    let kinds: Vec<_> = kept.report.warnings.iter().map(|w| &w.kind).collect();
+    assert_eq!(kinds, [&WarningKind::SignedWithoutChain]);
+    let dropped = |warnings: &[Warning]| -> Vec<(Place, WarningKind)> {
+        warnings
+            .iter()
+            .filter(|w| !kept.report.warnings.contains(w))
+            .map(|w| (w.at, w.kind.clone()))
+            .collect()
+    };
 
     let mut records = own.clone();
     for name in [
@@ -211,12 +220,7 @@ fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
         .map_err(|report| report.to_string())
         .expect("the strangers are dropped");
     assert_eq!(loaded.zone, kept.zone);
-    let warned: Vec<_> = loaded
-        .report
-        .warnings
-        .iter()
-        .map(|w| (w.at, w.kind.clone()))
-        .collect();
+    let warned = dropped(&loaded.report.warnings);
     let warning = |line, name| {
         let place = at(line);
         (place, WarningKind::OutsideZone { owner: dns(name) })
@@ -241,12 +245,7 @@ fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
         .map_err(|report| report.to_string())
         .expect("the strangers are dropped");
     assert_eq!(loaded.zone, kept.zone);
-    let warned: Vec<_> = loaded
-        .report
-        .warnings
-        .iter()
-        .map(|w| (w.at, w.kind.clone()))
-        .collect();
+    let warned = dropped(&loaded.report.warnings);
     assert_eq!(
         warned,
         [

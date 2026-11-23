@@ -42,7 +42,7 @@ const FAR: Duration = Duration::from_hours(262_800);
 #[derive(Debug)]
 pub enum Transfer {
     /// The whole zone, loaded with the checks of `dedens-zone` (D204): its warnings are kept, an error refuses it.
-    Full(Loaded),
+    Full(Box<Loaded>),
     /// The changes from the client's serial to the primary's, in order (RFC 1995 §4).
     Incremental(Vec<Changeset>),
     /// The primary's serial is the client's.

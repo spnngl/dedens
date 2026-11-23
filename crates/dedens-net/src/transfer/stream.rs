@@ -445,7 +445,7 @@ impl<'k> Reader<'k> {
                     newer(serial)?;
                 }
                 Zone::from_records(self.zone.name, records, &self.limits.zone)
-                    .map(Transfer::Full)
+                    .map(|loaded| Transfer::Full(Box::new(loaded)))
                     .map_err(|report| StreamError::Zone(Box::new(report)))
             }
         }
