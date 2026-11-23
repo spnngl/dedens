@@ -240,7 +240,8 @@ impl Zone {
     /// The owner of the NSEC record that covers `name`: the last before it in canonical order, which the apex,
     /// first of all, always is for a name below it.
     fn nsec_covering<'a>(&'a self, owners: &[usize], name: &Name<'_>) -> Option<Entry<'a>> {
-        let before = self.nodes.partition_point(|(key, _)| key < name);
+        // The place of the name, or of the first node after it: a node asked for has no NSEC of its own.
+        let (Ok(before) | Err(before)) = self.nodes.binary_search_by(|(key, _)| key.cmp(name));
         let owner = owners.partition_point(|&at| at < before).checked_sub(1)?;
         self.entry(*owners.get(owner)?)
     }

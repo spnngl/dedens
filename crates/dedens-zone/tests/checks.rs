@@ -227,6 +227,34 @@ fn rfc9276_s3_1_iterations_past_zero_are_warned_of() {
     );
 }
 
+/// The warnings of the zone of RFC 5155 Appendix A with every `from` replaced by `to`.
+fn warnings(from: &str, to: &str) -> Vec<WarningKind> {
+    let text = zone_file("rfc5155_appendix_a.zone");
+    assert!(text.contains(from), "{from}");
+    load(&text.replace(from, to))
+        .expect("a valid zone")
+        .report
+        .warnings
+        .into_iter()
+        .map(|w| w.kind)
+        .collect()
+}
+
+#[test]
+fn rfc9276_s3_1_no_iteration_is_not_warned_of() {
+    // The hashes no longer match the names: the load does not check them, only that the chain closes.
+    let rehashed = zone_file("rfc5155_appendix_a.zone").replace("1 1 12 aabbccdd", "1 1 0 -");
+    let text = rehashed.replace("NSEC3PARAM 1 0 12 aabbccdd", "NSEC3PARAM 1 0 0 -");
+    let loaded = load(&text).expect("a valid zone");
+    assert_eq!(loaded.report.warnings, []);
+}
+
+#[test]
+fn rfc5155_s4_1_2_an_nsec3param_of_other_flags_names_no_chain() {
+    // Flags other than 0 are for something else than serving (RFC 5155 §4.1.2): no chain, so no iteration warned.
+    assert_eq!(warnings("NSEC3PARAM 1 0 12", "NSEC3PARAM 1 1 12"), []);
+}
+
 // --- RFC 2181 §5.2 ---
 
 #[test]
