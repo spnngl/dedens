@@ -195,6 +195,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "transfer_signed"
+path = "fuzz_targets/transfer_signed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "dnssec_crypto"
 path = "fuzz_targets/dnssec_crypto.rs"
 test = false
