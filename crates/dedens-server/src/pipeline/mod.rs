@@ -237,6 +237,14 @@ impl Pipeline {
         self.keys.as_ref().map(Keys::keyring)
     }
 
+    /// The key the request `wire` is signed with, verified with the pipeline's keys at its clock's time (RFC 8945
+    /// §5.2); `None` for a request that is unsigned or that does not verify, or a pipeline without keys. The one
+    /// way to make a [`VerifiedKey`], for the handlers of transfers, notifications and updates (D211).
+    #[must_use]
+    pub fn verified_key(&self, wire: &[u8]) -> Option<VerifiedKey<'_>> {
+        self.keys.as_ref()?.verified_key(wire)
+    }
+
     /// The cookies made and checked, if any.
     #[must_use]
     pub const fn cookies(&self) -> Option<&Cookies> {

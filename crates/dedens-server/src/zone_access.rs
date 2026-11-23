@@ -70,8 +70,9 @@ impl ZoneAccess {
     }
 
     /// Whether the client at `from`, its request verified as signed with `key` or unsigned, may do `action` to
-    /// the zone. The key is a [`VerifiedKey`]: nothing but a verification makes one. An IPv4-mapped IPv6 address is the IPv4 one. The lists are searched in order, each network of each
-    /// line: their length is bounded where they are written (D115).
+    /// the zone. The key is a [`VerifiedKey`]: nothing but a verification makes one. An IPv4-mapped IPv6 address is
+    /// the IPv4 one. The lists are searched in order, each network of each line: their length is bounded where they
+    /// are written (D115).
     #[must_use]
     pub fn permits(&self, action: Action, from: IpAddr, key: Option<VerifiedKey<'_>>) -> bool {
         let key = key.map(VerifiedKey::key);

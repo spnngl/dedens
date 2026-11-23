@@ -27,21 +27,14 @@ impl fmt::Debug for Keys {
     }
 }
 
-/// The key a request was verified as signed with (RFC 8945 §5.2). Only a verification makes one, so what asks who
-/// may do what ([`ZoneAccess::permits`](crate::ZoneAccess::permits)) is never given a key found by the name a
-/// request claims.
+/// The key a request was verified as signed with (RFC 8945 §5.2). Only the pipeline's verification makes one
+/// ([`Pipeline::verified_key`](super::Pipeline::verified_key)), with its own keyring and clock, so what asks who may
+/// do what ([`ZoneAccess::permits`](crate::ZoneAccess::permits)) is never given a key found by the name a request
+/// claims, or verified against another keyring or time.
 #[derive(Debug, Clone, Copy)]
 pub struct VerifiedKey<'k>(&'k Key);
 
 impl<'k> VerifiedKey<'k> {
-    /// The key of the request `wire`, signed with a key of `keys` and verified at time `now`, as the pipeline
-    /// verifies it; `None` for a request that is unsigned or that does not verify.
-    #[must_use]
-    pub fn from_request(keys: &'k Keyring, wire: &[u8], now: u64) -> Option<Self> {
-        let request = verify_request(keys, wire, now).ok()??;
-        Some(Self(request.key()))
-    }
-
     /// The key.
     #[must_use]
     pub const fn key(self) -> &'k Key {
@@ -64,11 +57,18 @@ impl Keys {
         &self.keys
     }
 
+    /// The key of the request `wire`, signed with one of the keys and verified at the clock's time; `None` for a
+    /// request that is unsigned or that does not verify.
+    pub(super) fn verified_key(&self, wire: &[u8]) -> Option<VerifiedKey<'_>> {
+        let request = verify_request(&self.keys, wire, (self.clock)()).ok()??;
+        Some(VerifiedKey(request.key()))
+    }
+
     /// Checks the TSIG of the request `wire`, which `query` read, from `client`, if it has one: `Ok(None)` when it
-    /// has none, with no read of the clock and no second walk of the message. A TSIG that
-    /// is not alone and last or is malformed is answered FORMERR, unsigned (RFC 8945 §5.2); an unknown key or a
-    /// wrong MAC NOTAUTH, unsigned, BADKEY or BADSIG in the TSIG; a time outside the fudge or a truncated MAC
-    /// NOTAUTH, signed, BADTIME or BADTRUNC (§5.2.1 to §5.2.4, §5.3.2). The error is written into `out`.
+    /// has none, with no read of the clock and no second walk of the message. A TSIG that is not alone and last or
+    /// is malformed is answered FORMERR, unsigned (RFC 8945 §5.2); an unknown key or a wrong MAC NOTAUTH, unsigned,
+    /// BADKEY or BADSIG in the TSIG; a time outside the fudge or a truncated MAC NOTAUTH, signed, BADTIME or
+    /// BADTRUNC (§5.2.1 to §5.2.4, §5.3.2). The error is written into `out`.
     pub(super) fn verify(
         &self,
         (query, wire): (&Query<'_>, &[u8]),

@@ -2,9 +2,10 @@
 //! network and TSIG key (RFC 8945), nothing permitted by default.
 
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use dedens_proto::{Message, Question, RecordType};
-use dedens_server::{Action, Authoritative, Grant, Network, VerifiedKey, ZoneAccess};
+use dedens_server::{Action, Authoritative, Grant, Network, Pipeline, VerifiedKey, ZoneAccess};
 use dedens_testkit::dns;
 use dedens_tsig::{Algorithm, Key, Keyring, sign_request};
 
@@ -23,28 +24,40 @@ fn key(name: &str, algorithm: Algorithm) -> Key {
 /// When the requests are signed and verified.
 const NOW: u64 = 1_750_000_000;
 
-/// A key, and the keyring a server holding it verifies requests with.
+/// A key, and a pipeline holding it that verifies requests with it, its clock at [`NOW`].
 struct Peer {
     key: Key,
-    ring: Keyring,
+    pipeline: Pipeline,
 }
 
 impl Peer {
     fn new(name: &str, algorithm: Algorithm) -> Self {
         let key = key(name, algorithm);
-        let ring = Keyring::new([key.clone()]).expect("one key");
-        Self { key, ring }
+        let pipeline = holding(&key, NOW);
+        Self { key, pipeline }
     }
 
-    /// The key of a request this peer signs, verified: the one way to get a [`VerifiedKey`].
-    fn verified(&self) -> VerifiedKey<'_> {
+    /// A request signed with this peer's key at [`NOW`].
+    fn request(&self) -> Vec<u8> {
         let mut request = wire(&Message::query(
             7,
             Question::new(dns("example."), RecordType::SOA),
         ));
         sign_request(&self.key, &mut request, NOW).expect("signed");
-        VerifiedKey::from_request(&self.ring, &request, NOW).expect("verified")
+        request
     }
+
+    /// The key of a request this peer signs, verified: the one way to get a [`VerifiedKey`].
+    fn verified(&self) -> VerifiedKey<'_> {
+        let request = self.request();
+        self.pipeline.verified_key(&request).expect("verified")
+    }
+}
+
+/// A pipeline holding `key`, its clock at `now`.
+fn holding(key: &Key, now: u64) -> Pipeline {
+    let ring = Keyring::new([key.clone()]).expect("one key");
+    Pipeline::new(Vec::new()).with_keys(ring, Arc::new(move || now))
 }
 
 fn networks(texts: &[&str]) -> Vec<Network> {
@@ -135,15 +148,19 @@ fn rfc8945_s5_2_only_a_verified_request_makes_a_key() {
         7,
         Question::new(dns("example."), RecordType::SOA),
     ));
-    assert!(VerifiedKey::from_request(&peer.ring, &query, NOW).is_none());
-    let mut request = query;
-    sign_request(&peer.key, &mut request, NOW).expect("signed");
-    let verified = VerifiedKey::from_request(&peer.ring, &request, NOW);
+    assert!(peer.pipeline.verified_key(&query).is_none());
+    let request = peer.request();
+    let verified = peer.pipeline.verified_key(&request);
     assert_eq!(verified.map(|key| key.key().name()), Some(peer.key.name()));
-    // A time outside the fudge, a key of another keyring.
-    assert!(VerifiedKey::from_request(&peer.ring, &request, NOW + 1000).is_none());
+    // A time outside the fudge by the pipeline's own clock, a key of another keyring, no keyring at all.
+    assert!(
+        holding(&peer.key, NOW + 1000)
+            .verified_key(&request)
+            .is_none()
+    );
     let other = Peer::new("other.", Algorithm::HmacSha256);
-    assert!(VerifiedKey::from_request(&other.ring, &request, NOW).is_none());
+    assert!(other.pipeline.verified_key(&request).is_none());
+    assert!(Pipeline::new(Vec::new()).verified_key(&request).is_none());
 }
 
 #[test]
