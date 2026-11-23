@@ -67,6 +67,7 @@ fn a_the_signed_zone_loads_with_its_signatures_kept_apart() {
     assert_eq!(loaded.report.warnings, []);
     let apex = zone.node(zone.apex()).expect("the apex");
     assert!(apex.rrset(RecordType::SOA).is_some());
+    assert_eq!(zone.soa_rrset().map(|set| set.rdatas().len()), Some(1));
     assert!(apex.signatures(RecordType::SOA).is_some());
     // Every set of the apex is signed.
     assert_eq!(apex.signature_sets().count(), apex.rrsets().len());
