@@ -37,6 +37,15 @@ impl Pending {
     fn types(&self) -> usize {
         self.sets.len() + self.signatures.len()
     }
+
+    /// Whether the name holds NSEC3 records and their signatures, nothing else: the owner of a link of an
+    /// NSEC3 chain.
+    fn holds_only_nsec3(&self) -> bool {
+        let nsec3 = RecordType::NSEC3;
+        !self.sets.is_empty()
+            && self.sets.keys().all(|t| *t == nsec3)
+            && self.signatures.keys().all(|t| *t == nsec3)
+    }
 }
 
 /// A cut being walked below, in canonical order (RFC 4034 §6.1 keeps a subtree together).
@@ -405,7 +414,9 @@ impl<'l> Builder<'l> {
 
     /// Every name with authoritative data or a delegation point NS has an NSEC (RFC 4035 §2.3), and each NSEC
     /// leads to the owner of the next, in canonical order (RFC 4034 §4.1.1). A name below a cut has none to own,
-    /// and a name without one would be proved absent by the NSEC that covers it, while its answer is data.
+    /// and a name without one would be proved absent by the NSEC that covers it, while its answer is data. The
+    /// owners of NSEC3 records are no names of the NSEC chain: a signer adds the NSEC3 chain beside the NSEC one
+    /// and retires it after (RFC 5155 §10.4, §10.5).
     fn check_nsec(&mut self) {
         let mut cut: Option<&Name<'static>> = None;
         let mut missing = Vec::new();
@@ -416,6 +427,7 @@ impl<'l> Builder<'l> {
             let delegation = pending.sets.contains_key(&RecordType::NS) && name != &self.apex;
             cut = (delegation || pending.sets.contains_key(&RecordType::DNAME)).then_some(name);
             if !pending.sets.contains_key(&RecordType::NSEC)
+                && !pending.holds_only_nsec3()
                 && let Some(at) = pending
                     .sets
                     .values()

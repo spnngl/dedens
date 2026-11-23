@@ -5,7 +5,7 @@
 
 use dedens_proto::{Class, Nsec3HashAlgorithm, RecordType};
 use dedens_testkit::dns;
-use dedens_zone::{ErrorKind, Limits, WarningKind};
+use dedens_zone::{ErrorKind, Limits, Loaded, Report, WarningKind};
 
 use crate::util::{APEX, NEXT_LINE, errors, load, load_extra, load_files, refused, zone_file};
 
@@ -309,6 +309,53 @@ fn rfc4035_s2_3_a_name_below_a_cut_needs_no_nsec() {
     let text = zone_file("rfc4035_appendix_a.zone");
     let added = format!("{text}a.ns1.b.example. 3600 IN A 192.0.2.77\n");
     load(&added).expect("glue needs no NSEC");
+}
+
+/// The NSEC zone of RFC 4035 Appendix A with `extra` added: a signer making the NSEC3 chain beside the NSEC one
+/// (RFC 5155 §10.4 step 2), or removing it after (§10.5 step 3).
+fn nsec_zone_with(extra: &str) -> Result<Loaded, Report> {
+    load(&format!("{}{extra}", zone_file("rfc4035_appendix_a.zone")))
+}
+
+/// A complete NSEC3 chain, one link pointing to itself, and its signature.
+const NSEC3_LINK: &str = concat!(
+    "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example. 3600 IN NSEC3 1 0 0 - 0p9mhaveqvm6t7vbl5lop2u3t2rp3tom A\n",
+    "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example. 3600 IN RRSIG NSEC3 13 2 3600 20300101000000 20200101000000 1 ",
+    "example. AAAA\n"
+);
+
+#[test]
+fn rfc5155_s10_4_an_nsec_zone_with_the_nsec3_chain_being_added_is_not_refused() {
+    // The NSEC chain still serves, no NSEC3PARAM yet: the owners of the NSEC3 records have no NSEC.
+    let loaded = nsec_zone_with(NSEC3_LINK).expect("a zone in transition");
+    assert_eq!(loaded.report.warnings, []);
+    // Flags 1 only: the NSEC3PARAM names no chain to serve, the NSEC one stays.
+    let param = "example. 3600 IN NSEC3PARAM 1 1 0 -\n";
+    let loaded = nsec_zone_with(&format!("{param}{NSEC3_LINK}")).expect("a zone in transition");
+    assert_eq!(loaded.report.warnings, []);
+}
+
+#[test]
+fn rfc5155_s10_5_an_nsec_zone_with_the_nsec3_chain_being_removed_is_not_refused() {
+    // §10.5 step 3 takes the NSEC3PARAM away first, then the NSEC3 records: the first window of §10.4 again, here
+    // with the signature of the record already gone.
+    let half = NSEC3_LINK.lines().next().expect("the NSEC3");
+    nsec_zone_with(&format!("{half}\n")).expect("a chain without its signatures");
+}
+
+#[test]
+fn rfc5155_s10_4_an_nsec3_owner_holding_other_data_is_still_asked_for_an_nsec() {
+    // Only a name holding NSEC3 records and their signatures is exempt: this one answers with data.
+    let hash = "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example.";
+    let extra = format!("{NSEC3_LINK}{hash} 3600 IN TXT \"x\"\n");
+    let line = zone_file("rfc4035_appendix_a.zone").lines().count() + 1;
+    assert_eq!(
+        errors(nsec_zone_with(&extra).expect_err("a refused zone")),
+        [(
+            Some(line),
+            ErrorKind::MissingNsec { owner: dns(hash) }
+        )]
+    );
 }
 
 // --- RFC 2181 §5.2 ---
