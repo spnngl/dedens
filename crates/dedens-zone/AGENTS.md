@@ -26,11 +26,14 @@ what it answers (`answer.rs`, `reply.rs`, D206); `src/lib.rs` says what each typ
 - A change to `Zone::answer` goes with `fuzz/src/zone.rs` (`zone_answer`), `tests/answer.rs` (the RFC examples)
   and `tests/reference.rs` (Knot and NSD, by D203's rules); a difference there is D203's or a bug, never a changed
   expectation. The answer must not allocate zone data: bench `answer_zone` and `reply_zone` after touching it, the
-  127-label and DNAME-growth cases included (the lookup is one bisection for a name that is a node and two for one that is not, never a search per ancestor or
-  a walk from the apex).
+  127-label and DNAME-growth cases included (`locate` is one bisection for a name that is a node and at most two for
+  one that is not, `step` adds one for the wildcard; never a search per ancestor or a walk from the apex).
 - `Zone`'s nodes are a sorted `Vec`, not a map (D206): a lookup by a name that lives shorter than the zone must still
-  return a node that lives as long as the zone. `locate` bisects for the name asked and, if it is no node, takes the closest
-  encloser from the node before it, relying on D204: every ancestor of a node is a node, so the name's closest
-  encloser is the ancestor it shares the most labels with that node. `fn address_node` reads an occluded node's cut
-  the same way, with no walk.
-- A name holding only NSEC3 records is no name for `answer` (RFC 5155 §7.2), though it is a node.
+  return a node that lives as long as the zone. `locate` bisects for the name asked and, if it is no node, takes the
+  closest encloser from the node before it, relying on D204: every ancestor of a node is a node, so the name's
+  closest encloser is the ancestor it shares the most labels with that node. `fn address_node` reads an occluded
+  node's cut the same way, with no walk.
+- A node holding only NSEC3 records with no node below it is no name for `answer` (RFC 5155 §7.2.8): the builder
+  marks it (`Node::is_proof_only`), it is absent when asked for, and `locate` replaces it by its parent as the
+  closest encloser of a name below it. With a node below it, it is an empty non-terminal like any other. Any client
+  can ask for a name below a hash owner, so this is a query shape, not an odd zone (D206).

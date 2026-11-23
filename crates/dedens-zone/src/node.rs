@@ -64,6 +64,7 @@ pub struct Node {
     pub(crate) kind: Kind,
     pub(crate) wildcard: bool,
     pub(crate) dname: bool,
+    pub(crate) proof_only: bool,
     /// By type.
     pub(crate) rrsets: Vec<(RecordType, RrSet)>,
     /// By the type covered.
@@ -87,6 +88,14 @@ impl Node {
     #[must_use]
     pub const fn is_dname_owner(&self) -> bool {
         self.dname
+    }
+
+    /// Whether the name is there for the proofs of non-existence only: it holds NSEC3 records and nothing else, and
+    /// no node is below it. A server acts as if such a name did not exist (RFC 5155 §7.2.8), so no answer has it as
+    /// a name, nor as a closest encloser. One with a node below it exists, as an empty non-terminal.
+    #[must_use]
+    pub const fn is_proof_only(&self) -> bool {
+        self.proof_only
     }
 
     /// The `RRset`s by type, signatures left out.

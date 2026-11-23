@@ -429,6 +429,13 @@ impl<'l> Builder<'l> {
             }
             self.place(&mut nodes, &mut delegations, &mut cut, name, pending);
         }
+        // The names below a name follow it in canonical order, so the next node says whether there is one.
+        let mut next: Option<&Name<'static>> = None;
+        for (name, node) in nodes.iter_mut().rev() {
+            let name: &Name<'static> = name;
+            node.proof_only = holds_only_nsec3(node) && next.is_none_or(|n| !n.is_within(name));
+            next = Some(name);
+        }
         (nodes, delegations)
     }
 
@@ -524,6 +531,7 @@ impl<'l> Builder<'l> {
             kind,
             wildcard,
             dname,
+            proof_only: false,
             rrsets,
             signatures,
         }
@@ -548,6 +556,12 @@ impl<'l> Builder<'l> {
             }
         }
     }
+}
+
+/// Whether `node` holds NSEC3 records and nothing else.
+fn holds_only_nsec3(node: &Node) -> bool {
+    let mut sets = node.rrsets().peekable();
+    sets.peek().is_some() && sets.all(|(rtype, _)| rtype == RecordType::NSEC3)
 }
 
 /// The name servers of `ns` at or below `delegation`.

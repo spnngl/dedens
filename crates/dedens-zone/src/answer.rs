@@ -185,12 +185,6 @@ enum Located<'a> {
     Cut(Entry<'a>),
 }
 
-/// Whether `node` holds NSEC3 records and nothing else.
-fn only_nsec3(node: &Node) -> bool {
-    let mut sets = node.rrsets().peekable();
-    sets.peek().is_some() && sets.all(|(rtype, _)| rtype == RecordType::NSEC3)
-}
-
 /// What one name leads to.
 enum Step<'a> {
     End(End<'a>),
@@ -248,21 +242,26 @@ impl Zone {
         self.nodes.get(at).map(|(name, node)| Entry { name, node })
     }
 
-    /// Where `name`, which is within the zone, is: one lookup for a name the zone has, two for one it lacks, and
-    /// no walk, whatever the depth of the name or of the zone, which a client picks.
+    /// Where `name`, which is within the zone, is: one bisection for a name the zone has, at most two for one it
+    /// lacks, and no walk, whatever the depth of the name or of the zone, which a client picks. The wildcard of an
+    /// absent name is one more, in [`Zone::step`].
     ///
     /// A name the zone has is hidden when it is `Kind::Occluded`, whose `cut` is the node to refer to. For one
     /// it lacks, the lookup ends where the name would sort, and its closest encloser is the ancestor it shares
     /// the most labels with the node before: that node's subtree holds every name between the encloser and the
     /// name, and every ancestor of a node is a node (D204). The encloser's own `Kind` says whether a cut is
     /// above the name.
+    ///
+    /// A proof-only node is no name and no encloser (RFC 5155 §7.2.8, [`Node::is_proof_only`]): asked for, it
+    /// is absent; as the encloser of a name below it, its parent takes its place, at the cost of one more
+    /// bisection on that path.
     fn locate<'a>(&'a self, name: &Name<'_>) -> Option<Located<'a>> {
         let at = match self.nodes.binary_search_by(|(key, _)| key.cmp(name)) {
             Ok(at) => {
                 let entry = self.entry(at)?;
-                // A name that holds nothing but NSEC3 records is no name to ask for: it is in the zone for the
-                // proofs only (RFC 5155 §7.2), and Knot and NSD answer as if it were absent.
-                if !only_nsec3(entry.node) {
+                // The server acts as if the owner of an NSEC3 record did not exist (RFC 5155 §7.2.8), as Knot
+                // and NSD do for the name itself.
+                if !entry.node.is_proof_only() {
                     return match entry.node.kind() {
                         Kind::Occluded { cut } => self.entry(cut).map(Located::Cut),
                         _ => Some(Located::Exact(entry)),
@@ -275,7 +274,15 @@ impl Zone {
         let previous = self.entry(at.checked_sub(1)?)?;
         let shared = previous.name.shared_labels(name);
         let encloser = if shared == previous.name.label_count() {
-            previous
+            if previous.node.is_proof_only() {
+                // Nothing is below it but the name, which is absent: the parent has this node as a child, so
+                // it is not proof-only itself.
+                let parent = previous.name.parent()?;
+                let (name, node) = crate::zone::find(self.nodes.get(..at)?, &parent)?;
+                Entry { name, node }
+            } else {
+                previous
+            }
         } else if shared == self.apex.label_count() {
             // The usual one for a name a client invents: the apex, the first node.
             self.entry(0)?
@@ -331,7 +338,8 @@ impl Zone {
         Some(Entry { name, node })
     }
 
-    /// What `name`, within the zone, leads to when `qtype` is asked.
+    /// What `name`, within the zone, leads to when `qtype` is asked: at most three bisections of `name`, two in
+    /// [`Zone::locate`] and one for the wildcard.
     fn step<'a>(&'a self, name: Name<'a>, qtype: RecordType) -> Step<'a> {
         let at = match self.locate(&name) {
             Some(Located::Cut(cut)) if cut.node.kind() == Kind::Delegation => {
@@ -362,7 +370,9 @@ impl Zone {
                 Some(source) => Match::Wildcard { source, encloser },
                 None => return Step::End(End::NxDomain { name, encloser }),
             },
-            // The apex is a node of every zone, so this is out of reach; refusing is the safe answer.
+            // `locate` gives `None` for a name before the apex, which is within the zone so never, and for an
+            // ancestor it does not find, which every ancestor of a node being a node (D204) rules out. Refusing
+            // is the safe answer.
             None => return Step::End(End::NotAuth),
         };
         Self::at(name, at, qtype)
