@@ -256,3 +256,28 @@ pub(super) fn silent(error: &TransferError) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use super::*;
+
+    #[test]
+    fn a_primary_that_did_not_answer_is_silent() {
+        let refused = Error::from(ErrorKind::ConnectionRefused);
+        assert!(silent(&TransferError::Connect(refused)));
+        assert!(silent(&TransferError::Closed));
+        assert!(silent(&TransferError::Limit(Limit::Idle)));
+    }
+
+    #[test]
+    fn a_failure_of_ours_or_of_the_network_is_not() {
+        let denied = Error::from(ErrorKind::PermissionDenied);
+        assert!(!silent(&TransferError::Connect(denied)));
+        assert!(!silent(&TransferError::Io(Error::from(
+            ErrorKind::BrokenPipe
+        ))));
+        assert!(!silent(&TransferError::Limit(Limit::Messages)));
+    }
+}
