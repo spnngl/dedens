@@ -11,4 +11,5 @@ mod lookup;
 mod marks;
 mod reference;
 mod rfc_zones;
+mod signed;
 mod util;

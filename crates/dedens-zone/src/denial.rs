@@ -287,11 +287,17 @@ impl Zone {
         from: &Name<'_>,
     ) -> Option<(usize, Entry<'a>, Option<Entry<'a>>)> {
         // `from` is a name of the zone, so the walk is bounded by the zone's depth, not by `name`'s.
-        (self.apex.label_count()..=from.label_count()).rev().find_map(|labels| {
-            let encloser = self.nsec3_matching(params, chain, &name.ancestor(labels))?;
-            let next_closer = name.ancestor(labels + 1);
-            Some((labels, encloser, self.nsec3_covering(params, chain, &next_closer)))
-        })
+        (self.apex.label_count()..=from.label_count())
+            .rev()
+            .find_map(|labels| {
+                let encloser = self.nsec3_matching(params, chain, &name.ancestor(labels))?;
+                let next_closer = name.ancestor(labels + 1);
+                Some((
+                    labels,
+                    encloser,
+                    self.nsec3_covering(params, chain, &next_closer),
+                ))
+            })
     }
 
     /// Adds the closest provable encloser proof of `name` from `from` up: the encloser's record and the one

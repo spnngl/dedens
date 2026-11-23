@@ -2,7 +2,9 @@
 
 use core::fmt;
 
-use dedens_proto::{Class, DecodeError, Name, Nsec3HashAlgorithm, RecordType, Serial, TextErrorKind};
+use dedens_proto::{
+    Class, DecodeError, Name, Nsec3HashAlgorithm, RecordType, Serial, TextErrorKind,
+};
 
 /// Where a record starts: the line and column, from 1, in the file of that index in [`Report::files`].
 ///
@@ -141,7 +143,9 @@ pub enum ErrorKind {
     /// An NSEC or NSEC3 record whose next name is not the owner that follows it in its chain, in canonical or
     /// hash order: the chain does not close, and an answer would prove what the zone holds absent (RFC 4034
     /// §4.1.1, RFC 5155 §7.1).
-    #[error("the {rtype} record of {owner} does not lead to the next name of its chain (RFC 4034 §4.1.1, RFC 5155 §7.1)")]
+    #[error(
+        "the {rtype} record of {owner} does not lead to the next name of its chain (RFC 4034 §4.1.1, RFC 5155 §7.1)"
+    )]
     BrokenChain {
         /// NSEC or NSEC3.
         rtype: RecordType,

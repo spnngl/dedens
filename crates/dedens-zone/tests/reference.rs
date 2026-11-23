@@ -341,4 +341,3 @@ fn the_root_priming_answer_has_the_addresses_of_the_root_servers_as_knot_gives_t
     }
     assert_eq!(ours.additional.len(), 26);
 }
-

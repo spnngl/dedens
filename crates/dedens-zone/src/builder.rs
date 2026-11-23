@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, DecodedRecord, Name, Nsec3HashAlgorithm, Record, RecordType, Ttl, WireRdata};
+use dedens_proto::{
+    Class, DecodedRecord, Name, Nsec3HashAlgorithm, Record, RecordType, Ttl, WireRdata,
+};
 
 use crate::denial::{Chain, Denial, Params, owner_hash_of};
 use crate::zone::find;
@@ -451,7 +453,7 @@ impl<'l> Builder<'l> {
                 None => broken.push((set.at, name.clone())),
             }
         }
-        links.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        links.sort_unstable_by_key(|link| link.0);
         broken.extend(
             links
                 .iter()
