@@ -2,13 +2,16 @@
 //! Templates, a server's reading of requests and a client's reading of responses, and the stream of a zone transfer
 //! (D210).
 
+use std::cmp::Ordering;
+
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::stamp::{Relay, Stamp};
 use dedens_net::transfer::stream::{Asked, Reader, Step};
 use dedens_net::transfer::{Limits, Transfer};
 use dedens_proto::rdata::RData;
-use dedens_proto::{MAX_MESSAGE_LEN, Message, RecordType, Serial};
+use dedens_proto::{MAX_MESSAGE_LEN, Message, Name, RecordType, Serial, find_tsig};
+use dedens_tsig::{Algorithm, Key, ResponseVerifier};
 use dedens_zone::Changeset;
 
 /// Arbitrary text as `/etc/resolv.conf`: `ndots` stays at most 15, and any of its words has the name itself and at
@@ -221,15 +224,48 @@ pub fn read_doh_response(data: &[u8]) {
 /// Arbitrary bytes as a zone transfer over TCP (D210), each message behind its length in two octets: the request,
 /// whose ID, question and SOA say what was asked (RFC 5936 §2.2, RFC 1995 §3), then the responses, read by
 /// `transfer::stream::Reader` up to its end. A full zone is the zone asked for; changes start at the serial asked
-/// from and follow one another.
+/// from and follow one another, ahead of it, to the serial of the opening SOA.
 ///
 /// # Panics
 ///
 /// On a bug in the reader.
 pub fn transfer_stream(data: &[u8]) {
+    transfer(data, None);
+}
+
+/// [`transfer_stream`] with a request signed with a fixed key, the one of the captures (D203), and every message
+/// of the response verified: the key's name and secret are what the seeds of `axfr-tsig-stream` were signed with.
+///
+/// # Panics
+///
+/// On a bug in the reader or the verifier.
+pub fn transfer_signed(data: &[u8]) {
+    let name = Name::from_labels([b"dedens-test-key".as_slice()]).expect("a valid name");
+    let key = Key::from_base64(
+        name,
+        Algorithm::HmacSha256,
+        "ZGVkZW5zIHRlc3Qga2V5IGZvciBUU0lHIGNhcHR1cmVzCg==",
+    )
+    .expect("a key");
+    transfer(data, Some(&key));
+}
+
+/// The transfer of `data`: with `key`, the request's TSIG gives the MAC and the time of the verifier.
+fn transfer(data: &[u8], key: Option<&Key>) {
     let mut messages = frames(data);
-    let Some(Ok(request)) = messages.next().map(Message::decode) else {
+    let Some(wire) = messages.next() else {
         return;
+    };
+    let Ok(request) = Message::decode(wire) else {
+        return;
+    };
+    let (verifier, now) = match (key, find_tsig(wire)) {
+        (None, _) => (None, 0),
+        (Some(key), Ok(Some(tsig))) if &tsig.name == key.name() => (
+            Some(ResponseVerifier::new(key, tsig.tsig.mac())),
+            tsig.tsig.time_signed(),
+        ),
+        (Some(_), _) => return,
     };
     let request = request.message;
     let Some(question) = request.questions.first() else {
@@ -249,12 +285,22 @@ pub fn transfer_stream(data: &[u8]) {
     };
     let zone = question.name.clone().into_owned();
     let limits = Limits::default();
-    let mut reader = Reader::new(zone.clone(), request.header.id, asked, None, &limits);
+    let mut reader = Reader::new(zone.clone(), request.header.id, asked, verifier, &limits);
+    let mut opening = None;
     for message in messages {
-        match reader.message(message, 0) {
+        opening = opening.or_else(|| opening_serial(message));
+        match reader.message(message, now) {
             Ok(Step::More(next)) => reader = next,
             Ok(Step::Done(Transfer::Full(loaded))) => {
                 assert_eq!(loaded.zone.apex(), &zone, "another zone");
+                if let Some(from) = from {
+                    let serial = Serial::new(loaded.zone.soa().serial);
+                    assert_eq!(
+                        serial.partial_cmp(&from),
+                        Some(Ordering::Greater),
+                        "not newer"
+                    );
+                }
                 return;
             }
             Ok(Step::Done(Transfer::Incremental(changesets))) => {
@@ -266,10 +312,26 @@ pub fn transfer_stream(data: &[u8]) {
                 for pair in changesets.windows(2) {
                     assert_eq!(pair[0].to_serial(), pair[1].from_serial(), "a gap");
                 }
+                let last = changesets.last().map(Changeset::to_serial);
+                assert_eq!(last, opening, "changes not up to the opening SOA");
+                assert_eq!(
+                    last.zip(from).map(|(to, from)| to.partial_cmp(&from)),
+                    Some(Some(Ordering::Greater)),
+                    "changes not ahead of the serial asked"
+                );
                 return;
             }
             Ok(Step::Done(Transfer::UpToDate)) | Err(_) => return,
         }
+    }
+}
+
+/// The serial of the first answer of `message` when it is an SOA.
+fn opening_serial(message: &[u8]) -> Option<Serial> {
+    let message = Message::decode(message).ok()?.message;
+    match message.answer.first()?.data() {
+        RData::Soa(soa) => Some(Serial::new(soa.serial)),
+        _ => None,
     }
 }
 

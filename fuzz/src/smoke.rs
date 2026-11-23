@@ -141,14 +141,12 @@ fn recursion() -> Vec<(String, Vec<u8>)> {
 }
 
 /// The zone transfers over TCP of `testdata/authoritative/recordings/` (D203), each message behind its length in two
-/// octets, the request first: the AXFR and IXFR ones, but those of the root, too large to vary (D210).
+/// octets, the request first: the AXFR and IXFR ones, but the unsigned one of the root, too large to vary (D210);
+/// the signed one stays, for the verifier of `transfer_signed`: a flip fails its first MAC, and a cut its last.
 fn transfers() -> Vec<(String, Vec<u8>)> {
     Recording::ids()
         .into_iter()
-        .filter(|id| {
-            (id.starts_with("axfr-") || id.starts_with("ixfr-"))
-                && !["axfr-root", "axfr-tsig-stream"].contains(&id.as_str())
-        })
+        .filter(|id| (id.starts_with("axfr-") || id.starts_with("ixfr-")) && id != "axfr-root")
         .filter_map(|id| {
             let messages: Vec<_> = (Recording::read(&id).messages.into_iter())
                 .filter(|packet| packet.transport == Transport::Tcp)
