@@ -317,6 +317,19 @@ pub(crate) struct RawRecord<'a> {
     pub(crate) rdata: Reader<'a>,
 }
 
+impl RawRecord<'_> {
+    /// Whether the record names an `RRset` or a name without giving data: class ANY or NONE and no RDATA, in the
+    /// prerequisite and update sections of an UPDATE (RFC 2136 §2.4, §2.5). Its RDATA is valid whatever its type.
+    pub(crate) fn names_only(&self) -> bool {
+        names_only(self.class, self.rdata)
+    }
+}
+
+/// [`RawRecord::names_only`] of a record of `class` whose RDATA is `rdata`.
+fn names_only(class: Class, rdata: Reader<'_>) -> bool {
+    rdata.is_empty() && matches!(class, Class::ANY | Class::NONE)
+}
+
 /// Parses the RDATA of a record of `rtype`; RDATA invalid for its type is kept opaque, with why (D9).
 ///
 /// # Errors
@@ -443,6 +456,7 @@ impl<'a> Record<'a> {
     /// RDATA that is well delimited but invalid for its type is kept, reads as [`Opaque`] bytes, and is reported in
     /// [`DecodedRecord::invalid_rdata`], except for the types that may hold compressed names
     /// ([`RData::may_hold_compressed_names`]): their bytes mean nothing outside the message, so that is an error (D9).
+    /// A record [`RawRecord::names_only`] is valid whatever its type; its RDATA reads as empty [`Opaque`].
     ///
     /// # Errors
     ///
@@ -455,7 +469,11 @@ impl<'a> Record<'a> {
             ttl,
             rdata,
         } = raw;
-        let (rdata, invalid_rdata) = WireRdata::decode(rtype, rdata)?;
+        let (rdata, invalid_rdata) = if names_only(class, rdata) {
+            (WireRdata::from_checked(rtype, Box::default()), None)
+        } else {
+            WireRdata::decode(rtype, rdata)?
+        };
         let record = Self {
             name,
             class,

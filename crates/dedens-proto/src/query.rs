@@ -64,7 +64,9 @@ impl<'a> Query<'a> {
                 Entry::Record(section, raw) => {
                     tsig |= raw.rtype == RecordType::TSIG;
                     let index = &mut records[section.position()];
-                    if let (_, Some(error)) = decode_rdata(raw.rtype, raw.rdata)? {
+                    if !raw.names_only()
+                        && let (_, Some(error)) = decode_rdata(raw.rtype, raw.rdata)?
+                    {
                         violations.push(Violation::InvalidRdata {
                             section,
                             index: *index,

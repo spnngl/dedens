@@ -5,44 +5,18 @@
 use std::collections::BTreeSet;
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{
-    DecodeErrorKind, Flags, Message, Opcode, Record, RecordType, Section, Violation,
-};
+use dedens_proto::{Flags, Message, Record, RecordType};
 use dedens_testkit::authoritative::{
     Answers, Peer, QUERY_ID, Recording, Reference, Server, Transport, zone,
 };
 use dedens_testkit::message;
 
-/// `wire` decoded. An UPDATE (RFC 2136 §2) has records of class ANY or NONE with no RDATA in its prerequisite and
-/// update sections, which `dedens-proto` reads as invalid RDATA of their type, or, for a type whose RDATA is a name
-/// (NS), not at all: `None`. Nothing else may be wrong. Step 14 reads UPDATE with its own parser.
-fn decode(wire: &[u8]) -> Option<Message<'static>> {
-    let decoded = match Message::decode(wire) {
-        Ok(decoded) => decoded,
-        Err(error) => {
-            let update = wire.get(2).is_some_and(|byte| (byte >> 3) & 0xF == 5);
-            assert!(
-                update && matches!(error.kind, DecodeErrorKind::RdataLength),
-                "{error}"
-            );
-            return None;
-        }
-    };
-    let update = decoded.message.header.opcode == Opcode::UPDATE;
-    for violation in &decoded.violations {
-        assert!(
-            update
-                && matches!(
-                    violation,
-                    Violation::InvalidRdata {
-                        section: Section::Answer | Section::Authority,
-                        ..
-                    }
-                ),
-            "{violation}"
-        );
-    }
-    Some(decoded.message.into_owned())
+/// `wire` decoded, conforming: the records of class ANY or NONE without RDATA of an UPDATE too (RFC 2136 §2.4,
+/// §2.5).
+fn decode(wire: &[u8]) -> Message<'static> {
+    let decoded = Message::decode(wire).expect("a message");
+    assert_eq!(decoded.violations, [], "{:?}", decoded.message.header);
+    decoded.message.into_owned()
 }
 
 /// The messages the server sent, in order.
@@ -51,7 +25,7 @@ fn responses(recording: &Recording) -> Vec<Message<'static>> {
         .messages
         .iter()
         .filter(|packet| packet.from == Peer::Server)
-        .filter_map(|packet| decode(&packet.message))
+        .map(|packet| decode(&packet.message))
         .collect()
 }
 
@@ -79,7 +53,7 @@ fn every_message_of_a_recording_decodes() {
         let recording = Recording::read(&id);
         assert!(!recording.messages.is_empty(), "{id}");
         for packet in &recording.messages {
-            let _ = decode(&packet.message);
+            decode(&packet.message);
         }
     }
 }

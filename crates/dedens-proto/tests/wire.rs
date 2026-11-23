@@ -3,6 +3,7 @@
 //! - RFC 1035: header (§4.1.1), question (§4.1.2), name presentation (§5.1), RDATA (§3.3); the name codec's tests
 //!   are in `src/name.rs`.
 //! - RFC 1035 §4.1.4: message compression in the encoder.
+//! - RFC 2136 §2.4, §2.5: the records without RDATA of an UPDATE.
 //! - RFC 2181: TTL range (§8) and label contents (§11).
 //! - RFC 4343: case-insensitive comparison, case preserved.
 //! - D28: records keep their RDATA as checked wire bytes, read as typed data on demand.
@@ -13,8 +14,8 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use dedens_proto::rdata::{Mx, Opaque, RData, Soa, Srv, Txt, TxtError};
 use dedens_proto::{
-    Class, DecodeErrorKind, HEADER_LEN, Header, MAX_NAME_LEN, Message, Name, Opcode, Question,
-    Rcode, Record, RecordType, Ttl, WireRdata, ttl_offsets,
+    Class, DecodeErrorKind, HEADER_LEN, Header, MAX_NAME_LEN, Message, Name, Opcode, Query,
+    Question, Rcode, Record, RecordType, Ttl, WireRdata, ttl_offsets,
 };
 use dedens_testkit::dns;
 use proptest::prelude::*;
@@ -587,6 +588,43 @@ proptest! {
     fn ttl_round_trip(ttl in 0..=Ttl::MAX.get()) {
         prop_assert_eq!(Ttl::new(ttl).map(Ttl::get), Some(ttl));
     }
+}
+
+// --- RFC 2136 ---
+
+/// An UPDATE names an `RRset` or a name with a record of class ANY or NONE without RDATA (§2.4, §2.5), whatever
+/// its type: valid, empty, written back as read. Of class IN, the same record is invalid.
+#[test]
+fn rfc2136_s2_4_a_record_of_class_any_or_none_may_have_no_rdata() {
+    for class in [Class::ANY, Class::NONE] {
+        for rtype in [
+            RecordType::NS,
+            RecordType::A,
+            RecordType::SOA,
+            RecordType::ANY,
+        ] {
+            let wire = [
+                &[0][..],
+                &rtype.0.to_be_bytes(),
+                &class.0.to_be_bytes(),
+                &[0; 6],
+            ]
+            .concat();
+            let decoded = decode_record(&wire).unwrap();
+            assert_eq!(decoded.invalid_rdata, None, "{class} {rtype}");
+            assert!(decoded.record.rdata.wire().is_empty(), "{class} {rtype}");
+            assert_eq!(encode_record(&decoded.record), wire, "{class} {rtype}");
+            // An UPDATE with the record in its prerequisite section, read in place as `Message::decode` reads it.
+            let update = [&[0, 0, 0x28, 0, 0, 0, 0, 1, 0, 0, 0, 0][..], &wire].concat();
+            assert_eq!(Query::read(&update).unwrap().violations(), []);
+        }
+    }
+    assert!(decode_record(&record_wire(RecordType::NS, &[])).is_err());
+    assert!(
+        (decode_record(&record_wire(RecordType::A, &[])).unwrap())
+            .invalid_rdata
+            .is_some()
+    );
 }
 
 // --- RFC 4343 ---
