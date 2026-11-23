@@ -67,7 +67,7 @@ fn respond(zone: &Zone, reference: &Reference, limit: usize) -> Vec<u8> {
         edns: query.edns.clone(),
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut response);
+    let glue = answer.fill(zone, &mut response, limit);
     let mut buf = vec![0; limit];
     let len = glue.encode(&response, &mut buf).expect("encodes");
     buf.truncate(len);

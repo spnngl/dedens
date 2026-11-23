@@ -53,12 +53,17 @@ impl Answer<'_> {
     /// The additional section holds the addresses of the name servers, mail exchanges and service hosts of the
     /// answer that the zone has, A before AAAA, and for a referral first those of name servers at or below the
     /// delegation point, the glue it needs (RFC 9471 §2, §3.1). No alias is followed: the target of an NS or MX
-    /// record must not be one (RFC 2181 §10.3). The additional section of `message` must be empty. An answer takes
-    /// the addresses of authoritative names and, as optional data, the glue below a delegation point, as Knot
-    /// does (the root zone's `. NS` answer has the root servers' addresses, which sit below `net.`); never those
-    /// below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4).
-    /// A referral takes them from anywhere in the zone.
-    pub fn fill<'m>(&'m self, zone: &'m Zone, message: &mut Message<'m>) -> Glue {
+    /// record must not be one (RFC 2181 §10.3). The additional section of `message` must be empty. The addresses
+    /// are those of authoritative names, of delegation points and, as optional data, of the glue below one, as
+    /// Knot does (the root zone's `. NS` answer has the root servers' addresses, which sit below `net.`); never
+    /// those below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4).
+    ///
+    /// `limit` is the most bytes the response may have, the requester's size or [`MAX_MESSAGE_LEN`]: the
+    /// addresses stop being collected once they would not fit in it, whole `RRset`s at a time, so a zone of
+    /// many hosts with many addresses costs no more than a response can carry (D206).
+    ///
+    /// [`MAX_MESSAGE_LEN`]: dedens_proto::MAX_MESSAGE_LEN
+    pub fn fill<'m>(&'m self, zone: &'m Zone, message: &mut Message<'m>, limit: usize) -> Glue {
         let class = zone.class();
         if self.authoritative() {
             message.header.flags = message.header.flags.with(Flags::AA);
@@ -89,7 +94,7 @@ impl Answer<'_> {
                 name, rtype, rrset, ..
             } => {
                 records(&mut message.answer, name, zone, rrset);
-                additional(zone, *rtype, rrset, None, &mut message.additional);
+                additional(zone, *rtype, rrset, None, limit, &mut message.additional);
             }
             End::NoData { .. } | End::NxDomain { .. } => soa(zone, &mut message.authority),
             End::Referral { cut } => {
@@ -100,6 +105,7 @@ impl Answer<'_> {
                         RecordType::NS,
                         rrset,
                         Some(cut.name),
+                        limit,
                         &mut message.additional,
                     );
                 }
@@ -145,13 +151,19 @@ fn host<'m>(rdata: &'m WireRdata<'_>) -> Option<Name<'m>> {
     }
 }
 
+/// The least a record takes on the wire: a compression pointer for the owner, the type, class, TTL and length.
+const MIN_RECORD_LEN: usize = 2 + 10;
+
 /// Adds the addresses the zone has for the hosts of `rrset`, of `rtype`; with a delegation point `cut`, those at
 /// or below it come first. Returns how many records those are.
+///
+/// Stops once the records added take over `limit` bytes at the least: what comes after would be cut off.
 fn additional<'m>(
     zone: &'m Zone,
     rtype: RecordType,
     rrset: &'m RrSet,
     cut: Option<&Name<'_>>,
+    limit: usize,
     out: &mut Vec<Record<'m>>,
 ) -> usize {
     if !matches!(rtype, RecordType::NS | RecordType::MX | RecordType::SRV) {
@@ -164,32 +176,34 @@ fn additional<'m>(
     } else {
         &[None]
     };
+    let hosts: Vec<Name<'m>> = rrset.rdatas().iter().filter_map(host).collect();
+    let mut taken = 0;
     for pass in passes {
-        for host in rrset.rdatas().iter().filter_map(host) {
+        for (at, host) in hosts.iter().enumerate() {
+            if taken > limit {
+                return required;
+            }
             let below = cut.is_some_and(|cut| host.is_within(cut));
-            if pass.is_some_and(|wanted| wanted != below) {
+            // A host twice in the set (two MX of one exchange) has its addresses once: quadratic in the hosts,
+            // which the zone's `records_per_rrset` bounds.
+            if pass.is_some_and(|wanted| wanted != below)
+                || hosts.iter().take(at).any(|earlier| earlier == host)
+            {
                 continue;
             }
-            let node = if cut.is_some() {
-                zone.node(&host)
-            } else {
-                zone.address_node(&host)
-            };
-            let Some(node) = node else {
+            let Some(node) = zone.address_node(host) else {
                 continue;
             };
-            for rtype in [RecordType::A, RecordType::AAAA] {
+            for (rtype, rdata_len) in [(RecordType::A, 4), (RecordType::AAAA, 16)] {
                 let Some(set) = node.rrset(rtype) else {
                     continue;
                 };
-                // Quadratic in the hosts, which the `RRset`s bound (D206).
-                if out.iter().any(|r| r.rtype() == rtype && r.name == host) {
-                    continue;
-                }
                 let before = out.len();
-                records(out, &host, zone, set);
+                records(out, host, zone, set);
+                let added = out.len() - before;
+                taken += added * (MIN_RECORD_LEN + rdata_len);
                 if *pass == Some(true) {
-                    required += out.len() - before;
+                    required += added;
                 }
             }
         }

@@ -1,7 +1,9 @@
 //! Targets of dedens-zone: zone text on its way into a checked zone, a journal file into changesets, and the
 //! answers of a zone.
 
-use dedens_proto::{Flags, Header, Message, Name, Question, Rcode, RecordType, Ttl};
+use dedens_proto::{
+    Flags, Header, MAX_MESSAGE_LEN, Message, Name, Question, Rcode, RecordType, Ttl,
+};
 use dedens_zone::journal::format::{self, MAGIC, Tail};
 use dedens_zone::{End, Kind, Limits, MAX_CHAIN, Source, Zone};
 
@@ -137,7 +139,8 @@ fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType) {
         questions: vec![question.clone()],
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut message);
+    // The larger size: what 512 bytes keep of it is cut by `encode`, whole `RRset`s at a time.
+    let glue = answer.fill(zone, &mut message, MAX_MESSAGE_LEN);
     assert_eq!(message.rcode(), answer.rcode());
     assert_eq!(
         message.header.flags.contains(Flags::AA),
@@ -234,22 +237,30 @@ fn whole(zone: &Zone, apex: &Name<'static>) {
             node.kind() != Kind::EmptyNonTerminal || held == 0,
             "{name} holds records"
         );
-        let mut cut = false;
+        // The outermost cut above the name: the last one met going up.
+        let mut cut = None;
         let mut parent = name.parent();
         while let Some(p) = parent.filter(|_| name != apex) {
             let up = zone.node(&p).expect("every parent is a node");
-            cut |= up.kind() == Kind::Delegation || up.is_dname_owner();
+            if up.kind() == Kind::Delegation || up.is_dname_owner() {
+                cut = Some(p.clone());
+            }
             if &p == apex {
                 break;
             }
             parent = p.parent();
         }
+        let hidden_by = match node.kind() {
+            Kind::Occluded { cut } => zone.nodes().nth(cut).map(|(cut, _)| cut.clone()),
+            _ => None,
+        };
         assert_eq!(
-            node.kind() == Kind::Occluded,
-            cut,
+            matches!(node.kind(), Kind::Occluded { .. }),
+            cut.is_some(),
             "{name} is {:?}",
             node.kind()
         );
+        assert_eq!(hidden_by, cut, "{name} is hidden by another cut");
     }
     assert_eq!(records, zone.record_count());
 }

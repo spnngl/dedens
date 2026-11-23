@@ -46,7 +46,11 @@ pub enum Kind {
     Delegation,
     /// Below a delegation point or a DNAME owner: kept as written, never answered from (RFC 1034 §4.2.1, RFC 6672
     /// §2.4). Below a delegation, an address is glue (RFC 9471 §2).
-    Occluded,
+    Occluded {
+        /// The cut: the position, in [`Zone::nodes`](crate::Zone::nodes), of the first delegation point or DNAME
+        /// owner above the name, which has no cut above it. A lookup finds the cut with no walk (D206).
+        cut: usize,
+    },
     /// No record here; a name below it has one (RFC 4592 §2.2.2, RFC 8020).
     EmptyNonTerminal,
 }

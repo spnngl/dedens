@@ -16,6 +16,7 @@ thiserror.workspace = true
 [dev-dependencies]
 dedens-testkit = { workspace = true, features = ["authoritative"] }
 insta.workspace = true
+proptest.workspace = true
 tempfile.workspace = true
 
 [[test]]

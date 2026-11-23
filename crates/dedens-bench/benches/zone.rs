@@ -5,6 +5,7 @@
 //! files every record into a map of record sets, so it does more work than the other two.
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::hint::black_box;
 
 use dedens_bench::{ZONE_HOSTS, zone};
@@ -99,13 +100,50 @@ fn loaded(origin: Name<'static>, text: &str) -> Zone {
 /// which makes each name it leads to one label longer.
 const GROWING_DNAME: &str = "d DNAME \\# 13 01620164076578616d706c6500\n";
 
-/// The generated zone with a wildcard and a DNAME that grows names.
+/// The deep names, the delegation they hide under, and the hosts of the MX sets, to add to the generated zone.
+fn deep_text() -> String {
+    // A name of 120 labels with an address, then a delegation with names 120 labels deep below it and 100
+    // below it: occluded names, the addresses of which are optional glue.
+    let mut text = format!("{}example. A 192.0.2.77\n", "a.".repeat(119));
+    text.push_str("cut NS ns.elsewhere.\n");
+    writeln!(text, "{}cut A 192.0.2.78", "a.".repeat(118)).expect("writes");
+    for host in 0..100 {
+        writeln!(text, "mx-cut MX 10 t{host}.{}cut.example.", "a.".repeat(97)).expect("writes");
+        writeln!(text, "t{host}.{}cut A 192.0.2.{host}", "a.".repeat(97)).expect("writes");
+        // The same hosts in the zone itself, with one address each, and with 100 A and 100 AAAA records each.
+        writeln!(text, "mx-auth MX 10 ta{host}").expect("writes");
+        writeln!(text, "ta{host} A 192.0.2.{host}").expect("writes");
+        writeln!(text, "mx-many MX 10 tm{host}").expect("writes");
+        for address in 0..100 {
+            writeln!(text, "tm{host} A 192.0.2.{address}").expect("writes");
+            writeln!(text, "tm{host} AAAA 2001:db8::{address:x}").expect("writes");
+        }
+    }
+    text
+}
+
+/// The generated zone with a wildcard, a DNAME that grows names, and the deep names.
 fn answered_zone() -> Zone {
     let mut text = zone(ZONE_HOSTS);
     text.push_str("*.wild TXT \"wildcard\"\n");
     text.push_str(GROWING_DNAME);
+    text.push_str(&deep_text());
     let origin = Name::from_labels([b"example".as_slice()]).expect("a name");
     loaded(origin, &text)
+}
+
+/// The name of the PTR for an address of IPv6: 31 zero nibbles and `last`, below `ip6.arpa.`.
+fn ptr_name(last: char) -> String {
+    format!("{}{last}.ip6.arpa.", "0.".repeat(31))
+}
+
+/// A reverse zone for IPv6 with one PTR, 32 labels below the apex.
+fn ptr_zone() -> Zone {
+    let text = format!(
+        "$TTL 1h\n@ SOA ns hostmaster 1 1d 2h 4w 1h\n@ NS ns\nns A 192.0.2.1\n{} PTR host.example.\n",
+        ptr_name('1')
+    );
+    loaded("ip6.arpa.".parse().expect("a name"), &text)
 }
 
 /// The captured root zone: about 1 500 delegations.
@@ -125,7 +163,7 @@ fn reply(zone: &Zone, question: &Question<'_>, buf: &mut [u8]) -> usize {
         },
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut message);
+    let glue = answer.fill(zone, &mut message, buf.len());
     glue.encode(&message, buf).expect("encodes")
 }
 
@@ -141,6 +179,22 @@ const LONG: &str = "long";
 const GROWTH: &str = "growth";
 /// The longest name of all, 127 labels, under the root zone.
 const ROOT_LONG: &str = "root_long";
+/// An exact name of 120 labels, a node with an address.
+const DEEP: &str = "deep";
+/// One label below `DEEP`: it is not there, its closest encloser is 119 labels from the apex.
+const BELOW_DEEP: &str = "below_deep";
+/// An exact name of 120 labels below a delegation: occluded.
+const DEEP_CUT: &str = "deep_cut";
+/// An MX of 100 hosts 100 labels deep below a delegation, each with an address: optional glue.
+const MX_CUT: &str = "mx-cut.example.";
+/// An MX of 100 hosts of the zone, one address each.
+const MX_AUTH: &str = "mx-auth.example.";
+/// An MX of 100 hosts of the zone with 100 A and 100 AAAA records each: 20 000 addresses.
+const MX_MANY: &str = "mx-many.example.";
+/// A PTR of an IPv6 address, 34 labels, in a reverse zone.
+const PTR: &str = "ptr";
+/// The same name but for its last nibble: not there.
+const PTR_MISSING: &str = "ptr_missing";
 
 /// The name a bench argument stands for: the long ones are built, the others are the argument.
 fn asked(arg: &str) -> Name<'static> {
@@ -148,13 +202,18 @@ fn asked(arg: &str) -> Name<'static> {
         LONG => format!("{}example.", "a.".repeat(122)),
         GROWTH => format!("{}d.example.", "a.".repeat(100)),
         ROOT_LONG => "a.".repeat(127),
+        DEEP => format!("{}example.", "a.".repeat(119)),
+        BELOW_DEEP => format!("b.{}example.", "a.".repeat(119)),
+        DEEP_CUT => format!("{}cut.example.", "a.".repeat(118)),
+        PTR => ptr_name('1'),
+        PTR_MISSING => ptr_name('2'),
         name => name.to_owned(),
     };
     text.parse().expect("a name")
 }
 
 /// `Zone::answer` alone, no message: finding the answer in the zone of 100 000 records.
-#[divan::bench(args = [DATA, MISSING, WILD, ALIAS, LONG, GROWTH])]
+#[divan::bench(args = [DATA, MISSING, WILD, ALIAS, LONG, GROWTH, DEEP, BELOW_DEEP, DEEP_CUT])]
 fn answer_zone(bencher: Bencher<'_, '_>, name: &str) {
     let zone = answered_zone();
     let question = Question::new(asked(name), RecordType::A);
@@ -183,10 +242,28 @@ fn lookup_btree_map(bencher: Bencher<'_, '_>) {
 }
 
 /// The answer, the message and its encoding: the whole of what a query costs the zone.
-#[divan::bench(args = [DATA, MISSING, WILD, ALIAS, LONG, GROWTH])]
+#[divan::bench(args = [DATA, MISSING, WILD, ALIAS, LONG, GROWTH, DEEP, BELOW_DEEP, DEEP_CUT])]
 fn reply_zone(bencher: Bencher<'_, '_>, name: &str) {
     let zone = answered_zone();
     let question = Question::new(asked(name), RecordType::A);
+    let mut buf = [0_u8; 1232];
+    bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
+}
+
+/// An MX answer and the addresses of its hosts: occluded ones, ones of the zone, and ones with 20 000 addresses.
+#[divan::bench(args = [MX_AUTH, MX_CUT, MX_MANY])]
+fn reply_mx(bencher: Bencher<'_, '_>, name: &str) {
+    let zone = answered_zone();
+    let question = Question::new(asked(name), RecordType::MX);
+    let mut buf = [0_u8; 1232];
+    bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
+}
+
+/// A PTR of 34 labels in a reverse zone for IPv6, present and missing.
+#[divan::bench(args = [PTR, PTR_MISSING])]
+fn reply_ptr(bencher: Bencher<'_, '_>, name: &str) {
+    let zone = ptr_zone();
+    let question = Question::new(asked(name), RecordType::PTR);
     let mut buf = [0_u8; 1232];
     bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
 }
