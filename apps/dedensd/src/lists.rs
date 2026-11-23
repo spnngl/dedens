@@ -94,6 +94,8 @@ pub(crate) struct Store {
     pub(crate) rollover: crate::rollover::Kept,
     /// The zones of the `authoritative` stage (D208).
     pub(crate) zones: crate::zones::Held,
+    /// Where the TSIG keys read at start came from (D211).
+    pub(crate) key_files: crate::config::KeyOrigins,
 }
 
 impl Store {

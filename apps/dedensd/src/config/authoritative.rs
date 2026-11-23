@@ -495,6 +495,90 @@ mod tests {
         );
     }
 
+    /// D211: a reload keeps the keys of the file that it still names, with their algorithm and secret file, and
+    /// revokes the others; a line naming a key revoked is an error, as one naming a key added.
+    #[test]
+    fn a_reload_revokes_the_keys_it_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = example(dir.path());
+        let both = "keys:\n  - {name: k, algorithm: hmac-sha256, secret_file: SECRET}\n  - {name: j, algorithm: hmac-sha256, secret_file: SECRET}\n";
+        let granting = |key: &str| {
+            format!("        transfer:\n          - {{networks: ['192.0.2.0/24'], key: {key}}}\n")
+        };
+        let mut store = Store::default();
+        let started = read(
+            &guarded(dir.path(), &path, both, &granting("k")),
+            &mut store,
+        )
+        .unwrap();
+        assert_eq!(started.keys().map(Keyring::len), Some(2));
+        let reload = |text: &str, store: &mut Store| {
+            crate::config::read(text, env, (&started, Some(1)), store).map(|config| config.pipeline)
+        };
+        let names = |pipeline: &Pipeline| {
+            let keys = pipeline.keys().unwrap();
+            ["k.", "j."].map(|name| keys.get(&name.parse().unwrap()).is_some())
+        };
+        // The same keys, in another order and case: all kept.
+        let same = "keys:\n  - {name: J, algorithm: HMAC-SHA256, secret_file: SECRET}\n  - {name: k, algorithm: hmac-sha256, secret_file: SECRET}\n";
+        let text = guarded(dir.path(), &path, same, &granting("k"));
+        assert_eq!(names(&reload(&text, &mut store).unwrap()), [true, true]);
+        // Without `k`: revoked, `j` kept; a line naming `k` is refused.
+        let only_j = "keys:\n  - {name: j, algorithm: hmac-sha256, secret_file: SECRET}\n";
+        let text = guarded(dir.path(), &path, only_j, &granting("j"));
+        assert_eq!(names(&reload(&text, &mut store).unwrap()), [false, true]);
+        let text = guarded(dir.path(), &path, only_j, &granting("k"));
+        let error = reload(&text, &mut store).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("key `k.` is not in `keys`"),
+            "{error:#}"
+        );
+        // Another algorithm, or another secret file: changed, so not read, and dropped.
+        let sha512 = only_j.replace("hmac-sha256", "hmac-sha512");
+        let text = guarded(dir.path(), &path, &sha512, "");
+        assert_eq!(names(&reload(&text, &mut store).unwrap()), [false, false]);
+        let moved = only_j.replace(
+            "SECRET",
+            &dir.path().join("other.key").display().to_string(),
+        );
+        let text = guarded(dir.path(), &path, &moved, "");
+        assert_eq!(names(&reload(&text, &mut store).unwrap()), [false, false]);
+        // No `keys` at all: every key revoked.
+        let text = guarded(dir.path(), &path, "", "");
+        assert_eq!(
+            reload(&text, &mut store).unwrap().keys().map(Keyring::len),
+            Some(0)
+        );
+    }
+
+    /// D211: a reload that leaves the authoritative stage, and the `keys` with it, is a forwarder; `keys` left in
+    /// the file without the stage are refused.
+    #[test]
+    fn a_reload_may_drop_the_authoritative_stage_and_the_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = example(dir.path());
+        let keys = "keys:\n  - {name: k, algorithm: hmac-sha256, secret_file: SECRET}\n";
+        let mut store = Store::default();
+        let started = read(&guarded(dir.path(), &path, keys, ""), &mut store).unwrap();
+        assert_eq!(started.keys().map(Keyring::len), Some(1));
+        let forwarder = |keys: &str| {
+            let text = format!(
+                "{keys}listen: ['127.0.0.1:53']\npipeline: [cache]\nstages:\n  cache: {{type: cache}}\n"
+            );
+            let text = text.replace(
+                "SECRET",
+                &dir.path().join("secret.key").display().to_string(),
+            );
+            crate::config::read(&text, env, (&started, Some(1)), &mut Store::default())
+        };
+        assert!(forwarder("").unwrap().pipeline.keys().is_none());
+        let error = forwarder(keys).map(|_| ()).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("`keys` needs an authoritative stage"),
+            "{error:#}"
+        );
+    }
+
     #[test]
     fn the_authoritative_stage_comes_first() {
         let dir = tempfile::tempdir().unwrap();

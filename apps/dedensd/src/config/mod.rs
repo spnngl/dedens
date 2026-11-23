@@ -119,7 +119,7 @@
 //! ```yaml
 //! listen: ["0.0.0.0:53", "[::]:53"]
 //! access: {allow: ["10.0.0.0/8"]}     # who the stages after the zones answer
-//! keys:                              # up to 1000, read at start only, before the privileges are dropped
+//! keys:                              # up to 1000, read at start, as root; a reload revokes those removed
 //!   - {name: secondary, algorithm: hmac-sha256, secret_file: /etc/dedensd/secondary.key}  # base64, chmod 600
 //! pipeline: [zones, cache, root]
 //! stages:
@@ -198,6 +198,7 @@ pub(crate) use self::sources::Downloads;
 use self::sources::{
     CacheFile, DownloadsFile, Sources, StageFile, blocklist, cache, flush, hosts, prewarm,
 };
+pub(crate) use self::tsig::Origins as KeyOrigins;
 use self::tsig::{KeyFile, keys};
 use self::upstream::{Dnssec, Validation, forward};
 use crate::lists::Store;
@@ -401,9 +402,10 @@ fn build(
     let mut downloads = Downloads::new(file.downloads, file.roots, file.state_dir)?;
     let serving = started.unwrap_or(threads);
     let allowance = Allowance::serving(NonZeroUsize::new(serving).unwrap_or(NonZeroUsize::MIN));
-    // The keys are read at start, as root: a running server keeps them (D211).
-    let kept = started.map(|_| previous.keys().cloned().unwrap_or_default());
-    let keyring = keys(&file.keys, kept.as_ref())?;
+    // The keys are read at start, as root: a reload keeps those it still names, unchanged (D211).
+    let none = Keyring::default();
+    let kept = started.map(|_| previous.keys().unwrap_or(&none));
+    let keyring = keys(&file.keys, kept, &mut store.key_files)?;
     let (mut built, warmed) = stages(
         &file.pipeline,
         file.stages,
@@ -425,7 +427,7 @@ fn build(
         .collect();
     let authoritative = matches!(built.first(), Some(Stage::Authoritative(_)));
     ensure!(
-        authoritative || keyring.is_empty(),
+        authoritative || file.keys.is_empty(),
         "`keys` needs an authoritative stage: only its zones' answers are signed"
     );
     let mut pipeline = guard.around(built, previous)?.with_prewarm(warmed);
