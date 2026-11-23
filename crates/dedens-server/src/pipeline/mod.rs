@@ -35,7 +35,9 @@ use crate::validate::{Check, Outcome, Payer, Progress, Source, Validating};
 #[non_exhaustive]
 pub enum Stage {
     /// Answers from the zones it holds, AA set, or passes the query on (D208). Before the first stage of another
-    /// kind, it answers every client: the access lists apply to the queries it passes on.
+    /// kind, it answers every client: the access lists apply to the queries it passes on. Put it first: one
+    /// after another stage still answers, but with the access lists not applied to its answers, which is only
+    /// right for a zone that is public (D208).
     Authoritative(Authoritative),
     /// Answers from the cache, stores what a later stage asked upstream, and holds failures (D43). Shared: a
     /// pipeline built on reload keeps the cache of the one it replaces.
@@ -257,10 +259,20 @@ impl Pipeline {
 
     /// Whether the client at `from` is denied, with either action (D91). Counts the denial. For a caller that serves
     /// a client something other than a query the pipeline answers, such as a request to forward (D94), and has no
-    /// REFUSED message to give.
+    /// REFUSED message to give. Even when an authoritative stage opens the pipeline: the zones answer queries, not
+    /// such requests (D208).
     #[must_use]
     pub fn denies(&self, from: IpAddr) -> bool {
         self.access.as_ref().is_some_and(|access| access.deny(from))
+    }
+
+    /// Whether the client at `from` is denied with either action (D91) and its packets are to be left unread, as
+    /// a transport that seals its queries does, for want of a REFUSED to seal for it: it costs work to open them
+    /// (D99). Counts the denial. Never when an authoritative stage opens the pipeline: the zones answer every
+    /// client, and [`Pipeline::query`] denies the queries they pass on (D208).
+    #[must_use]
+    pub fn silences(&self, from: IpAddr) -> bool {
+        self.zones == 0 && self.denies(from)
     }
 
     /// The stages, in order.
@@ -489,6 +501,7 @@ impl Pipeline {
         let mut expired = false;
         for (index, stage) in self.stages.iter().enumerate().skip(self.zones) {
             match stage {
+                // Not one that opens the pipeline (skipped above): its answers skip the access lists ([`Stage`]).
                 Stage::Authoritative(zones) => {
                     if let Some(step) = zones.reply(client, out) {
                         return step;

@@ -6,30 +6,36 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use dedens_cache::{Cache, Config};
 use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Class, Flags, Message, Question, Rcode, RecordType, Transport};
+use dedens_proto::{Class, Flags, Message, Question, Rcode, RecordType, Transport, Ttl};
 use dedens_server::{Access, Authoritative, Denial, Forward, Network, Pipeline, Stage, Step};
 use dedens_testkit::dns;
 use dedens_zone::{Limits, Source, Zone};
 
-use crate::util::{decode, servers, wire};
+use crate::util::{decode, run, servers, wire};
+
+/// The zone file `file` of `testdata/zones`, loaded with `origin` as its apex, records without a TTL at 3600
+/// seconds, as dedensd loads them (D208), its `$INCLUDE` the mailboxes of RFC 1035 §5.3.
+fn load(file: &str, origin: &str) -> Arc<Zone> {
+    let text =
+        std::fs::read(dedens_testkit::path(&format!("zones/{file}"))).expect("the zone file");
+    let source = Source {
+        name: file,
+        text: &text,
+        default_ttl: Some(Ttl::from_wire(3600)),
+    };
+    let mut include = |_: &str| {
+        std::fs::read(dedens_testkit::path("zones/rfc1035_isi_mailboxes.zone"))
+            .map_err(|e| e.to_string())
+    };
+    let loaded = Zone::load(dns(origin), source, &mut include, &Limits::default());
+    Arc::new(loaded.expect("the zone loads").zone)
+}
 
 /// The zone of RFC 4035 Appendix A, `example.`.
 pub(crate) fn example() -> Arc<Zone> {
-    let text = std::fs::read(dedens_testkit::path("zones/rfc4035_appendix_a.zone"))
-        .expect("the zone file");
-    let source = Source {
-        name: "rfc4035_appendix_a.zone",
-        text: &text,
-        default_ttl: None,
-    };
-    let loaded = Zone::load(
-        dns("example"),
-        source,
-        &mut |_: &str| Err("no include".to_owned()),
-        &Limits::default(),
-    );
-    Arc::new(loaded.expect("the zone loads").zone)
+    load("rfc4035_appendix_a.zone", "example")
 }
 
 /// The authoritative stage serving [`example`].
@@ -230,20 +236,89 @@ fn rfc5358_4_a_name_outside_the_zones_goes_on_for_the_clients_the_access_lists_p
 }
 
 #[test]
-fn a_referral_goes_on_for_a_client_asking_for_recursion_it_has() {
+fn a_referral_is_never_passed_on_to_recursion() {
+    // Recursion would start from the root, not from our cut, and so ignore the delegation: the referral is the
+    // answer, as Knot and NSD give it, whatever RD and the client say (D208).
     let pipeline = mixed(Denial::Refuse);
     let question = ("www.a.example", RecordType::A);
-    let (step, _) = ask(&pipeline, question, Flags::RD, INSIDE);
-    assert!(matches!(step, Step::Upstream(_)), "{step:?}");
-    // Without RD, or recursion, the referral is the answer.
-    let reply = replied(&pipeline, question, Flags::NONE, INSIDE);
-    assert!(!reply.flags.contains(Flags::AA), "{:?}", reply.flags);
-    assert!(reply.flags.contains(Flags::RA), "{:?}", reply.flags);
-    assert!(has(&reply.records, "a.example. 3600 IN NS ns1.a.example."));
-    let reply = replied(&pipeline, question, Flags::RD, OUTSIDE);
-    assert!(!reply.flags.contains(Flags::AA), "{:?}", reply.flags);
-    assert!(!reply.flags.contains(Flags::RA), "{:?}", reply.flags);
-    assert!(has(&reply.records, "a.example. 3600 IN NS ns1.a.example."));
+    for (flags, from, ra) in [
+        (Flags::RD, INSIDE, true),
+        (Flags::NONE, INSIDE, true),
+        (Flags::RD, OUTSIDE, false),
+    ] {
+        let reply = replied(&pipeline, question, flags, from);
+        assert_eq!(reply.rcode, Rcode::NOERROR);
+        assert!(!reply.flags.contains(Flags::AA), "{:?}", reply.flags);
+        assert_eq!(reply.flags.contains(Flags::RA), ra, "{from}");
+        assert!(has(&reply.records, "a.example. 3600 IN NS ns1.a.example."));
+    }
+}
+
+#[test]
+fn rfc4035_3_1_4_1_a_ds_is_the_parent_zones_when_both_are_served() {
+    // `a.example.` is a cut of `example.`, which holds its DS; the ISI zone file stands for the child.
+    let child = load("rfc1035_isi.zone", "a.example");
+    let both = Authoritative::new([example(), child]).expect("two apexes");
+    let pipeline = Pipeline::new(vec![Stage::Authoritative(both)]);
+    let reply = replied(&pipeline, ("a.example", RecordType::DS), Flags::RD, OUTSIDE);
+    assert_eq!(reply.rcode, Rcode::NOERROR);
+    assert!(reply.flags.contains(Flags::AA), "{:?}", reply.flags);
+    assert!(
+        reply
+            .records
+            .iter()
+            .any(|r| r.starts_with("a.example. 3600 IN DS 57855 5 1 ")),
+        "{:?}",
+        reply.records
+    );
+    // Any other type at the cut is the child's: its SOA, and not the parent's referral.
+    let reply = replied(
+        &pipeline,
+        ("a.example", RecordType::SOA),
+        Flags::RD,
+        OUTSIDE,
+    );
+    assert!(reply.flags.contains(Flags::AA), "{:?}", reply.flags);
+    assert!(
+        reply
+            .records
+            .iter()
+            .any(|r| r.starts_with("a.example. 3600 IN SOA ")),
+        "{:?}",
+        reply.records
+    );
+    // The DS of a name that is no apex, or of the apex of the only zone, is that zone's.
+    let alone = Pipeline::new(vec![Stage::Authoritative(
+        Authoritative::new([example()]).expect("one zone"),
+    )]);
+    for name in ["example", "nothing.example"] {
+        let reply = replied(&alone, (name, RecordType::DS), Flags::RD, OUTSIDE);
+        assert!(reply.flags.contains(Flags::AA), "{name}: {:?}", reply.flags);
+    }
+}
+
+#[test]
+fn a_cache_hit_has_ra_only_where_recursion_follows() {
+    // The cache is shared by a pipeline that forwards, which fills it, and one that does not: its hits are no
+    // recursion (RFC 1035 §4.1.1, D208).
+    let cache = Arc::new(Cache::new(Config::default()).expect("valid settings"));
+    let forwarding = Pipeline::new(vec![
+        zones(),
+        Stage::Cache(Arc::clone(&cache)),
+        Stage::Forward(Forward::new(servers()).expect("servers")),
+    ]);
+    let query = wire(&dedens_testkit::query("a", 7));
+    let response = dedens_testkit::captured("a");
+    let done = run(&forwarding, &query, Transport::Udp, &[Some(&response)]);
+    assert!(done.reply.is_some());
+    let hit = |pipeline: &Pipeline| {
+        let done = run(pipeline, &query, Transport::Udp, &[]);
+        assert_eq!(done.asked, [], "a hit");
+        decode(&done.reply.expect("a reply")).header.flags
+    };
+    assert!(hit(&forwarding).contains(Flags::RA));
+    let cached = Pipeline::new(vec![zones(), Stage::Cache(cache)]);
+    assert!(!hit(&cached).contains(Flags::RA));
 }
 
 #[test]

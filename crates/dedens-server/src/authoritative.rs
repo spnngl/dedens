@@ -4,7 +4,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use dedens_proto::{Flags, MAX_NAME_LEN, Name};
+use dedens_proto::{MAX_NAME_LEN, Name, Question, RecordType};
 use dedens_zone::{End, Zone};
 
 use crate::Step;
@@ -76,25 +76,28 @@ impl Authoritative {
         }
     }
 
+    /// The zone that answers `question`: [`Authoritative::zone`] of its name, but for a DS, which the parent
+    /// zone holds (RFC 4035 §3.1.4.1): the zone of the name's parent when there is one, else the name's own. Knot
+    /// and NSD search the zone for a DS the same way (`process_query.c:186-201`, `query.c:1497-1535`).
+    fn zone_of(&self, question: &Question<'_>) -> Option<&Arc<Zone>> {
+        if question.qtype == RecordType::DS
+            && let Some(zone) = question.name.parent().and_then(|parent| self.zone(&parent))
+        {
+            return Some(zone);
+        }
+        self.zone(&question.name)
+    }
+
     /// The reply to `client`, written into `out`, when a zone answers its question; `None` passes the query on.
     ///
-    /// The zone answers, AA set (RFC 1034 §4.3.2), whatever RD says: a name of another class than the zone's
-    /// passes on, and so does a referral to a client that asked for recursion and has it, as BIND does: the
-    /// stages after resolve the name.
+    /// The zone answers, AA set (RFC 1034 §4.3.2), whatever RD says: a referral too, without AA, as Knot and NSD
+    /// answer it; the name is never resolved from the zone's cut (D208). Only a name of another class than the
+    /// zone's passes on.
     pub(crate) fn reply(&self, client: &Client<'_>, out: &mut [u8]) -> Option<Step> {
         let question = client.question.as_ref()?;
-        let zone = self.zone(&question.name)?;
+        let zone = self.zone_of(question)?;
         let answer = zone.answer(question);
-        let passes = match answer.end {
-            End::NotAuth => true,
-            End::Referral { .. } => {
-                !answer.authoritative()
-                    && client.recursion()
-                    && client.header.flags.contains(Flags::RD)
-            }
-            _ => false,
-        };
-        if passes {
+        if matches!(answer.end, End::NotAuth) {
             return None;
         }
         self.answers.count(&answer.end);
@@ -132,26 +135,25 @@ impl fmt::Debug for Authoritative {
 
 #[cfg(test)]
 mod tests {
+    use dedens_proto::Ttl;
     use dedens_zone::{Limits, Source};
 
     use super::*;
 
-    /// A zone of the least records a zone has, at `apex`.
-    const TEXT: &str = "@ 3600 IN SOA ns hostmaster 1 7200 3600 1209600 3600\n@ 3600 IN NS ns\nns 3600 IN A 192.0.2.1\n";
-
+    /// The zone of RFC 1035 §5.3 with `apex` as its origin, whatever it names: only the apex matters here.
     fn zone(apex: &str) -> Arc<Zone> {
-        let origin = apex.parse().expect("a name");
+        let text = std::fs::read(dedens_testkit::path("zones/rfc1035_isi.zone")).expect("the file");
         let source = Source {
             name: apex,
-            text: TEXT.as_bytes(),
-            default_ttl: None,
+            text: &text,
+            default_ttl: Some(Ttl::from_wire(3600)),
         };
-        let loaded = Zone::load(
-            origin,
-            source,
-            &mut |_| Err(String::new()),
-            &Limits::default(),
-        );
+        let mut include = |_: &str| {
+            std::fs::read(dedens_testkit::path("zones/rfc1035_isi_mailboxes.zone"))
+                .map_err(|e| e.to_string())
+        };
+        let origin = apex.parse().expect("a name");
+        let loaded = Zone::load(origin, source, &mut include, &Limits::default());
         Arc::new(loaded.expect("a zone").zone)
     }
 

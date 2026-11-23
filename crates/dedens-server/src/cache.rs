@@ -3,7 +3,7 @@
 
 use dedens_cache::{Cache, Checked, Freshness, Lookup, StalePolicy};
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Header, Query, Rcode};
+use dedens_proto::{Flags, Header, Query, Rcode};
 
 use crate::reply::Client;
 
@@ -38,8 +38,8 @@ pub(crate) enum Looked {
 }
 
 /// Looks `query` up in `cache` at `now` and writes the reply to `client` into `out`: the stored response patched
-/// for the query by the cache, flags included (AA and Z clear, RA set, the client's RD and CD, AD as RFC 6840 §5.8
-/// says), and our OPT record when the client sent one, with EDE 3
+/// for the query by the cache, flags included (AA and Z clear, RA set unless the client has no recursion (D208),
+/// the client's RD and CD, AD as RFC 6840 §5.8 says), and our OPT record when the client sent one, with EDE 3
 /// (Stale Answer) or 19 (Stale NXDOMAIN Answer) on expired data (RFC 8767 §4, RFC 8914 §4.4).
 ///
 /// Expired data answers as a [`Read::Lookup`] policy lets it: while resolving the query fails, or once the
@@ -78,6 +78,11 @@ pub(crate) fn look(
     };
     if let Checked::Bogus(code) = hit.checked {
         return Looked::Bogus(code);
+    }
+    if !client.recursion() {
+        // The cache patched the stored response for a client with recursion (RA set): this one has none (D208).
+        let [_, ra] = Flags::RA.bits().to_be_bytes();
+        out[3] &= !ra;
     }
     let refresh = match hit.freshness {
         Freshness::Fresh { prefetch } => prefetch,
