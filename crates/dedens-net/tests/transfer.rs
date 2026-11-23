@@ -10,14 +10,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dedens_net::io::Compio;
 use dedens_net::tcp::frame;
-use dedens_net::transfer::stream::{Asked, Reader, Step, StreamError};
+use dedens_net::transfer::stream::{Asked, Reader, Step, StreamError, soa_response};
 use dedens_net::transfer::{Limit, Limits, Transfer, TransferError, soa, transfer};
 use dedens_proto::rdata::RData;
-use dedens_proto::{Message, Name, Rcode, RecordType, Serial, find_tsig};
+use dedens_proto::{Flags, Message, Name, Rcode, Record, RecordType, Serial, find_tsig};
 use dedens_testkit::authoritative::{Answers, Peer, Recording, Server, TSIG_KEY, Transport};
 use dedens_testkit::dns;
 use dedens_tsig::{Key, Keyring, ResponseError, ResponseVerifier, verify_request};
-use dedens_zone::{Loaded, Source, Zone};
+use dedens_zone::{ChangesetError, Loaded, Source, Zone};
 
 /// What a primary does on a connection once it read the query: writes `bytes`, then closes its side when `close`,
 /// or holds the connection open, until the client goes either way.
@@ -29,8 +29,8 @@ struct Reply {
 /// The reply of a primary to the query it read.
 type Script = Box<dyn FnOnce(&[u8]) -> Reply + Send>;
 
-/// The response of a primary to the UDP query it read.
-type Datagram = fn(&[u8]) -> Vec<u8>;
+/// The datagrams a primary sends back to the UDP query it read.
+type Datagram = fn(&[u8]) -> Vec<Vec<u8>>;
 
 /// A primary on one port of the loopback address: its TCP connections, one after the other, each get the next of
 /// `scripts`; its UDP queries, the datagram of `udp`.
@@ -46,7 +46,9 @@ fn primary(udp: Option<Datagram>, scripts: Vec<Script>) -> SocketAddr {
         thread::spawn(move || {
             let mut buf = vec![0; 65535];
             while let Ok((len, client)) = socket.recv_from(&mut buf) {
-                socket.send_to(&udp(&buf[..len]), client).expect("sent");
+                for datagram in udp(&buf[..len]) {
+                    socket.send_to(&datagram, client).expect("sent");
+                }
             }
         });
     }
@@ -491,6 +493,141 @@ fn rfc8945_5_3_1_captured_signed_stream_verifies() {
     assert_eq!(loaded.zone.record_count(), 1200);
 }
 
+/// `message` as wire bytes.
+fn encoded(message: &Message<'_>) -> Vec<u8> {
+    let mut wire = vec![0; 65_535];
+    let len = message.encode(&mut wire).expect("a message of 64 KiB");
+    wire.truncate(len);
+    wire
+}
+
+/// The transfer of `zone` the `recording`'s responses, each changed by `change`, make as answers to its request.
+#[expect(clippy::panic, reason = "a test's helper fails the test")]
+fn read(
+    recording: &str,
+    zone: &str,
+    asked: Asked,
+    change: impl Fn(Message<'static>) -> Vec<u8>,
+) -> Result<Transfer, StreamError> {
+    let request = request(recording);
+    let id = u16::from_be_bytes([request[0], request[1]]);
+    let mut reader = Reader::new(dns(zone), id, asked, None, &Limits::default());
+    for response in responses(recording) {
+        let wire = change(
+            Message::decode(&response)
+                .expect("a message")
+                .message
+                .into_owned(),
+        );
+        match reader.message(&wire, 0)? {
+            Step::More(next) => reader = next,
+            Step::Done(transfer) => return Ok(transfer),
+        }
+    }
+    panic!("no end");
+}
+
+/// `soa` with `serial`.
+#[expect(clippy::panic, reason = "a test's helper fails the test")]
+fn with_serial(soa: &Record<'static>, serial: Serial) -> Record<'static> {
+    let RData::Soa(mut data) = soa.data() else {
+        panic!("not an SOA");
+    };
+    data.serial = serial.get();
+    Record::new(soa.name.clone(), soa.class, soa.ttl, &RData::Soa(data))
+}
+
+#[test]
+fn rfc5936_2_2_soa_of_another_serial_inside_is_refused() {
+    let inside = serial(&responses("axfr-zonetransfer.me")[0])
+        .checked_add(1)
+        .expect("a step");
+    let result = read(
+        "axfr-zonetransfer.me",
+        "zonetransfer.me.",
+        Asked::Axfr(None),
+        |mut message| {
+            let soa = with_serial(&message.answer[0], inside);
+            message.answer.insert(message.answer.len() / 2, soa);
+            encoded(&message)
+        },
+    );
+    assert_eq!(result.expect_err("refused"), StreamError::SoaInside(inside));
+}
+
+#[test]
+fn rfc1995_4_changesets_not_consecutive_are_refused() {
+    // [new, old, new, added..., new] becomes [latest, old, new, added..., gap, latest, latest]: a second changeset
+    // that starts past where the first ended.
+    let old = serial(&request("ixfr-difference-tcp"));
+    let result = read(
+        "ixfr-difference-tcp",
+        "example.",
+        Asked::Ixfr(old),
+        |mut message| {
+            let new = message.answer.pop().expect("the closing SOA");
+            let at = |step| with_serial(&new, old.checked_add(step).expect("a step"));
+            message.answer[0] = at(10);
+            message.answer.extend([at(4), at(10), at(10)]);
+            encoded(&message)
+        },
+    );
+    assert_eq!(
+        result.expect_err("refused"),
+        StreamError::Changeset(ChangesetError::NotConsecutive)
+    );
+}
+
+#[test]
+fn rfc5936_2_2_query_is_no_response() {
+    let result = read(
+        "axfr-zonetransfer.me",
+        "zonetransfer.me.",
+        Asked::Axfr(None),
+        |mut message| {
+            message.header.flags = message.header.flags.without(Flags::QR);
+            encoded(&message)
+        },
+    );
+    assert_eq!(result.expect_err("refused"), StreamError::NotResponse);
+}
+
+#[test]
+fn rfc5936_2_2_invalid_rdata_is_refused() {
+    let result = read(
+        "axfr-zonetransfer.me",
+        "zonetransfer.me.",
+        Asked::Axfr(None),
+        |mut message| {
+            message.authority.clear();
+            message.additional.clear();
+            message.edns = None;
+            let mut wire = encoded(&message);
+            // One more answer record, last in the message: an A record of 3 bytes, owned by the question's name.
+            let count = u16::from_be_bytes([wire[6], wire[7]]) + 1;
+            wire[6..8].copy_from_slice(&count.to_be_bytes());
+            wire.extend([0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 0, 0, 3, 192, 0, 2]);
+            wire
+        },
+    );
+    assert!(
+        matches!(result, Err(StreamError::InvalidRdata { .. })),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn rfc1034_soa_of_another_name_is_no_soa() {
+    let mut message = Message::decode(&root_soa())
+        .expect("a message")
+        .message
+        .into_owned();
+    let id = message.header.id;
+    message.answer[0].name = dns("com.");
+    let result = soa_response(&encoded(&message), id, &Name::root(), None, 0);
+    assert_eq!(result.expect_err("refused"), StreamError::NoSoa);
+}
+
 #[compio::test]
 async fn rfc8945_5_3_1_refused_key_is_a_tsig_error() {
     let key = key();
@@ -514,38 +651,50 @@ async fn rfc8945_5_3_1_refused_key_is_a_tsig_error() {
     }
 }
 
-/// The error of the root AXFR under `limits`.
-async fn bounded(script: Script, limits: Limits) -> TransferError {
+/// The result of the AXFR `script` sends, of the root, under `limits`.
+async fn bounded(script: Script, limits: Limits) -> Result<Transfer, TransferError> {
     let primary = primary(None, vec![script]);
-    let result = transfer(&Compio, primary, &Name::root(), None, None, &limits).await;
-    result.expect_err("past a limit")
+    transfer(&Compio, primary, &Name::root(), None, None, &limits).await
 }
 
 #[compio::test]
 async fn limits_each_bound_refuses() {
-    let limit = |error: TransferError| match error {
-        TransferError::Stream(StreamError::Limit(limit)) | TransferError::Limit(limit) => limit,
+    let limit = |result: Result<Transfer, TransferError>| match result {
+        Err(TransferError::Stream(StreamError::Limit(limit)) | TransferError::Limit(limit)) => {
+            limit
+        }
         other => panic!("not a limit: {other:?}"),
     };
+    // The root's AXFR as it came: its counts are the tightest limits it passes, one less refuses it.
+    let responses = responses("axfr-root");
+    let exact = Limits {
+        messages: responses.len(),
+        bytes: responses.iter().map(Vec::len).sum(),
+        records: (responses.iter())
+            .map(|m| Message::decode(m).expect("a message").message.answer.len())
+            .sum(),
+        ..Limits::default()
+    };
+    full(bounded(recorded("axfr-root"), exact).await);
     let cases = [
         (
             Limits {
-                messages: 1,
-                ..Limits::default()
+                messages: exact.messages - 1,
+                ..exact
             },
             Limit::Messages,
         ),
         (
             Limits {
-                bytes: 1024,
-                ..Limits::default()
+                bytes: exact.bytes - 1,
+                ..exact
             },
             Limit::Bytes,
         ),
         (
             Limits {
-                records: 100,
-                ..Limits::default()
+                records: exact.records - 1,
+                ..exact
             },
             Limit::Records,
         ),
@@ -579,10 +728,10 @@ async fn limits_records_per_rrset_refuse_the_zone() {
         },
         ..Limits::default()
     };
-    let error = bounded(recorded("axfr-root"), limits).await;
+    let result = bounded(recorded("axfr-root"), limits).await;
     assert!(
-        matches!(error, TransferError::Stream(StreamError::Zone(_))),
-        "{error:?}"
+        matches!(result, Err(TransferError::Stream(StreamError::Zone(_)))),
+        "{result:?}"
     );
 }
 
@@ -600,7 +749,15 @@ fn root_soa() -> Vec<u8> {
 
 #[compio::test]
 async fn rfc1035_soa_over_udp() {
-    let primary = primary(Some(|query| with_id(&root_soa(), query)), Vec::new());
+    // A datagram of another ID, then one that is no response, waited past (RFC 5452 §9.1).
+    let datagrams = |query: &[u8]| {
+        let mut other = with_id(&root_soa(), query);
+        other[1] ^= 1;
+        let mut not_response = with_id(&root_soa(), query);
+        not_response[2] &= !0x80;
+        vec![other, not_response, with_id(&root_soa(), query)]
+    };
+    let primary = primary(Some(datagrams), Vec::new());
     let soa = soa(&Compio, primary, &Name::root(), None)
         .await
         .expect("an SOA");
@@ -612,7 +769,7 @@ async fn rfc7766_5_truncated_soa_goes_over_tcp() {
     let truncated = |query: &[u8]| {
         let mut response = with_id(&root_soa(), query);
         response[2] |= 0x02;
-        response
+        vec![response]
     };
     let primary = primary(Some(truncated), vec![replay(vec![root_soa()])]);
     let soa = soa(&Compio, primary, &Name::root(), None)
