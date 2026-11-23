@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Instant;
 
+use dedens_testkit::authoritative::{Recording, Transport};
 use dedens_testkit::recursion::Resolution;
 
 use crate::{Entry, TARGETS};
@@ -45,6 +46,7 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
     }
     seeds.extend(coap_seeds());
     seeds.extend(recursion());
+    seeds.extend(transfers());
     seeds.extend(command_lines());
     seeds.extend(stamps());
     seeds.extend(configs());
@@ -136,6 +138,26 @@ fn recursion() -> Vec<(String, Vec<u8>)> {
         }
     }
     seeds
+}
+
+/// The zone transfers over TCP of `testdata/authoritative/recordings/` (D203), each message behind its length in two
+/// octets, the request first: the AXFR and IXFR ones, but those of the root, too large to vary (D210).
+fn transfers() -> Vec<(String, Vec<u8>)> {
+    Recording::ids()
+        .into_iter()
+        .filter(|id| {
+            (id.starts_with("axfr-") || id.starts_with("ixfr-"))
+                && !["axfr-root", "axfr-tsig-stream"].contains(&id.as_str())
+        })
+        .filter_map(|id| {
+            let messages: Vec<_> = (Recording::read(&id).messages.into_iter())
+                .filter(|packet| packet.transport == Transport::Tcp)
+                .map(|packet| packet.message)
+                .collect();
+            let messages: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
+            (!messages.is_empty()).then(|| (format!("transfer {id}"), framed(&messages)))
+        })
+        .collect()
 }
 
 /// The command lines of `seeds/command_lines.txt`, NUL between two arguments, as `just fuzz` writes them.

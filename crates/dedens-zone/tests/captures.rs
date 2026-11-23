@@ -13,7 +13,7 @@ use dedens_proto::{Message, Record, RecordType, Serial};
 use dedens_testkit::authoritative::{Peer, Recording};
 use dedens_testkit::dns;
 use dedens_zone::journal::{Journal, JournalLimits, Stored};
-use dedens_zone::{Changeset, Limits, Source, Zone};
+use dedens_zone::{Changeset, Limits, Place, Source, Zone};
 
 /// A root zone file of `testdata/authoritative/zones/`, loaded once for all the tests (a debug build takes seconds).
 fn root(file: &str) -> Zone {
@@ -83,6 +83,40 @@ fn ixfr() -> Vec<Changeset> {
                 .expect("a changeset")
         })
         .collect()
+}
+
+/// The root zone's records in the order Knot transferred them make the zone its file loads (D210).
+#[test]
+fn from_records_of_the_root_is_its_zone() {
+    let records = dedens_testkit::authoritative::zone("root.zone");
+    let loaded = Zone::from_records(dns("."), records, &Limits::default())
+        .map_err(|report| report.to_string())
+        .expect("the root zone");
+    assert_eq!(loaded.zone, root("root.zone"));
+    assert_eq!(loaded.report.warnings, []);
+}
+
+/// A record refused by [`Zone::from_records`] is placed at its number, from 1; past the errors' limit, the load
+/// stops (D210).
+#[test]
+fn from_records_places_an_error_at_the_record_number() {
+    let records = dedens_testkit::authoritative::zone("root.zone");
+    let limits = Limits {
+        errors: 2,
+        ..Limits::default()
+    };
+    let report = Zone::from_records(dns("zonetransfer.me."), records, &limits)
+        .expect_err("the root's records are outside zonetransfer.me.");
+    let places: Vec<_> = report.errors.iter().map(|error| error.at).collect();
+    let at = |line| {
+        Some(Place {
+            file: 0,
+            line,
+            column: 1,
+        })
+    };
+    assert_eq!(places, [at(1), at(2), None]);
+    assert_eq!(report.files, ["transfer"]);
 }
 
 /// A changeset's records as sorted lines, to compare as sets.

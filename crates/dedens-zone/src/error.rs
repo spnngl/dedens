@@ -9,7 +9,8 @@ use dedens_proto::{
 /// Where a record starts: the line and column, from 1, in the file of that index in [`Report::files`].
 ///
 /// A record of a zone that [`Zone::apply`](crate::Zone::apply) changes has no line: `line` and `column` are 0, and
-/// `file` is 0. A record of the changeset is its number, from 1, removals first, as the `line`.
+/// `file` is 0. A record of the changeset is its number, from 1, removals first, as the `line`. A record of
+/// [`Zone::from_records`](crate::Zone::from_records) is its number, from 1, as the `line`, at column 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Place {
     /// Index in [`Report::files`]; 0 is the zone file.

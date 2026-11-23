@@ -2323,7 +2323,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
     I/O and the stage); Unbound's DS entries kept in the state (the seed's DS name keys that turn Valid at once);
     following forward stages' anchors (the upstream's answers, out of the step); non-root anchors (out of the step).
-- D204 (amends D74; amended by D206, D207, D209) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
+- D204 (amends D74; amended by D206, D207, D209, D210) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
   &Limits)` returns for zone text, checked, and it never changes: a change loads a new `Zone` and the server swaps
   it in whole (`Arc`, as D24's pipeline), so a query sees one version from start to end and a reload that fails
   leaves the served one. Loading does no I/O: `$INCLUDE` is a callback giving the bytes of a file (D25: the
@@ -2822,3 +2822,53 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bound of 2500, the RFC's (first written: a load of 2500 iterations hashes a 100 000-name zone in 45 s, and
     D74's validator calls a zone above 150 insecure); a bound of BIND's 50 (a server holding a zone of 100 for a
     1024-bit key follows the RFC and Unbound).
+
+- D210 (amends D204) The transfer client (`dedens_net::transfer`, the authoritative phase): what a secondary asks
+  a primary. `soa(io, primary, zone, key)` asks for the zone's SOA over UDP, once, and again over TCP when the
+  response is truncated (RFC 7766 §5), within `SOA_TIMEOUT`, 10 s (NSD's `XFRD_UDP_TIMEOUT`, `xfrd.c`; Knot waits
+  5 s, `tcp-remote-io-timeout` in `src/knot/conf/schema.c`); its response must have the AA bit. `transfer(io,
+  primary, zone, from, key, &Limits) -> Transfer` asks over TCP for an IXFR from `from` (its authority section an
+  SOA of that serial, the only field servers read: Knot's `ixfr.c`) or, with no serial, an AXFR, and returns
+  `Transfer::Full(Loaded)`, `Incremental(Vec<Changeset>)` (D207) or `UpToDate`. Timers, retries, NOTIFY and the
+  zone's storage are the secondary's (step 13); XoT and IXFR over UDP are out.
+  - The stream (`transfer::stream::Reader`, sans-IO, a message in, the reader or the `Transfer` out; fuzz target
+    `transfer_stream`): each message decoded, of the query's ID, its TSIG verified when the query was signed
+    (`dedens_tsig::ResponseVerifier`, D205, the last message signed), a response of opcode QUERY, NOERROR, of the
+    query's question (the first message repeats it, the next ones repeat it or leave it out, RFC 5936 §2.2.1), no
+    answer record of invalid RDATA. The answer records go through a state machine: the zone's SOA first; an SOA
+    second starts IXFR changesets (old SOA, removed, new SOA, added, RFC 1995 §4), each checked by
+    `Changeset::new` and following the one before, the first from the client's serial, up to the opening SOA again;
+    anything else is the AXFR form, every record up to the opening SOA's serial again, an SOA of another serial
+    inside refused. An IXFR answered by the opening SOA alone is up to date when its serial is the client's,
+    refused (`NotNewer`) when behind it; a full zone not ahead of the client's serial is refused too (RFC 1982). A
+    record after the closing SOA is refused, a stream closed before it is `Closed`.
+  - The zone of a full transfer is built by `Zone::from_records(apex, records, &Limits)` (amends D204: a load
+    from records, not text, through the same `Builder`, each record's number its line): the checks of a load
+    run, warnings are kept in the `Loaded`, an error refuses the transfer (secondary severity, step 13).
+  - Fallback: an IXFR refused for what the primary sent (an error RCODE, NOTIMP included, no answer, a wrong
+    question, a malformed sequence, changes from another serial) is asked again as an AXFR, once, in the same
+    time budget, as Knot (`try_refresh` in `src/knot/events/handlers/refresh.c`, once, on all but I/O failures)
+    and BIND (`xfrin_recv_done` in `lib/dns/xfrin.c`, on an error RCODE or a bad header) do; NSD falls back on
+    NOTIMP and FORMERR (`xfrd_xfr_check_packet` in `nsd/xfrd.c`). Not after a TSIG failure, a limit, a serial
+    not ahead or a zone that does not load (`StreamError::retry_axfr`): an AXFR meets them again. Queries carry
+    no EDNS (a transfer is over TCP; the SOA fits in 512 bytes) and no RD.
+  - Limits (`transfer::Limits`, a test each): `time` 120 min for the whole transfer, the AXFR after an IXFR
+    included, BIND's `max-transfer-time-in` (`bin/include/defaultconfig.h`), Knot and NSD having none; `idle`
+    120 s for the connection or the next message, NSD's `tcp-timeout` (`configure.ac`), between Knot's 5 s and
+    BIND's `max-transfer-idle-in` 60 min; `messages` 2^24 and `records` 2^24, as many as a zone may hold
+    (`dedens_zone::Limits::records`; BIND's `max-records` is unlimited); `bytes` 1 GiB (Knot's `zone-max-size`
+    and NSD's `size-limit-xfr` unlimited by default); `zone`, the zone's own (D204: 100 records per `RRset` and
+    100 `RRset`s per name, BIND's `max-records-per-type` and `max-types-per-name`).
+  - Test data (D203): the AXFR captures of the root and of zonetransfer.me replayed by a primary on the loopback
+    address equal their zones' text; Knot's IXFR from the root's first serial applied to its older zone gives the
+    newer; the IXFR captures up to date, AXFR-form and of one changeset; the signed ones, their TSIG stripped and
+    made again by `dedens-tsig` for the test's query and clock, and the captured signed stream verified as Knot
+    signed it; Knot's refusals (an unsigned request NOTAUTH without TSIG, a bad key, secret or time); faults made
+    from the captures (a stream cut within a message, the closing SOA missing, a wrong ID, the last message
+    unsigned, a serial going back), each a typed error. The fuzz seeds are the transfers of
+    `testdata/authoritative/recordings/` but the root's, too large to vary.
+  - Rejected: `Transfer::Full(Zone)` (the plan's: the warnings of the load would be lost); building the zone as
+    the records come (the `Builder` is the crate's; the records are held once, the zone built at the end); a
+    fallback after a TSIG failure or a limit (Knot does it on all but I/O; an AXFR is then refused the same and
+    costs a second connection); the SOA query over TCP after a UDP timeout (the secondary's retry does it).
+

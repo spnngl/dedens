@@ -350,7 +350,7 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots target/seeds/recursion target/seeds/journal"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots target/seeds/recursion target/seeds/journal target/seeds/transfer"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
@@ -360,14 +360,16 @@ fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdat
 # test copy of the TLD list (D126), ICANN's CA bundle (D127) and the root key rollover state of
 # fuzz/seeds/root-5011.state (D200) in fuzz/target/seeds/roots; the responses of the captured resolutions of
 # testdata/recursion and testdata/recursion/minimised (D188), kept there in base64, one to a file in
-# fuzz/target/seeds/recursion; the journal file of fuzz/seeds/example.journal (D207) in fuzz/target/seeds/journal.
+# fuzz/target/seeds/recursion; the journal file of fuzz/seeds/example.journal (D207) in fuzz/target/seeds/journal; the
+# zone transfers over TCP of testdata/authoritative/recordings, each message behind its length in two octets, but the
+# root's (D210), one to a file in fuzz/target/seeds/transfer.
 # `seeds()` of fuzz/src/smoke.rs reads the same.
 [private]
 fuzz-seeds:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal
-    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal
+    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal fuzz/target/seeds/transfer
+    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal fuzz/target/seeds/transfer
     cp fuzz/seeds/example.journal fuzz/target/seeds/journal/
     cp crates/dedens-dnssec/src/root.ds crates/dedens-roots/src/named.root crates/dedens-roots/tests/data/tlds.json \
         crates/dedens-dnssec/src/icannbundle.pem fuzz/seeds/root-5011.state fuzz/target/seeds/roots/
@@ -375,6 +377,7 @@ fuzz-seeds:
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/command_lines/$." or die; print $out join "\0", split / /, $_, -1' fuzz/seeds/command_lines.txt
     perl -ne 'next if /^#/; chomp; open my $out, ">", "fuzz/target/seeds/stamps/$." or die; print $out $_' fuzz/seeds/stamps.txt
     perl -MMIME::Base64 -ne 'my $seed = $b64 ? $_ : /^\s*response: ([^>\s]\S*)$/ ? $1 : undef; if (defined $seed) { open my $out, ">", "fuzz/target/seeds/recursion/" . ++$n or die; print $out decode_base64($seed) } $b64 = /^\s*response: >-$/' testdata/recursion/*.yaml testdata/recursion/minimised/*.yaml
+    perl -MMIME::Base64 -ne 'if ($ARGV ne $file) { $file = $ARGV; ($id = $ARGV) =~ s{.*/|\.yaml$}{}g; undef $out } next if $id =~ /^(axfr-root|axfr-tsig-stream)$/; $tcp = $1 eq "tcp" if /^\s*transport: (\w+)$/; my $seed = $b64 ? $_ : /^\s*message: ([^>\s]\S*)$/ ? $1 : undef; $b64 = /^\s*message: >-$/; if (defined $seed && $tcp) { my $wire = decode_base64($seed); open $out, ">", "fuzz/target/seeds/transfer/$id" or die unless $out; print $out pack("n", length $wire), $wire }' testdata/authoritative/recordings/axfr-*.yaml testdata/authoritative/recordings/ixfr-*.yaml
     cp deploy/dedensd.yaml fuzz/target/seeds/configs/dedensd.yaml
     cp deploy/packages/dedensd.conf.yaml fuzz/target/seeds/configs/dedensd.conf.yaml
     cp fuzz/seeds/dnscrypt.yaml fuzz/target/seeds/configs/dnscrypt.yaml

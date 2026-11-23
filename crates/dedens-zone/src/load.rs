@@ -1,6 +1,7 @@
-//! [`Zone::load`]: zone text, `$INCLUDE` followed, into a checked [`Zone`] (D204).
+//! [`Zone::load`]: zone text, `$INCLUDE` followed, into a checked [`Zone`] (D204); [`Zone::from_records`]: the
+//! records of a transfer, checked the same way (D210).
 
-use dedens_proto::{Name, Ttl, ZoneEntry, ZoneReader};
+use dedens_proto::{DecodedRecord, Name, Record, Ttl, ZoneEntry, ZoneReader};
 
 use crate::builder::Builder;
 use crate::{Bound, ErrorKind, Limits, Place, Report, Zone};
@@ -51,6 +52,41 @@ impl Zone {
             reader = reader.with_ttl(ttl);
         }
         read(&mut builder, &mut reader, 0, 0, include);
+        builder
+            .finish()
+            .map(|(zone, report)| Loaded { zone, report })
+    }
+
+    /// Builds the zone of `apex` from `records`, those of a transfer in the order received, the closing SOA left
+    /// out (RFC 5936 §2.2), with every check of [`Zone::load`]; a place's line is the record's number in
+    /// `records`, from 1, in the file `transfer`.
+    ///
+    /// # Errors
+    ///
+    /// The [`Report`] of every error, as [`Zone::load`] gives it.
+    pub fn from_records(
+        apex: Name<'static>,
+        records: impl IntoIterator<Item = Record<'static>>,
+        limits: &Limits,
+    ) -> Result<Loaded, Report> {
+        let mut builder = Builder::new(apex, "transfer".to_owned(), limits);
+        for (n, record) in records.into_iter().enumerate() {
+            if builder.stopped() {
+                break;
+            }
+            let at = Place {
+                file: 0,
+                line: n + 1,
+                column: 1,
+            };
+            builder.add(
+                at,
+                DecodedRecord {
+                    record,
+                    invalid_rdata: None,
+                },
+            );
+        }
         builder
             .finish()
             .map(|(zone, report)| Loaded { zone, report })

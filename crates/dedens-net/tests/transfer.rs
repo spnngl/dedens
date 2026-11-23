@@ -1,0 +1,622 @@
+//! The transfer client (D210) against a primary on the loopback address that replays the captures of D203: AXFR
+//! (RFC 5936 §2.2) and IXFR (RFC 1995 §4) streams of Knot, signed ones re-signed by `dedens-tsig` (RFC 8945
+//! §5.3.1), the SOA query over UDP and TCP (RFC 7766 §5), a serial going back (RFC 1982), and each fault and bound a
+//! typed error.
+
+use std::io::{Read as _, Write as _};
+use std::net::{Shutdown, SocketAddr, TcpListener, UdpSocket};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use dedens_net::io::Compio;
+use dedens_net::tcp::frame;
+use dedens_net::transfer::stream::{Asked, Reader, Step, StreamError};
+use dedens_net::transfer::{Limit, Limits, Transfer, TransferError, soa, transfer};
+use dedens_proto::rdata::RData;
+use dedens_proto::{Message, Name, Rcode, RecordType, Serial, find_tsig};
+use dedens_testkit::authoritative::{Answers, Peer, Recording, Server, TSIG_KEY, Transport};
+use dedens_testkit::dns;
+use dedens_tsig::{Key, Keyring, ResponseError, ResponseVerifier, verify_request};
+use dedens_zone::{Loaded, Source, Zone};
+
+/// What a primary does on a connection once it read the query: writes `bytes`, then closes its side when `close`,
+/// or holds the connection open, until the client goes either way.
+struct Reply {
+    bytes: Vec<Vec<u8>>,
+    close: bool,
+}
+
+/// The reply of a primary to the query it read.
+type Script = Box<dyn FnOnce(&[u8]) -> Reply + Send>;
+
+/// The response of a primary to the UDP query it read.
+type Datagram = fn(&[u8]) -> Vec<u8>;
+
+/// A primary on one port of the loopback address: its TCP connections, one after the other, each get the next of
+/// `scripts`; its UDP queries, the datagram of `udp`.
+fn primary(udp: Option<Datagram>, scripts: Vec<Script>) -> SocketAddr {
+    let (socket, listener) = loop {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("a UDP socket");
+        if let Ok(listener) = TcpListener::bind(socket.local_addr().expect("bound")) {
+            break (socket, listener);
+        }
+    };
+    let addr = socket.local_addr().expect("bound");
+    if let Some(udp) = udp {
+        thread::spawn(move || {
+            let mut buf = vec![0; 65535];
+            while let Ok((len, client)) = socket.recv_from(&mut buf) {
+                socket.send_to(&udp(&buf[..len]), client).expect("sent");
+            }
+        });
+    }
+    thread::spawn(move || {
+        for (script, stream) in scripts.into_iter().zip(listener.incoming()) {
+            let mut stream = stream.expect("a connection");
+            let mut len = [0; 2];
+            stream.read_exact(&mut len).expect("a query's length");
+            let mut query = vec![0; usize::from(u16::from_be_bytes(len))];
+            stream.read_exact(&mut query).expect("a whole query");
+            let reply = script(&query);
+            for bytes in reply.bytes {
+                // The client may have given up meanwhile.
+                let _ = stream.write_all(&bytes);
+            }
+            if reply.close {
+                let _ = stream.shutdown(Shutdown::Write);
+            }
+            let _ = stream.read_to_end(&mut Vec::new());
+        }
+    });
+    addr
+}
+
+/// The responses of the recording `id`: those over TCP when it has any, else over UDP.
+fn responses(id: &str) -> Vec<Vec<u8>> {
+    let messages = Recording::read(id).messages;
+    let tcp = messages.iter().any(|m| m.transport == Transport::Tcp);
+    messages
+        .into_iter()
+        .filter(|m| m.from == Peer::Server && (m.transport == Transport::Tcp) == tcp)
+        .map(|m| m.message)
+        .collect()
+}
+
+/// The request of the recording `id` over TCP, or over UDP when it has none over TCP.
+fn request(id: &str) -> Vec<u8> {
+    let messages = Recording::read(id).messages;
+    let tcp = messages.iter().any(|m| m.transport == Transport::Tcp);
+    messages
+        .into_iter()
+        .find(|m| m.from == Peer::Client && (m.transport == Transport::Tcp) == tcp)
+        .expect("a request")
+        .message
+}
+
+/// `message` with the ID of `query`.
+fn with_id(message: &[u8], query: &[u8]) -> Vec<u8> {
+    let mut message = message.to_vec();
+    message[..2].copy_from_slice(&query[..2]);
+    message
+}
+
+/// Replays `messages` with the query's ID, then closes.
+fn replay(messages: Vec<Vec<u8>>) -> Script {
+    Box::new(move |query| Reply {
+        bytes: messages
+            .iter()
+            .map(|m| frame(&with_id(m, query)).expect("under 64 KiB"))
+            .collect(),
+        close: true,
+    })
+}
+
+/// Replays the responses of the recording `id`.
+fn recorded(id: &str) -> Script {
+    replay(responses(id))
+}
+
+/// The key of the captures, as Knot holds it.
+fn key() -> Key {
+    Key::from_base64(
+        dns(&format!("{}.", TSIG_KEY.name)),
+        TSIG_KEY.algorithm.parse().expect("hmac-sha256"),
+        TSIG_KEY.secret,
+    )
+    .expect("a valid secret")
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("after 1970")
+        .as_secs()
+}
+
+/// `wire` without its TSIG record, if it has one.
+fn strip(wire: &[u8]) -> Vec<u8> {
+    let Some(tsig) = find_tsig(wire).expect("well formed") else {
+        return wire.to_vec();
+    };
+    let mut stripped = wire[..tsig.start].to_vec();
+    let additional = u16::from_be_bytes([stripped[10], stripped[11]]) - 1;
+    stripped[10..12].copy_from_slice(&additional.to_be_bytes());
+    stripped
+}
+
+/// Replays the responses of the signed recording `id`, their TSIG made again for the query, now: the last one left
+/// unsigned when `unsigned_end`.
+fn resigned(id: &str, unsigned_end: bool) -> Script {
+    let messages = responses(id);
+    Box::new(move |query| {
+        let keys = Keyring::new([key()]).expect("one key");
+        let request = verify_request(&keys, query, unix_now())
+            .expect("a request signed with the key")
+            .expect("signed");
+        let mut signer = request.signer();
+        let last = messages.len() - 1;
+        let bytes = messages
+            .iter()
+            .enumerate()
+            .map(|(n, m)| {
+                let mut m = with_id(&strip(m), query);
+                if !(unsigned_end && n == last) {
+                    signer.sign(&mut m, unix_now()).expect("signed");
+                }
+                frame(&m).expect("under 64 KiB")
+            })
+            .collect();
+        Reply { bytes, close: true }
+    })
+}
+
+/// Reads the query and holds the connection, answering nothing.
+fn silent() -> Script {
+    Box::new(|_| Reply {
+        bytes: Vec::new(),
+        close: false,
+    })
+}
+
+/// The zone of `file` of `testdata/authoritative/zones/`, with origin `origin`.
+fn text(file: &str, origin: &str) -> Zone {
+    let text =
+        std::fs::read(dedens_testkit::path("authoritative/zones").join(file)).expect("a zone");
+    let source = Source {
+        name: file,
+        text: &text,
+        default_ttl: None,
+    };
+    let mut include = |_: &str| Err("no $INCLUDE".to_owned());
+    Zone::load(
+        dns(origin),
+        source,
+        &mut include,
+        &dedens_zone::Limits::default(),
+    )
+    .map_err(|report| report.to_string())
+    .expect(file)
+    .zone
+}
+
+/// The serial of the first SOA among the answer, then the authority records of `wire`.
+fn serial(wire: &[u8]) -> Serial {
+    let message = Message::decode(wire).expect("a message").message;
+    message
+        .answer
+        .iter()
+        .chain(&message.authority)
+        .find_map(|r| match r.data() {
+            RData::Soa(soa) => Some(Serial::new(soa.serial)),
+            _ => None,
+        })
+        .expect("an SOA")
+}
+
+/// Transfers `zone` from `primary` with the default limits.
+async fn from(
+    primary: SocketAddr,
+    zone: &str,
+    serial: Option<Serial>,
+    key: Option<&Key>,
+) -> Result<Transfer, TransferError> {
+    transfer(
+        &Compio,
+        primary,
+        &dns(zone),
+        serial,
+        key,
+        &Limits::default(),
+    )
+    .await
+}
+
+#[track_caller]
+#[expect(clippy::panic, reason = "a test's helper fails the test")]
+fn full(result: Result<Transfer, TransferError>) -> Loaded {
+    match result {
+        Ok(Transfer::Full(loaded)) => loaded,
+        other => panic!("not a full zone: {other:?}"),
+    }
+}
+
+#[track_caller]
+#[expect(clippy::panic, reason = "a test's helper fails the test")]
+fn stream_error(result: Result<Transfer, TransferError>) -> StreamError {
+    match result {
+        Err(TransferError::Stream(error)) => error,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+/// The root serial the IXFR capture starts from.
+const ROOT_PREVIOUS: Serial = Serial::new(2_026_111_401);
+
+#[compio::test]
+async fn rfc5936_2_2_root_axfr_is_its_zone() {
+    let primary = primary(None, vec![recorded("axfr-root")]);
+    let loaded = full(from(primary, ".", None, None).await);
+    assert_eq!(loaded.zone, text("root.zone", "."));
+}
+
+#[compio::test]
+async fn rfc5936_2_2_zonetransfer_me_axfr_is_its_zone() {
+    let primary = primary(None, vec![recorded("axfr-zonetransfer.me")]);
+    let loaded = full(from(primary, "zonetransfer.me.", None, None).await);
+    assert_eq!(
+        loaded.zone,
+        text("zonetransfer.me.zone", "zonetransfer.me.")
+    );
+}
+
+#[compio::test]
+async fn rfc1995_4_root_ixfr_applies_to_the_next_serial() {
+    let messages = responses("root-ixfr");
+    let script: Script = Box::new(move |query| {
+        // The query asks for an IXFR from the serial held, in an SOA of the authority section (RFC 1995 §3).
+        let decoded = Message::decode(query).expect("a query").message;
+        assert_eq!(decoded.questions[0].qtype, RecordType::IXFR);
+        assert_eq!(serial(query), ROOT_PREVIOUS);
+        replay(messages)(query)
+    });
+    let primary = primary(None, vec![script]);
+    let Ok(Transfer::Incremental(changesets)) = from(primary, ".", Some(ROOT_PREVIOUS), None).await
+    else {
+        panic!("not incremental");
+    };
+    assert_eq!(changesets[0].from_serial(), ROOT_PREVIOUS);
+    let mut zone = text("root-previous.zone", ".");
+    for changeset in &changesets {
+        zone = zone
+            .apply(changeset, &dedens_zone::Limits::default())
+            .map_err(|report| report.to_string())
+            .expect("applies")
+            .zone;
+    }
+    assert_eq!(zone, text("root.zone", "."));
+}
+
+#[compio::test]
+async fn rfc1995_4_single_soa_is_up_to_date() {
+    let ours = serial(&responses("ixfr-uptodate")[0]);
+    let primary = primary(None, vec![recorded("ixfr-uptodate")]);
+    let result = from(primary, "example.", Some(ours), None).await;
+    assert!(matches!(result, Ok(Transfer::UpToDate)), "{result:?}");
+}
+
+#[compio::test]
+async fn rfc1995_4_axfr_form_is_a_full_zone() {
+    let ours = serial(&request("ixfr-unknown-serial"));
+    let theirs = serial(&responses("ixfr-unknown-serial")[0]);
+    let primary = primary(None, vec![recorded("ixfr-unknown-serial")]);
+    let loaded = full(from(primary, "example.", Some(ours), None).await);
+    assert_eq!(Serial::new(loaded.zone.soa().serial), theirs);
+}
+
+#[compio::test]
+async fn rfc1995_4_difference_is_one_changeset() {
+    let ours = serial(&request("ixfr-difference-tcp"));
+    let primary = primary(None, vec![recorded("ixfr-difference-tcp")]);
+    let Ok(Transfer::Incremental(changesets)) = from(primary, "example.", Some(ours), None).await
+    else {
+        panic!("not incremental");
+    };
+    assert_eq!(changesets.len(), 1);
+    assert_eq!(changesets[0].from_serial(), ours);
+    assert_eq!(changesets[0].removed(), []);
+    assert!(
+        changesets[0]
+            .added()
+            .iter()
+            .any(|r| r.name == dns("dedens-new.example.") && r.rtype() == RecordType::A)
+    );
+}
+
+#[compio::test]
+async fn rfc1995_4_ixfr_refused_falls_back_to_axfr() {
+    // An IXFR answered with an AXFR's question is asked again as an AXFR, which the same answer serves.
+    let ours = Serial::new(2_019_100_800);
+    let primary = primary(
+        None,
+        vec![
+            recorded("axfr-zonetransfer.me"),
+            recorded("axfr-zonetransfer.me"),
+        ],
+    );
+    let loaded = full(from(primary, "zonetransfer.me.", Some(ours), None).await);
+    assert_eq!(
+        loaded.zone,
+        text("zonetransfer.me.zone", "zonetransfer.me.")
+    );
+}
+
+#[compio::test]
+async fn rfc5936_2_2_error_rcode_is_refused() {
+    let primary = primary(None, vec![recorded("axfr-unsigned-refused")]);
+    let error = stream_error(from(primary, "zonetransfer.me.", None, None).await);
+    // Knot answers an unsigned request for a key's zone with NOTAUTH, without TSIG.
+    assert_eq!(error, StreamError::Rcode(Rcode::NOTAUTH));
+}
+
+#[compio::test]
+async fn rfc1982_serial_going_back_is_refused() {
+    let ahead = Serial::new(2_026_112_202);
+    // The IXFR's changes start below the serial asked for; the AXFR asked then is behind it.
+    let root = primary(None, vec![recorded("root-ixfr"), recorded("axfr-root")]);
+    let error = stream_error(from(root, ".", Some(ahead), None).await);
+    assert_eq!(
+        error,
+        StreamError::NotNewer {
+            ours: ahead,
+            theirs: Serial::new(2_026_112_201),
+        }
+    );
+    // A single SOA behind the client's: no AXFR asked.
+    let theirs = serial(&responses("ixfr-uptodate")[0]);
+    let ours = theirs.checked_add(1).expect("a step");
+    let example = primary(None, vec![recorded("ixfr-uptodate")]);
+    let error = stream_error(from(example, "example.", Some(ours), None).await);
+    assert_eq!(error, StreamError::NotNewer { ours, theirs });
+}
+
+#[compio::test]
+async fn rfc5936_2_2_stream_cut_within_a_message_is_closed() {
+    let first = responses("axfr-root").swap_remove(0);
+    let script: Script = Box::new(move |query| {
+        let framed = frame(&with_id(&first, query)).expect("under 64 KiB");
+        Reply {
+            bytes: vec![framed[..framed.len() / 2].to_vec()],
+            close: true,
+        }
+    });
+    let primary = primary(None, vec![script]);
+    let result = from(primary, ".", None, None).await;
+    assert!(matches!(result, Err(TransferError::Closed)), "{result:?}");
+}
+
+#[compio::test]
+async fn rfc5936_2_2_missing_closing_soa_is_closed() {
+    let mut messages = responses("axfr-root");
+    messages.pop();
+    let primary = primary(None, vec![replay(messages)]);
+    let result = from(primary, ".", None, None).await;
+    assert!(matches!(result, Err(TransferError::Closed)), "{result:?}");
+}
+
+#[compio::test]
+async fn rfc5936_2_2_wrong_id_is_refused() {
+    let messages = responses("axfr-zonetransfer.me");
+    let script: Script = Box::new(move |query| {
+        let mut other = query[..2].to_vec();
+        other[1] ^= 1;
+        replay(messages)(&other)
+    });
+    let primary = primary(None, vec![script]);
+    let error = stream_error(from(primary, "zonetransfer.me.", None, None).await);
+    assert!(matches!(error, StreamError::WrongId { .. }), "{error:?}");
+}
+
+#[compio::test]
+async fn rfc8945_5_3_1_signed_axfr_verifies() {
+    let key = key();
+    let primary = primary(None, vec![resigned("axfr-tsig", false)]);
+    let loaded = full(from(primary, "zonetransfer.me.", None, Some(&key)).await);
+    assert_eq!(
+        loaded.zone,
+        text("zonetransfer.me.zone", "zonetransfer.me.")
+    );
+}
+
+#[compio::test]
+async fn rfc8945_5_3_1_signed_ixfr_up_to_date_verifies() {
+    let key = key();
+    let ours = serial(&responses("ixfr-tsig-uptodate")[0]);
+    let primary = primary(None, vec![resigned("ixfr-tsig-uptodate", false)]);
+    let result = from(primary, "zonetransfer.me.", Some(ours), Some(&key)).await;
+    assert!(matches!(result, Ok(Transfer::UpToDate)), "{result:?}");
+}
+
+#[compio::test]
+async fn rfc8945_5_3_1_unsigned_last_message_is_refused() {
+    let key = key();
+    let primary = primary(None, vec![resigned("axfr-tsig-stream", true)]);
+    let error = stream_error(from(primary, ".", None, Some(&key)).await);
+    assert_eq!(
+        error,
+        StreamError::Tsig {
+            error: ResponseError::UnsignedEnd,
+            rcode: Rcode::NOERROR,
+        }
+    );
+}
+
+#[test]
+fn rfc8945_5_3_1_captured_signed_stream_verifies() {
+    // Knot's own MACs, verified at the times it signed them, against the request's MAC.
+    let key = key();
+    let request = request("axfr-tsig-stream");
+    let request_mac = find_tsig(&request)
+        .expect("well formed")
+        .expect("signed")
+        .tsig
+        .mac()
+        .to_vec();
+    let id = u16::from_be_bytes([request[0], request[1]]);
+    let verifier = ResponseVerifier::new(&key, &request_mac);
+    let mut reader = Reader::new(
+        dns("."),
+        id,
+        Asked::Axfr(None),
+        Some(verifier),
+        &Limits::default(),
+    );
+    let mut messages = responses("axfr-tsig-stream").into_iter();
+    let transfer = loop {
+        let message = messages.next().expect("a message before the end");
+        let now = find_tsig(&message)
+            .expect("well formed")
+            .expect("signed")
+            .tsig
+            .time_signed();
+        match reader.message(&message, now).expect("accepted") {
+            Step::More(next) => reader = next,
+            Step::Done(transfer) => break transfer,
+        }
+    };
+    assert!(messages.next().is_none());
+    let Transfer::Full(loaded) = transfer else {
+        panic!("not a full zone");
+    };
+    // The 1200 records the capture holds, besides its closing SOA.
+    assert_eq!(loaded.zone.record_count(), 1200);
+}
+
+#[compio::test]
+async fn rfc8945_5_3_1_refused_key_is_a_tsig_error() {
+    let key = key();
+    for id in [
+        "axfr-tsig-bad-secret",
+        "axfr-tsig-unknown-key",
+        "axfr-tsig-bad-time",
+    ] {
+        let primary = primary(None, vec![recorded(id)]);
+        let error = stream_error(from(primary, "zonetransfer.me.", None, Some(&key)).await);
+        assert!(
+            matches!(
+                error,
+                StreamError::Tsig {
+                    rcode: Rcode::NOTAUTH,
+                    ..
+                }
+            ),
+            "{id}: {error:?}"
+        );
+    }
+}
+
+/// The error of the root AXFR under `limits`.
+async fn bounded(script: Script, limits: Limits) -> TransferError {
+    let primary = primary(None, vec![script]);
+    let result = transfer(&Compio, primary, &Name::root(), None, None, &limits).await;
+    result.expect_err("past a limit")
+}
+
+#[compio::test]
+async fn limits_each_bound_refuses() {
+    let limit = |error: TransferError| match error {
+        TransferError::Stream(StreamError::Limit(limit)) | TransferError::Limit(limit) => limit,
+        other => panic!("not a limit: {other:?}"),
+    };
+    let cases = [
+        (
+            Limits {
+                messages: 1,
+                ..Limits::default()
+            },
+            Limit::Messages,
+        ),
+        (
+            Limits {
+                bytes: 1024,
+                ..Limits::default()
+            },
+            Limit::Bytes,
+        ),
+        (
+            Limits {
+                records: 100,
+                ..Limits::default()
+            },
+            Limit::Records,
+        ),
+    ];
+    for (limits, expected) in cases {
+        assert_eq!(
+            limit(bounded(recorded("axfr-root"), limits).await),
+            expected
+        );
+    }
+    let short = Duration::from_millis(200);
+    let time = Limits {
+        time: short,
+        ..Limits::default()
+    };
+    assert_eq!(limit(bounded(silent(), time).await), Limit::Time);
+    let idle = Limits {
+        idle: short,
+        ..Limits::default()
+    };
+    assert_eq!(limit(bounded(silent(), idle).await), Limit::Idle);
+}
+
+#[compio::test]
+async fn limits_records_per_rrset_refuse_the_zone() {
+    // The root's 13 NS records are one RRset.
+    let limits = Limits {
+        zone: dedens_zone::Limits {
+            records_per_rrset: 12,
+            ..dedens_zone::Limits::default()
+        },
+        ..Limits::default()
+    };
+    let error = bounded(recorded("axfr-root"), limits).await;
+    assert!(
+        matches!(error, TransferError::Stream(StreamError::Zone(_))),
+        "{error:?}"
+    );
+}
+
+/// Knot's response to `. SOA` without EDNS, over UDP.
+fn root_soa() -> Vec<u8> {
+    Answers::read("root")
+        .answers
+        .into_iter()
+        .find(|r| r.name == Name::root() && r.rtype == RecordType::SOA && r.edns_size.is_none())
+        .expect("a captured SOA")
+        .responses
+        .remove(&Server::Knot)
+        .expect("Knot's")
+}
+
+#[compio::test]
+async fn rfc1035_soa_over_udp() {
+    let primary = primary(Some(|query| with_id(&root_soa(), query)), Vec::new());
+    let soa = soa(&Compio, primary, &Name::root(), None)
+        .await
+        .expect("an SOA");
+    assert_eq!(Serial::new(soa.serial), serial(&root_soa()));
+}
+
+#[compio::test]
+async fn rfc7766_5_truncated_soa_goes_over_tcp() {
+    let truncated = |query: &[u8]| {
+        let mut response = with_id(&root_soa(), query);
+        response[2] |= 0x02;
+        response
+    };
+    let primary = primary(Some(truncated), vec![replay(vec![root_soa()])]);
+    let soa = soa(&Compio, primary, &Name::root(), None)
+        .await
+        .expect("an SOA");
+    assert_eq!(Serial::new(soa.serial), serial(&root_soa()));
+}

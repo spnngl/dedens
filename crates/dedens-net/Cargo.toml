@@ -14,6 +14,9 @@ compio.workspace = true
 dedens-dnscrypt = { workspace = true, optional = true }
 dedens-odoh = { workspace = true, optional = true }
 dedens-proto.workspace = true
+# D210: the transfer client verifies TSIG and loads the zone it brings.
+dedens-tsig.workspace = true
+dedens-zone.workspace = true
 flume.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
@@ -40,7 +43,11 @@ tracing = ["dep:tracing"]
 compio = { workspace = true, features = ["macros"] }
 dedens-dnscrypt.workspace = true
 dedens-odoh.workspace = true
-dedens-testkit = { workspace = true, features = ["recursion", "responder"] }
+dedens-testkit = { workspace = true, features = [
+  "authoritative",
+  "recursion",
+  "responder",
+] }
 proptest.workspace = true
 
 [[test]]

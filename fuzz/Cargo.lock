@@ -801,6 +801,8 @@ dependencies = [
  "dedens-dnscrypt",
  "dedens-odoh",
  "dedens-proto",
+ "dedens-tsig",
+ "dedens-zone",
  "flume",
  "futures-util",
  "getrandom 0.4.3",
