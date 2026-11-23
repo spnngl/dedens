@@ -118,8 +118,9 @@ impl Keys {
         held.set.refresh_at
     }
 
-    /// What `packet`, from the client at `from`, is: a client denied by `pipeline` gets nothing, and no work is
-    /// done for it (D91), a certificate query is answered in the clear, any other must open.
+    /// What `packet`, from the client at `from`, is: a client [silenced](Pipeline::silences) by `pipeline` gets
+    /// nothing, and no work is done for it (D91), nor a denied one a certificate over UDP (D208), a certificate
+    /// query is answered in the clear, any other must open.
     fn open<N: Io>(
         &self,
         thread: &Thread<N>,
@@ -140,6 +141,13 @@ impl Keys {
             return resume(set, packet, unix, from);
         }
         let Some(issued) = set.find(packet) else {
+            // The certificates are answered outside the pipeline, with no rate limit (D99): the access check is
+            // their bound over UDP, even where the zones answer every client (D208), or any source could have
+            // them reflected at a victim. A denied client has them over TCP, where it proves its address.
+            if carrier == Carrier::Udp && pipeline.denies(from) {
+                dropped("none");
+                return Open::Drop;
+            }
             let answer = set.certificates(packet, self.service.provider(), carrier);
             return answer.map_or_else(
                 || {

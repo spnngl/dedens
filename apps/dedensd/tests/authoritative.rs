@@ -102,6 +102,32 @@ fn rfc1034_4_3_2_dedensd_answers_its_zones_with_aa() {
     assert_eq!(reply.rcode(), Rcode::REFUSED);
 }
 
+/// D208: a zone served below another that has no NS at its apex is warned of; one the parent delegates is not.
+#[test]
+fn a_zone_its_parent_does_not_delegate_is_warned_of() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (example, isi) = zones(dir.path());
+    let warning =
+        "zone served below a zone with no NS at its apex: the parent does not delegate it";
+    // `a.example.` is a cut of `example.` (RFC 4035 Appendix A), `d.example.` is none.
+    for (child, warned) in [("a.example", false), ("d.example", true)] {
+        let mut server = Server::configured(|listen| {
+            authoritative(listen, (&example, &isi)).replace("ISI.EDU", child)
+        });
+        // Logged after the zones are built.
+        let started = "every client can query these zones, whatever `access` says (D208)";
+        assert!(server.event(started).is_some());
+        let events = logged(&server, warning);
+        if warned {
+            assert_eq!(events.len(), 1, "{child}: {events:?}");
+            assert_eq!(events[0]["fields"]["zone"], "d.example.");
+            assert_eq!(events[0]["fields"]["parent"], "example.");
+        } else {
+            assert_eq!(events, Vec::<serde_json::Value>::new(), "{child}");
+        }
+    }
+}
+
 /// D120, D55: a reload loads again the zone whose file changed, no other; one that no longer loads keeps its last
 /// version, the error logged, and the reload serves the rest.
 #[test]
@@ -182,39 +208,99 @@ fn a_reload_drops_no_query() {
     );
 }
 
-/// D208, D99: over `DNSCrypt` a zone answers a client the access lists deny, whatever the action, as over every
-/// transport: the packets are opened for it. A name outside the zones gets what the lists say, sealed: REFUSED, or
-/// nothing.
+/// A `DNSCrypt` resolver serving `example.` alone, with `access` lines.
 #[cfg(feature = "dnscrypt")]
-#[test]
-fn a_zone_answers_a_client_the_access_lists_deny_over_dnscrypt() {
-    use dedens_net::client::Client;
-    use dedens_proto::Transport;
-
+fn dnscrypt(access: &str) -> crate::dnscrypt::Resolver {
     let dir = tempfile::tempdir().expect("a directory");
     let (example, _) = zones(dir.path());
     let stages = format!(
         "pipeline: [zones]\nstages:\n  zones:\n    type: authoritative\n    zones:\n      - {{name: example, file: '{}'}}\n",
         example.display()
     );
-    for action in ["refuse", "drop"] {
+    crate::dnscrypt::resolver_of("", access, &stages)
+}
+
+/// D208, D99: where zones are served, the certificates are answered over UDP, outside the pipeline and its rate
+/// limit, only to a client the access lists permit, as without zones: any other source could have them reflected
+/// at a victim. A client denied has them over TCP, where it proves its address.
+#[cfg(feature = "dnscrypt")]
+#[test]
+fn a_denied_client_has_the_certificates_over_tcp_only() {
+    use std::net::UdpSocket;
+    use std::time::Duration;
+
+    use dedens_proto::rdata::RData;
+
+    let certificates = Message::query(
+        9,
+        Question::new(
+            crate::dnscrypt::PROVIDER.parse().expect("a name"),
+            RecordType::TXT,
+        ),
+    )
+    .to_vec()
+    .expect("a query");
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("a socket");
+    socket
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .expect("a timeout");
+    for (allow, action, permitted) in [
+        ("10.0.0.0/8", "refuse", false),
+        ("10.0.0.0/8", "drop", false),
+        ("127.0.0.0/8", "refuse", true),
+    ] {
+        let access = format!("access:\n  allow: ['{allow}']\n  action: {action}\n");
+        let resolver = dnscrypt(&access);
+        socket
+            .send_to(&certificates, resolver.server.addr)
+            .expect("sent");
+        let mut buf = [0; 512];
+        match socket.recv(&mut buf) {
+            Ok(len) => {
+                assert!(permitted, "{allow} {action}: UDP answered");
+                let reply = crate::util::decode(&buf[..len]);
+                assert!(matches!(reply.answer[0].data(), RData::Txt(_)));
+            }
+            Err(_) => assert!(!permitted, "{allow} {action}: UDP not answered"),
+        }
+        let reply = crate::util::ask_tcp(resolver.server.addr, &certificates);
+        assert_eq!(reply.answer.len(), 2, "{allow} {action}: TCP");
+    }
+}
+
+/// D208, D99: over `DNSCrypt` a zone answers a client the access lists deny, whatever the action, as over every
+/// transport: the packets are opened for it. A name outside the zones gets what the lists say, sealed: REFUSED, or
+/// nothing. Over TCP too, where the client has the certificates; over UDP it has them from TCP.
+#[cfg(feature = "dnscrypt")]
+#[test]
+fn a_zone_answers_a_client_the_access_lists_deny_over_dnscrypt() {
+    use dedens_net::client::Client;
+    use dedens_proto::Transport;
+
+    for (action, transport) in [
+        ("refuse", Transport::Udp),
+        ("drop", Transport::Udp),
+        ("refuse", Transport::Tcp),
+        ("drop", Transport::Tcp),
+    ] {
         let access = format!("access:\n  allow: ['10.0.0.0/8']\n  action: {action}\n");
-        let resolver = crate::dnscrypt::resolver_of("", &access, &stages);
+        let resolver = dnscrypt(&access);
         let ask = |name: &str| {
             let question = Question::new(name.parse().expect("a name"), RecordType::A);
             crate::dnscrypt::ask_message(
                 &Client::new(),
                 &resolver.stamp,
                 Message::query(0x0102, question),
-                Transport::Udp,
+                transport,
             )
         };
         let response = ask("ns1.example.").expect("a zone answers");
+        assert_eq!(response.transport, transport, "{action}");
         let reply = crate::util::decode(&response.wire);
-        assert_eq!(reply.rcode(), Rcode::NOERROR, "{action}");
+        assert_eq!(reply.rcode(), Rcode::NOERROR, "{action} {transport:?}");
         assert!(
             reply.header.flags.contains(Flags::AA),
-            "{action}: {reply:?}"
+            "{action} {transport:?}: {reply:?}"
         );
         match ask("example.org.") {
             Ok(response) => {

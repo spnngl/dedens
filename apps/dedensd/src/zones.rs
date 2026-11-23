@@ -50,7 +50,7 @@ pub(crate) fn describe() {
 }
 
 /// The files a load read, with their stamps: the zone file, then each it includes, a link it followed as well as
-/// its target. `None` for a file that could not be opened as a regular file when read.
+/// its target. `None` for a file that could not be read, whatever the cause: it is tried again at each load.
 type Files = Vec<(PathBuf, Option<Stamp>)>;
 
 /// A zone loaded, and what tells whether its files changed since.
@@ -251,28 +251,31 @@ fn load(apex: &Name<'static>, path: &Path, max: u64, files: &mut Files) -> anyho
 }
 
 /// The bytes of the regular file at `path`, at most `max`: its size is checked before the file is read, and the
-/// buffer is that size. Its stamp is pushed on `files`, `None` if it cannot be opened.
+/// buffer is that size. Its stamp, taken before it is read, is pushed on `files` once it was read, `None` when
+/// any step failed: a read that failed for a reason of the moment, as an I/O error or a file that changed under
+/// it, must not make the zone skipped until the file changes.
 fn read(path: &Path, max: u64, files: &mut Files) -> anyhow::Result<Vec<u8>> {
     let reading = || format!("reading `{}`", path.display());
-    let opened = open(path).and_then(|file| Stamp::of(&file).map(|stamp| (file, stamp)));
-    files.push((
-        path.to_owned(),
-        opened.as_ref().ok().map(|(_, stamp)| *stamp),
-    ));
-    let (file, _) = opened.with_context(reading)?;
-    let len = file.metadata().with_context(reading)?.len();
-    ensure!(len <= max, "`{}` is over {max} bytes", path.display());
-    let mut text = Vec::with_capacity(usize::try_from(len).with_context(reading)?);
-    // The file may have grown since: the bound holds for what is read.
-    file.take(max.saturating_add(1))
-        .read_to_end(&mut text)
-        .with_context(reading)?;
-    ensure!(
-        u64::try_from(text.len()).is_ok_and(|len| len <= max),
-        "`{}` is over {max} bytes",
-        path.display()
-    );
-    Ok(text)
+    let read = || {
+        let file = open(path).with_context(reading)?;
+        let stamp = Stamp::of(&file).with_context(reading)?;
+        let len = file.metadata().with_context(reading)?.len();
+        ensure!(len <= max, "`{}` is over {max} bytes", path.display());
+        let mut text = Vec::with_capacity(usize::try_from(len).with_context(reading)?);
+        // The file may have grown since: the bound holds for what is read.
+        file.take(max.saturating_add(1))
+            .read_to_end(&mut text)
+            .with_context(reading)?;
+        ensure!(
+            u64::try_from(text.len()).is_ok_and(|len| len <= max),
+            "`{}` is over {max} bytes",
+            path.display()
+        );
+        anyhow::Ok((text, stamp))
+    };
+    let read = read();
+    files.push((path.to_owned(), read.as_ref().ok().map(|(_, stamp)| *stamp)));
+    read.map(|(text, _)| text)
 }
 
 #[cfg(test)]
@@ -347,6 +350,63 @@ mod tests {
         assert_eq!(read()[1], metric(SERIAL, "0"));
         assert_eq!(read()[2], metric(ZONES, "0"));
         assert!(held.zones.is_empty());
+    }
+
+    /// D208: the gauges describe what is served, so a reload that fails as a whole, after its zones were read,
+    /// leaves them as they were: the zones it did not name are still served.
+    #[test]
+    fn the_gauges_stay_after_a_reload_that_failed() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let dir = tempfile::tempdir().unwrap();
+        let isi = isi(dir.path());
+        let example = dir.path().join("example.zone");
+        fs::copy(
+            dedens_testkit::path("zones/rfc4035_appendix_a.zone"),
+            &example,
+        )
+        .unwrap();
+        let config = |zones: &str, tries: u8| {
+            format!(
+                "listen: ['127.0.0.1:53']\npipeline: [zones, up]\nstages:\n  zones:\n    type: authoritative\n    zones:\n{zones}  up:\n    type: forward\n    servers: ['192.0.2.1']\n    tries: {tries}\n"
+            )
+        };
+        let zone = |name: &str, file: &Path| {
+            format!("      - {{name: {name}, file: '{}'}}\n", file.display())
+        };
+        let both = zone("ISI.EDU", &isi) + &zone("example", &example);
+        let one = zone("ISI.EDU", &isi);
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let mut store = crate::lists::Store::default();
+        let read = |text: String, store: &mut crate::lists::Store| {
+            metrics::with_local_recorder(&recorder, || {
+                crate::config::read(
+                    &text,
+                    |_| None,
+                    (&dedens_server::Pipeline::default(), None),
+                    store,
+                )
+            })
+        };
+        read(config(&both, 1), &mut store).unwrap();
+        // The zones are read, and the forward stage after them is refused: `tries` is above 5.
+        read(config(&one, 9), &mut store).unwrap_err();
+        assert!(store.zones.zones.values().any(|kept| kept.used));
+        let gauges: Vec<_> = (snapshotter.snapshot().into_vec().into_iter())
+            .filter(|(key, ..)| key.key().name() == SERIAL || key.key().name() == ZONES)
+            .map(|(key, _, _, value)| match value {
+                DebugValue::Gauge(gauge) => (key.key().name().to_owned(), gauge.into_inner()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            gauges.iter().filter(|(name, _)| name == SERIAL).count(),
+            2,
+            "{gauges:?}"
+        );
+        assert!(gauges.iter().all(|(_, value)| *value >= 2.0), "{gauges:?}");
+        assert!(gauges.contains(&(ZONES.to_owned(), 2.0)), "{gauges:?}");
     }
 
     #[test]
@@ -465,9 +525,9 @@ mod tests {
             format!("{error:#}").contains(&format!("is over {} bytes", len - 1)),
             "{error:#}"
         );
-        // The file refused is recorded: nothing is tried again until it changes.
+        // A file that was not read has no stamp, so the zone is tried again at the next load, however it failed.
         assert_eq!(files.len(), 1);
-        assert!(files[0].1.is_some());
+        assert!(files[0].1.is_none());
     }
 
     #[cfg(unix)]
