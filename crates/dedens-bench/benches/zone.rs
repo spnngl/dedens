@@ -9,8 +9,13 @@ use std::fmt::Write;
 use std::hint::black_box;
 
 use dedens_bench::{ZONE_HOSTS, zone};
-use dedens_proto::{Flags, Header, Message, Name, Question, RecordType, ZoneEntry, ZoneReader};
-use dedens_zone::{Limits, Source, Zone};
+use dedens_dnssec::crypto::nsec3_hash;
+use dedens_dnssec::denial::hashed_owner;
+use dedens_proto::edns::{Edns, EdnsFlags};
+use dedens_proto::{
+    Flags, Header, Message, Name, Nsec3HashAlgorithm, Question, RecordType, ZoneEntry, ZoneReader,
+};
+use dedens_zone::{Dnssec, Limits, Source, Zone};
 use divan::Bencher;
 use domain::zonefile::inplace::Zonefile;
 use hickory_proto::serialize::txt::Parser;
@@ -146,6 +151,36 @@ fn ptr_zone() -> Zone {
     loaded("ip6.arpa.".parse().expect("a name"), &text)
 }
 
+/// The generated zone and a wildcard, with an NSEC3 chain of no salt and no iteration over its names (RFC 9276 §3.1),
+/// unsigned: the load checks no signature (D209), and the proofs are chosen the same way.
+fn nsec3_zone() -> Zone {
+    let mut text = zone(ZONE_HOSTS);
+    text.push_str("*.wild TXT \"wildcard\"\n");
+    let apex = Name::from_labels([b"example".as_slice()]).expect("a name");
+    let mut hashes: Vec<[u8; 20]> = loaded(apex.clone(), &text)
+        .nodes()
+        .map(|(name, _)| nsec3_hash(Nsec3HashAlgorithm::SHA1, &[], 0, name).expect("SHA-1"))
+        .collect();
+    hashes.sort_unstable();
+    hashes.dedup();
+    text.push_str("@ NSEC3PARAM 1 0 0 -\n");
+    let owner = |hash: &[u8; 20]| hashed_owner(&apex, hash).expect("a hashed owner");
+    for (at, hash) in hashes.iter().enumerate() {
+        let next = owner(&hashes[(at + 1) % hashes.len()]);
+        let next = next.labels().next().expect("the hash label");
+        let next = std::str::from_utf8(next).expect("base32hex");
+        writeln!(text, "{} NSEC3 1 0 0 - {next} A", owner(hash)).expect("writes");
+    }
+    loaded(apex, &text)
+}
+
+/// The zone of RFC 5155 Appendix A: NSEC3 of 12 iterations and a salt.
+fn rfc5155_zone() -> Zone {
+    let text = std::fs::read_to_string(dedens_testkit::path("zones/rfc5155_appendix_a.zone"))
+        .expect("the zone of RFC 5155");
+    loaded("example.".parse().expect("a name"), &text)
+}
+
 /// The captured root zone: about 1 500 delegations.
 fn root_zone() -> Zone {
     let text = std::fs::read_to_string(dedens_testkit::path("authoritative/zones/root.zone"))
@@ -153,18 +188,27 @@ fn root_zone() -> Zone {
     loaded(Name::root(), &text)
 }
 
-/// What a query costs the zone: the answer, the message it fills, the reply encoded.
-fn reply(zone: &Zone, question: &Question<'_>, buf: &mut [u8]) -> usize {
+/// What a query costs the zone: the answer, the message it fills, the reply encoded; with DO, its OPT record too.
+fn reply_with(zone: &Zone, question: &Question<'_>, buf: &mut [u8], dnssec: Dnssec) -> usize {
     let answer = zone.answer(question);
     let mut message = Message {
         header: Header {
             flags: Flags::QR,
             ..Header::default()
         },
+        edns: (dnssec == Dnssec::With).then(|| Edns {
+            flags: EdnsFlags::DO,
+            ..Edns::default()
+        }),
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut message, buf.len());
+    let glue = answer.fill(zone, &mut message, buf.len(), dnssec);
     glue.encode(&message, buf).expect("encodes")
+}
+
+/// [`reply_with`] without DO.
+fn reply(zone: &Zone, question: &Question<'_>, buf: &mut [u8]) -> usize {
+    reply_with(zone, question, buf, Dnssec::Without)
 }
 
 const DATA: &str = "h4000.example.";
@@ -276,3 +320,31 @@ fn reply_root(bencher: Bencher<'_, '_>, name: &str) {
     let mut buf = [0_u8; 1232];
     bencher.bench_local(|| reply(&zone, black_box(&question), &mut buf));
 }
+
+/// NXDOMAIN, wildcard and data with DO (D209): the generated zone with an NSEC3 chain of no iteration, the zone of
+/// RFC 5155 (12 iterations: each name hashed 13 times), and the root zone's NSEC; `DO` false is the same without.
+#[divan::bench(
+    consts = [false, true],
+    args = [NSEC3_MISSING, NSEC3_WILD, NSEC3_DATA, RFC5155_MISSING, ROOT_NSEC_MISSING, ROOT_DS_REFERRAL],
+)]
+fn reply_signed<const DO: bool>(bencher: Bencher<'_, '_>, name: &str) {
+    let (zone, asked) = match name {
+        NSEC3_MISSING => (nsec3_zone(), MISSING),
+        NSEC3_WILD => (nsec3_zone(), WILD),
+        NSEC3_DATA => (nsec3_zone(), DATA),
+        RFC5155_MISSING => (rfc5155_zone(), "a.c.x.w.example."),
+        ROOT_NSEC_MISSING => (root_zone(), ROOT_MISSING),
+        _ => (root_zone(), REFERRAL),
+    };
+    let question = Question::new(asked.parse().expect("a name"), RecordType::A);
+    let mut buf = [0_u8; 1232];
+    let dnssec = if DO { Dnssec::With } else { Dnssec::Without };
+    bencher.bench_local(|| reply_with(&zone, black_box(&question), &mut buf, dnssec));
+}
+
+const NSEC3_MISSING: &str = "nsec3_nxdomain";
+const NSEC3_WILD: &str = "nsec3_wildcard";
+const NSEC3_DATA: &str = "nsec3_data";
+const RFC5155_MISSING: &str = "rfc5155_nxdomain";
+const ROOT_NSEC_MISSING: &str = "root_nsec_nxdomain";
+const ROOT_DS_REFERRAL: &str = "root_ds_referral";

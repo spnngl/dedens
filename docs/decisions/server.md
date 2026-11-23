@@ -2323,7 +2323,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
     I/O and the stage); Unbound's DS entries kept in the state (the seed's DS name keys that turn Valid at once);
     following forward stages' anchors (the upstream's answers, out of the step); non-root anchors (out of the step).
-- D204 (amends D74; amended by D206, D207) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
+- D204 (amends D74; amended by D206, D207, D209) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
   &Limits)` returns for zone text, checked, and it never changes: a change loads a new `Zone` and the server swaps
   it in whole (`Arc`, as D24's pipeline), so a query sees one version from start to end and a reload that fails
   leaves the served one. Loading does no I/O: `$INCLUDE` is a callback giving the bytes of a file (D25: the
@@ -2439,9 +2439,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     interoperability need); `ring::hmac::verify` alone (it compares the whole tag: a truncated MAC needs the prefix
     compared in constant time); the system clock inside the crate (untestable, and the server owns its clock).
 
-- D206 (amends D204) The answer of a zone (`dedens-zone`, the authoritative phase): `Zone::answer(&Question) -> Answer`
+- D206 (amends D204; amended by D209) The answer of a zone (`dedens-zone`, the authoritative phase): `Zone::answer(&Question) -> Answer`
   is RFC 1034 §4.3.2 as a loop over the name asked, with RFC 4592 wildcards, RFC 6672 DNAME and RFC 9471 glue, no
-  DNSSEC record (step 07 adds them from what the answer carries). The answer refers to the zone and copies nothing:
+  DNSSEC record (D209 adds them from what the answer carries). The answer refers to the zone and copies nothing:
   a chain of links, then one end. A link is a CNAME followed or a DNAME with the CNAME synthesised from it (owner the
   name asked, the DNAME's TTL, RFC 6672 §3.1); the end is data (the `RRset` asked for, from a node or from the
   wildcard that gave it, with the closest encloser), no data, NXDOMAIN (with the closest encloser, which a proof
@@ -2498,7 +2498,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     types CNAME, RRSIG, NSEC and ANY (Knot); an alias asked below a DNAME is the synthesised one. A name made past 255
     bytes or 127 labels is YXDOMAIN with the DNAME in the answer and no SOA (RFC 6672 §2.2; Knot the same).
   - ANY: one `RRset`, the lowest type but NSEC3 (RFC 8482 §4.2), Knot's choice (D203 difference 3); NSD prefers A,
-    AAAA and other small types. RRSIG asked: the signatures of the first type (D203 difference 4; step 07).
+    AAAA and other small types. RRSIG asked: the signatures of the first type (D203 difference 4).
   - Additional section: the A and AAAA of in-zone NS, MX and SRV targets, in answers and referrals, the A
     before the AAAA; none for a CNAME target (RFC 2181 §10.3); no apex NS in the authority of a positive answer
     (D203 difference 1, Knot). Knot adds SVCB and HTTPS records too: left to TODECIDE. An answer's addresses come
@@ -2524,7 +2524,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     map, 10% more; a load of 63 ms and 47 MB is the same. The predecessor in canonical order is the previous index.
   - Test data: RFC 1034 §6.2 on the §6.1 root zone, RFC 4592 §2.2.1 and RFC 6672 §2.2, §6 examples
     (`crates/dedens-zone/tests/answer.rs`), and every answer captured from Knot and NSD for each zone of D203
-    (`reference.rs`), by D203's rules: signed zones without DO (the proofs are step 07's), Knot's answer (NSD's
+    (`reference.rs`), by D203's rules (with DO too since D209), Knot's answer (NSD's
     for the ISI zone, which Knot refuses), the names of RDATA compared lowercase (both servers lower them; `Record`'s
     equality ignores case there, strings and the rest are exact), owners as asked (as stored for NSD). Fuzz target
     `zone_answer`; bench `answer_zone`, `reply_zone`, `reply_mx`, `reply_ptr`, `reply_root` (answers 0.25-1.3 µs,
@@ -2606,3 +2606,62 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     record after a refused one kept (a hole breaks the chain); one `Changeset` per RRset (RFC 1995 §4's sequence is
     per version); keeping a changeset over the limit alone and dropping the rest (the oldest of a chain is what
     goes first, NSD).
+- D209 (amends D203, D204, D206) Pre-signed DNSSEC answers (`dedens-zone`, the authoritative phase): a zone signed
+  elsewhere is served as given, its signatures and its denial chain in every answer to a query with DO (RFC 4035
+  §3.1, RFC 5155 §7.2); dedens signs nothing and checks no signature (out of the phase's scope). `Answer::fill`
+  takes the requester's choice as a `Dnssec` (`Dnssec::asked(query's OPT)`, RFC 3225 §3), not from the
+  response's OPT record, which a server writes after the answer: a caller cannot forget DO and still compile.
+  - Storage, amending D204: the RRSIGs were already kept by node and by the type they cover (`Node::signatures`).
+    The builder (`Zone::load`, and `Zone::apply`, which builds again) adds a `Denial` index
+    (`crates/dedens-zone/src/denial.rs`) of the chain the apex names: NSEC3 for an NSEC3PARAM of flags 0 (RFC 5155
+    §4, §4.1.2; the first one; NSEC3 records of other parameters are a chain on its way in or out, ignored), else
+    NSEC for an NSEC, else none (unsigned, or signatures without a chain: RRSIGs given, no proof). NSEC: the places
+    of the nodes holding one, in canonical order, so the record covering a name is a bisection of the nodes and one
+    of the places (Knot walks back from the predecessor). NSEC3: each record's owner hash, decoded from its label
+    (none computed at load), with its node's place, sorted by hash, 28 bytes a record. The records stay in their
+    nodes (proof-only nodes, D206) and an answer borrows them as any other. The names a query needs, at most the
+    closest encloser, the next closer and the wildcard, are hashed when asked (`nsec3_hash`, the validator's).
+  - Load checks, errors that refuse the zone as D204's: each NSEC names the owner of the next NSEC in canonical
+    order, the last the apex (RFC 4034 §4.1.1); each NSEC3 of the chain's parameters, one label below the apex,
+    names the next hash, the last the first (RFC 5155 §7.1): `ErrorKind::BrokenChain` at the first broken link. An
+    NSEC3PARAM of a hash other than SHA-1 is `ErrorKind::Nsec3Algorithm` (§4.1.1: no proof can be chosen with a
+    hash the server lacks). Iterations above 0 load with `WarningKind::Nsec3Iterations` (RFC 9276 §3.1 asks for
+    0, §3.2 lets validators call high counts insecure): each name hashed costs 1 + iterations SHA-1 blocks, the
+    operator's choice: an NSEC3 NXDOMAIN with DO 1.7 µs at 0, 5.0 µs at 12 (`docs/benchmarks.md`). Not
+    checked: the signatures (they expire, so a load would refuse a zone the signer is about to replace; each
+    resolver's validator checks them; Knot validates only when configured, `dnssec-validation`), nor that every
+    name has its NSEC or NSEC3 (a missing record makes a proof a validator refuses, and the answer stays an
+    answer).
+  - Selection, Knot's (`nsec_proofs.c`), from what the answer records (the match, the closest encloser, the
+    wildcard source). Each `RRset` of the answer and authority sections is followed by its RRSIGs; the CNAME a
+    DNAME synthesises has none (RFC 6672 §5.3.1), nor a referral's NS and glue (RFC 4035 §2.2). NODATA: the SOA
+    and its RRSIG, both at min(TTL, MINIMUM) as D206, then the NSEC of the name, the covering one for an empty
+    non-terminal (RFC 4035 §3.1.3.1); with NSEC3 the record of the name (RFC 5155 §7.2.3), else the closest
+    provable encloser proof from its parent (§7.2.4: DS at an unsigned delegation of an opt-out chain, or an empty
+    non-terminal only such delegations make). NXDOMAIN: the NSEC covering the name and the one covering
+    `*.<closest encloser>` (§3.1.3.2); with NSEC3 the closest provable encloser proof (its record and the one
+    covering the next closer name, §7.2.1) and the record covering its wildcard (§7.2.2). Wildcard answer: the NSEC
+    covering the name (§3.1.3.3), the NSEC3 covering the next closer name (§7.2.6); wildcard NODATA adds the
+    wildcard's own record (§3.1.3.4, §7.2.5). A wildcard met by a CNAME of the chain gets its proof too. Referral:
+    the DS and its RRSIG for a signed child, else the NODATA proof of the cut, under NSEC3 an opt-out cover (RFC
+    4035 §3.1.4, RFC 5155 §7.2.7). A name that is only an NSEC3 owner is absent (D206) and proven so (§7.2.8). A
+    record named by two proofs appears once. Additional addresses carry their RRSIGs, after all the addresses.
+  - Truncation: proofs and RRSIGs are in the answer and authority sections, where any loss sets TC
+    (`Message::encode_truncated`; RFC 4035 §3.1.1: without them an answer is bogus), so a response too small for
+    them is TC and asked again over TCP. An address's RRSIGs are optional: dropped first, whole, without TC
+    (§3.1.1). The step's "whole RRset and RRSIG pairs" applies to the additional section only: in the others
+    the requester discards what TC marks (RFC 2181 §9), as D206.
+  - Test data: RFC 4035 Appendix B (B.1-B.8) and RFC 5155 Appendix B (B.1-B.6) reproduced from the Appendix A
+    zones (`crates/dedens-zone/tests/signed.rs`), the responses read from the RFC text, with D203 difference 1
+    applied to them (they have NSD's apex NS) and RFC 5155 B.6's RRSIG read with its missing parenthesis. Every
+    answer with DO to the questions captured for the RFC 4035 zone and the root zone (D203) is validated by
+    `dedens-dnssec` from the zone's own DNSKEY (the root's: its trust anchor), the zone answering what the
+    validator asks. RFC 5155's keys are of 512 bits, below what `dedens-dnssec` verifies (D71): its answers, the
+    RFC 4035 zone's, and a proptest over names of both zones and below them are checked by `denial::prove`, the
+    validator's set logic without signatures. Knot's DO answers compared by D203's rules (`reference.rs`, its
+    differences 6 and 8). Checks in `tests/checks.rs`; fuzz target `zone_answer` asks every name with and without
+    DO; bench `reply_signed`.
+  - Rejected: validating signatures at load (above); hashing every node at load (the names a query hashes are not
+    nodes, and an owner's label is its hash); a tree of NSEC3 records apart, as Knot's (D206 keeps them in
+    proof-only nodes, found by the same bisection); Knot's walk back to the previous NSEC (a bisection is bounded
+    whatever the zone); refusing iterations above 0 (a zone still at 10 must be servable).
