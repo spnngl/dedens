@@ -1,10 +1,15 @@
-//! Targets of dedens-net: `resolv.conf`, the DNS stamps of `DNSCrypt`, and the sans-IO core of `DoH` (RFC 8484): URI
-//! Templates, a server's reading of requests and a client's reading of responses.
+//! Targets of dedens-net: `resolv.conf`, the DNS stamps of `DNSCrypt`, the sans-IO core of `DoH` (RFC 8484): URI
+//! Templates, a server's reading of requests and a client's reading of responses, and the stream of a zone transfer
+//! (D210).
 
 use dedens_net::doh::{self, Method, Template};
 use dedens_net::resolv_conf::ResolvConf;
 use dedens_net::stamp::{Relay, Stamp};
-use dedens_proto::{MAX_MESSAGE_LEN, Message};
+use dedens_net::transfer::stream::{Asked, Reader, Step};
+use dedens_net::transfer::{Limits, Transfer};
+use dedens_proto::rdata::RData;
+use dedens_proto::{MAX_MESSAGE_LEN, Message, RecordType, Serial};
+use dedens_zone::Changeset;
 
 /// Arbitrary text as `/etc/resolv.conf`: `ndots` stays at most 15, and any of its words has the name itself and at
 /// most one candidate per search domain.
@@ -211,4 +216,69 @@ pub fn read_doh_response(data: &[u8]) {
         (Err(_), Err(_)) => {}
         (aged, fresh) => panic!("Age and Date change the result: {aged:?}, {fresh:?}"),
     }
+}
+
+/// Arbitrary bytes as a zone transfer over TCP (D210), each message behind its length in two octets: the request,
+/// whose ID, question and SOA say what was asked (RFC 5936 §2.2, RFC 1995 §3), then the responses, read by
+/// `transfer::stream::Reader` up to its end. A full zone is the zone asked for; changes start at the serial asked
+/// from and follow one another.
+///
+/// # Panics
+///
+/// On a bug in the reader.
+pub fn transfer_stream(data: &[u8]) {
+    let mut messages = frames(data);
+    let Some(Ok(request)) = messages.next().map(Message::decode) else {
+        return;
+    };
+    let request = request.message;
+    let Some(question) = request.questions.first() else {
+        return;
+    };
+    let from = request
+        .authority
+        .iter()
+        .find_map(|record| match record.data() {
+            RData::Soa(soa) => Some(Serial::new(soa.serial)),
+            _ => None,
+        });
+    let asked = match (question.qtype, from) {
+        (RecordType::IXFR, Some(from)) => Asked::Ixfr(from),
+        (RecordType::AXFR, from) => Asked::Axfr(from),
+        _ => return,
+    };
+    let zone = question.name.clone().into_owned();
+    let limits = Limits::default();
+    let mut reader = Reader::new(zone.clone(), request.header.id, asked, None, &limits);
+    for message in messages {
+        match reader.message(message, 0) {
+            Ok(Step::More(next)) => reader = next,
+            Ok(Step::Done(Transfer::Full(loaded))) => {
+                assert_eq!(loaded.zone.apex(), &zone, "another zone");
+                return;
+            }
+            Ok(Step::Done(Transfer::Incremental(changesets))) => {
+                assert_eq!(
+                    changesets.first().map(Changeset::from_serial),
+                    from,
+                    "changes from another serial"
+                );
+                for pair in changesets.windows(2) {
+                    assert_eq!(pair[0].to_serial(), pair[1].from_serial(), "a gap");
+                }
+                return;
+            }
+            Ok(Step::Done(Transfer::UpToDate)) | Err(_) => return,
+        }
+    }
+}
+
+/// The messages of `data`, each behind its length in two octets, up to the first that is cut short.
+fn frames(mut data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        let (length, rest) = data.split_first_chunk::<2>()?;
+        let message = rest.get(..usize::from(u16::from_be_bytes(*length)))?;
+        data = &rest[message.len()..];
+        Some(message)
+    })
 }

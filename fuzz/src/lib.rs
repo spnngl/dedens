@@ -40,6 +40,7 @@ pub use dnssec::{
 };
 pub use net::{
     parse_dns_stamp, parse_doh_template, parse_resolv_conf, read_doh_response, server_request,
+    transfer_stream,
 };
 pub use odoh::{odoh_decrypt, parse_odoh_configs, parse_odoh_message, read_odoh_http};
 pub use plugins::parse_lists;
@@ -92,6 +93,7 @@ targets! {
     parse_dns_stamp,
     server_request,
     read_doh_response,
+    transfer_stream,
     dnssec_crypto,
     parse_odoh_configs,
     parse_odoh_message,

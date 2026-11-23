@@ -1024,6 +1024,8 @@ dependencies = [
  "dedens-odoh",
  "dedens-proto",
  "dedens-testkit",
+ "dedens-tsig",
+ "dedens-zone",
  "flume",
  "futures-util",
  "getrandom 0.4.3",

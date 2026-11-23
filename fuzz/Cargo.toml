@@ -49,7 +49,10 @@ rand_core = "0.10.1"
 
 [dev-dependencies]
 # The responses of the captured resolutions, seeds of the smoke test (D188).
-dedens-testkit = { path = "../crates/dedens-testkit", features = ["recursion"] }
+dedens-testkit = { path = "../crates/dedens-testkit", features = [
+  "authoritative",
+  "recursion",
+] }
 
 [[bin]]
 name = "decode_message"
@@ -180,6 +183,13 @@ bench = false
 [[bin]]
 name = "read_doh_response"
 path = "fuzz_targets/read_doh_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transfer_stream"
+path = "fuzz_targets/transfer_stream.rs"
 test = false
 doc = false
 bench = false

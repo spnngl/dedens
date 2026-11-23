@@ -54,6 +54,7 @@ dedens-roots = { path = "crates/dedens-roots" }
 dedens-scenario = { path = "crates/dedens-scenario" }
 dedens-server = { path = "crates/dedens-server" }
 dedens-testkit = { path = "crates/dedens-testkit" }
+dedens-tsig = { path = "crates/dedens-tsig" }
 dedens-zone = { path = "crates/dedens-zone" }
 # D182: `dedens-sim` runs the serving loop of the library.
 dedensd = { path = "apps/dedensd" }
