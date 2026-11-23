@@ -26,8 +26,9 @@ parser does not know the type yet. `zones/nsec3_signed.zone` is the NSEC3 chain 
 iterations, no salt and the opt-out flag, with the signer's clock set to Unix time 1780000000 (2026-05-28 20:26:40
 UTC), so every signature starts 90 minutes before it and lasts 14 days from it. The keys are new each run: the stage
 is run once and its files kept, and the tests of `dedens-zone` run the validator at that time. The zones of
-`testdata/zones/` are served too: RFC 4035 and RFC 5155's appendices; the RFC 1035 ISI zone is refused by Knot (MB and MG are obsolete types it does not load), and the zone of every type by both
-(Knot: `unsupported record type`; NSD: `only class IN is supported`), so no answers exist for it.
+`testdata/zones/` are served too: RFC 4035 and RFC 5155's appendices; the RFC 1035 ISI zone is refused by Knot (MB
+and MG are obsolete types it does not load), and the zone of every type by both (Knot: `unsupported record
+type`; NSD: `only class IN is supported`), so no answers exist for it.
 
 ## Answers
 

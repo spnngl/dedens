@@ -33,8 +33,8 @@ pub struct Limits {
     /// Errors a load reports before it gives up: 100. A zone of wrong data would report each record; the first
     /// hundred are what a person reads. Knot's checker (`src/knot/zone/semantic-check.c`) reports them all.
     pub errors: usize,
-    /// Iterations of the NSEC3 chain the apex names: 150, the validator's cap of D74 (Unbound's
-    /// `val-nsec3-keysize-iterations` for 1024-bit keys; BIND's `DNS_NSEC3_MAXITERATIONS` is 50). An answer that
+    /// Iterations of the NSEC3 chain the apex names: 150, the validator's cap of D74 (Unbound 1.26's
+    /// `val-nsec3-keysize-iterations`, 150 for every key size; BIND's `DNS_NSEC3_MAXITERATIONS` is 50). An answer that
     /// proves a name absent hashes the next closer name, 1 + iterations SHA-1 blocks, and a load or an `apply`
     /// hashes each name twice, names × 2 × (1 + iterations) blocks, so a zone a third party supplies (a transfer)
     /// could make every query cost milliseconds and a load hours. RFC 5155 §10.3 allows up to 2500 (for the

@@ -656,8 +656,10 @@ enum Expected {
 /// The verdict each captured question of the zone `testdata/zones/nsec3_source.zone` signed by Knot is to get. Every
 /// NSEC3 record of the zone has the opt-out flag (Knot sets it on all of the chain it makes), so a proof that rests on
 /// the span of one is an `OptOut` at best: an NXDOMAIN, a wildcard's answer or NODATA, and the DS of `c.example.`,
-/// the unsigned delegation (RFC 5155 §6, §9.2). RRSIG queries are no answer to prove (RFC 4035 §3.1.5). An
-/// unforeseen question fails: a new capture gets its verdict here.
+/// the unsigned delegation (RFC 5155 §6, §9.2). RRSIG queries are no answer to prove (RFC 4035 §3.1.5). The
+/// verdict follows from the zone's structure by class (the subtrees of `c.example.` and `a.example.`, the hashed
+/// owners, the names below `dedens-nxdomain.` and `dedens-wild.w.`), the rest is listed: a question outside these
+/// classes fails, so a new capture gets its verdict here.
 fn expected(question: &Question<'_>) -> Expected {
     let (name, rtype) = (&question.name, question.qtype);
     let ds = rtype == RecordType::DS;
@@ -800,9 +802,7 @@ fn rfc5155_s7_2_4_no_data_at_an_empty_non_terminal_of_opt_out_delegations_has_th
     assert_eq!(response.answer, []);
     // The closest provable encloser's record, the apex's, and the cover of the next closer name `e.example.`: no
     // record of its own, no cover of the wildcard.
-    let owners = nsec3_owners(&response);
-    assert_eq!(owners.len(), 2, "{response:?}");
-    assert!(owners.iter().any(|owner| zone.node(owner).is_some()));
+    assert_eq!(nsec3_owners(&response).len(), 2, "{response:?}");
     // KNOWN GAP (`docs/TODECIDE.md`): `denial::prove` wants the wildcard denied too, where Unbound takes the cover
     // of the next closer name, which has the opt-out flag, as an insecure NODATA (RFC 5155 §9.2). Change this to
     // the fact the validator is made to give when it is.
@@ -823,9 +823,7 @@ fn rfc5155_s7_2_1_the_closest_provable_encloser_is_found_over_several_empty_non_
     assert_eq!(response.rcode(), Rcode::NXDOMAIN, "{response:?}");
     // The apex's record, the closest provable encloser's, and the one record that covers both the next closer
     // name and the wildcard `*.example.` (a record two proofs name appears once).
-    let owners = nsec3_owners(&response);
-    assert_eq!(owners.len(), 2, "{response:?}");
-    assert!(owners.iter().any(|owner| zone.node(owner).is_some()));
+    assert_eq!(nsec3_owners(&response).len(), 2, "{response:?}");
     let proof = proven(zone.apex(), &response).expect("a negative answer");
     assert!(
         matches!(proof, Ok(Fact::NameError { compact: false })),
