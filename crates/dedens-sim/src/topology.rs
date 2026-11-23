@@ -73,6 +73,8 @@ pub struct Topology {
     upstreams: Vec<(Answers, Speaks)>,
     /// The authoritative servers, by address: hosts named by it, in its order (D189).
     authorities: BTreeMap<IpAddr, Answers>,
+    /// The authoritative servers that are `dedensd`, by address, each with its pipeline ([`Topology::dedensd_at`]).
+    zones: BTreeMap<IpAddr, Build>,
     /// The answers of the resolutions loaded, [`Expected::resolved`].
     resolved: Vec<Expected>,
     epoch: SystemTime,
@@ -92,6 +94,7 @@ impl fmt::Debug for Topology {
         f.debug_struct("Topology")
             .field("upstreams", &self.upstreams)
             .field("authorities", &self.authorities)
+            .field("zones", &self.zones.keys())
             .field("resolved", &self.resolved)
             .field("epoch", &self.epoch)
             .field("duration", &self.duration)
@@ -108,6 +111,7 @@ impl Default for Topology {
         Self {
             upstreams: Vec::new(),
             authorities: BTreeMap::new(),
+            zones: BTreeMap::new(),
             resolved: Vec::new(),
             epoch: UNIX_EPOCH + EPOCH,
             duration: DURATION,
@@ -152,6 +156,25 @@ impl Topology {
     #[must_use]
     pub fn authoritative_at(mut self, addr: IpAddr, answers: Answers) -> Self {
         self.authorities.insert(addr, answers);
+        self
+    }
+
+    /// Adds an authoritative server at `addr` that is `dedensd`, its serving loop of UDP and TCP
+    /// ([`Resolver::serve_dedensd`]) answering through the pipeline `build` makes at each start: an authoritative
+    /// stage serving zones (D208). `addr` is no other server's. What its zones answer is the scenario's to expect:
+    /// [`Topology::expecting`].
+    #[must_use]
+    pub fn dedensd_at(mut self, addr: IpAddr, build: impl Fn() -> Pipeline + 'static) -> Self {
+        self.zones
+            .insert(addr, Rc::new(move |_: &[Server]| build()));
+        self
+    }
+
+    /// Expects `expected` for its question, an answer of servers whose data the topology does not hold: those of
+    /// [`Topology::dedensd_at`].
+    #[must_use]
+    pub fn expecting(mut self, expected: Expected) -> Self {
+        self.resolved.push(expected);
         self
     }
 
@@ -307,13 +330,7 @@ impl Topology {
                 }
             }
         }
-        for (n, (addr, answers)) in self.authorities.into_iter().enumerate() {
-            let rng = Rc::new(RefCell::new(Rng::new(seed, authority_stream(n))));
-            let (answers, trace) = (Rc::new(answers), trace.clone());
-            sim.host(addr, move || {
-                upstream::serve(Rc::clone(&answers), addr, Rc::clone(&rng), trace.clone())
-            });
-        }
+        host_authorities(&mut sim, (seed, &trace), self.authorities, self.zones);
         let host = sim.lookup("resolver");
         let addrs = servers.iter().map(|server| server.addr).collect();
         let resolver = Resolver {
@@ -543,6 +560,39 @@ impl World {
                 };
             }
         }
+    }
+}
+
+/// Hosts the authoritative servers on `sim`: those answering from their answers, then those that are `dedensd`
+/// ([`Topology::dedensd_at`]), each with a stream of `seed` in that order.
+fn host_authorities(
+    sim: &mut Sim<'static>,
+    (seed, trace): (Seed, &Trace),
+    authorities: BTreeMap<IpAddr, Answers>,
+    zones: BTreeMap<IpAddr, Build>,
+) {
+    let held = authorities.len();
+    for (n, (addr, answers)) in authorities.into_iter().enumerate() {
+        let rng = Rc::new(RefCell::new(Rng::new(seed, authority_stream(n))));
+        let (answers, trace) = (Rc::new(answers), trace.clone());
+        sim.host(addr, move || {
+            upstream::serve(Rc::clone(&answers), addr, Rc::clone(&rng), trace.clone())
+        });
+    }
+    for (n, (addr, build)) in zones.into_iter().enumerate() {
+        let server = Resolver {
+            upstreams: Vec::new(),
+            trust: None,
+            rng: Rc::new(RefCell::new(Rng::new(seed, authority_stream(held + n)))),
+            trace: trace.clone(),
+            build,
+            #[cfg(feature = "dnscrypt")]
+            dnscrypt: None,
+        };
+        sim.host(addr, move || {
+            let server = server.clone();
+            async move { server.serve_dedensd(addr).await }
+        });
     }
 }
 

@@ -14,7 +14,10 @@
 //! The same server stands at each address of a captured resolution, an authoritative server of the Internet,
 //! answering the exchanges captured from it ([`Answers::exchanges`], D189).
 //!
-//! Left out: the zone data of a real server; a scenario that needs it adds a pipeline with a local-data stage here.
+//! Left out: the zone data of a real server; a scenario that needs it has `dedensd` serve zones instead
+//! ([`Topology::dedensd_at`], D208).
+//!
+//! [`Topology::dedensd_at`]: crate::topology::Topology::dedensd_at
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
