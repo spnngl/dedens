@@ -928,6 +928,7 @@ dependencies = [
  "dedens-roots",
  "dedens-scenario",
  "dedens-testkit",
+ "dedens-tsig",
  "idna",
  "insta",
  "mimalloc",

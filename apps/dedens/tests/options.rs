@@ -172,15 +172,6 @@ fn usage_errors_the_run_finds_exit_2_before_any_query() {
 }
 
 #[test]
-fn zone_transfers_are_refused() {
-    dedens()
-        .args(["@192.0.2.1", "example.com", "AXFR"])
-        .assert()
-        .code(2)
-        .stderr(contains("zone transfers"));
-}
-
-#[test]
 fn search_tries_the_resolv_conf_domains() {
     let server = Responder::start(&["cname_chain"]);
     let conf = tempfile::NamedTempFile::new().expect("a file");

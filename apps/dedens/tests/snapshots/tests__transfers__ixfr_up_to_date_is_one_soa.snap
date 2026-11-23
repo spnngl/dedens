@@ -1,0 +1,8 @@
+---
+source: apps/dedens/tests/transfers.rs
+expression: "transfer(addr, \"example.\", &word, &[], 0)"
+---
+example. IXFR  NOERROR  N ms from 127.0.0.1:PORT over TCP
+answer
+  example.  1h  SOA  ns1.example. bugs.x.w.example. 1081539377 3600 300 3600000 3600
+recursion unavailable · EDNS 1232 bytes · 1 message · 1 record · 59/85 bytes

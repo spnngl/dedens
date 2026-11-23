@@ -414,6 +414,12 @@ Open questions, each with its proposed default. Once answered, record the outcom
   and MAC are gone, and a forwarder would have to pass the TSIG on unchanged (RFC 8945 §5.5). Default: refused;
   alternative: carry the verified key with the parked query and sign the stage's reply, once a user signs queries
   to a server that also resolves.
+- What the CLI's transfers (D212, step 10) leave out. UPDATE (RFC 2136) from the CLI: `dedens` has no way to send one;
+  default: none, `knsupdate` does it. Streaming output: a transfer is kept whole before it is printed, so the cap is
+  2^21 records (about 2 GB), and the human format aligns columns over the whole zone; alternative: print each message
+  as it arrives for `--short`, JSON lines. BIND's key files (`Kname.+163+id.key`, `key "name" { ... };`) and
+  kdig's `+tsig` (the TSIG record in the output): default: `-y`/`-k` in kdig's one-line format only. XoT (RFC 9103,
+  a transfer over TLS) and `+onesoa`: default: refused as usage errors.
 
 ## Later
 

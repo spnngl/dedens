@@ -1,0 +1,6 @@
+---
+source: apps/dedens/tests/transfers.rs
+expression: "transfer(addr, \"zonetransfer.me\", \"AXFR\", &[], 0)"
+---
+zonetransfer.me. AXFR  NOTAUTH (not authoritative)  N ms from 127.0.0.1:PORT over TCP
+recursion unavailable · EDNS 1232 bytes · 1 message · 0 records · 33/44 bytes

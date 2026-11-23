@@ -1,0 +1,57 @@
+---
+source: apps/dedens/tests/transfers.rs
+expression: out
+---
+zonetransfer.me. 7200 IN SOA nsztm1.digi.ninja. robin.digi.ninja. 2019100801 172800 900 1209600 3600
+zonetransfer.me. 7200 IN DNSKEY 256 3 7 AwEAAapoL+InQBYx2oi3dI424+dEDFgnVW0cOINfCY3jLrngZxBsEur8ByhMOQsxoIOYu/7b3c8tj2BwlQquqxZe79QHSW78fK7D+bP/8AosnBG5K5gJXEvphEtJ9x8/X0Y971XaW9lLmtJ6h4AXsrbgTr2g9KOiPSIbvDPMW8qLMaQkTm89hvPc+NuzrOEOPNhoXs/iPM+SQzrvTBfr6y0w2yPtYYdWI1kN76OQBxh0xjIdlyT0QKiohKq2bybPROJO7K3NlDc8oaOZoXH5/RfLDQzxzXyYSV8fLwimUeulo7YA11I/AHQ7DsUsFu2S2vxGCyR8nmx9gYbN4sBvTF2i5eM=
+zonetransfer.me. 301 IN TXT "google-site-verification=tyP28J7JAUHA9fw2sHXMgcCC0I6XBmmoVi04VlMewxA"
+zonetransfer.me. 7200 IN MX 0 ASPMX.L.GOOGLE.COM.
+zonetransfer.me. 7200 IN MX 10 ALT1.ASPMX.L.GOOGLE.COM.
+zonetransfer.me. 7200 IN MX 10 ALT2.ASPMX.L.GOOGLE.COM.
+zonetransfer.me. 7200 IN MX 20 ASPMX2.GOOGLEMAIL.COM.
+zonetransfer.me. 7200 IN MX 20 ASPMX3.GOOGLEMAIL.COM.
+zonetransfer.me. 7200 IN MX 20 ASPMX4.GOOGLEMAIL.COM.
+zonetransfer.me. 7200 IN MX 20 ASPMX5.GOOGLEMAIL.COM.
+zonetransfer.me. 7200 IN A 167.172.5.31
+zonetransfer.me. 7200 IN NS nsztm1.digi.ninja.
+zonetransfer.me. 7200 IN NS nsztm2.digi.ninja.
+zonetransfer.me. 7200 IN TYPE37 \# 966 0001000000308203bd308202a502147879046cceae562b5e8e61f748a99b4683504cfd300d06092a864886f70d01010b050030819a310b30090603550406130247423118301606035504080c0f536f75746820596f726b73686972653112301006035504070c09536865666669656c6431123010060355040a0c09446967696e696e6a613110300e060355040b0c074861636b696e673118301606035504030c0f7a6f6e657472616e736665722e6d65311d301b06092a864886f70d010901160e7a746d40646967692e6e696e6a61301e170d3235303730323133353531335a170d3236303730323133353531335a30819a310b30090603550406130247423118301606035504080c0f536f75746820596f726b73686972653112301006035504070c09536865666669656c6431123010060355040a0c09446967696e696e6a613110300e060355040b0c074861636b696e673118301606035504030c0f7a6f6e657472616e736665722e6d65311d301b06092a864886f70d010901160e7a746d40646967692e6e696e6a6130820122300d06092a864886f70d01010105000382010f003082010a0282010100bcd854cf56941a8e294d659a728990a7481193a192c707424b4424e4570a2b2649657715f6ec2f0ec3dec7c273487d79c66096c62f1549843342349e862db873c0945dbe168b55ba816b62e318ac442866ce24b8e448131f29c0731941448ce8ac1554b201fc513de7a19fa2f8311b15acdf741a4ca0130150a10fd2932dfeb0561fde0bed0623a99bbc6be3a99166995fd26269a476a101581eeadfe481c9f56b52884203618edf477093abd406d223f89fa2e12ccaccb5c8bc511f6c28ab30f42f75f960c0f6e3c29f9c586ee8501bdf4197d96da4e9fbdf95f05a019747fc7c68ff31a7b59f4ad2579867b97a2df1ddcf02801642d5b71c952fd6711ba0030203010001300d06092a864886f70d01010b050003820101005e8a7a7eda55dbfafbb645ea142b0cc2e6fb641775d94d789ec0689fe5fb2b936bea86eb540b6758ef97c03f31d9482f608401b912caf4b397e95628896315ac8b4837c2914ac8a7e5e25ee2dcdec2c346ad5b6455b6ca50b56209e06d0e09889a4f2b919796535b8d3acab4b7fc1ddc65197b608cf43a4a5613c585cf54ab7a586c0b22758969480a6eba3f246b72fe56bbb3255c2f7b2293524580b0dd624afec11a0105d34dfd596dc812fd593fcd5c01d585cb57f1fadbad78ce88cf9c64c75b69d3f78bb5bdfd727285427aecf22b431b68f7c817370829589b0e0d354da738337808eb7bbb35c17b3ea220548da908d5c85ca89ad3e7e1a7b471844713
+zonetransfer.me. 300 IN HINFO "Casio fx-700G" "Windows XP"
+_acme-challenge.zonetransfer.me. 301 IN TXT "6Oa05hbUJ9xSsvYy7pApQvwCUSSGgxvrbdizjePEsZI"
+_sip._tcp.zonetransfer.me. 14000 IN SRV 0 0 5060 www.zonetransfer.me.
+31.5.172.167.IN-ADDR.ARPA.zonetransfer.me. 7200 IN PTR www.zonetransfer.me.
+asfdbauthdns.zonetransfer.me. 7900 IN AFSDB 1 asfdbbox.zonetransfer.me.
+asfdbbox.zonetransfer.me. 7200 IN A 127.0.0.1
+asfdbvolume.zonetransfer.me. 7800 IN AFSDB 1 asfdbbox.zonetransfer.me.
+canberra-office.zonetransfer.me. 7200 IN A 202.14.81.230
+cmdexec.zonetransfer.me. 300 IN TXT "; ls"
+contact.zonetransfer.me. 2592000 IN TXT "Remember to call or email Pippa on +44 123 4567890 or pippa@zonetransfer.me when making DNS changes"
+dc-office.zonetransfer.me. 7200 IN A 143.228.181.132
+deadbeef.zonetransfer.me. 7201 IN AAAA dead:beaf::
+dr.zonetransfer.me. 300 IN TYPE29 \# 16 001216138b728cee7fa5c44a00989680
+DZC.zonetransfer.me. 7200 IN TXT "AbCdEfG"
+email.zonetransfer.me. 2222 IN NAPTR 1 1 "P" "E2U+email" "" email.zonetransfer.me.zonetransfer.me.
+email.zonetransfer.me. 7200 IN A 74.125.206.26
+fwd.zonetransfer.me. 200 IN TXT "forward-domain=https://digi.ninja/projects/zonetransferme"
+Hello.zonetransfer.me. 7200 IN TXT "Hi to Josh and all his class"
+home.zonetransfer.me. 7200 IN A 127.0.0.1
+Info.zonetransfer.me. 7200 IN TXT "ZoneTransfer.me service provided by Robin Wood - robin@digi.ninja. See http://digi.ninja/projects/zonetransferme for more information."
+internal.zonetransfer.me. 300 IN NS intns1.zonetransfer.me.
+internal.zonetransfer.me. 300 IN NS intns2.zonetransfer.me.
+intns1.zonetransfer.me. 300 IN A 81.4.108.41
+intns2.zonetransfer.me. 300 IN A 5.196.105.10
+office.zonetransfer.me. 7200 IN A 4.23.39.254
+ipv6actnow.org.zonetransfer.me. 7200 IN AAAA 2001:67c:2e8:11::c100:1332
+owa.zonetransfer.me. 7200 IN A 207.46.197.32
+robinwood.zonetransfer.me. 302 IN TXT "Robin Wood"
+rp.zonetransfer.me. 321 IN RP robin.zonetransfer.me. robinwood.zonetransfer.me.
+sip.zonetransfer.me. 3333 IN NAPTR 2 3 "P" "E2U+sip" "!^.*$!sip:customer-service@zonetransfer.me!" .
+sqli.zonetransfer.me. 300 IN TXT "' or 1=1 --"
+sshock.zonetransfer.me. 7200 IN TXT "() { :]}; echo ShellShocked"
+staging.zonetransfer.me. 7200 IN CNAME www.sydneyoperahouse.com.
+alltcpportsopen.firewall.test.zonetransfer.me. 301 IN A 127.0.0.1
+testing.zonetransfer.me. 301 IN CNAME www.zonetransfer.me.
+vpn.zonetransfer.me. 4000 IN A 174.36.59.154
+www.zonetransfer.me. 7200 IN A 167.172.5.31
+xss.zonetransfer.me. 300 IN TXT "'><script>alert('Boo')</script>"
+zonetransfer.me. 7200 IN SOA nsztm1.digi.ninja. robin.digi.ninja. 2019100801 172800 900 1209600 3600

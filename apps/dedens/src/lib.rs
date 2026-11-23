@@ -12,6 +12,7 @@ mod output;
 mod rdap;
 mod run;
 mod trace;
+mod tsig;
 mod validate;
 
 use std::ffi::OsString;

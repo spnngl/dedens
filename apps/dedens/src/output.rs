@@ -46,6 +46,8 @@ pub(crate) fn print(
     wire: &[u8],
 ) -> io::Result<()> {
     match printing.format {
+        // The wire of a transfer is its messages in a row (D212): it has no referral to find.
+        Format::Human if report.transfer.is_some() => human(out, report, None, printing.trace),
         Format::Human => {
             let decoded = Message::decode(wire).map_err(io::Error::other)?;
             human(out, report, decoded.message.referral(), printing.trace)
@@ -54,6 +56,14 @@ pub(crate) fn print(
             Some(certificates) => certificates
                 .iter()
                 .try_for_each(|certificate| writeln!(out, "{}", certificate_line(certificate))),
+            // A transfer's records come from many owners: each with its own (D212).
+            None if report.transfer.is_some() => report.answer.iter().try_for_each(|r| {
+                writeln!(
+                    out,
+                    "{} {} {} {} {}",
+                    r.name, r.ttl, r.class, r.rtype, r.data
+                )
+            }),
             None => report
                 .answer
                 .iter()
@@ -300,6 +310,19 @@ fn footer(out: &mut impl Write, report: &Report) -> io::Result<()> {
     .collect();
     if let Some(edns) = &report.edns {
         edns_words(edns, &mut words);
+    }
+    if let Some(transfer) = &report.transfer {
+        let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+        words.push(plural(transfer.messages, "message"));
+        words.push(plural(report.answer.len(), "record"));
+    }
+    if report
+        .exchange
+        .as_ref()
+        .and_then(|e| e.tsig.as_ref())
+        .is_some_and(|tsig| tsig.verified)
+    {
+        words.push("TSIG verified".to_owned());
     }
     words.push(match &report.exchange {
         Some(exchange) => format!("{}/{} bytes", exchange.query_size, report.size),

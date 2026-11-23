@@ -27,7 +27,7 @@ pub use options::{CookieOption, HttpsOption, InvalidOption, Options, Timeout};
 pub use report::{
     CertificateReport, DnsCryptReport, DnssecReport, DnssecStatus, EdeReport, EdnsReport,
     ExchangeReport, HeaderReport, HttpReport, Latency, OptionReport, QuestionReport, RecordReport,
-    Report, Transport,
+    Report, TransferReport, Transport, TsigReport,
 };
 
 /// Reads a field from its text with [`FromStr`](std::str::FromStr), for types of other crates and scalars that

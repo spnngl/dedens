@@ -12,6 +12,7 @@ mod providers;
 mod rdap;
 mod tld;
 mod trace;
+mod transfers;
 mod transports;
 mod util;
 mod validate;

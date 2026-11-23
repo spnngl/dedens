@@ -1,0 +1,12 @@
+---
+source: apps/dedens/tests/transfers.rs
+expression: "transfer(addr, \"example.\", &word, &[], 0)"
+---
+example. IXFR  NOERROR  N ms from 127.0.0.1:PORT over TCP
+answer
+  example.             1h  SOA  ns1.example. bugs.x.w.example. 1081539378 3600 300 3600000 3600
+                           SOA  ns1.example. bugs.x.w.example. 1081539377 3600 300 3600000 3600
+                           SOA  ns1.example. bugs.x.w.example. 1081539378 3600 300 3600000 3600
+  dedens-new.example.  5m  A    192.0.2.1
+  example.             1h  SOA  ns1.example. bugs.x.w.example. 1081539378 3600 300 3600000 3600
+authoritative · recursion unavailable · EDNS 1232 bytes · 1 message · 5 records · 59/259 bytes

@@ -51,6 +51,17 @@ pub struct Report {
     /// The round trips of a query asked several times (`dedens --repeat`), this report being of the last answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency: Option<Latency>,
+    /// For a zone transfer (D212): its messages. `answer` then holds every record of the response, in the order it came,
+    /// and `size` the bytes of all its messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<TransferReport>,
+}
+
+/// What a zone transfer came in (RFC 5936 §2.2, RFC 1995 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TransferReport {
+    /// The messages of the response.
+    pub messages: usize,
 }
 
 impl Report {
@@ -78,6 +89,7 @@ impl Report {
             violations: decoded.violations.iter().map(ToString::to_string).collect(),
             failures: Vec::new(),
             latency: None,
+            transfer: None,
         }
     }
 
@@ -89,7 +101,7 @@ impl Report {
         response: &Response,
         decoded: &Decoded<'_>,
     ) -> Self {
-        Self {
+        let mut report = Self {
             exchange: Some(ExchangeReport {
                 server,
                 transport: match response.transport {
@@ -113,9 +125,18 @@ impl Report {
                     certificate: Some(CertificateReport::new(info)),
                     certificates: Vec::new(),
                 }),
+                tsig: response.tsig.as_ref().map(|checked| TsigReport {
+                    verified: checked.is_ok(),
+                    error: checked.as_ref().err().map(ToString::to_string),
+                }),
             }),
             ..Self::new(id, decoded, response.wire.len())
+        };
+        if response.tsig.is_some() {
+            // Its verdict is `exchange.tsig`; the record is a MAC, not data (D212).
+            report.additional.retain(|record| record.rtype != "TSIG");
         }
+        report
     }
 }
 
@@ -220,6 +241,19 @@ pub struct ExchangeReport {
     /// (D98).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dnscrypt: Option<DnsCryptReport>,
+    /// With a signed query (`-y`, `-k`, D212), what became of the response's TSIG.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tsig: Option<TsigReport>,
+}
+
+/// Whether the TSIG of a response verifies (RFC 8945 §5.4), as the answer to the query signed (D212).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TsigReport {
+    /// Whether the response is signed with the key of the query and its MAC and time verify.
+    pub verified: bool,
+    /// Why not, in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What a `DNSCrypt` exchange tells of the certificates of the resolver.
@@ -395,7 +429,9 @@ pub struct RecordReport {
 }
 
 impl RecordReport {
-    fn new(record: &Record<'_>) -> Self {
+    /// The report of `record`.
+    #[must_use]
+    pub fn new(record: &Record<'_>) -> Self {
         Self {
             name: record.name.to_string(),
             ttl: record.ttl.get(),
@@ -667,6 +703,7 @@ mod tests {
                 http: None,
                 doc_path: None,
                 dnscrypt: None,
+                tsig: None,
             })
         );
         assert_eq!(report.size, wire.len());

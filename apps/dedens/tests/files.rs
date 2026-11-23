@@ -199,7 +199,7 @@ fn a_file_server_is_refused_the_transports_its_scheme_excludes() {
 
 /// D33: a query file is the user's input: a file that cannot be read or parsed, and a query of it with a bad server,
 /// bad options, a `dnssec` expectation without validation, a trust anchor file that cannot be read or a zone
-/// transfer, is a usage error found before any query, the file's good queries not asked either.
+/// IXFR (which has no serial in a file), is a usage error found before any query, the file's good queries not asked either.
 #[test]
 fn a_query_file_s_mistakes_are_usage_errors_before_any_query() {
     let server = Responder::start(&["a"]);
@@ -229,7 +229,7 @@ fn a_query_file_s_mistakes_are_usage_errors_before_any_query() {
             "{name: example.net, type: A, options: {trust_anchor: /nonexistent/anchors}}",
             "cannot read /nonexistent/anchors",
         ),
-        ("{name: example.com, type: AXFR}", "zone transfers"),
+        ("{name: example.com, type: IXFR}", "IXFR needs the serial"),
     ] {
         let file = format!("server: {}\nqueries: [{good}, {query}]", server.addr);
         dedens()

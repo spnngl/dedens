@@ -20,6 +20,7 @@ dedens-net = { workspace = true, features = ["tracing"] }
 dedens-proto.workspace = true
 dedens-roots.workspace = true
 dedens-scenario = { workspace = true, features = ["clap"] }
+dedens-tsig.workspace = true
 idna.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
@@ -46,7 +47,7 @@ assert_cmd.workspace = true
 clap_mangen.workspace = true
 dedens-dnscrypt.workspace = true
 dedens-odoh.workspace = true
-dedens-testkit = { workspace = true, features = ["responder"] }
+dedens-testkit = { workspace = true, features = ["authoritative", "responder"] }
 insta.workspace = true
 predicates.workspace = true
 tempfile.workspace = true

@@ -717,6 +717,7 @@ dependencies = [
  "dedens-proto",
  "dedens-roots",
  "dedens-scenario",
+ "dedens-tsig",
  "idna",
  "mimalloc",
  "serde",

@@ -4,7 +4,7 @@
 .SH NAME
 dedens \- A dig\-like DNS client
 .SH SYNOPSIS
-\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-\-tld\fR] [\fB\-\-rdap\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-dnscrypt\-relay\fR] [\fB\-\-dnscrypt\-pq\fR] [\fB\-\-dnscrypt\-resume\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
+\fBdedens\fR [\fB\-\-server\fR] [\fB\-p\fR|\fB\-\-port\fR] [\fB\-\-tls\-ca\fR] [\fB\-\-tls\-insecure\fR] [\fB\-x \fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-only\fR] [\fB\-\-save\-wire\fR] [\fB\-\-repeat\fR] [\fB\-\-trace\fR] [\fB\-\-search\fR] [\fB\-\-tld\fR] [\fB\-\-rdap\fR] [\fB\-y\fR|\fB\-\-tsig\fR] [\fB\-k\fR|\fB\-\-tsig\-file\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-tcp\fR] [\fB\-\-tls\fR] [\fB\-\-quic\fR] [\fB\-\-https\fR] [\fB\-\-https\-get\fR] [\fB\-\-https\-post\fR] [\fB\-\-odoh\-proxy\fR] [\fB\-\-coap\fR] [\fB\-\-doc\-discover\fR] [\fB\-\-dnscrypt\-cert\fR] [\fB\-\-dnscrypt\-relay\fR] [\fB\-\-dnscrypt\-pq\fR] [\fB\-\-dnscrypt\-resume\fR] [\fB\-\-odoh\-config\fR] [\fB\-\-ignore\fR] [\fB\-\-recurse\fR] [\fB\-\-cdflag\fR] [\fB\-\-adflag\fR] [\fB\-\-edns\fR] [\fB\-\-bufsize\fR] [\fB\-\-dnssec\fR] [\fB\-\-nsid\fR] [\fB\-\-cookie\fR] [\fB\-\-time\fR] [\fB\-\-tries\fR] [\fB\-\-validate\fR] [\fB\-\-trust\-anchor\fR] [\fB\-\-insecure\fR] [\fB\-\-format\fR] [\fB\-\-short\fR] [\fB\-\-json\fR] [\fB\-\-yaml\fR] [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME|TYPE|CLASS\fR] 
 .SH DESCRIPTION
 A dig\-like DNS client.
 .PP
@@ -79,6 +79,12 @@ Ask IANA\*(Aqs RDAP server about a top\-level domain instead: its status, contac
 .TP
 \fB\-\-rdap\fR \fI<NAME>\fR
 Ask the RDAP server of a domain\*(Aqs TLD, found in IANA\*(Aqs bootstrap file, about its registration instead: status, registrar, contacts, name servers, DS records, dates and redacted fields; under a name not registered, its parents up to one that is. JSON and YAML print the answer as received
+.TP
+\fB\-y\fR, \fB\-\-tsig\fR \fI<[ALGORITHM:]NAME:SECRET>\fR
+Sign each query with this TSIG key, `[ALGORITHM:]NAME:SECRET` with the secret in base64, as kdig: the algorithm is hmac\-sha256 when left out. The response\*(Aqs TSIG is verified and its result printed. The secret shows in the process list: `\-k` keeps it out
+.TP
+\fB\-k\fR, \fB\-\-tsig\-file\fR \fI<FILE>\fR
+As `\-y`, the key written in the first line of this file
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Print what the exchanges do on stderr: `\-v` dropped messages, retries and fallbacks, `\-vv` every message too
@@ -422,4 +428,4 @@ never
 Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 [\fINAME|TYPE|CLASS\fR]
-Names, types and classes, as dig reads them: a type or class mnemonic is one, anything else a name. Each name is asked the types after it, else those before the first name, else A; no name asks NS of the root
+Names, types and classes, as dig reads them: a type or class mnemonic is one, anything else a name. Each name is asked the types after it, else those before the first name, else A; no name asks NS of the root. `AXFR` transfers the zone, `IXFR=SERIAL` the changes since that serial, over TCP
