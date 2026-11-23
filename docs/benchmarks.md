@@ -976,7 +976,8 @@ bench:
 | IPv6 PTR, 34 labels | | 28.7 µs | | 1.56 µs |
 | IPv6 PTR, last nibble missing | | 956 ns | | 1.50 µs |
 | MX, 100 hosts of the zone, 1 address each | | 43.2 µs | | 34.1 µs |
-| MX, 100 hosts 100 labels deep below a cut | | 764 µs | | 552 µs |
+| MX, 100 hosts 100 labels deep below a cut 2 labels deep | | 764 µs | | 552 µs |
+| MX, 100 glue hosts below a cut 103 labels deep | | 39.0 ms | | 617 µs |
 | MX, 100 hosts with 200 addresses each | | 3.75 ms | | 4.9 µs |
 | root: name under no delegation | | 461 ns | | 513 ns |
 | root: 127 labels | | 794 ns | | 3.41 µs |
@@ -984,7 +985,8 @@ bench:
 
 - The cost of a lookup is that of a bisection, 17 comparisons of `Name`s, and a comparison costs the labels of the
   names it compares: a name of 120 labels takes 5.6 µs (47 ns a label; 3 labels take 255 ns, 85 ns a label), and one
-  that is not there takes a second bisection for the wildcard of its closest encloser (`long`, `below_deep`: twice).
+  that is not there takes up to two in `locate` and one more for the wildcard of its closest encloser (`long`,
+  `below_deep`: three at most).
   The walk of 54d7f3ed took one bisection for each label, of the name's suffixes: 120 for `deep`, 490 µs, 88 times
   more; it took names under a shallow cut cheaply (`deep_cut`, `growth`: the cut was found two
   labels down), which now cost the bisection of the long name each (5-7 µs; 11 of them for `growth`). That is the
@@ -998,17 +1000,22 @@ bench:
   runs of this section (an `example.` bisection alone takes 750 ns here).
 - `mx-many` (D206: the additional section stops once the records taken pass the limit `fill` is given, 1232 bytes here):
   4.9 µs for 100 hosts, where it took 3.75 ms to collect 20 000 addresses and drop them all at the encoding.
-- `mx-cut`: 100 hosts 100 labels deep, below a delegation, whose addresses are glue: 5.5 µs a host, one bisection each,
-  where the old walk stopped at the delegation after two labels: `address_node` reads the node's `cut`, which no
-  walk finds.
+- `mx-cut`: 100 hosts 100 labels deep, below a delegation 2 labels deep, whose addresses are glue: 5.5 µs a host, one
+  bisection each, where the old walk stopped at the delegation after two labels: `address_node` reads the node's
+  `cut`, which no walk finds. The walk cost a bisection for each label down to the cut, so the same MX under a cut
+  103 labels deep took 39.0 ms (about 103 bisections a host) against 617 µs now, whatever the cut's depth (one
+  run of the reviewer's scratch builds, 500 iterations; the row above is that case).
 - The lookup is most of a data answer: no allocation (`answer` allocates nothing but the chain's `Vec` when there is a
   link). `reply` allocates the message's `Vec`s: 1 allocation of 224 B for a data answer, 15 of 2.6 KB for the
   root's referral.
 - The nodes are a sorted `Vec` bisected, not D204's `BTreeMap` (the map cannot return a node outliving the name it was
   asked with): one lookup in 100 000 names 215 ns against 196 ns (10% more). `load_dedens` after the change: 63 ms and
   47 MB, `read_dedens` 9.1 ms, the same ratio of 7 as before.
-- Left: the root referral's allocations (the message's `Vec`s grow by push) and the `Name` order, whose comparison
-  is most of a lookup; neither tried, for a response that already takes under a microsecond but for referrals.
+- Left: the root referral's allocations (the message's `Vec`s grow by push), and the `Name` order, whose comparison
+  is most of a lookup: names of more than 100 labels take 5-60 µs, 17 comparisons each scanning every label of both
+  names, the wire form being leaf-first. A cheaper `Name::cmp` (offsets in `[u8; 128]` arrays) measured 30% less
+  on short names (NXDOMAIN 1.04 → 0.71 µs) and 10-20% less on long ones (growth 57 → 48 µs); a canonical key per
+  node, as Knot's, would stop at the first differing byte. Neither is done: `docs/TODECIDE.md`.
 
 ## DNSSEC crypto (D71)
 

@@ -348,13 +348,26 @@ Open questions, each with its proposed default. Once answered, record the outcom
 - SVCB and HTTPS records of in-zone NS, MX and SRV targets in the additional section (RFC 9460 §4; Knot adds them,
   `internet.c` `solve_additional`): D206 adds A and AAAA only. Default: add them with the step that
   takes the zone's SVCB data into answers (RFC 9460 §4.1 AliasMode targets), not before.
-- A chain of more than `MAX_CHAIN` (11) links ends in `End::Open` with AA and the links so far; Knot stops at 5, NSD at 18. Default: keep 11 until a client of `dedensd` that is not ours refuses one.
+- A chain of more than `MAX_CHAIN` (11) links ends in `End::Open` with AA and the links so far; Knot stops at 5, NSD
+  at 18. Default: keep 11 until a client of `dedensd` that is not ours refuses one.
 - Addresses below a DNAME owner in the additional section of an answer (D206): Knot adds them, dedens does not (RFC
   6672 §2.4: the data there is occluded, and the zone's own answers redirect it). Glue below a delegation is added, as
   Knot (the root zone's `. NS` priming answer carries the root servers' addresses, below `net.`). Default: none;
   alternative: Knot's, if a client needs them.
 - A wildcard that is a delegation (`*.a NS ns.x.`, D206): dedens refers, as Knot; RFC 4592 §4.2 leaves a wildcard
-  owning NS undefined (§4.2.1's discarded notions include treating it as data). Default: refer; alternative: answer NS data as for any type.
+  owning NS undefined (§4.2.1's discarded notions include treating it as data). Default: refer; alternative: answer
+  NS data as for any type.
+- A canonical lookup key per node (D206, `docs/benchmarks.md`): Knot's `knot_dname_lf`, the labels root-first and
+  lowercased, so that the bisection compares with `memcmp`, stops at the first byte that differs, and the name asked
+  is converted once. `Name::cmp` reads both names label by label from the wire form, leaf first, so each of the 17
+  comparisons of a bisection scans every label of both: names of more than 100 labels cost 5-60 µs (a deep cut
+  6 µs, a DNAME that grows 57 µs) against 1 µs for a short one. The key costs about the name's length in memory per
+  node. Default: keep the bisection as it is; alternative: the keys, when a bench of `dedensd` shows long names.
+- A cheaper `Name::cmp` (D206): reading the label offsets of both names into `[u8; 128]` arrays from the flat wire form
+  instead of two `[&[u8]; MAX_LABELS]` arrays and the `labels().nth(SHORT)` scans measured 30% less on short names
+  (NXDOMAIN 1.04 → 0.71 µs, wildcard 783 → 567 ns) and 10-20% less on long ones (growth 57 → 48 µs); `Packed` names
+  would keep the old code. Default: a separate performance change, with its own bench; it also helps the keys above
+  when they are not built.
 
 ## Later
 
