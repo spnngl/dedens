@@ -570,9 +570,8 @@ fn verdict(validator: &Validator, zone: &Zone, response: &Message<'_>, now: u64)
     }
 }
 
-/// Whether `verdict` accepts the response: secure, a referral to a child signed as its DS says, an answer of
-/// RRSIG records, which are not signed (RFC 4035 §3.1.5), or a proof by an opt-out NSEC3 span whose signatures the
-/// validator checked: it can only call the name insecure (RFC 5155 §6, §9.2).
+/// Whether `verdict` accepts the response of an NSEC zone: secure, a referral to a child signed as its DS says,
+/// or an answer of RRSIG records, which are not signed (RFC 4035 §3.1.5).
 fn accepted(verdict: &Verdict, response: &Message<'_>) -> bool {
     let signed = response
         .authority
@@ -581,7 +580,7 @@ fn accepted(verdict: &Verdict, response: &Message<'_>) -> bool {
     match verdict {
         Verdict::Secure { .. }
         | Verdict::Insecure {
-            reason: InsecureReason::RrsigQuery | InsecureReason::OptOut,
+            reason: InsecureReason::RrsigQuery,
         } => true,
         Verdict::Referral { delegation, .. } => (*delegation == Delegation::Signed) == signed,
         _ => false,
@@ -646,8 +645,74 @@ fn rfc4035_s5_the_validator_accepts_every_answer_of_the_root_zone_to_the_capture
 /// `nsec3_signed.zone` start 90 minutes before and end 14 days after it.
 const NSEC3_SIGNED: u64 = 1_780_000_000;
 
+/// What the validator says of the answer to a question of the capture `nsec3_signed`.
+#[derive(Debug, PartialEq)]
+enum Expected {
+    Secure,
+    Insecure(InsecureReason),
+    Referral(Delegation),
+}
+
+/// The verdict each captured question of the zone `testdata/zones/nsec3_source.zone` signed by Knot is to get. Every
+/// NSEC3 record of the zone has the opt-out flag (Knot sets it on all of the chain it makes), so a proof that rests on
+/// the span of one is an `OptOut` at best: an NXDOMAIN, a wildcard's answer or NODATA, and the DS of `c.example.`,
+/// the unsigned delegation (RFC 5155 §6, §9.2). RRSIG queries are no answer to prove (RFC 4035 §3.1.5). An
+/// unforeseen question fails: a new capture gets its verdict here.
+fn expected(question: &Question<'_>) -> Expected {
+    let (name, rtype) = (&question.name, question.qtype);
+    let ds = rtype == RecordType::DS;
+    if name.is_within(&dns("c.example.")) {
+        return if ds && *name == dns("c.example.") {
+            Expected::Insecure(InsecureReason::OptOut)
+        } else {
+            Expected::Referral(Delegation::Unsigned {
+                reason: InsecureReason::OptOut,
+            })
+        };
+    }
+    if name.is_within(&dns("a.example.")) {
+        return if ds && *name == dns("a.example.") {
+            Expected::Secure
+        } else {
+            Expected::Referral(Delegation::Signed)
+        };
+    }
+    // An NSEC3 owner of the zone (a hash of 32 characters), a name it lacks, and the name the capture made up for
+    // an NXDOMAIN: NXDOMAIN.
+    let hash =
+        name.label_count() == 2 && name.labels().next().is_some_and(|label| label.len() == 32);
+    let nxdomain = hash || name.is_within(&dns("dedens-nxdomain.example."));
+    let wildcard = name.is_within(&dns("dedens-wild.w.example."));
+    if nxdomain || (wildcard && rtype != RecordType::RRSIG) {
+        return Expected::Insecure(InsecureReason::OptOut);
+    }
+    if rtype == RecordType::RRSIG {
+        return Expected::Insecure(InsecureReason::RrsigQuery);
+    }
+    let names = [
+        "example.",
+        "ns1.example.",
+        "ns2.example.",
+        "ai.example.",
+        "alias.example.",
+        "xx.example.",
+        "w.example.",
+        "y.w.example.",
+        "x.w.example.",
+        "x.y.w.example.",
+        "*.w.example.",
+    ];
+    assert!(
+        names.iter().any(|known| *name == dns(known)),
+        "no verdict expected of {} {}",
+        question.name,
+        question.qtype
+    );
+    Expected::Secure
+}
+
 #[test]
-fn rfc5155_s7_2_the_validator_accepts_every_answer_of_an_nsec3_zone_signed_by_knot_to_the_captured_questions()
+fn rfc5155_s7_2_the_validator_gives_each_captured_question_of_an_nsec3_zone_signed_by_knot_its_verdict()
  {
     let answers = Answers::read("nsec3_signed");
     let zone = zone("example.", "../authoritative/zones/nsec3_signed.zone");
@@ -660,9 +725,20 @@ fn rfc5155_s7_2_the_validator_accepts_every_answer_of_an_nsec3_zone_signed_by_kn
         }
         let response = respond(&zone, question);
         let verdict = verdict(&validator, &zone, &response, NSEC3_SIGNED);
-        assert!(accepted(&verdict, &response), "{verdict:?}\n{response:?}");
+        let got = match verdict {
+            Verdict::Secure { .. } => Expected::Secure,
+            Verdict::Insecure { reason } => Expected::Insecure(reason),
+            Verdict::Referral { delegation, .. } => Expected::Referral(delegation),
+            other => panic!("{other:?}\n{response:?}"),
+        };
+        let want = expected(question);
+        assert_eq!(
+            got, want,
+            "{} {}\n{response:?}",
+            question.name, question.qtype
+        );
         checked += 1;
-        secure += usize::from(matches!(verdict, Verdict::Secure { .. }));
+        secure += usize::from(got == Expected::Secure);
     }
     assert!(checked > 50, "{checked}");
     assert!(secure > 30, "{secure} of {checked}");
@@ -689,4 +765,70 @@ fn rfc5155_s7_2_every_answer_to_the_captured_questions_is_proven() {
             }
         }
     }
+}
+
+/// RFC 5155 Appendix A's zone with unsigned delegations added below `e.example.` and `h.example.`, names that
+/// have no NSEC3 record in the opt-out chain: the delegations are in its span (RFC 5155 §6), and the names above
+/// them are empty non-terminals only they make (§7.2.4).
+fn opt_out_zone() -> Zone {
+    let text = zone_file("rfc5155_appendix_a.zone")
+        + "d.e.example. 3600 IN NS ns.elsewhere.test.\n\
+           f.g.h.example. 3600 IN NS ns.elsewhere.test.\n";
+    load_files("example.", &text, None, &[], &Limits::default())
+        .expect("a valid zone")
+        .zone
+}
+
+/// The owners of the NSEC3 records in the authority section of `response`.
+fn nsec3_owners<'a>(response: &'a Message<'_>) -> Vec<&'a Name<'a>> {
+    let owners = response
+        .authority
+        .iter()
+        .filter(|record| record.rtype() == RecordType::NSEC3)
+        .map(|record| &record.name);
+    owners.collect()
+}
+
+#[test]
+fn rfc5155_s7_2_4_no_data_at_an_empty_non_terminal_of_opt_out_delegations_has_the_next_closer_cover()
+ {
+    let zone = opt_out_zone();
+    let ent = Question::new(dns("e.example."), RecordType::A);
+    let response = respond(&zone, &ent);
+    assert_eq!(response.rcode(), Rcode::NOERROR, "{response:?}");
+    assert!(response.header.flags.contains(Flags::AA));
+    assert_eq!(response.answer, []);
+    // The closest provable encloser's record, the apex's, and the cover of the next closer name `e.example.`: no
+    // record of its own, no cover of the wildcard.
+    let owners = nsec3_owners(&response);
+    assert_eq!(owners.len(), 2, "{response:?}");
+    assert!(owners.iter().any(|owner| zone.node(owner).is_some()));
+    // KNOWN GAP (`docs/TODECIDE.md`): `denial::prove` wants the wildcard denied too, where Unbound takes the cover
+    // of the next closer name, which has the opt-out flag, as an insecure NODATA (RFC 5155 §9.2). Change this to
+    // the fact the validator is made to give when it is.
+    let proof = proven(zone.apex(), &response).expect("a negative answer");
+    assert!(
+        matches!(proof, Err(denial::Unproven::WildcardNotDenied)),
+        "{proof:?}\n{response:?}"
+    );
+}
+
+#[test]
+fn rfc5155_s7_2_1_the_closest_provable_encloser_is_found_over_several_empty_non_terminals() {
+    let zone = opt_out_zone();
+    // `g.h.example.` and `h.example.` are empty non-terminals with no NSEC3 record: the walk up from the closest
+    // encloser `g.h.example.` goes through both to the apex, and the next closer name is `h.example.`.
+    let question = Question::new(dns("x.g.h.example."), RecordType::A);
+    let response = respond(&zone, &question);
+    assert_eq!(response.rcode(), Rcode::NXDOMAIN, "{response:?}");
+    // The apex's record, the closest provable encloser's, and the one record that covers both the next closer
+    // name and the wildcard `*.example.` (a record two proofs name appears once).
+    let owners = nsec3_owners(&response);
+    assert_eq!(owners.len(), 2, "{response:?}");
+    assert!(owners.iter().any(|owner| zone.node(owner).is_some()));
+    let proof = proven(zone.apex(), &response).expect("a negative answer");
+    assert!(
+        matches!(proof, Ok(Fact::NameError { compact: false })),
+        "{proof:?}\n{response:?}"
+    );
 }
