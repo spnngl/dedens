@@ -350,6 +350,20 @@ fn rfc4035_3_1_4_1_the_parent_of_a_ds_is_found_whatever_the_case() {
 }
 
 #[test]
+fn rfc4035_3_1_4_1_the_parent_of_a_ds_is_found_past_a_zone_that_is_no_ancestor() {
+    // `a.example.` sorts just before the parent `q.example.`, and shares only `example.` with it: the search for
+    // the parent's zone goes on to `example.`, not to the zone of the name itself.
+    let pipeline = nested(&["example", "a.example", "x.q.example"]);
+    let reply = replied(
+        &pipeline,
+        ("x.q.example", RecordType::DS),
+        Flags::RD,
+        OUTSIDE,
+    );
+    assert_eq!(soa_owners(&reply), ["example."], "{:?}", reply.records);
+}
+
+#[test]
 fn rfc4035_3_1_4_1_the_parent_zone_answers_a_ds_not_the_grandparent() {
     // `venera.a.example.` is no cut of `a.example.` but a name it holds: its DS is NODATA with the SOA of the
     // parent, not of the zone of that name, nor the referral the grandparent `example.` would give.
