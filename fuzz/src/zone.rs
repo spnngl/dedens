@@ -219,10 +219,22 @@ fn whole(zone: &Zone, apex: &Name<'static>) {
     assert!(root.rrset(RecordType::NS).is_some());
     let mut previous: Option<&Name<'static>> = None;
     let mut records = 0;
-    for (name, node) in zone.nodes() {
+    let nodes: Vec<_> = zone.nodes().collect();
+    for (at, &(name, node)) in nodes.iter().enumerate() {
         assert!(name.is_within(apex), "{name} outside {apex}");
         assert!(previous.is_none_or(|p| p < name), "{name} out of order");
         previous = Some(name);
+        // Proof-only: NSEC3 records and no other set, and no node below (RFC 5155 §7.2.8, D206).
+        let only_nsec3 =
+            node.rrsets().next().is_some() && node.rrsets().all(|(t, _)| t == RecordType::NSEC3);
+        let below = nodes
+            .get(at + 1)
+            .is_some_and(|(next, _)| next.is_within(name));
+        assert_eq!(
+            node.is_proof_only(),
+            only_nsec3 && !below,
+            "{name} proof-only is wrong"
+        );
         let sets = node
             .rrsets()
             .map(|(_, set)| set)
