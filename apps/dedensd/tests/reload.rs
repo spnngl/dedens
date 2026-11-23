@@ -95,7 +95,7 @@ fn blocks(server: &Server, name: &str) -> bool {
 }
 
 /// The events `server` has logged so far with `message`.
-fn logged(server: &Server, message: &str) -> Vec<serde_json::Value> {
+pub(crate) fn logged(server: &Server, message: &str) -> Vec<serde_json::Value> {
     server
         .stderr()
         .iter()

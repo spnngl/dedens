@@ -2,6 +2,8 @@
 //! and in the names of its tests.
 
 mod access;
+#[cfg(unix)]
+mod authoritative;
 #[cfg(feature = "doc")]
 mod coap;
 #[cfg(feature = "dnscrypt")]

@@ -92,6 +92,8 @@ pub(crate) struct Store {
     pub(crate) roots: crate::roots::Held,
     /// The root key rollover followed by RFC 5011 (D200).
     pub(crate) rollover: crate::rollover::Kept,
+    /// The zones of the `authoritative` stage (D208).
+    pub(crate) zones: crate::zones::Held,
 }
 
 impl Store {
@@ -103,6 +105,7 @@ impl Store {
         for union in &mut self.unions {
             union.used = false;
         }
+        self.zones.begin();
     }
 
     /// Ends a reading of the configuration that succeeded: what it did not use is dropped, so that the store holds
@@ -110,6 +113,7 @@ impl Store {
     pub(crate) fn end(&mut self) {
         self.held.retain(|_, held| held.used);
         self.unions.retain(|union| union.used);
+        self.zones.end();
     }
 
     /// The names of the `entries` of a stage, read as `tlds` says; none for no entries.

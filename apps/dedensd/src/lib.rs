@@ -23,6 +23,7 @@ mod rollover;
 mod roots;
 mod serve;
 mod sync;
+mod zones;
 
 use std::io::{self, Write};
 use std::mem::ManuallyDrop;
@@ -114,8 +115,6 @@ pub fn main() -> anyhow::Result<()> {
     // Resolved while still root, so a user or a group that does not exist fails the start before any socket is bound.
     let plan = privileges::resolve(config.user.as_ref()).with_context(|| format!("in {path}"))?;
     config.warn_access(&config.listen);
-    serve::describe();
-    rollover::describe();
     process();
     // Every socket is bound before any thread starts, so a taken address fails the start.
     let sockets = (0..config.threads)
@@ -359,9 +358,12 @@ impl Ending {
     }
 }
 
-/// Sets what the whole process holds to before its threads start: the panic hook (D121), and on Unix the limit of
-/// open descriptors ([`descriptors`]).
+/// Sets what the whole process holds to before its threads start: the descriptions of the metrics, the panic hook
+/// (D121), and on Unix the limit of open descriptors ([`descriptors`]).
 fn process() {
+    serve::describe();
+    rollover::describe();
+    zones::describe();
     isolate::hook();
     #[cfg(unix)]
     descriptors();

@@ -216,6 +216,8 @@ pub(crate) fn control(
     mut downloads: Downloads,
     mut store: Store,
 ) -> io::Result<()> {
+    // The server serves: from now on, a zone failing to load keeps its last version (D208).
+    store.zones.serve();
     let (hangup, wakes) = mpsc::channel::<Wake>();
     current.probe().connect(hangup.clone());
     #[cfg(unix)]

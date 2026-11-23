@@ -1241,6 +1241,7 @@ dependencies = [
  "dedens-scenario",
  "dedens-server",
  "dedens-testkit",
+ "dedens-zone",
  "flate2",
  "flume",
  "futures-util",
