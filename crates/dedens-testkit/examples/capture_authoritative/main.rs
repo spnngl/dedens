@@ -8,6 +8,9 @@
 //!   (RFC 5936 §2.2), and the Wayback Machine's older copy of the root zone into `zones/root-previous.zone`.
 //! - `answers`: Knot and NSD each serve each zone of [`zones::ZONES`] and answer the queries of [`queries`], into
 //!   `answers/`.
+//! - `signed`: Knot's `kzonesign` signs `zones/nsec3_source.zone` with an NSEC3 chain (ECDSA P-256, 0 iterations, no
+//!   salt, opt-out) at a pinned time into `zones/nsec3_signed.zone`, and both servers answer it into
+//!   `answers/nsec3_signed.yaml` ([`signed`], D209). Not in the default stages: keys are new each run.
 //! - `exchanges`: TSIG-signed and unsigned AXFR, IXFR, NOTIFY and UPDATE between Knot's tools and Knot, into
 //!   `recordings/` ([`scenarios`]).
 //! - `signed-stream`: Knot serves the first records of the root zone to the key's holder, and the signed AXFR, several
@@ -23,6 +26,7 @@ mod proxy;
 mod queries;
 mod scenarios;
 mod servers;
+mod signed;
 mod transfer;
 mod zones;
 
@@ -63,6 +67,7 @@ fn main() -> Result<()> {
         match stage.as_str() {
             "sources" => transfer::sources(&dir)?,
             "answers" => servers::answers(&dir)?,
+            "signed" => signed::signed(&dir)?,
             "exchanges" => scenarios::exchanges(&dir)?,
             "signed-stream" => scenarios::signed_stream(&dir)?,
             "root-ixfr" => scenarios::root_ixfr(&dir)?,

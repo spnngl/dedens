@@ -400,7 +400,9 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   (images from `testdata/authoritative/Containerfile`, NSD built from its tarball by checksum; `just
   authoritative-images`) and from public servers, in `testdata/authoritative/` (README beside), by `just
   capture-authoritative [stages]`: the example `capture_authoritative` of `dedens-testkit`, read through its feature
-  `authoritative` (`Answers`, `Recording`). No BIND, and no byte invented.
+  `authoritative` (`Answers`, `Recording`). No BIND, and no byte invented. The stage `signed` (`just
+  capture-signed`, outside the defaults, for its keys are new each run) has Knot's `kzonesign` sign an RFC 5155
+  Appendix A-like zone with an NSEC3 chain at a pinned time (D209).
   - Sources: AXFR of the root zone (ICANN, then root servers) and of `zonetransfer.me.` (a zone published for it), as
     text (`zones/`) and as the transfer's messages; the zones of `testdata/zones/` served by both servers, one
     server run per zone (three of them are `example.`), each answering a fixed list of questions (the README's
@@ -432,7 +434,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     before setting TC (RFC 2181 §9) differ; the answer algorithm's decision says. (8) Knot writes the names in NS
     RDATA uncompressed, so its responses are longer: the root's `. NS` with DO at 1232 bytes holds 22 addresses in
     Knot's 1 217 bytes and 26 in `dedensd`'s 1 097; where Knot's additional section has no room for one more
-    address (16 bytes), it is compared as a subset of ours (D209).
+    address (16 bytes), it is compared as the first records of ours, in order (D209).
   - `dedens-proto` reads every capture except the UPDATE messages whose RDATA is empty (class ANY or NONE, RFC 2136
     §2.4, §2.5: an NS of it fails, other types read as invalid RDATA); the step of UPDATE parses them itself.
   - Rejected: BIND (not asked for; no image pinned); one Knot or NSD run for all zones (three are `example.`); the
