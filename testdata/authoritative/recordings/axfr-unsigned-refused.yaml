@@ -1,4 +1,4 @@
-description: "AXFR without TSIG of a zone that is for the key's holder: REFUSED"
+description: "AXFR without TSIG of a zone that is for the key's holder: NOTAUTH, unsigned"
 server: knotd, Knot DNS 3.6.2
 captured_at: 1795374284
 zone: zonetransfer.me.

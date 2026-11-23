@@ -58,7 +58,7 @@ varies by run: IDs, TSIG times and MACs, times between messages.
 | `axfr-tsig` | AXFR signed: the one response carries a TSIG (RFC 8945 §5.3, RFC 5936 §2.2) |
 | `axfr-tsig-stream` | AXFR signed, 1200 records of the root: five messages, each signed over the one before (RFC 8945 §5.3.1) |
 | `axfr-tsig-bad-secret`, `axfr-tsig-unknown-key`, `axfr-tsig-bad-time` | NOTAUTH with BADSIG, BADKEY, BADTIME (a clock 600 s behind) |
-| `axfr-unsigned-refused` | A zone for a key's holder, asked without TSIG: REFUSED |
+| `axfr-unsigned-refused` | A zone for a key's holder, asked without TSIG: NOTAUTH, unsigned |
 | `ixfr-uptodate`, `ixfr-tsig-uptodate` | IXFR from the serial held: one SOA |
 | `ixfr-unknown-serial` | IXFR from a serial never held: the full zone, AXFR-style (RFC 1995 §4) |
 | `ixfr-difference-tcp`, `ixfr-difference-udp` | IXFR after an UPDATE: the difference |
