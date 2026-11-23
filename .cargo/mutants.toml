@@ -265,6 +265,9 @@ exclude_re = [
   # when asked, a name below a cut is a referral), so the links computed for it are never read; the guard only
   # saves the two hashes a name costs at load.
   'denial\.rs:\d+:\d+: replace \|\| with && in Denial::links$',
+  # The transfer client (D210): an idle end equal to the transfer's deadline, which no test meets to the
+  # nanosecond; and the query's random ID, which the primary copies whatever it is.
+  'transfer/mod\.rs:\d+:\d+: (replace < with <= in wait|replace draw_id -> Result<u16, TransferError> with Ok\([01]\))$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never
