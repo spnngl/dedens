@@ -13,7 +13,7 @@ unbound_version := "1.26.2"
 # Verus's release (D180), its own rustc and Z3 in it (`just verus-install`). vstd in Cargo.toml moves with it, by
 # hand, to the version `cargo verus toolchain list` gives: `just verus` fails on any other.
 # renovate: datasource=github-releases depName=verus-lang/verus extractVersion=^release/(?<version>\d+\.\d+\.\d+\.\d+\.[0-9a-f]+)$
-verus_version := "0.2026.11.02.8bf68ee"
+verus_version := "0.2026.11.22.1ce6a59"
 # The container engine of `bench-dnsperf`: `DEDENS_CONTAINER=podman just bench-dnsperf`.
 # `DEDENS_ROUNDS=5` sets its rounds.
 container := env("DEDENS_CONTAINER", "docker")
