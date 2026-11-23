@@ -2624,8 +2624,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     place of the record of its own hash, and of the one covering the hash of its wildcard, found at load by hashing
     the name and `*.name` (`nsec3_hash`, the validator's) and bisecting the chain. A query then hashes the next
     closer name only, the one name it proves absent that is no node, and finds the closest provable encloser's
-    record, and the cover of its wildcard, in the nodes: an encloser without a record (an empty non-terminal of an opt-out chain,
-    RFC 5155 §7.1) leads to its parent's.
+    record, and the cover of its wildcard, in the nodes: an encloser without a record (an empty non-terminal of an
+    opt-out chain, RFC 5155 §7.1) leads to its parent's.
   - Load checks, errors that refuse the zone as D204's: each NSEC names the owner of the next NSEC in canonical
     order, the last the apex (RFC 4034 §4.1.1); each NSEC3 of the chain's parameters, one label below the apex,
     names the next hash, the last the first (RFC 5155 §7.1): `ErrorKind::BrokenChain` at the first broken link. An
@@ -2634,18 +2634,17 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     0, §3.2 lets validators call high counts insecure): each name hashed costs 1 + iterations SHA-1 blocks, the
     operator's choice: an NSEC3 NXDOMAIN with DO 0.98 µs at 0, 2.0 µs at 12 (`docs/benchmarks.md`). Above
     `Limits::nsec3_iterations`, 150 by default, the chain is refused, `ErrorKind::Limit` of
-    `Bound::Nsec3Iterations`: 150 is D74's cap, the one number of the project (Unbound's
-    `val-nsec3-keysize-iterations` for 1024-bit keys; BIND 9.21's `DNS_NSEC3_MAXITERATIONS` is 50). RFC 5155 §10.3
-    gives a zone owner a "MUST NOT" above 2500 (for the largest keys, 150 and 500 for 1024 and 2048 bits): a zone
+    `Bound::Nsec3Iterations`: 150 is D74's cap, the one number of the project (Unbound 1.26's
+    `val-nsec3-keysize-iterations`, 150 for every key size; BIND 9.21's `DNS_NSEC3_MAXITERATIONS` is 50). RFC
+    5155 §10.3 gives a zone owner a "MUST NOT" above 2500 (for the largest keys, 150 and 500 for 1024 and 2048 bits): a zone
     over 150 is served by Knot and NSD up to 65 535, and would not validate at Unbound, so the bound guards the
     server, not the zone's keys (not read, so not the table's lower rows), and an operator who follows the RFC's
     500 sets `Limits::nsec3_iterations`. A zone a third party supplies (a transfer) could otherwise make each
     query hash 1 + 65 535 blocks, 6 ms. The load pays it too, and so does every `Zone::apply`, which builds the
     zone again: names × 2 × (1 + iterations) SHA-1 blocks, 2.7 s for 100 000 names at 150, 7.6 minutes for the 2²⁴
     names `Limits::names` allows (`docs/benchmarks.md`; `docs/TODECIDE.md` asks for the links of the names a
-    change leaves alone to be kept). A
-    NSEC chain is also checked for the name each NSEC is owned by: an authoritative name (not an empty
-    non-terminal, not below a cut: a delegation's NS, and its DS, are the parent's) without an NSEC is
+    change leaves alone to be kept). A NSEC chain is also checked for the name each NSEC is owned by: an
+    authoritative name (not an empty non-terminal, not below a cut: a delegation's NS, and its DS, are the parent's) without an NSEC is
     `ErrorKind::MissingNsec` (RFC 4035 §2.3): the NSEC covering it would prove it absent, while its answer is
     data. A name holding only NSEC3 records and their RRSIGs is not asked for one: it is a link of the NSEC3
     chain an NSEC zone is gaining or losing, whose NSEC chain is the one being served (RFC 5155 §10.4, §10.5:
@@ -2693,9 +2692,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     closer name with the opt-out flag and no cover of the wildcard (RFC 5155 §7.2.4), which `denial::prove` calls
     `WildcardNotDenied`, where Unbound calls it insecure (`docs/TODECIDE.md`); `tests/signed.rs` shows the answer
     and the verdict as they are, and the walk of the closest provable encloser over several levels of such names.
-    RFC 5155's keys are of 512
-    bits, below what `dedens-dnssec` verifies (D71): its answers, the other zones', and a proptest over names of
-    both zones and below them are checked by `denial::prove`, the validator's set logic without signatures. The
+    RFC 5155's keys are of 512 bits, below what `dedens-dnssec` verifies (D71): its answers, the other zones', and
+    a proptest over names of both zones and below them are checked by `denial::prove`, the validator's set logic without signatures. The
     proptest also holds each answer to two properties: the message without DO is the message with DO less its
     RRSIG, NSEC and NSEC3 records and a referral's DS, and with DO every `RRset` of the answer and authority
     sections has its RRSIG but a referral's NS, glue and the CNAME a DNAME made (RFC 4035 §3.1.1, §3.1.4, §4.3);
@@ -2712,7 +2710,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     node's 20-byte hash (a `Node` 40 bytes larger with the wildcard's, and a bisection of the chain each query) for
     the place of its record (8 bytes for both, and no bisection); a tree of NSEC3 records apart, as Knot's (D206
     keeps them in proof-only nodes, found by the same bisection); Knot's walk back to the previous NSEC (a
-    bisection is bounded whatever the zone); refusing iterations above 0 (a zone still at 10 must be servable); a bound of 2500, the
-    RFC's (first written: a load of 2500 iterations hashes a 100 000-name zone in 45 s, and D74's validator
-    would call the zone insecure at 150); a bound of BIND's 50 (a server holding a zone of 100 for a
+    bisection is bounded whatever the zone); refusing iterations above 0 (a zone still at 10 must be servable); a
+    bound of 2500, the RFC's (first written: a load of 2500 iterations hashes a 100 000-name zone in 45 s, and
+    D74's validator calls a zone above 150 insecure); a bound of BIND's 50 (a server holding a zone of 100 for a
     1024-bit key follows the RFC and Unbound).

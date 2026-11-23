@@ -39,7 +39,7 @@ impl Pending {
     }
 
     /// Whether the name holds NSEC3 records and their signatures, nothing else: the owner of a link of an
-    /// NSEC3 chain.
+    /// NSEC3 chain. Unlike the free `holds_only_nsec3` of a node, a signature of another type disqualifies it.
     fn holds_only_nsec3(&self) -> bool {
         let nsec3 = RecordType::NSEC3;
         !self.sets.is_empty()
