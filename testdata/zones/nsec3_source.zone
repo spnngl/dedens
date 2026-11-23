@@ -1,6 +1,6 @@
-; The unsigned zone `just capture-authoritative signed` has Knot sign (D209): the names of RFC 5155 Appendix A's zone
+; The unsigned zone `just capture-signed` has Knot sign (D209): the names of RFC 5155 Appendix A's zone
 ; (RFC 5155 Appendix A, with its DS at `a.example.`, its opt-out insecure delegation `c.example.`, its wildcard
-; and its empty non-terminal `y.w.example.`) and a CNAME. The signed zone is `authoritative/zones/nsec3-signed.zone`.
+; and its empty non-terminal `y.w.example.`) and a CNAME. The signed zone is `authoritative/zones/nsec3_signed.zone`.
 $ORIGIN example.
 $TTL 3600
 @       SOA ns1 bugs.x.w 1 3600 300 3600000 3600

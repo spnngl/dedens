@@ -351,10 +351,7 @@ fn rfc5155_s10_4_an_nsec3_owner_holding_other_data_is_still_asked_for_an_nsec() 
     let line = zone_file("rfc4035_appendix_a.zone").lines().count() + 1;
     assert_eq!(
         errors(nsec_zone_with(&extra).expect_err("a refused zone")),
-        [(
-            Some(line),
-            ErrorKind::MissingNsec { owner: dns(hash) }
-        )]
+        [(Some(line), ErrorKind::MissingNsec { owner: dns(hash) })]
     );
 }
 

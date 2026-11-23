@@ -556,7 +556,8 @@ capture-authoritative *stages="sources answers exchanges root-ixfr signed-stream
 # Run once: the files are frozen, the tests of `dedens-zone` hold the validator to them. Needs the images of
 # `authoritative-images`.
 capture-signed:
-    cargo run -q -p dedens-testkit --features authoritative --example capture_authoritative -- testdata/authoritative signed
+    cargo run -q -p dedens-testkit --features authoritative --example capture_authoritative -- \
+        testdata/authoritative signed
 
 # Capture the root's DNSKEY RRset through the KSK-2010 to KSK-2017 rollover (D200) into testdata/dnssec/rollover-*.zone:
 # the DNSKEY and RRSIG DNSKEY lines of the root zone IANA served at each moment, from the Internet Archive's copies

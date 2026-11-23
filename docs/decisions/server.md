@@ -2354,7 +2354,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - `Limits`, each a field with a reason and a test (`crates/dedens-zone/tests/limits.rs`): records 2^24, names 2^24
     (empty non-terminals count), records per `RRset` 100 and `RRset`s per name 100 (BIND's `max-records-per-type` and
     `max-types-per-name`; its `max-records` is unlimited), RDATA bytes 2^30, `$INCLUDE` depth 8 (Knot and BIND have
-    no bound: a file that includes itself must end), errors reported 100, NSEC3 iterations 2500 (D209).
+    no bound: a file that includes itself must end), errors reported 100, NSEC3 iterations 150 (D209).
   - Test data: the RFC example zones of `testdata/zones/` (RFC 1035 §5.3 with its `$INCLUDE`, RFC 4035 and RFC 5155
     appendix A), each refused in a broken variant by the check naming it. `every_type.zone`, the fuzzing seed, is not
     a zone for the loader: it holds records of the classes CH, HS and CLASS32 and a name outside the zone, so the
@@ -2620,11 +2620,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     of the places (Knot walks back from the predecessor). NSEC3: each record's owner hash, decoded from its label,
     with its node's place, sorted by hash, 32 bytes a record (`(Hash, usize)`: 20, 4 of padding, 8). The records
     stay in their nodes (proof-only nodes, D206) and an answer borrows them as any other. Each node that can be an
-    answer's name also keeps its `Links` (`Node::nsec3`, 16 bytes: a `Node` is 88, was 72): the place of the record
-    of its own hash, and of the one covering the hash of its wildcard, found at load by hashing the name and
-    `*.name` (`nsec3_hash`, the validator's) and bisecting the chain. A query then hashes the next closer name
-    only, the one name it proves absent that is no node, and finds the closest provable encloser's record, and the
-    cover of its wildcard, in the nodes: an encloser without a record (an empty non-terminal of an opt-out chain,
+    answer's name also keeps its `Links` (`Node::nsec3`, 8 bytes, two `NonZeroU32` places: a `Node` is 80, was 72): the
+    place of the record of its own hash, and of the one covering the hash of its wildcard, found at load by hashing
+    the name and `*.name` (`nsec3_hash`, the validator's) and bisecting the chain. A query then hashes the next
+    closer name only, the one name it proves absent that is no node, and finds the closest provable encloser's
+    record, and the cover of its wildcard, in the nodes: an encloser without a record (an empty non-terminal of an opt-out chain,
     RFC 5155 §7.1) leads to its parent's.
   - Load checks, errors that refuse the zone as D204's: each NSEC names the owner of the next NSEC in canonical
     order, the last the apex (RFC 4034 §4.1.1); each NSEC3 of the chain's parameters, one label below the apex,
@@ -2633,19 +2633,26 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     hash the server lacks). Iterations above 0 load with `WarningKind::Nsec3Iterations` (RFC 9276 §3.1 asks for
     0, §3.2 lets validators call high counts insecure): each name hashed costs 1 + iterations SHA-1 blocks, the
     operator's choice: an NSEC3 NXDOMAIN with DO 0.98 µs at 0, 2.0 µs at 12 (`docs/benchmarks.md`). Above
-    `Limits::nsec3_iterations`, 2500 by default (D204's bounds), the chain is refused, `ErrorKind::Limit` of
-    `Bound::Nsec3Iterations`: RFC 5155 §10.3 gives a zone owner a "MUST NOT" above 2500 (for the largest keys,
-    150 and 500 for 1024 and 2048 bits), and a zone a third party supplies (a transfer) could otherwise make
-    each query hash 1 + 65 535 blocks, 6 ms, and a load of 100 000 names, which hashes each twice, twenty minutes.
-    Knot and NSD serve any count up to 65 535; BIND's validator calls more than 50 insecure
-    (`DNS_NSEC3_MAXITERATIONS`), Unbound's more than 150: a zone over 150 is served but would not validate
-    anyway; the bound guards the server, not the zone's keys (not read, so not the table's lower rows). A
+    `Limits::nsec3_iterations`, 150 by default, the chain is refused, `ErrorKind::Limit` of
+    `Bound::Nsec3Iterations`: 150 is D74's cap, the one number of the project (Unbound's
+    `val-nsec3-keysize-iterations` for 1024-bit keys; BIND 9.21's `DNS_NSEC3_MAXITERATIONS` is 50). RFC 5155 §10.3
+    gives a zone owner a "MUST NOT" above 2500 (for the largest keys, 150 and 500 for 1024 and 2048 bits): a zone
+    over 150 is served by Knot and NSD up to 65 535, and would not validate at Unbound, so the bound guards the
+    server, not the zone's keys (not read, so not the table's lower rows), and an operator who follows the RFC's
+    500 sets `Limits::nsec3_iterations`. A zone a third party supplies (a transfer) could otherwise make each
+    query hash 1 + 65 535 blocks, 6 ms. The load pays it too, and so does every `Zone::apply`, which builds the
+    zone again: names × 2 × (1 + iterations) SHA-1 blocks, 2.7 s for 100 000 names at 150, 7.6 minutes for the 2²⁴
+    names `Limits::names` allows (`docs/benchmarks.md`; `docs/TODECIDE.md` asks for the links of the names a
+    change leaves alone to be kept). A
     NSEC chain is also checked for the name each NSEC is owned by: an authoritative name (not an empty
     non-terminal, not below a cut: a delegation's NS, and its DS, are the parent's) without an NSEC is
     `ErrorKind::MissingNsec` (RFC 4035 §2.3): the NSEC covering it would prove it absent, while its answer is
-    data. A DNSKEY or an RRSIG at the apex with no chain named (no NSEC at the apex, no NSEC3PARAM of flags 0)
-    loads with `WarningKind::SignedWithoutChain`: the answers carry signatures and no proof (RFC 4035 §3.1.3, RFC
-    5155 §4.1.2); unsigned zones, the first use, say nothing. Not checked: the signatures (they expire, so a
+    data. A name holding only NSEC3 records and their RRSIGs is not asked for one: it is a link of the NSEC3
+    chain an NSEC zone is gaining or losing, whose NSEC chain is the one being served (RFC 5155 §10.4, §10.5:
+    both chains are in the zone through the rollover, and the NSEC3 records have no NSEC). A DNSKEY or an RRSIG at
+    the apex with no chain named (no NSEC at the apex, no NSEC3PARAM of flags 0) loads with
+    `WarningKind::SignedWithoutChain`: the answers carry signatures and no proof (RFC 4035 §3.1.3, RFC 5155
+    §4.1.2); unsigned zones, the first use, say nothing. Not checked: the signatures (they expire, so a
     load would refuse a zone the signer is about to replace; each resolver's validator checks them; Knot
     validates only when configured, `dnssec-validation`), nor that every name has its NSEC3 (an opt-out chain
     leaves names out by design, RFC 5155 §6: a name a signer's bug left out makes a proof a validator refuses,
@@ -2679,23 +2686,33 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     opt-out insecure delegation, a wildcard, an empty non-terminal and a CNAME) with ECDSA P-256, NSEC3 of 0
     iterations, no salt and the opt-out flag, at the pinned time 2026-05-28 20:26:40 UTC (new keys each run, so
     the files are frozen: not in the default stages), and both servers answer it; the validator runs at that time,
-    and a DS of the opt-out delegation is `Insecure` by opt-out, as RFC 5155 §6 says. RFC 5155's keys are of 512
+    and each captured question has its verdict, given in the test and checked as such (every NSEC3 of Knot's chain
+    has the opt-out flag, so only the DS of the opt-out delegation, an NXDOMAIN, and a wildcard's answer or NODATA are
+    `Insecure` by opt-out, as RFC 5155 §6 says; the others are `Secure` or a referral). The validator is a known gap
+    where a name is an empty non-terminal made only by opt-out delegations: its NODATA has the cover of the next
+    closer name with the opt-out flag and no cover of the wildcard (RFC 5155 §7.2.4), which `denial::prove` calls
+    `WildcardNotDenied`, where Unbound calls it insecure (`docs/TODECIDE.md`); `tests/signed.rs` shows the answer
+    and the verdict as they are, and the walk of the closest provable encloser over several levels of such names.
+    RFC 5155's keys are of 512
     bits, below what `dedens-dnssec` verifies (D71): its answers, the other zones', and a proptest over names of
     both zones and below them are checked by `denial::prove`, the validator's set logic without signatures. The
     proptest also holds each answer to two properties: the message without DO is the message with DO less its
     RRSIG, NSEC and NSEC3 records and a referral's DS, and with DO every `RRset` of the answer and authority
     sections has its RRSIG but a referral's NS, glue and the CNAME a DNAME made (RFC 4035 §3.1.1, §3.1.4, §4.3);
-    the first also in the fuzz target `zone_answer`. Knot's DO answers compared by D203's rules (`reference.rs`,
+    the first also in the fuzz target `zone_answer`. Both are stated of the answer unsized (`MAX_MESSAGE_LEN`):
+    under a small UDP size the records of DO truncate the answer sooner (Truncation above), so the two answers
+    no longer differ by them alone. Knot's DO answers compared by D203's rules (`reference.rs`,
     its differences 6 and 8: where Knot's additional section stops short, it is the first records of ours, in
     order). Checks in `tests/checks.rs`; fuzz target `zone_answer` asks every name with and without DO; bench
     `reply_signed`.
   - Rejected: validating signatures at load (above); hashing no node at load, as first written (an NXDOMAIN
     hashed the closest encloser, the next closer and the wildcard, 4.75 µs at 12 iterations against 2.0 µs now:
-    the load pays two hashes a name, 134 ms for 100 000 names before, 159 ms after, at 0 iterations, and 1.3 MB
+    the load pays two hashes a name, 134 ms for 100 000 names before, 167 ms after, at 0 iterations, and 0.5 MB
     more peak memory; the answer to a query, the part an attacker chooses the names of, pays one); keeping each
     node's 20-byte hash (a `Node` 40 bytes larger with the wildcard's, and a bisection of the chain each query) for
-    the place of its record (16 bytes for both, and no bisection); a tree of NSEC3 records apart, as Knot's (D206 keeps them in
-    proof-only nodes, found by the same bisection); Knot's walk back to the previous NSEC (a bisection is bounded
-    whatever the zone); refusing iterations above 0 (a zone still at 10 must be servable); a bound below 2500
-    (BIND's 50, Unbound's 150 are a validator's; a server holding a zone of 500 for a 2048-bit key follows the
-    RFC).
+    the place of its record (8 bytes for both, and no bisection); a tree of NSEC3 records apart, as Knot's (D206
+    keeps them in proof-only nodes, found by the same bisection); Knot's walk back to the previous NSEC (a
+    bisection is bounded whatever the zone); refusing iterations above 0 (a zone still at 10 must be servable); a bound of 2500, the
+    RFC's (first written: a load of 2500 iterations hashes a 100 000-name zone in 45 s, and D74's validator
+    would call the zone insecure at 150); a bound of BIND's 50 (a server holding a zone of 100 for a
+    1024-bit key follows the RFC and Unbound).

@@ -370,6 +370,22 @@ Open questions, each with its proposed default. Once answered, record the outcom
   it. Default: the warning. Alternative: in the builder's reverse pass, mark proof-only every node whose own records
   are only NSEC3 (or none) and whose subtree is all proof-only, with the index of its nearest real ancestor, as
   `Occluded { cut }` does, so that `locate` stays at two bisections with one index hop.
+- `Zone::apply` rehashes the whole NSEC3 zone (D209): it builds the zone again, so a one-record IXFR pays each
+  name's two hashes of the `Links`, names × 2 × (1 + iterations) SHA-1 blocks (`apply_nsec3` in
+  `docs/benchmarks.md`: 134 ms for 100 000 names at 0 iterations, some 2.2 s more for 1 000 000 names at 12). NSD
+  prehashes each name too (`nsec3.c`, `hash` and `hash_wc`) but updates the chain as a change touches it. Default:
+  rebuild, the load bounded by `Limits::nsec3_iterations` (150). Alternative: incremental `Links`, keeping those of the
+  nodes whose neighbours in the chain a change leaves alone; worth it when a secondary of a large NSEC3 zone
+  follows an IXFR stream.
+- A NODATA of an empty non-terminal made only by opt-out delegations is not accepted by `dedens-dnssec` (D74, D209):
+  `e.example. A` in RFC 5155 Appendix A's zone with an unsigned `d.e.example. NS` (in the opt-out span, so
+  `e.example.` has no NSEC3) gets NOERROR with the closest provable encloser's record and the opt-out record covering
+  the next closer name `e.example.` (RFC 5155 §7.2.3, §7.2.4: NSD's answer, `nsec3.c`), and `denial::prove` answers
+  `Unproven::WildcardNotDenied`: it wants the wildcard's cover too. Unbound (`val_nsec3.c`, Case 5 of
+  `nsec3_prove_nodata`) takes a next closer cover with the opt-out flag as an insecure NODATA without proof of the
+  wildcard (RFC 5155 §9.2: the name may be an unsigned delegation). `tests/signed.rs` pins what the validator says
+  today. Default: leave the validator, so a resolver of dedens treats such an answer from an opt-out zone as bogus
+  where Unbound calls it insecure. Alternative: accept it in `denial::nsec3`, as `Proof::opt_out`, an insecure NODATA.
 
 ## Later
 
