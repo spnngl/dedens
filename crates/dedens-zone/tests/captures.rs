@@ -196,7 +196,13 @@ fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
     assert_eq!(kept.report.warnings, []);
 
     let mut records = own.clone();
-    for name in ["a.example.", "b.example.", "c.example."] {
+    for name in [
+        "a.example.",
+        "b.example.",
+        "c.example.",
+        "d.example.",
+        "e.example.",
+    ] {
         let mut stranger = own.last().expect("a record").clone();
         stranger.name = dns(name);
         records.push(stranger);
@@ -222,6 +228,8 @@ fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
             warning(n + 1, "a.example."),
             warning(n + 2, "b.example."),
             warning(n + 3, "c.example."),
+            warning(n + 4, "d.example."),
+            warning(n + 5, "e.example."),
         ]
     );
 
@@ -245,7 +253,7 @@ fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
             warning(n + 1, "a.example."),
             warning(n + 2, "b.example."),
             // The first one past the limit is the place, the count of those past it.
-            (at(n + 3), WarningKind::OutsideZoneMore { count: 1 }),
+            (at(n + 3), WarningKind::OutsideZoneMore { count: 3 }),
         ]
     );
 }
