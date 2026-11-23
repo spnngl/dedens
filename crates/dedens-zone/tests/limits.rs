@@ -25,7 +25,7 @@ fn the_defaults_are_the_ones_d204_documents() {
         (l.rdata_bytes, l.include_depth, l.errors),
         (1 << 30, 8, 100)
     );
-    assert_eq!(l.nsec3_iterations, 2500);
+    assert_eq!(l.nsec3_iterations, 150);
 }
 
 #[test]
@@ -45,11 +45,11 @@ fn iterations_of_the_nsec3_chain() {
         errors(load_with(&with(13), &at(12)).expect_err("past the bound")),
         [(Some(48), limit(Bound::Nsec3Iterations, 12))]
     );
-    // The default is RFC 5155 §10.3's 2500.
-    load_with(&with(2500), &Limits::default()).expect("at the default");
+    // The default is D74's validator cap, 150.
+    load_with(&with(150), &Limits::default()).expect("at the default");
     assert_eq!(
-        errors(load_with(&with(2501), &Limits::default()).expect_err("past the default")),
-        [(Some(48), limit(Bound::Nsec3Iterations, 2500))]
+        errors(load_with(&with(151), &Limits::default()).expect_err("past the default")),
+        [(Some(48), limit(Bound::Nsec3Iterations, 150))]
     );
 }
 
