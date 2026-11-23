@@ -269,9 +269,11 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   Verus does not know it. Message decoding as fast after the change (`decode_dedens` 118.9 ns against 118.7 ns for
   an A answer), the `message` benches within noise after `unpack`'s. The release is pinned in the justfile, its own rustc installed beside ours, so the stable pin does not wait for Verus; Renovate bumps it
   (`loose` versioning: `0.<date>.<commit>`) and leaves vstd alone, as its crates.io versions include those of
-  Verus's rolling releases: vstd moves by hand to the version `cargo verus toolchain list` gives, and `just verus`
-  (`--check-toolchain`) fails on any other. Rejected: Creusot (its creusot-std is LGPL, which `deny.toml` refuses;
-  opam and Why3 to install; a specification for each call outside the crate), Flux (a prototype without releases,
+  Verus's rolling releases: vstd moves in the same pull request, by `fuzz-lock.yml`'s `just vstd-sync`, to the
+  version Verus's toolchain manifest for the release names (`source/cargo-verus/toolchain-manifests/`, what
+  `cargo verus toolchain list` reads), and `just verus` (`--check-toolchain`) fails on any other. Until Verus
+  merges the release's manifest the job fails, and a rerun moves vstd. Rejected: Creusot (its creusot-std is
+  LGPL, which `deny.toml` refuses; opam and Why3 to install; a specification for each call outside the crate), Flux (a prototype without releases,
   a git dependency without a licence), Aeneas with Charon (proofs written by hand in Lean, broken by each change of
   the Rust, and no one to own them; Charon alone checks nothing; the way back is Kani's `-Z lean`, which writes the
   LLBC Aeneas reads with no second toolchain), MIRAI (unmaintained since 2025-03; its

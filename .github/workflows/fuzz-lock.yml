@@ -2,8 +2,9 @@ name: fuzz-lock
 
 # On each push of Renovate to its branches: commits `fuzz/Cargo.lock` when the bump changed what it resolves.
 # `fuzz/` is a workspace of its own, so Renovate updates only `Cargo.lock`, and `just check`'s
-# `cargo shear --locked` then refuses the stale fuzz lock file. The push uses an app's token, as one of
-# GITHUB_TOKEN would start no checks on the new commit; Renovate ignores the app's commits (`gitIgnoredAuthors` in renovate.json5).
+# `cargo shear --locked` then refuses the stale fuzz lock file. It also moves vstd to the Verus release of the
+# justfile (`just vstd-sync`, D180), which Renovate cannot: no datasource maps one to the other. The push uses an
+# app's token, as one of GITHUB_TOKEN would start no checks on the new commit; Renovate ignores the app's commits (`gitIgnoredAuthors` in renovate.json5).
 on:
   push:
     branches:
@@ -28,12 +29,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # Resolves the fuzz workspace against the bumped crates; the toolchain of rust-toolchain.toml.
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          # renovate: datasource=github-releases depName=casey/just
+          just-version: "1.59.0"
+      # Pins vstd to the justfile's Verus and resolves both workspaces against the bumped crates; the toolchain of
+      # rust-toolchain.toml.
       - name: Resolve
-        run: cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+        run: just vstd-sync
       - id: changed
         run: |
-          if git diff --quiet -- fuzz/Cargo.lock; then echo "changed=false"; else echo "changed=true"; fi >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- Cargo.toml Cargo.lock fuzz/Cargo.lock; then echo "changed=false"; else echo "changed=true"; fi >> "$GITHUB_OUTPUT"
       - id: app
         if: steps.changed.outputs.changed == 'true'
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
@@ -51,5 +57,5 @@ jobs:
         run: |
           git config user.name "${SLUG}[bot]"
           git config user.email "${SLUG}[bot]@users.noreply.github.com"
-          git commit --quiet -m "chore(deps): update the fuzz lock file" -- fuzz/Cargo.lock
+          git commit --quiet -m "chore(deps): update vstd and the lock files" -- Cargo.toml Cargo.lock fuzz/Cargo.lock
           git push "https://x-access-token:$TOKEN@github.com/$REPOSITORY.git" "HEAD:refs/heads/$BRANCH"

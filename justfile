@@ -10,8 +10,8 @@ rapx_version := "0.7.75"
 kani_version := "0.68.0"
 # renovate: datasource=github-tags depName=NLnetLabs/unbound extractVersion=^release-(?<version>.*)$
 unbound_version := "1.26.2"
-# Verus's release (D180), its own rustc and Z3 in it (`just verus-install`). vstd in Cargo.toml moves with it, by
-# hand, to the version `cargo verus toolchain list` gives: `just verus` fails on any other.
+# Verus's release (D180), its own rustc and Z3 in it (`just verus-install`). vstd in Cargo.toml moves with it
+# (`just vstd-sync`, which `fuzz-lock.yml` runs on Renovate's branches): `just verus` fails on any other.
 # renovate: datasource=github-releases depName=verus-lang/verus extractVersion=^release/(?<version>\d+\.\d+\.\d+\.\d+\.[0-9a-f]+)$
 verus_version := "0.2026.11.22.1ce6a59"
 # The container engine of `bench-dnsperf`: `DEDENS_CONTAINER=podman just bench-dnsperf`.
@@ -637,6 +637,21 @@ verus-install:
     mv "$dir/verus-$platform"/* "$dir" && rmdir "$dir/verus-$platform"
     toolchain="$(sed -n 's/.*"toolchain": "\([^ "]*\).*/\1/p' "$dir/version.json")"
     rustup toolchain install --profile minimal "$toolchain"
+
+# Pin vstd to the version Verus's toolchain manifest names for the release of `verus_version` (D180), and resolve both
+# lock files against it. The manifest is on Verus's main once the release's bot pull request is merged: until then
+# this fails, and a rerun picks it up.
+vstd-sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url="https://raw.githubusercontent.com/verus-lang/verus/main/source/cargo-verus/toolchain-manifests/{{ verus_version }}.toml"
+    manifest=$(curl -fsSL "$url") || { echo "vstd-sync: no toolchain manifest for Verus {{ verus_version }} at $url" >&2; exit 1; }
+    vstd=$(sed -nE 's/^vstd = "([^"]+)"$/\1/p' <<< "$manifest")
+    [[ -n "$vstd" ]] || { echo "vstd-sync: the manifest of Verus {{ verus_version }} names no vstd" >&2; exit 1; }
+    sed -i.bak -E "s/^vstd = \"=[^\"]+\"/vstd = \"=$vstd\"/" Cargo.toml && rm Cargo.toml.bak
+    grep -q "^vstd = \"=$vstd\"" Cargo.toml || { echo "vstd-sync: no vstd pin in Cargo.toml" >&2; exit 1; }
+    cargo metadata --format-version 1 > /dev/null
+    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
 # Verus's proofs of dedens-proto and dedens-dnssec (D180), outside the gate; its own target dir, target/verus. `--cfg
 # verus_keep_ghost` brings in vstd, which no other build has.

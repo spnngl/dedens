@@ -39,7 +39,7 @@
             "versioning": "loose",
         },
         {
-            "description": "D180: vstd moves with the Verus release in the justfile, by hand; its crates.io versions include the rolling releases'.",
+            "description": "D180: vstd moves with the Verus release in the justfile, in Renovate's pull request by fuzz-lock.yml's `just vstd-sync`; its crates.io versions include the rolling releases'.",
             "matchPackageNames": ["vstd"],
             "enabled": false,
         },
