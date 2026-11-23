@@ -83,7 +83,13 @@ fn loaded(server: &Server) -> Vec<String> {
 fn rfc1034_4_3_2_dedensd_answers_its_zones_with_aa() {
     let dir = tempfile::tempdir().expect("a directory");
     let (example, isi) = zones(dir.path());
-    let server = Server::configured(|listen| authoritative(listen, (&example, &isi)));
+    let mut server = Server::configured(|listen| authoritative(listen, (&example, &isi)));
+    // S3: the zones every client can query are logged at the start.
+    let zones = server
+        .event("every client can query these zones, whatever `access` says (D208)")
+        .expect("the zones logged");
+    assert_eq!(zones["fields"]["count"], 2, "{zones}");
+    assert_eq!(zones["fields"]["zones"], "ISI.EDU. example.", "{zones}");
     let reply = ask(&server, "ns1.example.", RecordType::A);
     assert_eq!(reply.rcode(), Rcode::NOERROR);
     assert!(reply.header.flags.contains(Flags::AA), "{reply:?}");
@@ -174,4 +180,49 @@ fn a_reload_drops_no_query() {
         serials.iter().all(|&serial| serial == 20 || serial == 21),
         "{serials:?}"
     );
+}
+
+/// D208, D99: over `DNSCrypt` a zone answers a client the access lists deny, whatever the action, as over every
+/// transport: the packets are opened for it. A name outside the zones gets what the lists say, sealed: REFUSED, or
+/// nothing.
+#[cfg(feature = "dnscrypt")]
+#[test]
+fn a_zone_answers_a_client_the_access_lists_deny_over_dnscrypt() {
+    use dedens_net::client::Client;
+    use dedens_proto::Transport;
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let (example, _) = zones(dir.path());
+    let stages = format!(
+        "pipeline: [zones]\nstages:\n  zones:\n    type: authoritative\n    zones:\n      - {{name: example, file: '{}'}}\n",
+        example.display()
+    );
+    for action in ["refuse", "drop"] {
+        let access = format!("access:\n  allow: ['10.0.0.0/8']\n  action: {action}\n");
+        let resolver = crate::dnscrypt::resolver_of("", &access, &stages);
+        let ask = |name: &str| {
+            let question = Question::new(name.parse().expect("a name"), RecordType::A);
+            crate::dnscrypt::ask_message(
+                &Client::new(),
+                &resolver.stamp,
+                Message::query(0x0102, question),
+                Transport::Udp,
+            )
+        };
+        let response = ask("ns1.example.").expect("a zone answers");
+        let reply = crate::util::decode(&response.wire);
+        assert_eq!(reply.rcode(), Rcode::NOERROR, "{action}");
+        assert!(
+            reply.header.flags.contains(Flags::AA),
+            "{action}: {reply:?}"
+        );
+        match ask("example.org.") {
+            Ok(response) => {
+                assert_eq!(action, "refuse");
+                let reply = crate::util::decode(&response.wire);
+                assert_eq!(reply.rcode(), Rcode::REFUSED);
+            }
+            Err(_) => assert_eq!(action, "drop"),
+        }
+    }
 }
