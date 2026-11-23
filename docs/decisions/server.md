@@ -2356,10 +2356,10 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   `Limits` (those bound a load): the chain bound is `MAX_CHAIN`. `Answer::fill` writes the records into a `Message`
   borrowing the zone's names and RDATA (`Name::reborrow`, `WireRdata::reborrow`, no copy) and `Glue::encode` encodes
   it; no zone data is allocated for a query (the `Vec`s of the message are).
-  - Algorithm: the name or its closest encloser, found with one bisection when the name is a node and two when it
-    is not, whatever its depth (`Zone::locate`). A node is found first: an authoritative one, or an empty non-terminal,
-    answers at once, and an `Occluded` one carries the index of its cut, set by the loader (the outermost delegation
-    or DNAME owner above it), so no walk finds the cut. A name that is no node ends the bisection where it would sort;
+  - Algorithm: the name or its closest encloser, found with one bisection when the name is a node and at most two
+    when it is not (`Zone::locate`), and one more for the wildcard of an absent name, whatever its depth. A node is found first:
+    an authoritative one, or an empty non-terminal, answers at once, and an `Occluded` one carries the index of its
+    cut, set by the loader (the outermost delegation or DNAME owner above it), so no walk finds the cut. A name that is no node ends the bisection where it would sort;
     every ancestor of a node is a node (D204), so its closest encloser is the ancestor it shares the most labels with
     the node before it (the apex, the first node, without a second bisection; the node before itself when it is the
     ancestor), and that node's kind says whether a cut is above the name: the cut of an `Occluded` node, or the node
@@ -2367,9 +2367,15 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     delegation a referral and a DNAME the synthesis (RFC 6672 §2.4: data below a DNAME is occluded). The time is
     that of a bisection of names of the length asked, 17 comparisons of up to 127 labels, with nothing allocated: a
     client picks the length, and a walk from the apex that looked up each ancestor of a name cost 120 bisections for
-    120 labels, 490 µs (`docs/benchmarks.md`). A node that holds only NSEC3 records is no name to ask for when it is the
-    name asked, which is found absent, and the node is its closest encloser, as for any name below it that the zone
-    lacks (a zone with a name below an NSEC3 owner is odd, and none of D203 has one). An existing name, an empty
+    120 labels, 490 µs (`docs/benchmarks.md`). A node that holds only NSEC3 records and has no node below it
+    is no name (RFC 5155 §7.2.8: the server acts as if its owner did not exist; Knot keeps NSEC3 records in a tree
+    of their own, so its main tree has none): the builder marks it (`Node::is_proof_only`), asked for it is absent,
+    and as the closest encloser of a name below it, its parent takes its place, one more bisection on that path
+    only (a name that is not there is no closest encloser, and no NSEC3 record could prove it as one, §7.2.1). The
+    trigger is the query's shape, not the zone's: any client can ask `x.<hash>.<zone>.` of an NSEC3 zone, and with
+    a wildcard at the apex the answer is its synthesis, as Knot's (NSD handles the exact name only, so differs
+    below it; D203 takes Knot). One with a node below it exists, as an empty non-terminal: no data for any type, the
+    NSEC3 records included, and no wildcard (RFC 4592 §2.2.1). An existing name, an empty
     non-terminal included, answers itself: no wildcard (RFC 4592 §2.2.1), no data when the type is absent. An absent
     name: `*.<encloser>` answers if it exists (its owner is the name asked, the case as asked), else NXDOMAIN. A
     wildcard that is itself a delegation (`*.a NS`) refers, as Knot, but for DS (RFC 4592 §4.2 leaves it undefined,
@@ -2380,7 +2386,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     first owner's, and Knot does the same). The meta types AXFR, IXFR, OPT, TSIG, MAILA and MAILB are asked of the
     zone as any type (AA, NODATA): the transfer and the OPT are the server's (steps 06 and 08), not the answer's.
   - Negative answers carry the SOA with the least of its TTL and MINIMUM (RFC 2308 §3, Knot's `SOAMINTTL`); a name
-    that holds only NSEC3 records is absent (RFC 5155 §7.2; both servers answer NXDOMAIN, and no NSEC3 as data).
+    that holds only NSEC3 records, with none below it, is absent (RFC 5155 §7.2.8; both servers answer NXDOMAIN, and
+    no NSEC3 as data).
   - Chains: followed in the zone up to `MAX_CHAIN` = 11 links, then `Open`. Knot stops at 5 (`CNAME_CHAIN_MAX`), NSD at
     18 (`MAX_CNAME_CHAIN`); 11 is what the resolver accepts in a response (D192), so a dedens client never refuses
     what `dedensd` sends. A name met twice ends the chain (shown once, as Knot's duplicate check). Not followed for the

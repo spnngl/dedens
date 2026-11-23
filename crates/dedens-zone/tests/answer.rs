@@ -1,7 +1,7 @@
 //! What a zone answers: RFC 1034 §4.3.2 and the examples of §6.2 (on the root zone of §6.1), RFC 4592 §2.2.1 and §3
 //! (wildcards), RFC 6672 §2.2, §3, §6 (DNAME), RFC 2308 §3 (the SOA of a negative answer), RFC 8482 §4.2 (ANY),
 //! RFC 4035 §3.1.4.1 (DS at a delegation), RFC 6604 §2.1 (AA and RCODE after a chain), RFC 9471 §3.1 (glue and
-//! TC). D206 records each choice.
+//! TC), RFC 5155 §7.2.8 (names with NSEC3 records only). D206 records each choice.
 
 use std::fmt::Write;
 
@@ -786,6 +786,40 @@ fn s3_1_a_referral_whose_glue_does_not_fit_is_truncated_and_sibling_glue_is_drop
 }
 
 #[test]
+fn s3_1_a_referral_whose_glue_stops_the_collection_before_the_limit_is_truncated() {
+    // 16 name servers below the cut, each with an A and an AAAA record: 44 bytes of glue each at the least. With a
+    // limit of 512 the collection stops inside the required glue, which is then more than the response holds:
+    // TC is set, as every required record must be sent (RFC 9471 §3.1).
+    let mut text = String::new();
+    for host in 0..16 {
+        writeln!(text, "sub NS ns{host}.sub").expect("writes");
+        writeln!(text, "ns{host}.sub A 192.0.2.{host}").expect("writes");
+        writeln!(text, "ns{host}.sub AAAA 2001:db8::{host:x}").expect("writes");
+    }
+    let zone = example(&text);
+    let question = Question::new(dns("www.sub.example."), RecordType::A);
+    let answer = zone.answer(&question);
+    let mut message = Message {
+        header: Header {
+            flags: Flags::QR,
+            ..Header::default()
+        },
+        questions: vec![question.clone()],
+        ..Message::default()
+    };
+    let glue = answer.fill(&zone, &mut message, 512);
+    // The collection stopped before the last servers' addresses, and what it took is more than 512 bytes.
+    assert!((1..32).contains(&glue.required()), "{}", glue.required());
+    assert_eq!(message.additional.len(), glue.required());
+    assert!(message.to_vec().expect("encodes").len() > 512);
+    let mut buf = vec![0; 512];
+    let len = glue.encode(&message, &mut buf).expect("encodes");
+    let decoded = Message::decode(&buf[..len]).expect("decodes").message;
+    assert!(decoded.header.flags.contains(Flags::TC));
+    assert!(decoded.additional.len() < glue.required());
+}
+
+#[test]
 fn s2_glue_is_not_added_for_a_cname_target() {
     // RFC 2181 §10.3: an alias is not an NS or MX target; nothing is resolved for it.
     let zone = example("a MX 10 alias\nalias CNAME ns\n");
@@ -800,10 +834,25 @@ fn s2_the_additional_section_of_an_ns_answer_has_the_addresses_of_the_servers() 
     assert_eq!(r.additional, ["ns.example. 3600 IN A 192.0.2.1"]);
 }
 
-// --- RFC 5155 §7.2 ---
+// --- RFC 5155 §7.2.8 ---
+
+/// The NSEC3 record of the apex of RFC 5155 appendix A, at its owner: a name for the proofs only.
+const HASH: &str = "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom";
+const NSEC3: &str =
+    "NSEC3 1 1 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS SOA NSEC3PARAM RRSIG";
+
+/// The closest encloser of the name asked, which is not there.
+fn encloser(zone: &Zone, name: &str) -> dedens_proto::Name<'static> {
+    let question = Question::new(dns(name), RecordType::A);
+    let answer = zone.answer(&question);
+    let End::NxDomain { encloser, .. } = &answer.end else {
+        unreachable!("nxdomain");
+    };
+    encloser.name.clone()
+}
 
 #[test]
-fn s7_2_a_name_with_only_nsec3_records_is_not_there() {
+fn s7_2_8_a_name_with_only_nsec3_records_is_not_there() {
     let zone = zone("example.", &zone_file("rfc5155_appendix_a.zone"));
     let r = ask(
         &zone,
@@ -814,21 +863,49 @@ fn s7_2_a_name_with_only_nsec3_records_is_not_there() {
 }
 
 #[test]
-fn s7_2_the_closest_encloser_of_a_name_below_one_with_only_nsec3_records_is_that_name() {
-    // The ancestor is a node (D204), and a name asked below it has it as the closest encloser: only the name
-    // asked itself is not there for its NSEC3 records alone.
+fn s7_2_8_the_closest_encloser_of_a_name_below_one_with_only_nsec3_records_is_its_parent() {
+    // The name with the records is not there, so it cannot be a closest encloser, which a proof needs an NSEC3
+    // record of: the parent takes its place, at any depth.
     let zone = zone("example.", &zone_file("rfc5155_appendix_a.zone"));
-    let question = Question::new(
-        dns("x.0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example."),
-        RecordType::A,
-    );
-    let answer = zone.answer(&question);
-    let End::NxDomain { encloser, .. } = &answer.end else {
-        unreachable!("nxdomain");
-    };
+    let apex = dns("example.");
+    assert_eq!(encloser(&zone, &format!("x.{HASH}.example.")), apex);
+    assert_eq!(encloser(&zone, &format!("a.b.c.{HASH}.example.")), apex);
+    assert_eq!(encloser(&zone, &format!("x.{HASH}.EXAMPLE.")), apex);
+    // Below the name of another hash.
+    let hash = "kohar7mbb8dc2ce8a9qvl8hon4k53uhi";
+    assert_eq!(encloser(&zone, &format!("x.{hash}.example.")), apex);
+    let r = ask(&zone, &format!("x.{HASH}.example."), RecordType::A);
+    assert_eq!(r.rcode, Rcode::NXDOMAIN);
+}
+
+#[test]
+fn s7_2_8_the_wildcard_of_the_apex_answers_for_a_name_below_one_with_only_nsec3_records() {
+    let zone = example(&format!("* TXT wild\n{HASH} {NSEC3}\n"));
+    for name in [format!("x.{HASH}.example."), format!("{HASH}.example.")] {
+        let r = ask(&zone, &name, RecordType::TXT);
+        assert_eq!(r.rcode, Rcode::NOERROR, "{name}");
+        assert_eq!(r.answer, [format!("{name} 3600 IN TXT \"wild\"")]);
+    }
+}
+
+#[test]
+fn s7_2_8_a_name_with_only_nsec3_records_and_a_name_below_it_is_there() {
+    // It is an empty non-terminal: no data for any type, the NSEC3 records included, and no wildcard, which
+    // does not match a name that exists (RFC 4592 §2.2.1).
+    let zone = example(&format!(
+        "* TXT wild\n{HASH} {NSEC3}\nchild.{HASH} A 192.0.2.5\n"
+    ));
+    for rtype in [RecordType::TXT, RecordType::NSEC3, RecordType::ANY] {
+        let r = ask(&zone, &format!("{HASH}.example."), rtype);
+        assert_eq!(r.rcode, Rcode::NOERROR, "{rtype:?}");
+        assert!(r.aa);
+        assert_eq!((r.answer.len(), r.authority.len()), (0, 1), "{rtype:?}");
+    }
+    // A name below it that is not there has it as the closest encloser, which the wildcard of the apex does not
+    // reach.
     assert_eq!(
-        *encloser.name,
-        dns("0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example.")
+        encloser(&zone, &format!("x.{HASH}.example.")),
+        dns(&format!("{HASH}.example."))
     );
 }
 
