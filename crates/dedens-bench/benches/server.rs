@@ -1,7 +1,8 @@
 //! The server's paths (D23, D43), as `dedensd` runs them for each datagram: a hit, `Pipeline::query` reading a
 //! query and answering it from the cache stage, and a miss, the query sent upstream and its response stored and
 //! answered; a plugin answering with records it holds (D54); and an authoritative stage answering from its zones
-//! (D208), without keys and with them, its query unsigned and signed (D211). The allocation counts show the hit and plugin paths allocate nothing.
+//! (D208), without keys and with them, its query unsigned and signed (D211). The allocation counts show the hit
+//! and plugin paths allocate nothing.
 
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};

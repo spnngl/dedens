@@ -138,6 +138,8 @@ fn s5_1_a_query_read_knows_it_holds_a_tsig() {
     assert!(has(&message(&[], std::slice::from_ref(&tsig))));
     assert!(has(&message(&[a_record()], &[a_record(), tsig.clone()])));
     assert!(has(&message(std::slice::from_ref(&tsig), &[a_record()])));
+    // Twice, as with one: the flag is set, `find_tsig` refuses the message.
+    assert!(has(&message(&[], &[tsig.clone(), tsig])));
 }
 
 /// §5.1: a TSIG anywhere else, twice, or followed by anything is an error.
