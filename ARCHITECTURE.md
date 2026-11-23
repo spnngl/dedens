@@ -36,14 +36,14 @@
   answer read by `src/rdap.rs`, a 404 explained by `dedens-roots` (D129); `+rdap`: the TLD's server from IANA's
   bootstrap file, the client and printer both share (`src/run/rdap.rs`, D130).
 - Server, a query: `apps/dedensd/src/serve/` (a module per transport, D65, D66, D81, D84; ODoH in
-  `apps/dedensd/src/odoh/`, D79, D94; DNSCrypt in `apps/dedensd/src/dnscrypt/` and `serve/dnscrypt.rs`, D99) → `crates/dedens-server/src/access.rs` (D91) → `Query::read` →
-  `cookie.rs` and `rrl.rs` (D113) → the TSIG verified, the reply signed (`pipeline/signed.rs`, D211) → the stage
-  pipeline (`pipeline/`, D23) of stages `authoritative.rs` (D208, its zones loaded and kept across reloads by
-  `apps/dedensd/src/zones.rs`, each zone's transfer, notify and update lists in `zone_access.rs`, D211; the access
-  lists past it), `plugin.rs`, `cache.rs` and
-  `forward.rs` or `recurse/` (D195; `apps/dedensd/src/serve/recurse.rs` steps the resolution, `dedens-resolver`,
-  over `dedens-net`'s authoritative mode, D190); a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to the query by
-  `reply.rs` → send (UDP: the socket's `Outbox`, D123).
+  `apps/dedensd/src/odoh/`, D79, D94; DNSCrypt in `apps/dedensd/src/dnscrypt/` and `serve/dnscrypt.rs`, D99) →
+  `crates/dedens-server/src/access.rs` (D91) → `Query::read` → `cookie.rs` and `rrl.rs` (D113) → the TSIG verified,
+  the reply signed (`pipeline/signed.rs`, D211) → the stage pipeline (`pipeline/`, D23) of stages `authoritative.rs`
+  (D208, its zones loaded and kept across reloads by `apps/dedensd/src/zones.rs`, each zone's transfer, notify and
+  update lists in `zone_access.rs`, D211; the access lists past it), `plugin.rs`, `cache.rs` and `forward.rs` or
+  `recurse/` (D195; `apps/dedensd/src/serve/recurse.rs` steps the resolution, `dedens-resolver`, over `dedens-net`'s
+  authoritative mode, D190); a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to
+  the query by `reply.rs` → send (UDP: the socket's `Outbox`, D123).
 - Server, a response from upstream: `Message::decode` (D28) → `forward::usable` → with `dnssec: validate`,
   `validate.rs` (D77; its cost: `budget.rs`, D117; questions in flight shared: `apps/dedensd/src/flights.rs`, D86)
   → `Cache::insert` or `Cache::insert_checked`, encoded once there and served as a hit from then on (D43).
