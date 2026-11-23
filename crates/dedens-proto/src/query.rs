@@ -1,7 +1,7 @@
 //! A query read in place, for a server (D21): the header, the question and the EDNS settings it answers by,
 //! checked as [`Message::decode`](crate::Message::decode) checks them, without allocating.
 
-use crate::codes::Rcode;
+use crate::codes::{Rcode, RecordType};
 use crate::edns::{EdnsView, read_options};
 use crate::error::DecodeError;
 use crate::header::Header;
@@ -16,6 +16,7 @@ pub struct Query<'a> {
     header: Header,
     question: Option<Question<'a>>,
     edns: Option<EdnsView<'a>>,
+    tsig: bool,
     violations: Vec<Violation>,
 }
 
@@ -40,6 +41,7 @@ impl<'a> Query<'a> {
         let mut header = Header::default();
         let mut question = None;
         let mut edns = None;
+        let mut tsig = false;
         let mut violations = Vec::new();
         // Records met so far per section, to place a violation as `Message::decode` does.
         let mut records = [0; 3];
@@ -60,6 +62,7 @@ impl<'a> Query<'a> {
                     edns = Some(EdnsView::new(raw.class.0, raw.ttl, raw.rdata));
                 }
                 Entry::Record(section, raw) => {
+                    tsig |= raw.rtype == RecordType::TSIG;
                     let index = &mut records[section.position()];
                     if let (_, Some(error)) = decode_rdata(raw.rtype, raw.rdata)? {
                         violations.push(Violation::InvalidRdata {
@@ -78,6 +81,7 @@ impl<'a> Query<'a> {
             header,
             question,
             edns,
+            tsig,
             violations,
         })
     }
@@ -111,6 +115,13 @@ impl<'a> Query<'a> {
     #[must_use]
     pub const fn edns(&self) -> Option<&EdnsView<'a>> {
         self.edns.as_ref()
+    }
+
+    /// Whether a TSIG record (RFC 8945 §4.2) is anywhere in the message, in any section: where it stands, and whether
+    /// it is well formed, is for [`find_tsig`](crate::find_tsig) to say. A server with no TSIG to verify skips it.
+    #[must_use]
+    pub const fn has_tsig(&self) -> bool {
+        self.tsig
     }
 
     /// The rules the query breaks, as [`Decoded::violations`](crate::Decoded::violations): a server answers

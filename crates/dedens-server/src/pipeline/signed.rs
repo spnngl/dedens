@@ -4,7 +4,7 @@
 use std::fmt;
 
 use dedens_proto::edns::InfoCode;
-use dedens_proto::{Message, Rcode};
+use dedens_proto::{Message, Query, Rcode};
 use dedens_tsig::{Key, Keyring, Refusal, Request, SignError, verify_request};
 
 use super::Step;
@@ -64,16 +64,20 @@ impl Keys {
         &self.keys
     }
 
-    /// Checks the TSIG of the request `wire` from `client`, if it has one: `Ok(None)` when it has none. A TSIG that
+    /// Checks the TSIG of the request `wire`, which `query` read, from `client`, if it has one: `Ok(None)` when it
+    /// has none, with no read of the clock and no second walk of the message. A TSIG that
     /// is not alone and last or is malformed is answered FORMERR, unsigned (RFC 8945 §5.2); an unknown key or a
     /// wrong MAC NOTAUTH, unsigned, BADKEY or BADSIG in the TSIG; a time outside the fudge or a truncated MAC
     /// NOTAUTH, signed, BADTIME or BADTRUNC (§5.2.1 to §5.2.4, §5.3.2). The error is written into `out`.
     pub(super) fn verify(
         &self,
-        wire: &[u8],
+        (query, wire): (&Query<'_>, &[u8]),
         client: &Client<'_>,
         out: &mut [u8],
     ) -> Result<Option<Signed<'_>>, Step> {
+        if !query.has_tsig() {
+            return Ok(None);
+        }
         let now = (self.clock)();
         match verify_request(&self.keys, wire, now) {
             Ok(request) => Ok(request.map(|request| Signed { request, now })),

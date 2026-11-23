@@ -402,7 +402,7 @@ impl Pipeline {
         let signed = match self
             .keys
             .as_ref()
-            .map(|keys| keys.verify(wire, &client, out))
+            .map(|keys| keys.verify((&query, wire), &client, out))
         {
             None | Some(Ok(None)) => None,
             Some(Ok(Some(signed))) => Some(signed),

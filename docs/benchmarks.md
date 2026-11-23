@@ -442,6 +442,25 @@ nothing validates.
   the root's referral to `com.`, 13 NS and their glue, 6.06 µs and 17 allocations (1.24 KB, 5 grows). Against
   `plugin`, 60 ns in the same session, and `hit`, 105 ns: an answer costs what a few hits do, a referral of the
   root tens; no D117 budget counts them, as none counts a hit.
+- `authoritative_with_keys` and `authoritative_signed` (D211): the same stage and questions with `Pipeline::with_keys`,
+  the query unsigned and signed with an HMAC-SHA256 key (the clock fixed). The fastest sample of 5 runs of 100 and,
+  in parentheses, the median of the runs' medians, in ns, of the bench of this tree and of the tree before
+  `Query::has_tsig` (the read of the query finds the TSIG, so an unsigned query neither reads the clock nor is
+  walked a second time), built from one `server.rs` and run alternately, same session. The first column is the
+  stage without keys in this tree, which the change does not touch:
+
+  | Question | no keys | keys, before | keys, after | signed, before | signed, after |
+  |---|---|---|---|---|---|
+  | `VENERA.ISI.EDU.` A | 273 (305) | 291 (310) | 269 (300) | 853 (949) | 835 (929) |
+  | `ISI.EDU.` MX | 574 (657) | 600 (656) | 572 (652) | 1182 (1266) | 1143 (1269) |
+  | `NOTHERE.ISI.EDU.` A | 370 (443) | 412 (463) | 412 (443) | 1020 (1065) | 937 (1065) |
+  | root referral to `com.` | 5286 (5786) | 5199 (5867) | 5203 (5744) | 6065 (6560) | 6107 (6565) |
+
+  Keys cost an unsigned query what noise hides: before the change the samples are within 45 ns of the stage
+  without keys (90 for the referral, either way), and the stage without keys itself differs by as much between
+  the two trees (284 → 273, 614 → 574 ns fastest). The change removes work no sample could show: it is no gain, and
+  costs a flag. A signed query costs about 560 ns more than an unsigned one for a small answer (the HMAC of the
+  request and of the reply, and a copy), before and after alike, as it is still walked once more.
 
 ## Blocklist (D56, D58, D118, D120)
 
