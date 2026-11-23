@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use dedens_proto::{Class, MAX_LABELS, MAX_NAME_LEN, Name, Question, Rcode, RecordType};
+use dedens_proto::{Class, MAX_NAME_LEN, Name, Question, Rcode, RecordType};
 
 use crate::{Kind, Node, RrSet, Zone};
 
@@ -176,12 +176,12 @@ impl Answer<'_> {
 
 /// Where a name is, in a zone that has every ancestor of its names down to the apex as a node (D204).
 enum Located<'a> {
-    /// The zone has the name.
+    /// The zone has the name, and nothing hides it.
     Exact(Entry<'a>),
     /// The zone has no such name: its closest encloser, a node that is neither a cut nor occluded.
     Absent(Entry<'a>),
-    /// The name is below this delegation point or DNAME owner, the first on the way down from the apex: it is
-    /// hidden by it, whatever the zone holds there (RFC 1034 §4.2.1, RFC 6672 §2.4).
+    /// The name is below this delegation point or DNAME owner, the outermost: it is hidden by it, whatever the
+    /// zone holds there (RFC 1034 §4.2.1, RFC 6672 §2.4).
     Cut(Entry<'a>),
 }
 
@@ -243,67 +243,78 @@ impl Zone {
         Answer { chain, end }
     }
 
-    /// Where `name`, which is within the zone, is, walking down from the apex.
-    ///
-    /// Every ancestor of a node is a node (D204), so the closest encloser is the last name of the walk before one
-    /// the zone lacks, and a name that is not in the zone costs one lookup past its closest encloser: the time is
-    /// bounded by the depth of the zone, not by the length of the name, which a client picks.
-    fn locate<'a>(&'a self, name: &Name<'_>) -> Option<Located<'a>> {
-        let (apex, node) = self.nodes.first()?;
-        let mut encloser = Entry { name: apex, node };
-        let mut buf = [0; MAX_NAME_LEN];
-        let wire = name.to_wire(&mut buf);
-        // Where each label starts in `wire`, the first one first.
-        let mut starts = [0_u8; MAX_LABELS];
-        let mut count = 0;
-        let mut at = 0;
-        while let Some(&len) = wire.get(at).filter(|len| **len != 0) {
-            *starts.get_mut(count)? = u8::try_from(at).ok()?;
-            count += 1;
-            at += usize::from(len) + 1;
-        }
-        let apex_labels = self.apex.label_count();
-        if count > apex_labels && node.is_dname_owner() {
-            return Some(Located::Cut(encloser));
-        }
-        // The suffix of `depth` labels, from the apex's depth + 1 to the name itself.
-        for depth in apex_labels + 1..=count {
-            let from = usize::from(*starts.get(count - depth)?);
-            let suffix = Name::from_uncompressed(wire.get(from..)?).ok()?;
-            // A name that holds nothing but NSEC3 records is no name to ask for: it is in the zone for the
-            // proofs only (RFC 5155 §7.2), and Knot and NSD answer as if it were absent.
-            let Some((name, node)) = self.find(&suffix).filter(|(_, node)| !only_nsec3(node))
-            else {
-                return Some(Located::Absent(encloser));
-            };
-            let entry = Entry { name, node };
-            if depth == count {
-                return Some(Located::Exact(entry));
-            }
-            if node.kind() == Kind::Delegation || node.is_dname_owner() {
-                return Some(Located::Cut(entry));
-            }
-            encloser = entry;
-        }
-        // The apex itself.
-        Some(Located::Exact(encloser))
+    /// The node at `at` in the nodes, with its name.
+    fn entry(&self, at: usize) -> Option<Entry<'_>> {
+        self.nodes.get(at).map(|(name, node)| Entry { name, node })
     }
 
-    /// The node of `host` whose addresses an answer may carry (D206): an authoritative one, or one below a
-    /// delegation point, whose addresses are glue and which Knot gives as optional additional data too. Not one
-    /// below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4), nor a delegation point.
+    /// Where `name`, which is within the zone, is: one lookup for a name the zone has, two for one it lacks, and
+    /// no walk, whatever the depth of the name or of the zone, which a client picks.
     ///
-    /// The first cut on the way down from the apex tells a delegation from a DNAME, the one walk `locate` does;
-    /// it runs for an occluded node only, so an authoritative host costs the one lookup.
+    /// A name the zone has is hidden when it is `Kind::Occluded`, whose `cut` is the node to refer to. For one
+    /// it lacks, the lookup ends where the name would sort, and its closest encloser is the ancestor it shares
+    /// the most labels with the node before: that node's subtree holds every name between the encloser and the
+    /// name, and every ancestor of a node is a node (D204). The encloser's own `Kind` says whether a cut is
+    /// above the name.
+    fn locate<'a>(&'a self, name: &Name<'_>) -> Option<Located<'a>> {
+        let at = match self.nodes.binary_search_by(|(key, _)| key.cmp(name)) {
+            Ok(at) => {
+                let entry = self.entry(at)?;
+                // A name that holds nothing but NSEC3 records is no name to ask for: it is in the zone for the
+                // proofs only (RFC 5155 §7.2), and Knot and NSD answer as if it were absent.
+                if !only_nsec3(entry.node) {
+                    return match entry.node.kind() {
+                        Kind::Occluded { cut } => self.entry(cut).map(Located::Cut),
+                        _ => Some(Located::Exact(entry)),
+                    };
+                }
+                at
+            }
+            Err(at) => at,
+        };
+        let previous = self.entry(at.checked_sub(1)?)?;
+        let shared = previous.name.shared_labels(name);
+        let encloser = if shared == previous.name.label_count() {
+            previous
+        } else if shared == self.apex.label_count() {
+            // The usual one for a name a client invents: the apex, the first node.
+            self.entry(0)?
+        } else {
+            // The ancestor of `name` of `shared` labels: the name's last ones, cut from its wire bytes. It sorts
+            // before the node before `name`, which it is the ancestor of.
+            let mut buf = [0; MAX_NAME_LEN];
+            let wire = name.to_wire(&mut buf);
+            let mut from = 0;
+            for _ in shared..name.label_count() {
+                from += usize::from(*wire.get(from)?) + 1;
+            }
+            let ancestor = Name::from_uncompressed(wire.get(from..)?).ok()?;
+            let (name, node) = crate::zone::find(self.nodes.get(..at)?, &ancestor)?;
+            Entry { name, node }
+        };
+        Some(match encloser.node.kind() {
+            Kind::Occluded { cut } => Located::Cut(self.entry(cut)?),
+            Kind::Delegation => Located::Cut(encloser),
+            _ if encloser.node.is_dname_owner() => Located::Cut(encloser),
+            _ => Located::Absent(encloser),
+        })
+    }
+
+    /// The node of `host` whose addresses an answer may carry (D206): an authoritative one, a delegation point, or
+    /// one below a delegation point, whose addresses are glue (RFC 9499) and which Knot gives as optional
+    /// additional data too. Not one below a DNAME owner, which the zone's own answers redirect (RFC 6672 §2.4).
+    ///
+    /// One lookup: an occluded node knows its cut.
     pub(crate) fn address_node(&self, host: &Name<'_>) -> Option<&Node> {
         let node = self.node(host)?;
         match node.kind() {
-            Kind::Authoritative => Some(node),
-            Kind::Occluded => match self.locate(host)? {
-                Located::Cut(cut) if cut.node.kind() == Kind::Delegation => Some(node),
-                _ => None,
-            },
-            Kind::Delegation | Kind::EmptyNonTerminal => None,
+            Kind::Authoritative | Kind::Delegation => Some(node),
+            Kind::Occluded { cut } => self
+                .nodes
+                .get(cut)
+                .filter(|(_, cut)| cut.kind() == Kind::Delegation)
+                .map(|_| node),
+            Kind::EmptyNonTerminal => None,
         }
     }
 
@@ -338,7 +349,7 @@ impl Zone {
                     });
                 }
                 // `locate` gives a name below a cut as `Cut`.
-                Kind::Occluded => return Step::End(End::NotAuth),
+                Kind::Occluded { .. } => return Step::End(End::NotAuth),
             },
             Some(Located::Absent(encloser)) => match self.wildcard(encloser.name) {
                 // A wildcard that is a delegation point refers, as Knot's does; RFC 4592 §4.2 leaves it open. Its

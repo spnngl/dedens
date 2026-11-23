@@ -23,6 +23,15 @@ fn kind(loaded: &Loaded, name: &str) -> Kind {
     loaded.zone.node(&dns(name)).expect("a node").kind()
 }
 
+/// The delegation point or DNAME owner that hides `name`.
+fn hidden_by(loaded: &Loaded, name: &str) -> Name<'static> {
+    let Kind::Occluded { cut } = kind(loaded, name) else {
+        unreachable!("{name} is not occluded");
+    };
+    let (owner, _) = loaded.zone.nodes().nth(cut).expect("the cut is a node");
+    owner.clone()
+}
+
 // --- RFC 1034 §4.2.1 ---
 
 #[test]
@@ -32,8 +41,8 @@ fn s4_2_1_a_delegation_point_and_what_is_below_it() {
     assert_eq!(kind(&loaded, "a.example."), Kind::Delegation);
     assert_eq!(kind(&loaded, "b.example."), Kind::Delegation);
     // The glue is below the cut.
-    assert_eq!(kind(&loaded, "ns1.a.example."), Kind::Occluded);
-    assert_eq!(kind(&loaded, "ns2.a.example."), Kind::Occluded);
+    assert_eq!(hidden_by(&loaded, "ns1.a.example."), dns("a.example."));
+    assert_eq!(hidden_by(&loaded, "ns2.a.example."), dns("a.example."));
     assert_eq!(kind(&loaded, "ns1.example."), Kind::Authoritative);
     assert_eq!(kind(&loaded, "ai.example."), Kind::Authoritative);
 }
@@ -43,8 +52,11 @@ fn s4_2_1_data_below_a_delegation_is_kept_even_when_no_glue() {
     let loaded = load_extra("sub NS ns.other.\nwww.sub A 192.0.2.9\ndeep.www.sub A 192.0.2.10\n")
         .expect("a zone");
     assert_eq!(kind(&loaded, "sub.example."), Kind::Delegation);
-    assert_eq!(kind(&loaded, "www.sub.example."), Kind::Occluded);
-    assert_eq!(kind(&loaded, "deep.www.sub.example."), Kind::Occluded);
+    assert_eq!(hidden_by(&loaded, "www.sub.example."), dns("sub.example."));
+    assert_eq!(
+        hidden_by(&loaded, "deep.www.sub.example."),
+        dns("sub.example.")
+    );
     assert_eq!(kind(&loaded, "ns.example."), Kind::Authoritative);
     let www = loaded.zone.node(&dns("www.sub.example.")).expect("www.sub");
     assert!(www.rrset(RecordType::A).is_some());
@@ -53,7 +65,11 @@ fn s4_2_1_data_below_a_delegation_is_kept_even_when_no_glue() {
 #[test]
 fn s4_2_1_a_delegation_below_a_delegation_is_occluded() {
     let loaded = load_extra("sub NS ns.other.\ndeeper.sub NS ns.other.\n").expect("a zone");
-    assert_eq!(kind(&loaded, "deeper.sub.example."), Kind::Occluded);
+    // The outermost cut hides it.
+    assert_eq!(
+        hidden_by(&loaded, "deeper.sub.example."),
+        dns("sub.example.")
+    );
 }
 
 // --- RFC 9471 §2 ---
@@ -101,13 +117,10 @@ fn s2_4_names_below_a_dname_are_kept_and_reported_once() {
     assert_eq!((d.kind(), d.is_dname_owner()), (Kind::Authoritative, true));
     let x = loaded.zone.node(&dns("x.d.example.")).expect("x.d");
     assert!(!x.is_dname_owner());
-    assert_eq!(kind(&loaded, "x.d.example."), Kind::Occluded);
-    assert_eq!(kind(&loaded, "z.d.d.example."), Kind::Occluded);
-    assert_eq!(
-        kind(&loaded, "d.d.example."),
-        Kind::Occluded,
-        "an empty non-terminal below"
-    );
+    assert_eq!(hidden_by(&loaded, "x.d.example."), dns("d.example."));
+    assert_eq!(hidden_by(&loaded, "z.d.d.example."), dns("d.example."));
+    // An empty non-terminal below.
+    assert_eq!(hidden_by(&loaded, "d.d.example."), dns("d.example."));
     let warnings: Vec<_> = loaded
         .report
         .warnings
@@ -129,7 +142,7 @@ fn s2_4_names_below_a_dname_are_kept_and_reported_once() {
 fn s2_4_a_dname_at_the_apex_occludes_all_below() {
     let loaded = load_extra("@ DNAME \\# 15 056f74686572076578616d706c6500\n").expect("a zone");
     assert_eq!(kind(&loaded, "example."), Kind::Authoritative);
-    assert_eq!(kind(&loaded, "ns.example."), Kind::Occluded);
+    assert_eq!(hidden_by(&loaded, "ns.example."), dns("example."));
     assert_eq!(loaded.report.warnings.len(), 1);
 }
 

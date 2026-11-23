@@ -8,9 +8,11 @@ what it answers (`answer.rs`, `reply.rs`, D206); `src/lib.rs` says what each typ
   with its RFC section in the message, and a test in `tests/checks.rs` or `tests/marks.rs` that breaks a zone by it.
 - A new bound is a `Limits` field with its default's reason and prior art in the doc, and a test in
   `tests/limits.rs` that reaches it; `fuzz/src/zone.rs` sets small ones so the fuzz target reaches them too.
-- `Kind::Occluded` is every name below a delegation point or a DNAME owner; an empty non-terminal below one is
-  occluded, not empty. `finish` finds them walking the names in canonical order: it relies on the names under a
-  name being next to it.
+- `Kind::Occluded { cut }` is every name below a delegation point or a DNAME owner; an empty non-terminal below one
+  is occluded, not empty. `cut` is the index of the outermost cut's node in the sorted nodes, which `answer` reads
+  instead of walking: the index must stay right when nodes are added or removed (`Zone::apply` rebuilds through
+  `Builder`). `finish` finds them walking the names in canonical order: it relies on the names under a name being
+  next to it.
 - `Zone::apply` goes through `Builder` too (`from_zone`, `remove`, then `add`), so a check added to `add` or `finish`
   holds for a changed zone as for a loaded one; a record of the old zone has line 0 in a `Place`, a changeset's the
   number of its record. The journal is the only file I/O of the crate (blocking: callers run it off the serving
@@ -24,8 +26,11 @@ what it answers (`answer.rs`, `reply.rs`, D206); `src/lib.rs` says what each typ
 - A change to `Zone::answer` goes with `fuzz/src/zone.rs` (`zone_answer`), `tests/answer.rs` (the RFC examples)
   and `tests/reference.rs` (Knot and NSD, by D203's rules); a difference there is D203's or a bug, never a changed
   expectation. The answer must not allocate zone data: bench `answer_zone` and `reply_zone` after touching it, the
-  127-label and DNAME-growth cases included (the lookup is one walk from the apex, never a search per ancestor).
+  127-label and DNAME-growth cases included (the lookup is one bisection for a name that is a node and two for one that is not, never a search per ancestor or
+  a walk from the apex).
 - `Zone`'s nodes are a sorted `Vec`, not a map (D206): a lookup by a name that lives shorter than the zone must still
-  return a node that lives as long as the zone. `locate` walks a name asked from the apex down by suffix slices of its
-  wire bytes, relying on D204: every ancestor of a node is a node, so the first absent suffix ends the walk.
+  return a node that lives as long as the zone. `locate` bisects for the name asked and, if it is no node, takes the closest
+  encloser from the node before it, relying on D204: every ancestor of a node is a node, so the name's closest
+  encloser is the ancestor it shares the most labels with that node. `fn address_node` reads an occluded node's cut
+  the same way, with no walk.
 - A name holding only NSEC3 records is no name for `answer` (RFC 5155 §7.2), though it is a node.

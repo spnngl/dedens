@@ -39,6 +39,8 @@ impl Pending {
 /// A cut being walked below, in canonical order (RFC 4034 §6.1 keeps a subtree together).
 struct Cut {
     name: Name<'static>,
+    /// Where the cut's node is in the nodes.
+    index: usize,
     /// The DNAME's place, none for a delegation.
     dname: Option<Place>,
     /// Whether the first name below was reported.
@@ -458,7 +460,7 @@ impl<'l> Builder<'l> {
                     },
                 });
             }
-            kind = Kind::Occluded;
+            kind = Kind::Occluded { cut: c.index };
         } else {
             *cut = None;
             let dname = pending.sets.get(&RecordType::DNAME).map(|b| b.at);
@@ -466,6 +468,7 @@ impl<'l> Builder<'l> {
                 kind = Kind::Delegation;
                 *cut = Some(Cut {
                     name: name.clone(),
+                    index: nodes.len(),
                     dname: None,
                     warned: false,
                 });
@@ -480,6 +483,7 @@ impl<'l> Builder<'l> {
             } else if dname.is_some() {
                 *cut = Some(Cut {
                     name: name.clone(),
+                    index: nodes.len(),
                     dname,
                     warned: false,
                 });

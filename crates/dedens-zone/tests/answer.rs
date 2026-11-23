@@ -6,7 +6,7 @@
 use std::fmt::Write;
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, Flags, Header, Message, Question, Rcode, RecordType};
+use dedens_proto::{Class, Flags, Header, MAX_MESSAGE_LEN, Message, Question, Rcode, RecordType};
 use dedens_testkit::dns;
 use dedens_zone::{Answer, End, Limits, Link, MAX_CHAIN, Zone};
 
@@ -62,7 +62,7 @@ fn reply(zone: &Zone, answer: &Answer<'_>, question: &Question<'_>) -> Reply {
         questions: vec![question.clone()],
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut message);
+    let glue = answer.fill(zone, &mut message, MAX_MESSAGE_LEN);
     Reply {
         rcode: message.rcode(),
         aa: message.header.flags.contains(Flags::AA),
@@ -745,7 +745,7 @@ fn s3_1_a_referral_whose_glue_does_not_fit_is_truncated_and_sibling_glue_is_drop
         questions: vec![question.clone()],
         ..Message::default()
     };
-    let glue = answer.fill(&zone, &mut message);
+    let glue = answer.fill(&zone, &mut message, MAX_MESSAGE_LEN);
     let full = message.to_vec().expect("encodes");
     let mut buf = vec![0; 4096];
     // Everything fits: no TC.
@@ -811,6 +811,25 @@ fn s7_2_a_name_with_only_nsec3_records_is_not_there() {
         RecordType::NSEC3,
     );
     assert_eq!(r.rcode, Rcode::NXDOMAIN);
+}
+
+#[test]
+fn s7_2_the_closest_encloser_of_a_name_below_one_with_only_nsec3_records_is_that_name() {
+    // The ancestor is a node (D204), and a name asked below it has it as the closest encloser: only the name
+    // asked itself is not there for its NSEC3 records alone.
+    let zone = zone("example.", &zone_file("rfc5155_appendix_a.zone"));
+    let question = Question::new(
+        dns("x.0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example."),
+        RecordType::A,
+    );
+    let answer = zone.answer(&question);
+    let End::NxDomain { encloser, .. } = &answer.end else {
+        unreachable!("nxdomain");
+    };
+    assert_eq!(
+        *encloser.name,
+        dns("0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example.")
+    );
 }
 
 #[test]
@@ -957,8 +976,8 @@ fn s4_3_2_a_name_with_the_most_labels_is_found_from_the_apex_down() {
 #[test]
 fn s2_4_an_answer_has_the_glue_below_a_delegation_point_but_no_address_below_a_dname() {
     // The first cut on the way down decides: glue below a delegation even where a DNAME is further down,
-    // nothing below a DNAME even where a delegation is further down. An address at the delegation point itself
-    // is no data of the zone.
+    // nothing below a DNAME even where a delegation is further down. An address at the delegation point itself is
+    // glue too, being at a zone cut (RFC 9499), as Knot gives it.
     let zone = example(&format!(
         "{}x.d A 192.0.2.7\ng.d NS ns.other.\nh.g.d A 192.0.2.9\n\
          sub NS ns.other.\nh.sub A 192.0.2.8\nsub A 192.0.2.10\n{}y.e.sub A 192.0.2.11\n\
@@ -966,7 +985,7 @@ fn s2_4_an_answer_has_the_glue_below_a_delegation_point_but_no_address_below_a_d
         dname("d", "other."),
         dname("e.sub", "other."),
     ));
-    for name in ["a.example.", "f.example.", "p.example."] {
+    for name in ["a.example.", "f.example."] {
         let r = ask(&zone, name, RecordType::MX);
         assert_eq!(r.answer.len(), 1, "{name}");
         assert_eq!(r.additional, Vec::<String>::new(), "{name}");
@@ -974,6 +993,7 @@ fn s2_4_an_answer_has_the_glue_below_a_delegation_point_but_no_address_below_a_d
     }
     for (name, address) in [
         ("b.example.", "h.sub.example. 3600 IN A 192.0.2.8"),
+        ("p.example.", "sub.example. 3600 IN A 192.0.2.10"),
         ("q.example.", "y.e.sub.example. 3600 IN A 192.0.2.11"),
         ("c.example.", "ns.example. 3600 IN A 192.0.2.1"),
     ] {
@@ -982,4 +1002,72 @@ fn s2_4_an_answer_has_the_glue_below_a_delegation_point_but_no_address_below_a_d
         // Glue in an answer is optional: TC is never set for it.
         assert_eq!(r.required_glue, 0, "{name}");
     }
+}
+
+#[test]
+fn s2_4_a_referral_takes_no_address_from_below_a_dname_either() {
+    // `x.d` is below a DNAME: the referral's optional addresses leave it out, as an answer does; a sibling's stay.
+    let zone = example(&format!(
+        "{}x.d A 192.0.2.7\nsub NS ns.sub\nsub NS x.d.example.\nsub NS ns.other.example.\n\
+         ns.sub A 192.0.2.11\nns.other A 192.0.2.20\n",
+        dname("d", "other.")
+    ));
+    let r = ask(&zone, "www.sub.example.", RecordType::A);
+    assert_eq!(
+        r.additional,
+        [
+            "ns.sub.example. 3600 IN A 192.0.2.11",
+            "ns.other.example. 3600 IN A 192.0.2.20",
+        ]
+    );
+    assert_eq!(r.required_glue, 1);
+}
+
+#[test]
+fn s2_a_host_twice_in_an_rrset_has_its_addresses_once() {
+    let r = ask(
+        &example("m MX 10 ns\nm MX 20 ns\n"),
+        "m.example.",
+        RecordType::MX,
+    );
+    assert_eq!(r.answer.len(), 2);
+    assert_eq!(r.additional, ["ns.example. 3600 IN A 192.0.2.1"]);
+}
+
+// --- The additional section is collected up to what the response can hold ---
+
+/// A zone with `mx MX` of 100 hosts, each with 100 A and 100 AAAA records: 20 000 addresses, the most the default
+/// limits let one `RRset` of hosts reach.
+fn many_addresses() -> Zone {
+    let mut text = String::new();
+    for host in 0..100 {
+        writeln!(text, "mx MX 10 h{host}").expect("writes");
+        for address in 0..100 {
+            writeln!(text, "h{host} A 192.0.2.{address}").expect("writes");
+            writeln!(text, "h{host} AAAA 2001:db8::{address:x}").expect("writes");
+        }
+    }
+    example(&text)
+}
+
+/// How many records the additional section has when `limit` is what `fill` is given for the MX of `mx.example.`.
+fn collected(zone: &Zone, limit: usize) -> usize {
+    let question = Question::new(dns("mx.example."), RecordType::MX);
+    let answer = zone.answer(&question);
+    let mut message = Message::default();
+    answer.fill(zone, &mut message, limit);
+    assert_eq!(message.answer.len(), 100);
+    message.additional.len()
+}
+
+#[test]
+fn s2_the_addresses_of_the_hosts_are_collected_only_up_to_the_size_of_the_response() {
+    let zone = many_addresses();
+    // A host's A and AAAA records take 100 × (12 + 4) + 100 × (12 + 16) = 4 400 bytes at the least. Collecting
+    // stops once the records taken go over the limit, between hosts.
+    assert_eq!(collected(&zone, 1232), 200);
+    assert_eq!(collected(&zone, 4399), 200);
+    assert_eq!(collected(&zone, 4400), 400);
+    // 15 hosts take 66 000 bytes: the first number of whole hosts over 65 535.
+    assert_eq!(collected(&zone, MAX_MESSAGE_LEN), 3000);
 }

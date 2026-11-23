@@ -7,6 +7,7 @@ mod checks;
 mod differences;
 mod journal;
 mod limits;
+mod lookup;
 mod marks;
 mod reference;
 mod rfc_zones;

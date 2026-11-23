@@ -381,7 +381,14 @@ fn applying_finds_the_kinds_and_the_empty_non_terminals_again() {
     assert_eq!(applied, new);
     let kind = |n: &str| applied.node(&dns(n)).map(Node::kind);
     assert_eq!(kind("c.example."), Some(Kind::Delegation));
-    assert_eq!(kind("b.c.example."), Some(Kind::Occluded));
+    let Some(Kind::Occluded { cut }) = kind("b.c.example.") else {
+        panic!("b.c is occluded");
+    };
+    assert_eq!(
+        applied.nodes().nth(cut).map(|(name, _)| name.clone()),
+        Some(dns("c.example.")),
+        "the cut is found again"
+    );
     assert_eq!(kind("y.example."), None, "x.y's removal took its parent");
     let back = version(3, "x.y A 192.0.2.2\n");
     let diff = Zone::diff(&applied, &back).expect("ahead");
