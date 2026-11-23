@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use compio::rustls::pki_types::ServerName;
 use dedens_proto::edns::Cookie;
 use dedens_proto::{EncodeError, Message, Transport};
+use dedens_tsig::Key;
 
 use crate::cookies::{COOKIES, Jar, Pair};
 #[cfg(feature = "dnscrypt")]
@@ -393,7 +394,28 @@ impl<N: Io> Client<N> {
         if options.transport == Transport::Odoh {
             return Err(ClientError::OdohWithoutProxy);
         }
-        self.run(query, &server.into(), Via::Direct, options).await
+        self.run(query, &server.into(), Via::Direct, options, None)
+            .await
+    }
+
+    /// As [`Client::exchange`], the query signed with `key` (RFC 8945 §5.3) at each try, over any transport but
+    /// Oblivious `DoH`: [`Response::tsig`] tells whether the response verifies (D212).
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::exchange`]; [`ClientError::Encode`] when the TSIG record does not fit in the query.
+    pub async fn exchange_signed(
+        &self,
+        query: Message<'_>,
+        server: impl Into<Server>,
+        options: &Options,
+        key: &Key,
+    ) -> Result<Response, ClientError> {
+        if options.transport == Transport::Odoh {
+            return Err(ClientError::OdohWithoutProxy);
+        }
+        self.run(query, &server.into(), Via::Direct, options, Some(key))
+            .await
     }
 
     /// Sends `query` to the `DNSCrypt` resolver of `stamp`, sealed under its certificate, and returns the response
@@ -435,7 +457,7 @@ impl<N: Io> Client<N> {
     ) -> Result<Response, ClientError> {
         let resolver = self.dnscrypt.of(stamp, relays);
         let target = Server::from(stamp.address.socket_addr());
-        self.run(query, &target, Via::DnsCrypt(&resolver), options)
+        self.run(query, &target, Via::DnsCrypt(&resolver), options, None)
             .await
     }
 
@@ -495,7 +517,7 @@ impl<N: Io> Client<N> {
             ..*options
         };
         let via = proxy.as_ref().map_or(Via::Direct, Via::Proxy);
-        self.run(query, &target.into(), via, &options).await
+        self.run(query, &target.into(), via, &options, None).await
     }
 
     /// Keeps `configs`, the encoded key configurations of the Oblivious `DoH` `target`, for good: they are not
@@ -566,6 +588,7 @@ impl<N: Io> Client<N> {
         target: &Server,
         via: Via<'_>,
         options: &Options,
+        key: Option<&Key>,
     ) -> Result<Response, ClientError> {
         let server = target.addr;
         #[cfg(feature = "dnscrypt")]
@@ -628,7 +651,10 @@ impl<N: Io> Client<N> {
         // The IDs of the queries a fallback changes (RFC 5452 §9.2, D114).
         let spare = self.draw::<8>()?;
         let spare_ids = [0, 2, 4, 6].map(|at| u16::from_be_bytes([spare[at], spare[at + 1]]));
-        let exchange = Exchange::start(query, server, asked, spare_ids, self.io.now())?;
+        let mut exchange = Exchange::start(query, server, asked, spare_ids, self.io.now())?;
+        if let Some(key) = key {
+            exchange = exchange.signed(key, self.io.unix_time(), self.io.now())?;
+        }
         let mut progress = if slow {
             exchange.lose(self.io.now())
         } else {

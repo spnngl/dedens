@@ -131,6 +131,13 @@ impl<'k> ResponseVerifier<'k> {
         verifier
     }
 
+    /// The MAC of the request, while no message of the response was accepted: the one [`ResponseVerifier::new`]
+    /// takes, for a verifier made again later (one that cannot borrow its key as long as it lives).
+    #[must_use]
+    pub fn request_mac(&self) -> &[u8] {
+        &self.prior
+    }
+
     /// Accepts or refuses the next message of the response, at time `now`.
     ///
     /// A refused message leaves the verifier as it was: over UDP keep waiting for the real response (RFC 8945

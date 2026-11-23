@@ -264,7 +264,7 @@ async fn ask<N: Io>(
 }
 
 /// A connection to the primary, the query sent, its responses read before a deadline.
-struct Tcp<'i, N: Io> {
+pub struct Tcp<'i, N: Io> {
     io: &'i N,
     read: BufReader<<N::Stream as Splittable>::ReadHalf>,
     /// Kept open until the end: dropping it would close the connection.
@@ -275,7 +275,15 @@ struct Tcp<'i, N: Io> {
 
 impl<'i, N: Io> Tcp<'i, N> {
     /// Connects to `primary` and sends `wire`, each step within `idle` and `deadline`.
-    async fn open(
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::Connect`], [`TransferError::Io`], or [`TransferError::Limit`] past a bound.
+    ///
+    /// # Panics
+    ///
+    /// When `wire` is longer than a TCP message (65535 bytes): the queries of [`query`] are not.
+    pub async fn open(
         io: &'i N,
         primary: SocketAddr,
         wire: &[u8],
@@ -299,7 +307,12 @@ impl<'i, N: Io> Tcp<'i, N> {
     }
 
     /// The next message.
-    async fn next(&mut self) -> Result<Vec<u8>, TransferError> {
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::Closed`] when the primary closed the connection, [`TransferError::Io`], or
+    /// [`TransferError::Limit`] past a bound.
+    pub async fn next(&mut self) -> Result<Vec<u8>, TransferError> {
         wait(
             self.io,
             self.deadline,
@@ -333,21 +346,30 @@ async fn wait<N: Io, F: Future>(
         })
 }
 
-/// `after` from now, or [`FAR`] on when the clock cannot count so far: a limit set to `Duration::MAX` means none.
-fn after(io: &impl Io, after: Duration) -> Instant {
+/// `after` from now, or 30 years on when the clock cannot count so far: a limit set to `Duration::MAX` means none.
+pub fn after(io: &impl Io, after: Duration) -> Instant {
     let now = io.now();
     now.checked_add(after).unwrap_or_else(|| now + FAR)
 }
 
 /// A random query ID (RFC 5452 §4.3).
-fn draw_id(io: &impl Io) -> Result<u16, TransferError> {
+///
+/// # Errors
+///
+/// [`TransferError::Random`].
+pub fn draw_id(io: &impl Io) -> Result<u16, TransferError> {
     let mut id = [0; 2];
     io.random(&mut id).map_err(TransferError::Random)?;
     Ok(u16::from_be_bytes(id))
 }
 
 /// The query of `id` for `qtype` of `zone`, with `authority`: no RD, no EDNS.
-fn query(
+///
+/// # Panics
+///
+/// Never for a name and an SOA each within the 255 bytes of a name: the query is under 512 bytes.
+#[must_use]
+pub fn query(
     zone: &Name<'static>,
     qtype: RecordType,
     authority: Option<Record<'static>>,
@@ -373,7 +395,11 @@ fn query(
 }
 
 /// `wire` signed with `key`, if any, and the verifier of its responses.
-fn signed<'k>(
+///
+/// # Errors
+///
+/// [`TransferError::Sign`].
+pub fn signed<'k>(
     io: &impl Io,
     mut wire: Vec<u8>,
     key: Option<&'k Key>,
