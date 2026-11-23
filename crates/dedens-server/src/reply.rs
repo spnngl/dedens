@@ -10,7 +10,7 @@ use dedens_proto::{
     Flags, HEADER_LEN, Header, MAX_MESSAGE_LEN, Message, Query, Question, Rcode, Transport,
     Violation,
 };
-use dedens_zone::{Answer as ZoneAnswer, Glue, Zone};
+use dedens_zone::{Answer as ZoneAnswer, Dnssec, Glue, Zone};
 
 use crate::plugin::Answer;
 
@@ -151,7 +151,8 @@ impl<'q> Client<'q> {
     }
 
     /// Writes `answer`, the answer of `zone`, as [`Client::authoritative`] does, AA as the answer has it: the
-    /// authoritative stage's (D208). TC is set when the glue a referral requires does not fit (RFC 9471 §3).
+    /// authoritative stage's (D208). TC is set when the glue a referral requires does not fit (RFC 9471 §3). A
+    /// client with DO gets the signatures and the denial proofs of a signed zone (D209).
     pub(crate) fn zone(
         &self,
         zone: &Zone,
@@ -159,7 +160,12 @@ impl<'q> Client<'q> {
         out: &mut [u8],
     ) -> Option<usize> {
         let mut message = Message::default();
-        let glue = answer.fill(zone, &mut message, self.limit().min(out.len()));
+        let dnssec = if self.dnssec() {
+            Dnssec::With
+        } else {
+            Dnssec::Without
+        };
+        let glue = answer.fill(zone, &mut message, self.limit().min(out.len()), dnssec);
         let aa = if answer.authoritative() {
             Flags::AA
         } else {

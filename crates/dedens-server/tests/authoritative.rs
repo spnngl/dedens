@@ -7,8 +7,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
-use dedens_proto::edns::{EdnsOption, InfoCode};
-use dedens_proto::{Class, Flags, Message, Question, Rcode, RecordType, Transport, Ttl};
+use dedens_proto::edns::{Edns, EdnsFlags, EdnsOption, InfoCode};
+use dedens_proto::{Class, Flags, Message, Question, Rcode, Record, RecordType, Transport, Ttl};
 use dedens_server::{Access, Authoritative, Denial, Forward, Network, Pipeline, Stage, Step};
 use dedens_testkit::dns;
 use dedens_zone::{Limits, Source, Zone};
@@ -140,6 +140,45 @@ fn rfc1034_4_3_2_a_zone_answers_with_aa_whatever_rd() {
         assert!(!reply.flags.contains(Flags::RA), "{:?}", reply.flags);
         assert_eq!(reply.records[0], "ns1.example. 3600 IN A 192.0.2.1");
     }
+}
+
+/// The types of the records of every section of the reply to `ml.example. A`, a name `example.` lacks, from a
+/// client whose OPT record has `do_bit` (RFC 3225 §3).
+fn name_error_types(do_bit: bool) -> Vec<RecordType> {
+    let mut query = Message::query(7, Question::new(dns("ml.example"), RecordType::A));
+    query.edns = Some(Edns {
+        flags: if do_bit {
+            EdnsFlags::DO
+        } else {
+            EdnsFlags::default()
+        },
+        ..Edns::default()
+    });
+    let mut out = vec![0; 65535];
+    let step = authoritative().query(&wire(&query), Transport::Udp, addr(OUTSIDE), 0, &mut out);
+    assert!(matches!(step, Step::Reply(_)), "{step:?}");
+    if let Step::Reply(len) = step {
+        out.truncate(len);
+    }
+    let reply = decode(&out).into_owned();
+    assert_eq!(reply.rcode(), Rcode::NXDOMAIN);
+    assert_eq!(
+        reply.edns.map(|edns| edns.flags.contains(EdnsFlags::DO)),
+        Some(do_bit),
+        "DO copied"
+    );
+    reply.authority.iter().map(Record::rtype).collect()
+}
+
+#[test]
+fn rfc4035_3_1_the_stage_gives_a_client_with_do_the_signatures_and_proofs_of_a_signed_zone() {
+    // RFC 4035 §3.1.1, §3.1.3.2: the SOA, the NSECs of the name and of the wildcard, each with its RRSIG (D209).
+    let with = name_error_types(true);
+    assert!(with.contains(&RecordType::SOA), "{with:?}");
+    assert!(with.contains(&RecordType::NSEC), "{with:?}");
+    assert!(with.contains(&RecordType::RRSIG), "{with:?}");
+    // Without DO, the SOA alone (RFC 4035 §3.1).
+    assert_eq!(name_error_types(false), [RecordType::SOA]);
 }
 
 #[test]
