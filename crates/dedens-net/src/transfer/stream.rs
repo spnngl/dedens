@@ -114,8 +114,8 @@ pub enum StreamError {
     #[error("bad changeset: {0}")]
     Changeset(ChangesetError),
     /// An IXFR changeset that ends past the opening SOA's serial: the chain would go round the serial space to
-    /// reach it, as NSD refuses ("bad middle serial"; RFC 1995 §4: the changes lead to the newest version, the
-    /// opening SOA's).
+    /// reach it: NSD refuses a middle serial above the opening one ("bad middle serial", `xfrd.c`), by plain integer
+    /// comparison, this by RFC 1982 (RFC 1995 §4: the changes lead to the newest version, the opening SOA's).
     #[error("a changeset ends at serial {to}, past the opening SOA's {opening}")]
     BadMiddleSerial {
         /// Where the changeset ends.
@@ -150,6 +150,28 @@ impl StreamError {
             self,
             Self::Tsig { .. } | Self::Limit(_) | Self::NotNewer { .. } | Self::Zone(_)
         )
+    }
+
+    /// Whether a UDP response of the SOA query refused so may be a forged datagram, to wait past for the real
+    /// response (RFC 8945 §5.4, RFC 5452 §9.1): `signed` is whether the query was. Signed, every error before the
+    /// TSIG verifies, one that does not decode included; the ones after it come from the primary, as a signed TSIG
+    /// error does. Unsigned, a datagram that does not decode or does not repeat the question: nothing else tells a
+    /// forged one from the primary's.
+    #[must_use]
+    pub const fn spoofable(&self, signed: bool) -> bool {
+        match self {
+            Self::Tsig {
+                error:
+                    ResponseError::Refused {
+                        authenticated: true,
+                        ..
+                    },
+                ..
+            } => false,
+            Self::Malformed(_) | Self::WrongId { .. } | Self::Tsig { .. } => true,
+            Self::WrongQuestion => !signed,
+            _ => false,
+        }
     }
 }
 
@@ -362,8 +384,7 @@ impl<'k> Reader<'k> {
                 changes.done.push(changeset);
                 if reached {
                     // The latest version reached: this SOA closes the stream, and must be the opening one, by
-                    // serial alone as in Knot and BIND (the rest of the SOA is not compared).
-                    //
+                    // serial alone as NSD's (the rest of the SOA is not compared; Knot compares the whole record).
                     if Some(serial) != self.serial {
                         return Err(StreamError::SoaInside(serial));
                     }
@@ -382,7 +403,8 @@ impl<'k> Reader<'k> {
     }
 
     /// The AXFR form: `record` added to `records`, or the end when it is the closing SOA, the opening one again
-    /// (RFC 5936 §2.2: matched on the serial alone, as in Knot and BIND; the rest of the SOA is not compared).
+    /// (RFC 5936 §2.2: matched on the serial alone, as NSD does; the rest of the SOA is not compared).
+    /// Knot ends an AXFR at any second SOA of the apex.
     fn full(
         &self,
         mut records: Vec<Record<'static>>,

@@ -184,8 +184,8 @@ fn rfc6895_a_meta_type_or_class_is_refused_in_a_transfer_and_a_changeset() {
 }
 
 /// A record of a transfer outside the zone is dropped with a warning, as Knot does, and the zone is the rest;
-/// beyond [`Limits::errors`] the drops are not warned of; a zone file's record outside the zone stays an error
-/// (D210).
+/// beyond [`Limits::errors`] the drops are counted in one last warning (D210).
+/// `a_zone_file_and_an_ixfr_changeset_still_refuse_a_record_outside_the_zone` is the other side.
 #[test]
 fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
     let apex = dns("zonetransfer.me.");
@@ -233,7 +233,79 @@ fn from_records_drops_a_record_outside_the_zone_with_a_warning() {
         .map_err(|report| report.to_string())
         .expect("the strangers are dropped");
     assert_eq!(loaded.zone, kept.zone);
-    assert_eq!(loaded.report.warnings.len(), 2);
+    let warned: Vec<_> = loaded
+        .report
+        .warnings
+        .iter()
+        .map(|w| (w.at, w.kind.clone()))
+        .collect();
+    assert_eq!(
+        warned,
+        [
+            warning(n + 1, "a.example."),
+            warning(n + 2, "b.example."),
+            // The first one past the limit is the place, the count of those past it.
+            (at(n + 3), WarningKind::OutsideZoneMore { count: 1 }),
+        ]
+    );
+}
+
+/// A zone file, and an IXFR changeset applied to a zone, refuse a record outside the zone: only a full transfer
+/// drops it (D210), so step 13 keeps the asymmetry on purpose.
+#[test]
+fn a_zone_file_and_an_ixfr_changeset_still_refuse_a_record_outside_the_zone() {
+    let owner = dns("stranger.example.");
+    let outside = |report: &dedens_zone::Report| {
+        report
+            .errors
+            .iter()
+            .map(|error| error.kind.clone())
+            .collect::<Vec<_>>()
+    };
+    let expected = [ErrorKind::OutsideZone {
+        owner: owner.clone(),
+    }];
+
+    let mut text =
+        fs::read(dedens_testkit::path("authoritative/zones").join("zonetransfer.me.zone"))
+            .expect("a zone file");
+    text.extend_from_slice(b"\nstranger.example. 300 IN A 192.0.2.1\n");
+    let source = Source {
+        name: "zonetransfer.me.zone",
+        text: &text,
+        default_ttl: None,
+    };
+    let mut include = |_: &str| Err("no $INCLUDE".to_owned());
+    let report = Zone::load(
+        dns("zonetransfer.me."),
+        source,
+        &mut include,
+        &Limits::default(),
+    )
+    .expect_err("a record outside the zone");
+    assert_eq!(outside(&report), expected);
+
+    let own = dedens_testkit::authoritative::zone("zonetransfer.me.zone");
+    let zone = Zone::from_records(dns("zonetransfer.me."), own.clone(), &Limits::default())
+        .map_err(|report| report.to_string())
+        .expect("the zone")
+        .zone;
+    let mut stranger = own.last().expect("a record").clone();
+    stranger.name = owner;
+    let changeset = Changeset::new(
+        own.iter()
+            .find(|r| r.rtype() == RecordType::SOA)
+            .expect("an SOA")
+            .clone(),
+        next_soa(&own),
+        Vec::new(),
+        vec![stranger],
+    )
+    .expect("a changeset");
+    let report = zone
+        .apply(&changeset, &Limits::default())
+        .expect_err("a record outside the zone");
+    assert_eq!(outside(&report), expected);
 }
 
 /// A changeset's SOA of the zone, one serial ahead.

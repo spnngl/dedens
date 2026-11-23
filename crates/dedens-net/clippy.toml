@@ -6,7 +6,7 @@ allow-panic-in-tests = true
 allow-print-in-tests = true
 allow-dbg-in-tests = true
 
-# D134: `udp.rs`, `tcp.rs` and `client.rs` deny `clippy::disallowed_methods` (the lint is off elsewhere, see the
+# D134, D210: `udp.rs`, `tcp.rs`, `client.rs` and `transfer` deny `clippy::disallowed_methods` (the lint is off elsewhere, see the
 # workspace's Cargo.toml): the clock, tasks, timers, randomness and sockets of the pools go through `io::Io`, so a
 # simulated one can stand in. `io.rs` holds the one call of each.
 disallowed-methods = [

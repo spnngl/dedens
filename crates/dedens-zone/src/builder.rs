@@ -78,8 +78,10 @@ pub(crate) struct Builder<'l> {
     warnings: Vec<Warning>,
     /// Whether a record outside the zone is dropped with a warning, not refused.
     drops_outside: bool,
-    /// The records dropped for being outside the zone: only the first [`Limits::errors`] are warned of.
+    /// The records dropped for being outside the zone: only the first [`Limits::errors`] are warned of one by one.
     dropped: usize,
+    /// The first one past them, summed up in a last warning.
+    unlisted: Option<Place>,
     stopped: bool,
 }
 
@@ -99,6 +101,7 @@ impl<'l> Builder<'l> {
             warnings: Vec::new(),
             drops_outside: false,
             dropped: 0,
+            unlisted: None,
             stopped: false,
         }
     }
@@ -252,14 +255,18 @@ impl<'l> Builder<'l> {
 
     /// A record of `owner`, outside the zone: an error, or a warning when the source drops such records.
     fn outside(&mut self, at: Place, owner: Name<'static>) {
-        if !self.drops_outside {
+        if self.drops_outside {
+            self.dropped = self.dropped.saturating_add(1);
+            if self.dropped <= self.limits.errors {
+                self.warnings.push(Warning {
+                    at,
+                    kind: WarningKind::OutsideZone { owner },
+                });
+            } else {
+                self.unlisted.get_or_insert(at);
+            }
+        } else {
             self.error(Some(at), ErrorKind::OutsideZone { owner });
-        } else if self.dropped < self.limits.errors {
-            self.dropped += 1;
-            self.warnings.push(Warning {
-                at,
-                kind: WarningKind::OutsideZone { owner },
-            });
         }
     }
 
@@ -395,6 +402,14 @@ impl<'l> Builder<'l> {
         else {
             return Err(self.report);
         };
+        if let Some(at) = self.unlisted {
+            self.warnings.push(Warning {
+                at,
+                kind: WarningKind::OutsideZoneMore {
+                    count: self.dropped - self.limits.errors,
+                },
+            });
+        }
         self.report.warnings = self.warnings;
         Ok((
             Zone {
