@@ -22,6 +22,7 @@
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod access;
+mod authoritative;
 mod budget;
 mod cache;
 mod cookie;
@@ -36,6 +37,7 @@ mod rrl;
 mod validate;
 
 pub use access::{Access, Denial, Network, NetworkError};
+pub use authoritative::{Authoritative, Duplicate};
 pub use budget::{Budget, BudgetError, Budgets, MAX_BUDGET, Slot, Spent};
 pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
 pub use forward::{Forward, OdohProxy, Server, Via};

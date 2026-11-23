@@ -1137,6 +1137,7 @@ dependencies = [
  "dedens-resolver",
  "dedens-roots",
  "dedens-testkit",
+ "dedens-zone",
  "ipnet",
  "metrics",
  "metrics-util",

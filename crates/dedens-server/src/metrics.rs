@@ -14,8 +14,14 @@
 //! - `dedens_validations_parked_total`: client queries that found the allowance of D77 spent and waited for it
 //!   (D186); those given up past their wait are counted `shed` too.
 //!
-//! Handles are taken once, when the forward stage's validator, the access lists, the rate limit or the cookies are
-//! built, from the recorder installed then.
+//! - `dedensd_authoritative_answers_total{kind}`: answers of the authoritative stage (D208), by where the way from
+//!   the name asked ends: `data`, `nodata`, `nxdomain`, `referral`, `yxdomain`, `synthesized` (the CNAME of a
+//!   DNAME asked for) or `open` (a chain leaving the zone).
+//!
+//! Handles are taken once, when the forward stage's validator, the access lists, the rate limit, the cookies or the
+//! authoritative stage are built, from the recorder installed then.
+
+use dedens_zone::End;
 
 use crate::access::Denial;
 use crate::cookie::Standing;
@@ -119,6 +125,73 @@ impl Limited {
         reason = "the same calls with and without the feature"
     )]
     pub(crate) const fn count(&self, _: Admission) {}
+}
+
+/// The counters of the authoritative stage's answers, by kind.
+#[cfg(feature = "metrics")]
+#[derive(Clone)]
+pub(crate) struct Answers {
+    data: metrics::Counter,
+    nodata: metrics::Counter,
+    nxdomain: metrics::Counter,
+    referral: metrics::Counter,
+    yxdomain: metrics::Counter,
+    synthesized: metrics::Counter,
+    open: metrics::Counter,
+}
+
+/// The counters of the authoritative stage's answers: none without the `metrics` feature.
+#[cfg(not(feature = "metrics"))]
+#[derive(Clone)]
+pub(crate) struct Answers;
+
+#[cfg(feature = "metrics")]
+impl Answers {
+    pub(crate) fn new() -> Self {
+        const ANSWERS: &str = "dedensd_authoritative_answers_total";
+        metrics::describe_counter!(
+            ANSWERS,
+            "Answers of the authoritative stage, by kind: data, nodata, nxdomain, referral, yxdomain, synthesized \
+             or open."
+        );
+        Self {
+            data: metrics::counter!(ANSWERS, "kind" => "data"),
+            nodata: metrics::counter!(ANSWERS, "kind" => "nodata"),
+            nxdomain: metrics::counter!(ANSWERS, "kind" => "nxdomain"),
+            referral: metrics::counter!(ANSWERS, "kind" => "referral"),
+            yxdomain: metrics::counter!(ANSWERS, "kind" => "yxdomain"),
+            synthesized: metrics::counter!(ANSWERS, "kind" => "synthesized"),
+            open: metrics::counter!(ANSWERS, "kind" => "open"),
+        }
+    }
+
+    pub(crate) fn count(&self, end: &End<'_>) {
+        match end {
+            // Not an answer: the query goes on to the next stage.
+            End::NotAuth => return,
+            End::Data { .. } => &self.data,
+            End::NoData { .. } => &self.nodata,
+            End::NxDomain { .. } => &self.nxdomain,
+            End::Referral { .. } => &self.referral,
+            End::YxDomain { .. } => &self.yxdomain,
+            End::Synthesized => &self.synthesized,
+            End::Open { .. } => &self.open,
+        }
+        .increment(1);
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+impl Answers {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "the same calls with and without the feature"
+    )]
+    pub(crate) const fn count(&self, _: &End<'_>) {}
 }
 
 /// The counters of queries by cookie.
