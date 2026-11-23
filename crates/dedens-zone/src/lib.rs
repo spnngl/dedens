@@ -9,6 +9,7 @@
 mod answer;
 mod builder;
 mod changeset;
+mod denial;
 mod difference;
 mod error;
 pub mod journal;

@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use dedens_proto::{Class, DecodeError, Name, RecordType, Serial, TextErrorKind};
+use dedens_proto::{Class, DecodeError, Name, Nsec3HashAlgorithm, RecordType, Serial, TextErrorKind};
 
 /// Where a record starts: the line and column, from 1, in the file of that index in [`Report::files`].
 ///
@@ -138,6 +138,23 @@ pub enum ErrorKind {
         /// The serial the changeset starts from.
         changeset: Serial,
     },
+    /// An NSEC or NSEC3 record whose next name is not the owner that follows it in its chain, in canonical or
+    /// hash order: the chain does not close, and an answer would prove what the zone holds absent (RFC 4034
+    /// §4.1.1, RFC 5155 §7.1).
+    #[error("the {rtype} record of {owner} does not lead to the next name of its chain (RFC 4034 §4.1.1, RFC 5155 §7.1)")]
+    BrokenChain {
+        /// NSEC or NSEC3.
+        rtype: RecordType,
+        /// The owner of the record.
+        owner: Name<'static>,
+    },
+    /// An NSEC3PARAM of another hash algorithm than SHA-1, the only one (RFC 5155 §11): no name can be hashed to
+    /// prove it absent.
+    #[error("NSEC3PARAM of hash algorithm {algorithm}, not SHA-1 (RFC 5155 §11)")]
+    Nsec3Algorithm {
+        /// The algorithm.
+        algorithm: Nsec3HashAlgorithm,
+    },
     /// More errors than [`Limits::errors`](crate::Limits::errors): the load stopped.
     #[error("more than {limit} errors: stopped")]
     Stopped {
@@ -185,6 +202,14 @@ pub enum WarningKind {
     Nsec3Owner {
         /// The owner of the record.
         owner: Name<'static>,
+    },
+    /// NSEC3 parameters of more than 0 iterations, which RFC 9276 §3.1 advises against: an answer that proves a
+    /// name absent hashes up to three names that many times more, and validators may take the zone as insecure
+    /// (§3.2).
+    #[error("NSEC3PARAM of {iterations} iterations; RFC 9276 §3.1 advises 0")]
+    Nsec3Iterations {
+        /// The iterations.
+        iterations: u16,
     },
 }
 

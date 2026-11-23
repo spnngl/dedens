@@ -1,10 +1,12 @@
 //! The sections of a response from an [`Answer`], and its encoding (D206).
 
 use dedens_proto::rdata::RData;
+use dedens_proto::edns::EdnsFlags;
 use dedens_proto::{EncodeError, Flags, Message, Name, Record, RecordType, Ttl, WireRdata};
 
-use crate::answer::{Answer, End, Link};
-use crate::{RrSet, Zone};
+use crate::answer::{Answer, End, Entry, Link, Match};
+use crate::denial::Proofs;
+use crate::{Node, RrSet, Zone};
 
 /// The bit of the header's flags word that is TC, in its first byte at offset 2.
 const TC_BYTE: u8 = 0x02;
@@ -76,6 +78,14 @@ impl Answer<'_> {
     /// many hosts with many addresses costs no more than a response can carry (D206). The returned [`Glue`]
     /// encodes `message` into a buffer of at most `limit` bytes.
     ///
+    /// With DO in the OPT record of `message`, which a response copies from its query (RFC 3225 §3), each
+    /// `RRset` has its signatures right after it, but for the NS of a referral and its glue, which the zone does
+    /// not sign, and the CNAME a DNAME synthesises, which no one signs (RFC 4035 §3.1.1, RFC 6672 §5.3.1). The
+    /// authority section then holds the NSEC or NSEC3 records that prove what the answer lacks or a wildcard
+    /// answered, with their signatures, and a referral the DS of the child or the proof that it has none
+    /// (RFC 4035 §3.1.3, §3.1.4, RFC 5155 §7.2, D209). A record cut off in the answer or authority section sets
+    /// TC; a signature of an address, optional, is dropped first, without TC.
+    ///
     /// [`MAX_MESSAGE_LEN`]: dedens_proto::MAX_MESSAGE_LEN
     pub fn fill<'m>(&'m self, zone: &'m Zone, message: &mut Message<'m>, limit: usize) -> Glue {
         let class = zone.class();
@@ -83,16 +93,25 @@ impl Answer<'_> {
             message.header.flags = message.header.flags.with(Flags::AA);
         }
         message.header.rcode = self.rcode();
+        let dnssec = message
+            .edns
+            .as_ref()
+            .is_some_and(|edns| edns.flags.contains(EdnsFlags::DO));
+        let out = Out { zone, dnssec };
+        let mut proofs = Proofs::new();
         for link in &self.chain {
             match link {
-                Link::Cname { name, rrset, .. } => records(&mut message.answer, name, zone, rrset),
+                Link::Cname { name, at, rrset } => {
+                    out.signed(&mut message.answer, name, at.node(), RecordType::CNAME, rrset);
+                    out.prove_wildcard(name, at, &mut proofs);
+                }
                 Link::Dname {
                     name,
                     at,
                     rrset,
                     target,
                 } => {
-                    records(&mut message.answer, at.name, zone, rrset);
+                    out.signed(&mut message.answer, at.name, at.node, RecordType::DNAME, rrset);
                     message.answer.push(Record {
                         name: name.clone(),
                         class,
@@ -105,17 +124,32 @@ impl Answer<'_> {
         let mut glue = Glue { required: 0, limit };
         match &self.end {
             End::Data {
-                name, rtype, rrset, ..
+                name,
+                at,
+                rtype,
+                rrset,
             } => {
-                records(&mut message.answer, name, zone, rrset);
-                additional(zone, *rtype, rrset, None, limit, &mut message.additional);
+                out.signed(&mut message.answer, name, at.node(), *rtype, rrset);
+                out.prove_wildcard(name, at, &mut proofs);
+                additional(out, *rtype, rrset, None, limit, &mut message.additional);
             }
-            End::NoData { .. } | End::NxDomain { .. } => soa(zone, &mut message.authority),
+            End::NoData { name, at } => {
+                out.soa(&mut message.authority);
+                if out.dnssec {
+                    zone.prove_no_data(name, at, &mut proofs);
+                }
+            }
+            End::NxDomain { name, encloser } => {
+                out.soa(&mut message.authority);
+                if out.dnssec {
+                    zone.prove_no_name(name, encloser, &mut proofs);
+                }
+            }
             End::Referral { cut } => {
                 if let Some(rrset) = cut.node.rrset(RecordType::NS) {
                     records(&mut message.authority, cut.name, zone, rrset);
                     glue.required = additional(
-                        zone,
+                        out,
                         RecordType::NS,
                         rrset,
                         Some(cut.name),
@@ -123,11 +157,87 @@ impl Answer<'_> {
                         &mut message.additional,
                     );
                 }
+                if out.dnssec {
+                    match cut.node.rrset(RecordType::DS) {
+                        Some(ds) => out.signed(&mut message.authority, cut.name, cut.node, RecordType::DS, ds),
+                        None => zone.prove_no_data(cut.name, &Match::Exact(*cut), &mut proofs),
+                    }
+                }
             }
-            End::YxDomain { at, rrset, .. } => records(&mut message.answer, at.name, zone, rrset),
+            End::YxDomain { at, rrset, .. } => {
+                out.signed(&mut message.answer, at.name, at.node, RecordType::DNAME, rrset);
+            }
             End::NotAuth | End::Synthesized | End::Open { .. } => {}
         }
+        out.proofs(&proofs, &mut message.authority);
         glue
+    }
+}
+
+/// Where the records of a response come from, and whether they go with their signatures: DO.
+#[derive(Clone, Copy)]
+struct Out<'m> {
+    zone: &'m Zone,
+    dnssec: bool,
+}
+
+impl<'m> Out<'m> {
+    /// Adds `rrset`, of `rtype` at `node`, owned by `owner`, then under DO its signatures (RFC 4035 §3.1.1).
+    fn signed(
+        self,
+        out: &mut Vec<Record<'m>>,
+        owner: &Name<'m>,
+        node: &'m Node,
+        rtype: RecordType,
+        rrset: &'m RrSet,
+    ) {
+        records(out, owner, self.zone, rrset);
+        self.signatures(out, owner, node, rtype);
+    }
+
+    /// Under DO, adds the signatures of the `RRset` of `rtype` at `node`, owned by `owner`.
+    fn signatures(self, out: &mut Vec<Record<'m>>, owner: &Name<'m>, node: &'m Node, rtype: RecordType) {
+        if let (true, Some(signatures)) = (self.dnssec, node.signatures(rtype)) {
+            records(out, owner, self.zone, signatures);
+        }
+    }
+
+    /// Under DO, proves that `name`, answered at `at`, is absent when a wildcard answered it (RFC 4035
+    /// §3.1.3.3, RFC 5155 §7.2.6).
+    fn prove_wildcard(self, name: &Name<'_>, at: &Match<'m>, proofs: &mut Proofs<'m>) {
+        if let (true, Match::Wildcard { encloser, .. }) = (self.dnssec, at) {
+            self.zone.prove_wildcard_answer(name, encloser, proofs);
+        }
+    }
+
+    /// Adds the SOA, with the TTL of a negative answer: the lower of its own and its MINIMUM (RFC 2308 §3, §5),
+    /// then under DO its signatures with that TTL too.
+    fn soa(self, out: &mut Vec<Record<'m>>) {
+        let zone = self.zone;
+        let Some((_, apex)) = zone.find(zone.apex()) else {
+            return;
+        };
+        let ttl = zone.soa_ttl().min(Ttl::from_wire(zone.soa().minimum));
+        let signatures = apex.signatures(RecordType::SOA).filter(|_| self.dnssec);
+        let sets = apex.rrset(RecordType::SOA).into_iter().chain(signatures);
+        out.extend(sets.flat_map(|set| set.rdatas()).map(|rdata| Record {
+            name: zone.apex().reborrow(),
+            class: zone.class(),
+            ttl,
+            rdata: rdata.reborrow(),
+        }));
+    }
+
+    /// Adds the NSEC or NSEC3 records of `proofs`, each with its signatures.
+    fn proofs(self, proofs: &[Entry<'m>], out: &mut Vec<Record<'m>>) {
+        let Some(rtype) = self.zone.denial.rtype() else {
+            return;
+        };
+        for proof in proofs {
+            if let Some(rrset) = proof.node.rrset(rtype) {
+                self.signed(out, proof.name, proof.node, rtype, rrset);
+            }
+        }
     }
 }
 
@@ -139,19 +249,6 @@ fn records<'m>(out: &mut Vec<Record<'m>>, owner: &Name<'m>, zone: &Zone, rrset: 
         ttl: rrset.ttl(),
         rdata: rdata.reborrow(),
     }));
-}
-
-/// Adds the SOA, with the TTL of a negative answer: the lower of its own and its MINIMUM (RFC 2308 §3, §5).
-fn soa<'m>(zone: &'m Zone, out: &mut Vec<Record<'m>>) {
-    if let Some(rrset) = zone.soa_rrset() {
-        let ttl = rrset.ttl().min(Ttl::from_wire(zone.soa().minimum));
-        out.extend(rrset.rdatas().iter().map(|rdata| Record {
-            name: zone.apex().reborrow(),
-            class: zone.class(),
-            ttl,
-            rdata: rdata.reborrow(),
-        }));
-    }
 }
 
 /// The host a record of `rdata` points to for whom an address is wanted: the name server, mail exchange or
@@ -169,11 +266,12 @@ fn host<'m>(rdata: &'m WireRdata<'_>) -> Option<Name<'m>> {
 const MIN_RECORD_LEN: usize = 2 + 10;
 
 /// Adds the addresses the zone has for the hosts of `rrset`, of `rtype`; with a delegation point `cut`, those at
-/// or below it come first. Returns how many records those are.
+/// or below it come first. Returns how many records those are. Under DO the signatures of the addresses follow
+/// them all, so a response short of room drops those first (RFC 4035 §3.1.1); glue has none.
 ///
 /// Stops once the records added take over `limit` bytes at the least: what comes after would be cut off.
 fn additional<'m>(
-    zone: &'m Zone,
+    out_of: Out<'m>,
     rtype: RecordType,
     rrset: &'m RrSet,
     cut: Option<&Name<'_>>,
@@ -190,11 +288,14 @@ fn additional<'m>(
     } else {
         &[None]
     };
+    let zone = out_of.zone;
     let hosts: Vec<Name<'m>> = rrset.rdatas().iter().filter_map(host).collect();
+    let mut signatures = Vec::new();
     let mut taken = 0;
     for pass in passes {
         for (at, host) in hosts.iter().enumerate() {
             if taken > limit {
+                out.append(&mut signatures);
                 return required;
             }
             let below = cut.is_some_and(|cut| host.is_within(cut));
@@ -214,6 +315,7 @@ fn additional<'m>(
                 };
                 let before = out.len();
                 records(out, host, zone, set);
+                out_of.signatures(&mut signatures, host, node, rtype);
                 let added = out.len() - before;
                 taken += added * (MIN_RECORD_LEN + rdata_len);
                 if *pass == Some(true) {
@@ -222,5 +324,6 @@ fn additional<'m>(
             }
         }
     }
+    out.append(&mut signatures);
     required
 }

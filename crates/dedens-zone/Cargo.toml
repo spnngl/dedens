@@ -10,6 +10,8 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+# The NSEC3 hash and hashed owner names of the proofs (D209): one implementation with the validator's.
+dedens-dnssec.workspace = true
 dedens-proto.workspace = true
 thiserror.workspace = true
 

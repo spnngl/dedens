@@ -2,7 +2,7 @@
 //! answers from the same zone, by the comparison rules of D203 (RFC 1034 §4.3.2, RFC 2181 §9, RFC 8482 §4.2,
 //! RFC 9471 §3.1): sections as sets of records with their TTLs, flags, response code and the presence of EDNS equal.
 //!
-//! Signed zones are compared without DO: the signatures and proofs of a DO answer are step 07's.
+//! With DO, the answers of signed zones carry their signatures and proofs, compared the same way (D209).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -12,9 +12,6 @@ use dedens_proto::{Flags, Header, Message, Name, Opcode, Record, RecordType, Ttl
 use dedens_testkit::authoritative::{Answers, QUERY_ID, Reference, Server, Transport};
 use dedens_testkit::{message, path};
 use dedens_zone::{Include, Kind, Limits, Source, Zone};
-
-/// The zones whose answers carry no DNSSEC records: with DO they are compared too.
-const UNSIGNED: [&str; 2] = ["rfc1035_isi", "zonetransfer.me"];
 
 /// The `$INCLUDE` of the ISI zone (RFC 1035 §5.3), and the file that holds it.
 const ISI_INCLUDE: (&str, &str) = (
@@ -120,6 +117,9 @@ fn limit(reference: &Reference) -> usize {
     }
 }
 
+/// The least an address record takes: a compression pointer, type, class, TTL, length and four bytes of A.
+const MIN_ADDRESS_LEN: usize = 2 + 10 + 4;
+
 fn fits(reference: &Reference, wire: &[u8]) -> bool {
     wire.len() <= limit(reference)
 }
@@ -150,6 +150,27 @@ fn given<'a>(
         .filter(move |record| referral || !below_dname(zone, &record.name))
 }
 
+/// Whether `response` answers NSEC from a wildcard: its signature counts fewer labels than its owner (RFC 4035
+/// §5.3.2).
+fn wildcard_nsec(response: &Message<'_>) -> bool {
+    response.answer.iter().any(|record| match record.data() {
+        RData::Rrsig(rrsig) => {
+            rrsig.type_covered == RecordType::NSEC
+                && usize::from(rrsig.labels) < record.name.label_count()
+        }
+        _ => false,
+    })
+}
+
+/// Whether `record` is an NSEC or its signature.
+fn proves(record: &Record<'_>) -> bool {
+    match record.data() {
+        RData::Nsec(_) => true,
+        RData::Rrsig(rrsig) => rrsig.type_covered == RecordType::NSEC,
+        _ => false,
+    }
+}
+
 /// Compares `ours` with what `server` sent, `theirs`, as D203 says; `full` is ours without a limit.
 fn compare(id: &str, server: Server, zone: &Zone, reference: &Reference, ours: &[u8], full: &[u8]) {
     let theirs = &reference.responses[&server];
@@ -157,6 +178,7 @@ fn compare(id: &str, server: Server, zone: &Zone, reference: &Reference, ours: &
         "{id} {server} {} {} {:?} DO={}",
         reference.name, reference.rtype, reference.edns_size, reference.dnssec_ok
     );
+    let key = format!("{key} ours {} theirs {}", ours.len(), theirs.len());
     let (mine, other) = (message(ours), message(theirs));
     assert_eq!(mine.rcode(), other.rcode(), "{key}");
     assert_eq!(mine.edns.is_some(), other.edns.is_some(), "{key}");
@@ -179,7 +201,7 @@ fn compare(id: &str, server: Server, zone: &Zone, reference: &Reference, ours: &
     assert_eq!(a, b, "{key}");
     // An authority section with an NS record is a referral: ours has none else.
     let referral = mine.authority.iter().any(|r| r.rtype() == RecordType::NS);
-    let (answer, authority) = (rows(server, &mine.answer), rows(server, &mine.authority));
+    let (answer, mut authority) = (rows(server, &mine.answer), rows(server, &mine.authority));
     let (their_answer, mut their_authority) =
         (rows(server, &other.answer), rows(server, &other.authority));
     // The name servers of the apex NS NSD adds to a positive answer, whose addresses it adds too.
@@ -195,6 +217,11 @@ fn compare(id: &str, server: Server, zone: &Zone, reference: &Reference, ours: &
             }
             !apex_ns
         });
+    }
+    if server == Server::Knot && wildcard_nsec(&mine) {
+        // D203: the NSEC asked at a name a wildcard answers comes with the NSEC that proves the name absent, as
+        // NSD gives it (RFC 4035 §3.1.3.3); Knot leaves it out.
+        authority.retain(|(_, record)| !proves(record));
     }
     if reference.rtype == RecordType::ANY && server == Server::Nsd {
         // D203: which RRset answers ANY is the server's; ours is the lowest type, one of them (RFC 8482 §4.2).
@@ -234,7 +261,11 @@ fn compare(id: &str, server: Server, zone: &Zone, reference: &Reference, ours: &
         // NSD gives fewer addresses (D203): what it gives is part of the whole.
         subset(&their_additional, &whole)
     } else if same(&additional, &whole) {
+        // Knot writes the names in the RDATA of NS uncompressed: its response may be full where ours is not, its
+        // additional section cut short of one more address (D203).
         same(&additional, &their_additional)
+            || (subset(&their_additional, &whole)
+                && theirs.len() + MIN_ADDRESS_LEN > limit(reference))
     } else {
         // Past the limit the additional section is cut where the server decides (D203): what each keeps is
         // part of the whole.
@@ -254,11 +285,7 @@ fn every_captured_answer_is_the_one_of_knot_by_the_rules_of_d203() {
     for id in Answers::ids() {
         let answers = Answers::read(&id);
         let zone = load(&answers);
-        let unsigned = UNSIGNED.contains(&id.as_str());
         for reference in &answers.answers {
-            if reference.dnssec_ok && !unsigned {
-                continue;
-            }
             let server = if reference.responses.contains_key(&Server::Knot) {
                 Server::Knot
             } else {
@@ -314,3 +341,4 @@ fn the_root_priming_answer_has_the_addresses_of_the_root_servers_as_knot_gives_t
     }
     assert_eq!(ours.additional.len(), 26);
 }
+

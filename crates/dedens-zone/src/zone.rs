@@ -3,6 +3,7 @@
 use dedens_proto::rdata::Soa;
 use dedens_proto::{Class, Name, RecordType, Ttl};
 
+use crate::denial::Denial;
 use crate::{Node, RrSet};
 
 /// A zone: every name at or below its apex with the `RRset`s there, in canonical order (RFC 4034 §6.1), found by
@@ -19,6 +20,8 @@ pub struct Zone {
     pub(crate) soa_ttl: Ttl,
     pub(crate) nodes: Vec<(Name<'static>, Node)>,
     pub(crate) records: usize,
+    /// The NSEC or NSEC3 chain the proofs come from (D209).
+    pub(crate) denial: Denial,
 }
 
 impl Zone {
