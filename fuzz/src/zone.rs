@@ -1,6 +1,7 @@
 //! Targets of dedens-zone: zone text on its way into a checked zone, a journal file into changesets, and the
 //! answers of a zone.
 
+use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::{
     Flags, Header, MAX_MESSAGE_LEN, Message, Name, Question, Rcode, RecordType, Ttl,
 };
@@ -84,8 +85,8 @@ const TYPES: [RecordType; 8] = [
 const ASKED: usize = 24;
 
 /// A zone file, then (after a NUL, which no zone text holds) a question: 2 bytes of type and a name in text. Every
-/// name of the zone, a name below it and the question's are asked of the zone `example.` the file loads into: an
-/// answer never panics, ends a chain within [`MAX_CHAIN`], and fills a message that encodes (in 512 bytes or 64 KiB)
+/// name of the zone, a name below it and the question's are asked of the zone `example.` the file loads into, with
+/// and without DO, so the proofs of a signed zone are chosen too: an answer never panics, ends a chain within [`MAX_CHAIN`], and fills a message that encodes (in 512 bytes or 64 KiB)
 /// and decodes with the `RCODE`, `AA` and sections the answer gave.
 ///
 /// # Panics
@@ -106,7 +107,7 @@ pub fn zone_answer(data: &[u8]) {
             .ok()
             .and_then(|name| name.parse().ok())
     {
-        ask(&zone, &name, RecordType(u16::from_be_bytes(*qtype)));
+        ask(&zone, &name, RecordType(u16::from_be_bytes(*qtype)), Some(dnssec_ok()));
         names.push(name);
     }
     for (name, _) in zone.nodes().take(ASKED) {
@@ -116,13 +117,23 @@ pub fn zone_answer(data: &[u8]) {
     }
     for name in &names {
         for qtype in TYPES {
-            ask(&zone, name, qtype);
+            for dnssec in [None, Some(dnssec_ok())] {
+                ask(&zone, name, qtype, dnssec);
+            }
         }
     }
 }
 
-/// One question of `zone`: what the answer, and the reply made of it, must be.
-fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType) {
+/// The OPT of a query with DO, which the reply takes: the signatures and proofs of a signed zone (D209).
+fn dnssec_ok() -> Edns<'static> {
+    Edns {
+        flags: EdnsFlags::DO,
+        ..Edns::default()
+    }
+}
+
+/// One question of `zone`, with `edns` in the reply: what the answer, and the reply made of it, must be.
+fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType, edns: Option<Edns<'static>>) {
     let question = Question::new(name.clone(), qtype);
     let answer = zone.answer(&question);
     assert!(answer.chain.len() <= MAX_CHAIN, "{name}: a chain too long");
@@ -137,6 +148,7 @@ fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType) {
             ..Header::default()
         },
         questions: vec![question.clone()],
+        edns,
         ..Message::default()
     };
     // The larger size: what 512 bytes keep of it is cut by `encode`, whole `RRset`s at a time.
