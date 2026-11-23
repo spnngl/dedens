@@ -1,12 +1,13 @@
 //! The checks of a load, each on a broken variant of a valid zone: RFC 1035 §5.2 (one class, one SOA at the apex, an
 //! NS there, records inside the zone), RFC 2181 §5.2 (TTLs of an `RRset`) and §10.1 (CNAME), RFC 6672 §2.3 and §2.4
-//! (DNAME), RFC 5155 §3 and §7.1 (the owner of an NSEC3 record).
+//! (DNAME), RFC 5155 §3 and §7.1 (the owner of an NSEC3 record), and the NSEC and NSEC3 chains of a signed zone
+//! (RFC 4034 §4.1.1, RFC 5155 §4.1.1 and §7.1, RFC 9276 §3.1).
 
-use dedens_proto::{Class, RecordType};
+use dedens_proto::{Class, Nsec3HashAlgorithm, RecordType};
 use dedens_testkit::dns;
 use dedens_zone::{ErrorKind, Limits, WarningKind};
 
-use crate::util::{APEX, NEXT_LINE, load, load_extra, refused, zone_file};
+use crate::util::{APEX, NEXT_LINE, errors, load, load_extra, load_files, refused, zone_file};
 
 /// The error `kind` at the first line after the apex.
 fn first(kind: ErrorKind) -> Vec<(Option<usize>, ErrorKind)> {
@@ -138,6 +139,92 @@ fn s3_an_nsec3_owner_that_is_not_one_label_below_the_apex_is_warned_of() {
 fn s3_an_nsec3_owner_one_label_below_the_apex_is_not() {
     let loaded = load_extra(&format!("hash {NSEC3}\n")).expect("a zone");
     assert_eq!(loaded.report.warnings, []);
+}
+
+// --- The denial chains: RFC 4034 §4.1.1, RFC 5155 §7.1, RFC 9276 §3.1 (D209) ---
+
+/// The errors of the zone of `testdata/zones/` `file` with `from` replaced by `to` once.
+fn broken(file: &str, from: &str, to: &str) -> Vec<(Option<usize>, ErrorKind)> {
+    let text = zone_file(file);
+    assert!(text.contains(from), "{from}");
+    errors(load(&text.replacen(from, to, 1)).expect_err("a refused zone"))
+}
+
+#[test]
+fn rfc4034_s4_1_1_an_nsec_that_skips_a_name_breaks_the_chain() {
+    // The NSEC of example. names b.example. as next, skipping a.example. and ai.example.
+    assert_eq!(
+        broken(
+            "rfc4035_appendix_a.zone",
+            "NSEC   a.example. NS SOA",
+            "NSEC   b.example. NS SOA"
+        ),
+        [(
+            Some(34),
+            ErrorKind::BrokenChain {
+                rtype: RecordType::NSEC,
+                owner: dns("example."),
+            }
+        )]
+    );
+}
+
+#[test]
+fn rfc5155_s7_1_an_nsec3_that_skips_a_hash_breaks_the_chain() {
+    // The NSEC3 of the apex names the hash after the next one: the signatures are not checked (D209).
+    assert_eq!(
+        broken(
+            "rfc5155_appendix_a.zone",
+            "2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS",
+            "2vptu5timamqttgl4luu9kg21e0aor3s MX DNSKEY NS"
+        ),
+        [(
+            Some(54),
+            ErrorKind::BrokenChain {
+                rtype: RecordType::NSEC3,
+                owner: dns("0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example."),
+            }
+        )]
+    );
+}
+
+#[test]
+fn rfc5155_s4_1_1_a_chain_of_an_unknown_hash_is_refused() {
+    assert_eq!(
+        broken(
+            "rfc5155_appendix_a.zone",
+            "NSEC3PARAM 1 0 12",
+            "NSEC3PARAM 2 0 12"
+        ),
+        [(
+            Some(48),
+            ErrorKind::Nsec3Algorithm {
+                algorithm: Nsec3HashAlgorithm::from(2),
+            }
+        )]
+    );
+}
+
+#[test]
+fn rfc9276_s3_1_iterations_past_zero_are_warned_of() {
+    let loaded = load_files(
+        "example.",
+        &zone_file("rfc5155_appendix_a.zone"),
+        None,
+        &[],
+        &Limits::default(),
+    )
+    .expect("a zone with a warning");
+    let warnings: Vec<_> = loaded
+        .report
+        .warnings
+        .iter()
+        .map(|w| (w.at.line, &w.kind))
+        .collect();
+    assert_eq!(
+        warnings,
+        [(48, &WarningKind::Nsec3Iterations { iterations: 12 })]
+    );
 }
 
 // --- RFC 2181 §5.2 ---

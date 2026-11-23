@@ -928,6 +928,7 @@ dependencies = [
 name = "dedens-zone"
 version = "0.1.0"
 dependencies = [
+ "dedens-dnssec",
  "dedens-proto",
  "thiserror",
 ]
