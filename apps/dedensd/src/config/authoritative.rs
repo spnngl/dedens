@@ -164,7 +164,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use dedens_server::Pipeline;
+    use dedens_proto::Message;
+    use dedens_server::{Pipeline, VerifiedKey};
 
     use super::super::tests::env;
     use super::*;
@@ -296,6 +297,15 @@ mod tests {
             .unwrap()
     }
 
+    /// The key `name` of `ring`, of a request signed with it and verified: the one way to get a `VerifiedKey`.
+    fn verified<'k>(ring: &'k Keyring, name: &str) -> VerifiedKey<'k> {
+        let query = Message::query(7, Question::new(name.parse().unwrap(), RecordType::SOA));
+        let mut request = query.to_vec().unwrap();
+        let key = key(name, "hmac-sha256");
+        dedens_tsig::sign_request(&key, &mut request, 1_750_000_000).unwrap();
+        VerifiedKey::from_request(ring, &request, 1_750_000_000).unwrap()
+    }
+
     /// D211: the keys are read from their files, the access lists of a zone built with them, a line of a key
     /// permitting requests signed with it alone, a line without one unsigned requests alone.
     #[test]
@@ -314,19 +324,21 @@ mod tests {
             panic!("{:?}", pipeline.stages());
         };
         let (_, access) = stage.access(&"www.example.".parse().unwrap()).unwrap();
-        let (secondary, other) = (key("secondary", "hmac-sha256"), key("other", "hmac-sha256"));
+        let ring = pipeline.keys().unwrap();
+        let other = Keyring::new([key("other", "hmac-sha256")]).unwrap();
+        let secondary = verified(ring, "secondary");
         let inside = "192.0.2.7".parse().unwrap();
-        assert!(access.permits(Action::Transfer, inside, Some(&secondary)));
+        assert!(access.permits(Action::Transfer, inside, Some(secondary)));
         assert!(!access.permits(Action::Transfer, inside, None));
-        assert!(!access.permits(Action::Transfer, inside, Some(&other)));
+        assert!(!access.permits(Action::Transfer, inside, Some(verified(&other, "other"))));
         assert!(!access.permits(
             Action::Transfer,
             "198.51.100.1".parse().unwrap(),
-            Some(&secondary)
+            Some(secondary)
         ));
         let primary = "2001:db8::53".parse().unwrap();
         assert!(access.permits(Action::Notify, primary, None));
-        assert!(!access.permits(Action::Notify, primary, Some(&secondary)));
+        assert!(!access.permits(Action::Notify, primary, Some(secondary)));
         assert!(!access.permits(Action::Update, primary, None));
     }
 

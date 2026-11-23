@@ -43,7 +43,7 @@ pub use budget::{Budget, BudgetError, Budgets, MAX_BUDGET, Slot, Spent};
 pub use cookie::{Cookies, Secret, SecretError, Secrets, Standing};
 pub use forward::{Forward, OdohProxy, Server, Via};
 pub use park::{Parking, Place};
-pub use pipeline::{Parked, Pipeline, Stage, Step, Upstream, Warm, Warmth};
+pub use pipeline::{Parked, Pipeline, Stage, Step, Upstream, VerifiedKey, Warm, Warmth};
 pub use plugin::{Answer, Plugin, Records, Reviewer};
 pub use recurse::{NotLocal, Recurse, Resolving, Turn};
 pub use rrl::{Admission, MAX_BURST, Rate, RateLimit, RateLimitConfig, RateLimitError};

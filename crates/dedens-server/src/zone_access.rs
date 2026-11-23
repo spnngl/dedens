@@ -8,6 +8,7 @@ use dedens_proto::Name;
 use dedens_tsig::{Algorithm, Key};
 
 use crate::access::Network;
+use crate::pipeline::VerifiedKey;
 
 /// What a client asks of a zone that the zone's access lists guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,10 +70,11 @@ impl ZoneAccess {
     }
 
     /// Whether the client at `from`, its request verified as signed with `key` or unsigned, may do `action` to
-    /// the zone. An IPv4-mapped IPv6 address is the IPv4 one. The lists are searched in order, each network of each
+    /// the zone. The key is a [`VerifiedKey`]: nothing but a verification makes one. An IPv4-mapped IPv6 address is the IPv4 one. The lists are searched in order, each network of each
     /// line: their length is bounded where they are written (D115).
     #[must_use]
-    pub fn permits(&self, action: Action, from: IpAddr, key: Option<&Key>) -> bool {
+    pub fn permits(&self, action: Action, from: IpAddr, key: Option<VerifiedKey<'_>>) -> bool {
+        let key = key.map(VerifiedKey::key);
         self.list(action)
             .iter()
             .any(|grant| grant.matches(from, key))

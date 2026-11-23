@@ -3,11 +3,13 @@
 
 use std::net::IpAddr;
 
-use dedens_server::{Action, Authoritative, Grant, Network, ZoneAccess};
+use dedens_proto::{Message, Question, RecordType};
+use dedens_server::{Action, Authoritative, Grant, Network, VerifiedKey, ZoneAccess};
 use dedens_testkit::dns;
-use dedens_tsig::{Algorithm, Key};
+use dedens_tsig::{Algorithm, Key, Keyring, sign_request};
 
 use crate::authoritative::example;
+use crate::util::wire;
 
 fn key(name: &str, algorithm: Algorithm) -> Key {
     Key::new(
@@ -16,6 +18,33 @@ fn key(name: &str, algorithm: Algorithm) -> Key {
         b"a secret of thirty-two bytes....".to_vec(),
     )
     .expect("a key")
+}
+
+/// When the requests are signed and verified.
+const NOW: u64 = 1_750_000_000;
+
+/// A key, and the keyring a server holding it verifies requests with.
+struct Peer {
+    key: Key,
+    ring: Keyring,
+}
+
+impl Peer {
+    fn new(name: &str, algorithm: Algorithm) -> Self {
+        let key = key(name, algorithm);
+        let ring = Keyring::new([key.clone()]).expect("one key");
+        Self { key, ring }
+    }
+
+    /// The key of a request this peer signs, verified: the one way to get a [`VerifiedKey`].
+    fn verified(&self) -> VerifiedKey<'_> {
+        let mut request = wire(&Message::query(
+            7,
+            Question::new(dns("example."), RecordType::SOA),
+        ));
+        sign_request(&self.key, &mut request, NOW).expect("signed");
+        VerifiedKey::from_request(&self.ring, &request, NOW).expect("verified")
+    }
 }
 
 fn networks(texts: &[&str]) -> Vec<Network> {
@@ -31,14 +60,14 @@ fn addr(text: &str) -> IpAddr {
 #[test]
 fn rfc5936_s5_nothing_is_permitted_by_default() {
     let access = ZoneAccess::default();
-    let signed = key("transfer.", Algorithm::HmacSha256);
+    let peer = Peer::new("transfer.", Algorithm::HmacSha256);
     for action in [Action::Transfer, Action::Notify, Action::Update] {
         assert!(
             !access.permits(action, addr("192.0.2.1"), None),
             "{action:?}"
         );
         assert!(
-            !access.permits(action, addr("::1"), Some(&signed)),
+            !access.permits(action, addr("::1"), Some(peer.verified())),
             "{action:?}"
         );
     }
@@ -54,8 +83,8 @@ fn rfc9103_s9_4_a_line_without_a_key_permits_unsigned_requests_from_its_networks
     assert!(access.permits(Action::Transfer, addr("::ffff:192.0.2.7"), None));
     assert!(!access.permits(Action::Transfer, addr("198.51.100.1"), None));
     // A signed request is matched by its key alone: Knot's `check_addr_key` and NSD's `acl_key_matches` too.
-    let signed = key("transfer.", Algorithm::HmacSha256);
-    assert!(!access.permits(Action::Transfer, addr("192.0.2.7"), Some(&signed)));
+    let peer = Peer::new("transfer.", Algorithm::HmacSha256);
+    assert!(!access.permits(Action::Transfer, addr("192.0.2.7"), Some(peer.verified())));
     // The other lists are their own.
     assert!(!access.permits(Action::Notify, addr("192.0.2.7"), None));
     assert!(!access.permits(Action::Update, addr("192.0.2.7"), None));
@@ -63,38 +92,58 @@ fn rfc9103_s9_4_a_line_without_a_key_permits_unsigned_requests_from_its_networks
 
 #[test]
 fn rfc8945_a_line_with_a_key_permits_only_requests_signed_with_it() {
-    let signed = key("update.", Algorithm::HmacSha256);
-    let grant = Grant::new(networks(&["0.0.0.0/0", "::/0"]), Some(&signed));
+    let peer = Peer::new("update.", Algorithm::HmacSha256);
+    let grant = Grant::new(networks(&["0.0.0.0/0", "::/0"]), Some(&peer.key));
     let access = ZoneAccess::default().with(Action::Update, [grant]);
-    assert!(access.permits(Action::Update, addr("198.51.100.1"), Some(&signed)));
+    let from = addr("198.51.100.1");
+    assert!(access.permits(Action::Update, from, Some(peer.verified())));
     // Names compare without case.
-    let upper = key("UPDATE.", Algorithm::HmacSha256);
-    assert!(access.permits(Action::Update, addr("2001:db8::1"), Some(&upper)));
-    assert!(!access.permits(Action::Update, addr("198.51.100.1"), None));
-    let other = key("other.", Algorithm::HmacSha256);
-    assert!(!access.permits(Action::Update, addr("198.51.100.1"), Some(&other)));
+    let upper = Peer::new("UPDATE.", Algorithm::HmacSha256);
+    assert!(access.permits(Action::Update, addr("2001:db8::1"), Some(upper.verified())));
+    assert!(!access.permits(Action::Update, from, None));
+    let other = Peer::new("other.", Algorithm::HmacSha256);
+    assert!(!access.permits(Action::Update, from, Some(other.verified())));
     // A key of the same name with another algorithm is another key (RFC 8945 §10).
-    let algorithm = key("update.", Algorithm::HmacSha512);
-    assert!(!access.permits(Action::Update, addr("198.51.100.1"), Some(&algorithm)));
+    let algorithm = Peer::new("update.", Algorithm::HmacSha512);
+    assert!(!access.permits(Action::Update, from, Some(algorithm.verified())));
 }
 
 #[test]
 fn rfc1996_s5_a_keyed_line_holds_to_its_networks() {
-    let signed = key("notify.", Algorithm::HmacSha256);
+    let peer = Peer::new("notify.", Algorithm::HmacSha256);
     let access = ZoneAccess::default().with(
         Action::Notify,
         [
-            Grant::new(networks(&["10.0.0.0/8"]), Some(&signed)),
+            Grant::new(networks(&["10.0.0.0/8"]), Some(&peer.key)),
             Grant::new(networks(&["192.0.2.53/32"]), None),
         ],
     );
-    assert!(access.permits(Action::Notify, addr("10.1.2.3"), Some(&signed)));
-    assert!(!access.permits(Action::Notify, addr("192.0.2.53"), Some(&signed)));
+    assert!(access.permits(Action::Notify, addr("10.1.2.3"), Some(peer.verified())));
+    assert!(!access.permits(Action::Notify, addr("192.0.2.53"), Some(peer.verified())));
     assert!(access.permits(Action::Notify, addr("192.0.2.53"), None));
     assert!(!access.permits(Action::Notify, addr("10.1.2.3"), None));
     // A line without a network matches no client.
-    let none = ZoneAccess::default().with(Action::Notify, [Grant::new([], Some(&signed))]);
-    assert!(!none.permits(Action::Notify, addr("10.1.2.3"), Some(&signed)));
+    let none = ZoneAccess::default().with(Action::Notify, [Grant::new([], Some(&peer.key))]);
+    assert!(!none.permits(Action::Notify, addr("10.1.2.3"), Some(peer.verified())));
+}
+
+/// RFC 8945 §5.2: a request that is unsigned, or whose MAC does not verify, makes no key to ask the lists with.
+#[test]
+fn rfc8945_s5_2_only_a_verified_request_makes_a_key() {
+    let peer = Peer::new("update.", Algorithm::HmacSha256);
+    let query = wire(&Message::query(
+        7,
+        Question::new(dns("example."), RecordType::SOA),
+    ));
+    assert!(VerifiedKey::from_request(&peer.ring, &query, NOW).is_none());
+    let mut request = query;
+    sign_request(&peer.key, &mut request, NOW).expect("signed");
+    let verified = VerifiedKey::from_request(&peer.ring, &request, NOW);
+    assert_eq!(verified.map(|key| key.key().name()), Some(peer.key.name()));
+    // A time outside the fudge, a key of another keyring.
+    assert!(VerifiedKey::from_request(&peer.ring, &request, NOW + 1000).is_none());
+    let other = Peer::new("other.", Algorithm::HmacSha256);
+    assert!(VerifiedKey::from_request(&other.ring, &request, NOW).is_none());
 }
 
 #[test]
