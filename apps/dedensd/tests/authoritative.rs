@@ -1,17 +1,23 @@
 //! `dedensd`'s `authoritative` stage (D208): its zones answered with AA (RFC 1034 §4.3.2), a reload loading again the
 //! zone whose files changed and no other (D120), a zone that fails to load serving its last version (D55), and the
-//! queries asked while it reloads all answered.
+//! queries asked while it reloads all answered; requests signed with a key of `keys` answered signed (RFC 8945 §5.3,
+//! D211).
 
+use std::io::Write as _;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{Flags, Message, Question, Rcode, RecordType};
+use dedens_proto::{Flags, Message, Question, Rcode, RecordType, TsigError, find_tsig};
+use dedens_testkit::authoritative::TSIG_KEY;
+use dedens_tsig::{Key, ResponseError, Verified, sign_request};
 
 use crate::reload::logged;
-use crate::util::{Server, ask_udp};
+use crate::util::{Server, ask_udp, decode, framed, read_framed, write_key};
 
 /// The zones of RFC 4035 Appendix A and of RFC 1035 §5.3, the latter's `$INCLUDE` named as in `dir`, copied to
 /// `dir`: the files of `example.` and `ISI.EDU.`.
@@ -206,6 +212,129 @@ fn a_reload_drops_no_query() {
         serials.iter().all(|&serial| serial == 20 || serial == 21),
         "{serials:?}"
     );
+}
+
+/// The raw reply over a new TCP connection to `query`.
+fn exchange_tcp(server: SocketAddr, query: &[u8]) -> Vec<u8> {
+    let mut stream = TcpStream::connect(server).expect("connected");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a timeout");
+    stream.write_all(&framed(query)).expect("sent");
+    read_framed(&mut stream).expect("a reply")
+}
+
+/// Seconds since the Unix epoch.
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs()
+}
+
+/// The key of the captures (D203) named `name`.
+fn key(name: &str) -> Key {
+    let algorithm = TSIG_KEY.algorithm.parse().expect("an algorithm");
+    Key::from_base64(name.parse().expect("a name"), algorithm, TSIG_KEY.secret).expect("a key")
+}
+
+/// RFC 8945 §5.3, D211: a query signed with a key of `keys`, read from its file at start, is answered signed with it,
+/// over UDP and TCP; the client's verifier (D205) accepts the answer. One signed with a key the server does not have
+/// is answered NOTAUTH BADKEY, unsigned (§5.3.2); an unsigned query is answered unsigned.
+#[test]
+fn rfc8945_5_3_a_signed_query_is_answered_signed() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (example, isi) = zones(dir.path());
+    let secret = dir.path().join("tsig.key");
+    write_key(&secret, TSIG_KEY.secret);
+    let mut server = Server::configured(|listen| {
+        format!(
+            "keys:\n  - {{name: {}, algorithm: {}, secret_file: '{}'}}\n{}",
+            TSIG_KEY.name,
+            TSIG_KEY.algorithm,
+            secret.display(),
+            authoritative(listen, (&example, &isi))
+        )
+    });
+    assert!(
+        server
+            .event("every client can query these zones, whatever `access` says (D208)")
+            .is_some()
+    );
+    let query = || {
+        Message::query(
+            7,
+            Question::new("ISI.EDU.".parse().expect("a name"), RecordType::SOA),
+        )
+        .to_vec()
+        .expect("a query fits")
+    };
+    let known = key(TSIG_KEY.name);
+    for udp in [true, false] {
+        let mut wire = query();
+        let mut verifier = sign_request(&known, &mut wire, now()).expect("signed");
+        let reply = if udp {
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("a UDP port");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("a timeout");
+            socket.send_to(&wire, server.addr).expect("sent");
+            let mut buf = vec![0; 65535];
+            let len = socket.recv(&mut buf).expect("a reply");
+            buf.truncate(len);
+            buf
+        } else {
+            exchange_tcp(server.addr, &wire)
+        };
+        assert_eq!(
+            verifier.verify(&reply, now()),
+            Ok(Verified::Signed),
+            "udp {udp}"
+        );
+        verifier.finish().expect("complete");
+        let message = decode(&reply);
+        assert_eq!(message.rcode(), Rcode::NOERROR);
+        assert_eq!(serial_of(&message), Some(20));
+    }
+
+    let unknown = key("another-key");
+    let mut wire = query();
+    let mut verifier = sign_request(&unknown, &mut wire, now()).expect("signed");
+    let reply = exchange_tcp(server.addr, &wire);
+    assert_eq!(decode(&reply).rcode(), Rcode::NOTAUTH);
+    let refused = ResponseError::Refused {
+        error: TsigError::BADKEY,
+        authenticated: false,
+    };
+    assert_eq!(verifier.verify(&reply, now()), Err(refused));
+
+    let reply = exchange_tcp(server.addr, &query());
+    assert_eq!(
+        find_tsig(&reply),
+        Ok(None),
+        "an unsigned query answered signed"
+    );
+}
+
+/// D211, D115: a key file others can read is refused at start.
+#[cfg(unix)]
+#[test]
+fn a_key_others_can_read_is_refused() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let (example, isi) = zones(dir.path());
+    let secret = dir.path().join("tsig.key");
+    std::fs::write(&secret, TSIG_KEY.secret).expect("written");
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let text = format!(
+        "keys:\n  - {{name: k, algorithm: hmac-sha256, secret_file: '{}'}}\n{}",
+        secret.display(),
+        authoritative("127.0.0.1:53", (&example, &isi))
+    );
+    let (code, stderr) = crate::util::validate(&text);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("can be accessed by others"), "{stderr}");
 }
 
 /// A `DNSCrypt` resolver serving `example.` alone, with `access` lines.

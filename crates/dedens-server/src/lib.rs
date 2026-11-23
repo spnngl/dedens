@@ -35,6 +35,7 @@ mod recurse;
 mod reply;
 mod rrl;
 mod validate;
+mod zone_access;
 
 pub use access::{Access, Denial, Network, NetworkError};
 pub use authoritative::{Authoritative, Duplicate};
@@ -47,3 +48,4 @@ pub use plugin::{Answer, Plugin, Records, Reviewer};
 pub use recurse::{NotLocal, Recurse, Resolving, Turn};
 pub use rrl::{Admission, MAX_BURST, Rate, RateLimit, RateLimitConfig, RateLimitError};
 pub use validate::{Allowance, Clock, DEFAULT_SHARE, Validating};
+pub use zone_access::{Action, Grant, ZoneAccess};

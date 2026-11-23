@@ -21,6 +21,7 @@ dedens-cache.workspace = true
 dedens-dnssec.workspace = true
 dedens-proto.workspace = true
 dedens-resolver.workspace = true
+dedens-tsig.workspace = true
 dedens-zone.workspace = true
 ipnet.workspace = true
 metrics = { workspace = true, optional = true }
@@ -34,7 +35,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 dedens-roots.workspace = true
-dedens-testkit = { workspace = true, features = ["recursion"] }
+dedens-testkit = { workspace = true, features = ["authoritative", "recursion"] }
 metrics.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 

@@ -10,6 +10,7 @@ use dedens_proto::{
     Flags, HEADER_LEN, Header, MAX_MESSAGE_LEN, Message, Query, Question, Rcode, Transport,
     Violation,
 };
+use dedens_tsig::Key;
 use dedens_zone::{Answer as ZoneAnswer, Dnssec, Glue, Zone};
 
 use crate::plugin::Answer;
@@ -42,6 +43,8 @@ pub(crate) struct Client<'q> {
     /// Whether recursion is available to the client, RA (RFC 1035 §4.1.1): always, but past an authoritative
     /// stage (D208).
     recursion: bool,
+    /// The key the query is signed with, verified (D211): the reply keeps room for the TSIG record it gets.
+    key: Option<&'q Key>,
 }
 
 /// The OPT record of a query, as its reply needs it: the reply has ours when the query had one, and only then (RFC
@@ -83,6 +86,7 @@ impl<'q> Client<'q> {
             transport,
             cookie: None,
             recursion: true,
+            key: None,
         }
     }
 
@@ -104,6 +108,18 @@ impl<'q> Client<'q> {
         self.recursion
     }
 
+    /// The same client, its query verified as signed with `key` (D211): its replies keep room for their TSIG
+    /// record (RFC 8945 §5.3).
+    pub(crate) const fn with_key(mut self, key: Option<&'q Key>) -> Self {
+        self.key = key;
+        self
+    }
+
+    /// The key the query is signed with, verified, if it is.
+    pub(crate) const fn key(&self) -> Option<&'q Key> {
+        self.key
+    }
+
     /// The client of a query read no further than its header: the reply has no question and no OPT record, as
     /// none was read.
     pub(crate) const fn unread(header: Header, transport: Transport) -> Self {
@@ -114,6 +130,7 @@ impl<'q> Client<'q> {
             transport,
             cookie: None,
             recursion: true,
+            key: None,
         }
     }
 
@@ -165,7 +182,7 @@ impl<'q> Client<'q> {
         } else {
             Dnssec::Without
         };
-        let glue = answer.fill(zone, &mut message, self.limit().min(out.len()), dnssec);
+        let glue = answer.fill(zone, &mut message, self.room(out), dnssec);
         let aa = if answer.authoritative() {
             Flags::AA
         } else {
@@ -212,7 +229,7 @@ impl<'q> Client<'q> {
         if message.set_rcode(rcode).is_err() {
             message.header.rcode = Rcode::SERVFAIL;
         }
-        let limit = self.limit().min(out.len());
+        let limit = self.room(out);
         let len = encode(&message, &mut out[..limit])?;
         match (&mut message.edns, self.padding(len, limit)) {
             (Some(edns), Some(zeros)) => {
@@ -251,7 +268,7 @@ impl<'q> Client<'q> {
         let error = answer.error.filter(|_| edns.is_some());
         let opt = edns.as_ref().map_or(0, Edns::wire_len) + self.options_len(error);
         let at = HEADER_LEN + question.name.wire_len() + 4;
-        let limit = self.limit().min(out.len());
+        let limit = self.room(out);
         let records = answer
             .records
             .filter(|records| at + records.wire().len() + opt <= limit);
@@ -313,7 +330,7 @@ impl<'q> Client<'q> {
             let [hi, lo] = u16::from(code).to_be_bytes();
             end = put(out, end, &[option_hi, option_lo, 0, 2, hi, lo])?;
         }
-        if let Some(zeros) = self.padding(end, self.limit().min(out.len())) {
+        if let Some(zeros) = self.padding(end, self.room(out)) {
             let [code_hi, code_lo] = u16::from(OptionCode::PADDING).to_be_bytes();
             let [len_hi, len_lo] = zeros.to_be_bytes();
             end = put(out, end, &[code_hi, code_lo, len_hi, len_lo])?;
@@ -389,6 +406,13 @@ impl<'q> Client<'q> {
             },
             ..Edns::default()
         }
+    }
+
+    /// The room for a reply in `out`: [`Client::limit`], less the TSIG record a signed query's reply gets (RFC 8945
+    /// §5.3).
+    pub(crate) fn room(&self, out: &[u8]) -> usize {
+        let tsig = self.key.map_or(0, Key::record_len);
+        self.limit().min(out.len()).saturating_sub(tsig)
     }
 
     /// The longest reply.

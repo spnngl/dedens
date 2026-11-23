@@ -334,7 +334,7 @@ fn s5_3_a_response_is_signed_over_the_request_mac() {
 }
 
 /// §5.3: the record goes in up to the last byte a message may have: the owner, 10 bytes, the algorithm name, the
-/// fixed fields and a full MAC.
+/// fixed fields and a full MAC: [`Key::record_len`].
 #[test]
 fn s5_3_the_record_fits_to_the_last_byte() {
     let keys = keyring();
@@ -343,6 +343,7 @@ fn s5_3_the_record_fits_to_the_last_byte() {
         .expect("valid")
         .expect("signed");
     let record = dns("dedens-test-key.").wire_len() + 10 + 13 + 16 + 32;
+    assert_eq!(verified.key().record_len(), record);
     let mut fits = query(1, "a.");
     fits.resize(65535 - record, 0);
     verified.signer().sign(&mut fits, T).expect("room");

@@ -113,17 +113,24 @@
 //!
 //! An authoritative server (D208) has an authoritative stage first, alone or before the others: its zones are
 //! answered to every client, with AA; the names outside them go on to the next stages for the clients `access`
-//! permits, REFUSED (or dropped) for the others.
+//! permits, REFUSED (or dropped) for the others. Requests signed with one of `keys` are verified and their answers
+//! signed (RFC 8945, D211); a zone's `transfer`, `notify` and `update` lists permit nothing unless written.
 //!
 //! ```yaml
 //! listen: ["0.0.0.0:53", "[::]:53"]
 //! access: {allow: ["10.0.0.0/8"]}     # who the stages after the zones answer
+//! keys:                              # up to 1000, read at start only, before the privileges are dropped
+//!   - {name: secondary, algorithm: hmac-sha256, secret_file: /etc/dedensd/secondary.key}  # base64, chmod 600
 //! pipeline: [zones, cache, root]
 //! stages:
 //!   zones:
 //!     type: authoritative
 //!     zones:                         # up to 10000; each loaded again on reload when a file it reads changed
-//!       - {name: example.com, file: /etc/dedensd/zones/example.com.zone}   # $INCLUDE: in the file's directory
+//!       - name: example.com
+//!         file: /etc/dedensd/zones/example.com.zone   # $INCLUDE: in the file's directory
+//!         transfer:                  # each line: its networks, signed with `key` or unsigned without it
+//!           - {networks: ["192.0.2.0/24"], key: secondary}
+//!         notify: []                 # and `update`: up to 1000 networks a list
 //!   cache: {type: cache}
 //!   root: {type: recurse}
 //! ```
@@ -147,6 +154,7 @@ mod roots;
 #[cfg(any(feature = "odoh", feature = "dnscrypt"))]
 mod secret;
 mod sources;
+mod tsig;
 mod upstream;
 
 use std::collections::BTreeMap;
@@ -161,6 +169,7 @@ use dedens_net::tls::{Presented, Trust};
 use dedens_plugins::TopLevel;
 use dedens_proto::{Question, Ttl};
 use dedens_server::{Allowance, Pipeline, Stage};
+use dedens_tsig::Keyring;
 use serde::Deserialize;
 
 use self::access::{AccessFile, AccessSource};
@@ -189,6 +198,7 @@ pub(crate) use self::sources::Downloads;
 use self::sources::{
     CacheFile, DownloadsFile, Sources, StageFile, blocklist, cache, flush, hosts, prewarm,
 };
+use self::tsig::{KeyFile, keys};
 use self::upstream::{Dnssec, Validation, forward};
 use crate::lists::Store;
 use crate::privileges::{Account, Identity};
@@ -230,6 +240,9 @@ struct File {
     user: Option<Account>,
     /// Its group, instead of the user's own (D122).
     group: Option<Account>,
+    /// The TSIG keys signed requests are verified with, read at start only (D211).
+    #[serde(default)]
+    keys: Vec<KeyFile>,
     /// The names of the stages, in the order a query goes through them.
     pipeline: Vec<String>,
     /// The stages, by name.
@@ -291,7 +304,9 @@ pub(crate) struct Config {
 /// (`sources::lists`, `crate::roots`); settings
 /// a stage refuses; an `access` network that is malformed or has bits set past its length, an unknown `action`;
 /// `rrl` settings out of bounds, a cookie `secret` that is not 32 hexadecimal digits, `accept` without a `secret`;
-/// a `group` without a `user`, a `user` off Linux (D122).
+/// a `group` without a `user`, a `user` off Linux (D122); `keys` without an authoritative stage, a key file that
+/// cannot be read, others can access or holds no base64 secret, a name given twice; an access list of a zone with a
+/// line without a network or a key not in `keys` (D211).
 pub(crate) fn read(
     text: &str,
     env: impl Fn(&str) -> Option<String>,
@@ -338,11 +353,12 @@ fn parse(text: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Fil
 }
 
 impl File {
-    /// Whether building it reads a file it names: the TLS certificate and key, the upstream authorities, a stage's
-    /// file, trust anchors or saved downloads.
+    /// Whether building it reads a file it names: the TLS certificate and key, the upstream authorities, a TSIG
+    /// key, a stage's file, trust anchors or saved downloads.
     fn names_files(&self) -> bool {
         self.tls.is_some()
             || self.upstream_ca.is_some()
+            || !self.keys.is_empty()
             || self.stages.values().any(StageFile::names_files)
     }
 }
@@ -385,10 +401,13 @@ fn build(
     let mut downloads = Downloads::new(file.downloads, file.roots, file.state_dir)?;
     let serving = started.unwrap_or(threads);
     let allowance = Allowance::serving(NonZeroUsize::new(serving).unwrap_or(NonZeroUsize::MIN));
+    // The keys are read at start, as root: a running server keeps them (D211).
+    let kept = started.map(|_| previous.keys().cloned().unwrap_or_default());
+    let keyring = keys(&file.keys, kept.as_ref())?;
     let (mut built, warmed) = stages(
         &file.pipeline,
         file.stages,
-        (previous, allowance),
+        (previous, allowance, &keyring),
         &mut downloads,
         store,
     )?;
@@ -404,7 +423,15 @@ fn build(
         .flatten()
         .map(|zone| zone.apex().to_string())
         .collect();
-    let pipeline = guard.around(built, previous)?.with_prewarm(warmed);
+    let authoritative = matches!(built.first(), Some(Stage::Authoritative(_)));
+    ensure!(
+        authoritative || keyring.is_empty(),
+        "`keys` needs an authoritative stage: only its zones' answers are signed"
+    );
+    let mut pipeline = guard.around(built, previous)?.with_prewarm(warmed);
+    if authoritative {
+        pipeline = pipeline.with_keys(keyring, Arc::new(unix_seconds));
+    }
     Ok(Config {
         listen: file.listen,
         presented,
@@ -450,7 +477,8 @@ const MAX_TRIES: u8 = 5;
 const MAX_THREADS: usize = 1024;
 
 /// The stages of `order`, built from `defined` after those of `previous`, a validating forward or recurse stage
-/// bound to `allowance` (D77, D197), and the questions their cache stage keeps answered (D96).
+/// bound to `allowance` (D77, D197), the access lists of an authoritative stage to `keys` (D211), and the questions
+/// their cache stage keeps answered (D96).
 ///
 /// # Errors
 ///
@@ -458,7 +486,7 @@ const MAX_THREADS: usize = 1024;
 fn stages(
     order: &[String],
     mut defined: BTreeMap<String, StageFile>,
-    (previous, allowance): (&Pipeline, Allowance),
+    (previous, allowance, keys): (&Pipeline, Allowance, &Keyring),
     downloads: &mut Downloads,
     store: &mut Store,
 ) -> anyhow::Result<(Vec<Stage>, Vec<Question<'static>>)> {
@@ -549,7 +577,7 @@ fn stages(
                     .transpose()?;
                 recurse(name, file, (&built, previous), (root, allowance))?
             }
-            StageFile::Authoritative(file) => authoritative(name, &file, store)?,
+            StageFile::Authoritative(file) => authoritative(name, &file, keys, store)?,
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
                 downloads.tlds(store)?,
                 Ttl::from_wire(PLUGIN_TTL),

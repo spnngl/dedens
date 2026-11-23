@@ -1,6 +1,7 @@
 //! Secrets and trust (D115): the `odoh` section and the target's key (D79, D94, D117), the permissions of a key
 //! file, and the certificate authorities upstream servers are checked against.
 
+use std::io::Read as _;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -185,6 +186,42 @@ fn shared_key(owner: u32, root: bool, member: impl FnOnce() -> bool) -> bool {
 #[expect(clippy::unnecessary_wraps, reason = "the signature of the Unix one")]
 pub(crate) fn guard_key(_file: &fs::File, _setting: &str, _path: &Path) -> anyhow::Result<()> {
     Ok(())
+}
+
+/// The text of the key file `file`, surrounding whitespace aside, read into `buffer`, one byte longer than the
+/// longest file: a buffer of its size, wiped on drop by the caller, leaves no copy of the secret where a growing
+/// buffer was. A file others can access is refused, one its group can access warned about ([`guard_key`], D115).
+///
+/// # Errors
+///
+/// A file that cannot be read, others can access, or longer than `buffer` less a byte.
+pub(super) fn read_key<'b>(
+    file: &Path,
+    setting: &str,
+    buffer: &'b mut [u8],
+) -> anyhow::Result<&'b [u8]> {
+    let shown = file.display();
+    let mut input =
+        fs::File::open(file).with_context(|| format!("{setting}: cannot read the key {shown}"))?;
+    guard_key(&input, setting, file)?;
+    let mut len = 0;
+    while let Some(rest) = buffer.get_mut(len..).filter(|rest| !rest.is_empty()) {
+        match input.read(rest) {
+            Ok(0) => break,
+            Ok(read) => len += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("{setting}: cannot read the key {shown}"));
+            }
+        }
+    }
+    let most = buffer.len().saturating_sub(1);
+    ensure!(
+        len <= most,
+        "{setting}: the key {shown} is longer than {most} bytes"
+    );
+    Ok(buffer.get(..len).unwrap_or_default().trim_ascii())
 }
 
 /// The certificate authorities of the PEM file `path`, the system's without one.
