@@ -11,9 +11,11 @@ const TC_BYTE: u8 = 0x02;
 
 /// What must stay in the additional section of a response for it to be sent without TC (RFC 9471 §3.1): the
 /// glue a referral cannot do without, which comes first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Glue {
     required: usize,
+    /// The `limit` the sections were collected for: [`Glue::encode`] writes into no more.
+    limit: usize,
 }
 
 impl Glue {
@@ -27,12 +29,23 @@ impl Glue {
     /// does not fit: the answer and authority sections are never cut without it, the rest of the additional
     /// section is dropped whole `RRset`s at a time (RFC 9471 §3.1, RFC 2181 §9).
     ///
+    /// `buf` must be no longer than the `limit` given to [`Answer::fill`]: it collected addresses for no more,
+    /// and stopped inside the required glue when that did not fit, which only a buffer of at most `limit` bytes
+    /// reports as TC. With a larger one, required glue could be cut off without TC. To send less than the buffer
+    /// holds, give `fill` that size.
+    ///
     /// # Errors
     ///
     /// As [`Message::encode_truncated`].
     pub fn encode(self, message: &Message<'_>, buf: &mut [u8]) -> Result<usize, EncodeError> {
         // `fill` writes the required glue first into an additional section it found empty.
         debug_assert!(self.required <= message.additional.len());
+        debug_assert!(
+            buf.len() <= self.limit,
+            "{} bytes to write, the sections were collected for {}",
+            buf.len(),
+            self.limit
+        );
         let encoded = message.encode_truncated(buf)?;
         let kept = message.additional.len().saturating_sub(encoded.dropped);
         if !encoded.truncated
@@ -60,7 +73,8 @@ impl Answer<'_> {
     ///
     /// `limit` is the most bytes the response may have, the requester's size or [`MAX_MESSAGE_LEN`]: the
     /// addresses stop being collected once they would not fit in it, whole `RRset`s at a time, so a zone of
-    /// many hosts with many addresses costs no more than a response can carry (D206).
+    /// many hosts with many addresses costs no more than a response can carry (D206). The returned [`Glue`]
+    /// encodes `message` into a buffer of at most `limit` bytes.
     ///
     /// [`MAX_MESSAGE_LEN`]: dedens_proto::MAX_MESSAGE_LEN
     pub fn fill<'m>(&'m self, zone: &'m Zone, message: &mut Message<'m>, limit: usize) -> Glue {
@@ -88,7 +102,7 @@ impl Answer<'_> {
                 }
             }
         }
-        let mut glue = Glue::default();
+        let mut glue = Glue { required: 0, limit };
         match &self.end {
             End::Data {
                 name, rtype, rrset, ..
