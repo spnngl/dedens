@@ -363,11 +363,20 @@ Open questions, each with its proposed default. Once answered, record the outcom
   comparisons of a bisection scans every label of both: names of more than 100 labels cost 5-60 µs (a deep cut
   6 µs, a DNAME that grows 57 µs) against 1 µs for a short one. The key costs about the name's length in memory per
   node. Default: keep the bisection as it is; alternative: the keys, when a bench of `dedensd` shows long names.
-- A cheaper `Name::cmp` (D206): reading the label offsets of both names into `[u8; 128]` arrays from the flat wire form
-  instead of two `[&[u8]; MAX_LABELS]` arrays and the `labels().nth(SHORT)` scans measured 30% less on short names
-  (NXDOMAIN 1.04 → 0.71 µs, wildcard 783 → 567 ns) and 10-20% less on long ones (growth 57 → 48 µs); `Packed` names
-  would keep the old code. Default: a separate performance change, with its own bench; it also helps the keys above
+- A cheaper `Name::cmp` (D206): reading the label offsets of both names into `[u8; 128]` arrays from the flat wire
+  form instead of two `[&[u8]; MAX_LABELS]` arrays and the `labels().nth(SHORT)` scans measured 30% less on short
+  names (NXDOMAIN 1.04 → 0.71 µs, wildcard 783 → 567 ns) and 10-20% less on long ones (growth 57 → 48 µs);
+  `Packed` names would keep the old code. Default: a separate performance change, with its own bench; it also helps the keys above
   when they are not built.
+- An NSEC3 owner deeper than one label below the apex (D206): RFC 5155 §3 and §7.1 put the hash as a single label
+  under the zone name, and the load warns (`WarningKind::Nsec3Owner`) of any other. Knot keeps every NSEC3 record in
+  a tree of its own, whatever the owner; dedens marks only the node that holds them, so an empty non-terminal that
+  exists only for a deeper owner (`<hash>.a.b.` makes `a.b.`) answers NODATA, and Knot, which has no such name,
+  NXDOMAIN with another closest encloser (in the root zone, `<hash>.*.a.*.*.` makes the empty non-terminal `*.`
+  synthesise for any name). The fuzz of the review found them only in zones with such owners; no client can cause
+  it. Default: the warning. Alternative: in the builder's reverse pass, mark proof-only every node whose own records
+  are only NSEC3 (or none) and whose subtree is all proof-only, with the index of its nearest real ancestor, as
+  `Occluded { cut }` does, so that `locate` stays at two bisections with one index hop.
 
 ## Later
 

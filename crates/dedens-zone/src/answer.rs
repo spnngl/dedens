@@ -253,8 +253,8 @@ impl Zone {
     /// above the name.
     ///
     /// A proof-only node is no name and no encloser (RFC 5155 §7.2.8, [`Node::is_proof_only`]): asked for, it
-    /// is absent; as the encloser of a name below it, its parent takes its place, at the cost of one more
-    /// bisection on that path.
+    /// is absent; as the encloser of a name below it, its parent takes its place, at the cost of no more
+    /// bisection when the parent is the apex, and one more otherwise.
     fn locate<'a>(&'a self, name: &Name<'_>) -> Option<Located<'a>> {
         let at = match self.nodes.binary_search_by(|(key, _)| key.cmp(name)) {
             Ok(at) => {
@@ -272,17 +272,15 @@ impl Zone {
             Err(at) => at,
         };
         let previous = self.entry(at.checked_sub(1)?)?;
-        let shared = previous.name.shared_labels(name);
+        let mut shared = previous.name.shared_labels(name);
+        if shared == previous.name.label_count() && previous.node.is_proof_only() {
+            // Nothing is below it but the name, which is absent: its parent, which has it as a child so is not
+            // proof-only, is the closest encloser (RFC 5155 §7.2.8). The apex holds the SOA, so is never
+            // proof-only and the count does not underflow.
+            shared = shared.saturating_sub(1);
+        }
         let encloser = if shared == previous.name.label_count() {
-            if previous.node.is_proof_only() {
-                // Nothing is below it but the name, which is absent: the parent has this node as a child, so
-                // it is not proof-only itself.
-                let parent = previous.name.parent()?;
-                let (name, node) = crate::zone::find(self.nodes.get(..at)?, &parent)?;
-                Entry { name, node }
-            } else {
-                previous
-            }
+            previous
         } else if shared == self.apex.label_count() {
             // The usual one for a name a client invents: the apex, the first node.
             self.entry(0)?
@@ -325,7 +323,8 @@ impl Zone {
         }
     }
 
-    /// The wildcard that answers for a name whose closest encloser is `encloser`.
+    /// The wildcard that answers for a name whose closest encloser is `encloser`: not a proof-only node, which is
+    /// no name (RFC 5155 §7.2.8).
     fn wildcard<'a>(&'a self, encloser: &Name<'_>) -> Option<Entry<'a>> {
         let mut buf = [0; MAX_NAME_LEN];
         let wire = encloser.to_wire(&mut buf);
@@ -334,7 +333,9 @@ impl Zone {
         let star = star.get_mut(..len)?;
         star.get_mut(..2)?.copy_from_slice(b"\x01*");
         star.get_mut(2..)?.copy_from_slice(wire);
-        let (name, node) = self.find(&Name::from_uncompressed(star).ok()?)?;
+        let (name, node) = self
+            .find(&Name::from_uncompressed(star).ok()?)
+            .filter(|(_, node)| !node.is_proof_only())?;
         Some(Entry { name, node })
     }
 

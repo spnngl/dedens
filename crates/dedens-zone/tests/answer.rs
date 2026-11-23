@@ -889,6 +889,14 @@ fn s7_2_8_the_wildcard_of_the_apex_answers_for_a_name_below_one_with_only_nsec3_
 }
 
 #[test]
+fn s7_2_8_a_wildcard_with_only_nsec3_records_is_no_wildcard() {
+    // Its owner is not there (RFC 5155 §7.2.8), so no name is synthesised from it: NXDOMAIN, not no data.
+    let zone = example(&format!("* {NSEC3}\n"));
+    let r = ask(&zone, "x.example.", RecordType::TXT);
+    assert_eq!(r.rcode, Rcode::NXDOMAIN);
+}
+
+#[test]
 fn s7_2_8_a_name_with_only_nsec3_records_and_a_name_below_it_is_there() {
     // It is an empty non-terminal: no data for any type, the NSEC3 records included, and no wildcard, which
     // does not match a name that exists (RFC 4592 §2.2.1).

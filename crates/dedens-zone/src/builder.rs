@@ -503,6 +503,16 @@ impl<'l> Builder<'l> {
     fn node(&mut self, name: &Name<'_>, kind: Kind, pending: Pending) -> Node {
         let wildcard = name.labels().next() == Some(b"*".as_slice());
         let dname = pending.sets.contains_key(&RecordType::DNAME);
+        if let Some(b) = pending.sets.get(&RecordType::NSEC3)
+            && name.label_count() != self.apex.label_count().saturating_add(1)
+        {
+            self.warnings.push(Warning {
+                at: b.at,
+                kind: WarningKind::Nsec3Owner {
+                    owner: name.clone().into_owned(),
+                },
+            });
+        }
         let mut set = |rtype: RecordType, b: Building| {
             if b.mixed_ttls {
                 self.warnings.push(Warning {
