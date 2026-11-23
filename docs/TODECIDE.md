@@ -405,6 +405,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   exact (`Glue::encode` drops whole `RRset`s, TC when required glue goes), so the cost is the records built and
   dropped, bounded by the limit. Default: as is; alternative: `limit` less those sizes, which `Glue::encode`'s
   `limit` check (the buffer at most the `limit` of `fill`) would have to follow.
+- The default limits of a transfer (D210, step 13): `Limits::records` 2^24 and `bytes` 1 GiB bound what a primary
+  can send, but a transfer holds about 1 KB a record while it runs (measured on the root's AXFR), so 2^24 records
+  would peak at some 16 GB. Default: the limits as they are, a secondary sets those of each zone. Alternative:
+  defaults of a few million records, or a bound on the memory of all the transfers at once.
 
 ## Later
 
