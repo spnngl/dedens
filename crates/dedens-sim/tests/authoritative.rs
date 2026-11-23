@@ -19,7 +19,7 @@ use dedens_sim::client::Carrier;
 use dedens_sim::oracle::Expected;
 use dedens_sim::seed::{self, Seed};
 use dedens_sim::topology::{Topology, World};
-use dedens_zone::{Limits, Source, Zone};
+use dedens_zone::{Dnssec, Limits, Source, Zone};
 
 use crate::util::SEEDS;
 
@@ -98,7 +98,7 @@ fn answered(zone: &Zone, question: &Question<'static>) -> Expected {
         questions: vec![question.clone()],
         ..Message::default()
     };
-    answer.fill(zone, &mut message, MAX_MESSAGE_LEN);
+    answer.fill(zone, &mut message, MAX_MESSAGE_LEN, Dnssec::Without);
     Expected::of(&message.into_owned())
 }
 
