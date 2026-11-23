@@ -29,7 +29,8 @@ pub fn sign_request<'k>(
     Ok(ResponseVerifier::new(key, &mac))
 }
 
-/// A response that cannot be accepted, after which the client closes the connection (RFC 8945 §5.3.1).
+/// A response that cannot be accepted: over TCP the client closes the connection, over UDP it keeps waiting
+/// (RFC 8945 §5.4); the verifier is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ResponseError {
@@ -179,7 +180,7 @@ impl<'k> ResponseVerifier<'k> {
                 now,
             });
         }
-        if !self.first && tsig.time_signed() < self.last_time {
+        if tsig.time_signed() < self.last_time {
             return Err(ResponseError::TimeDecreased {
                 time_signed: tsig.time_signed(),
                 previous: self.last_time,

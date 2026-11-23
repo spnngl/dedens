@@ -96,7 +96,7 @@ impl Digest {
     }
 }
 
-// `ring`'s context is not `Debug`, and holds no secret worth showing.
+// `ring`'s context is not `Debug`, and holds key-derived state, which is not shown.
 impl fmt::Debug for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Digest")
@@ -195,4 +195,20 @@ pub(crate) fn append(
     wire.extend_from_slice(&rdata_len.to_be_bytes());
     wire.extend_from_slice(&rdata);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 8945 §5.2.2.1: a MAC under 10 bytes never matches, even when it is the start of the computed one.
+    #[test]
+    fn matches_refuses_a_mac_under_the_floor() {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, b"key");
+        let tag = hmac::sign(&key, b"message");
+        let computed = tag.as_ref();
+        assert!(!matches(&tag, &computed[..MIN_MAC_LEN - 1]));
+        assert!(matches(&tag, &computed[..MIN_MAC_LEN]));
+        assert!(matches(&tag, computed));
+    }
 }
