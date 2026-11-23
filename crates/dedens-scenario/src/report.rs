@@ -710,6 +710,58 @@ mod tests {
         assert_eq!(report.header.id, decoded.message.header.id);
     }
 
+    /// A signed exchange reports its TSIG verdict, and the records of its response stay but a TSIG one (D212).
+    #[test]
+    fn a_signed_exchange_reports_its_verdict_and_keeps_the_records() {
+        use std::time::{Duration, Instant};
+
+        use dedens_net::exchange::{Exchange, Options, Progress};
+        use dedens_tsig::{Algorithm, Key};
+
+        let mut answer = dedens_proto::Message::decode(CAPTURED[0].1)
+            .expect("captured")
+            .message;
+        let extra = answer.answer.first().cloned().expect("an answer");
+        answer.additional.push(extra);
+        let mut wire = vec![0; 4096];
+        let len = answer.encode(&mut wire).expect("encoded");
+        wire.truncate(len);
+        let question = answer.questions[0].clone();
+        let query = dedens_proto::Message::query(answer.header.id, question);
+        let server: SocketAddr = "192.0.2.53:53".parse().expect("an address");
+        let key = Key::from_base64(
+            "k.example.".parse().expect("a name"),
+            Algorithm::HmacSha256,
+            "c2VjcmV0",
+        )
+        .expect("a key");
+        let sent = Instant::now();
+        let exchange = Exchange::start(query, server, Options::default(), [1, 2, 3, 4], sent)
+            .expect("an encoded query")
+            .signed(&key, 1_000, sent)
+            .expect("room for the TSIG");
+        let progress = exchange.receive(
+            server,
+            dedens_proto::Transport::Udp,
+            wire.clone(),
+            sent + Duration::from_millis(7),
+        );
+        let Progress::Done(Ok(response)) = progress else {
+            panic!("{progress:?}");
+        };
+        let decoded = dedens_proto::Message::decode(&wire).expect("readable");
+        let report = Report::exchanged("nsid".parse().expect("an id"), server, &response, &decoded);
+        let tsig = report.exchange.and_then(|exchange| exchange.tsig);
+        assert_eq!(
+            tsig,
+            Some(TsigReport {
+                verified: false,
+                error: Some("the response has no TSIG".to_owned()),
+            })
+        );
+        assert_eq!(report.additional.len(), 1, "{:?}", report.additional);
+    }
+
     #[test]
     fn control_characters_of_extra_text_are_escaped() {
         assert_eq!(printable("a\u{1b}[2J\r\nb é"), "a\\u{1b}[2J\\r\\nb é");

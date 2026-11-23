@@ -400,3 +400,111 @@ fn usage_errors_exit_2() {
         "+trace goes with",
     );
 }
+
+#[test]
+fn a_transfer_goes_with_no_validation() {
+    dedens()
+        .args(["zone", "AXFR", "@127.0.0.1", "+validate"])
+        .assert()
+        .code(2)
+        .stderr(contains("no +validate and no expectation"));
+}
+
+#[test]
+fn a_transfer_takes_a_timeout() {
+    let addr = primary(recorded("axfr-unsigned-refused"));
+    let out = transfer(addr, "zonetransfer.me", "AXFR", &["+time=3"], 0);
+    assert!(out.contains("1 message"), "{out}");
+}
+
+#[test]
+fn a_message_with_another_id_ends_the_run() {
+    let messages = responses("axfr-unsigned-refused");
+    let addr = primary(Box::new(move |query| {
+        messages
+            .iter()
+            .map(|m| {
+                let mut other = with_id(m, query);
+                other[1] ^= 1;
+                frame(&other).expect("under 64 KiB")
+            })
+            .collect()
+    }));
+    let at = format!("@{}", addr.ip());
+    let port = addr.port().to_string();
+    dedens()
+        .args(["zonetransfer.me", "AXFR", &at, "-p", &port])
+        .assert()
+        .code(10)
+        .stderr(contains("not the response to the query"));
+}
+
+#[test]
+fn a_later_message_with_a_violation_is_reported() {
+    let messages = responses("axfr-tsig-stream");
+    let addr = primary(Box::new(move |query| {
+        messages
+            .iter()
+            .enumerate()
+            .map(|(index, m)| {
+                let mut message = with_id(m, query);
+                if index == 1 {
+                    message.push(0);
+                }
+                frame(&message).expect("under 64 KiB")
+            })
+            .collect()
+    }));
+    let out = transfer(addr, ".", "AXFR", &[], 0);
+    assert_eq!(
+        out.matches("1 bytes after the last record").count(),
+        1,
+        "{out}"
+    );
+}
+
+#[test]
+fn a_record_after_the_closing_soa_is_reported_not_shown() {
+    let mut messages = responses("axfr-zonetransfer.me");
+    let last = messages.pop().expect("a message");
+    let mut last = last;
+    // One more answer record, an A of the root: the counts after the answer section are 0 in this message.
+    assert_eq!(last[8..12], [0; 4], "{last:?}");
+    let answers = u16::from_be_bytes([last[6], last[7]]) + 1;
+    last[6..8].copy_from_slice(&answers.to_be_bytes());
+    last.extend_from_slice(&[0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 192, 0, 2, 1]);
+    messages.push(last);
+    let addr = primary(Box::new(move |query| {
+        messages
+            .iter()
+            .map(|m| frame(&with_id(m, query)).expect("under 64 KiB"))
+            .collect()
+    }));
+    let out = transfer(addr, "zonetransfer.me", "AXFR", &[], 0);
+    assert!(out.contains("records after the closing SOA"), "{out}");
+    assert!(!out.contains("192.0.2.1"), "{out}");
+}
+
+#[test]
+fn a_lone_soa_does_not_end_an_axfr() {
+    // The answer of an up-to-date IXFR, then the connection closed: for an AXFR the rest never came.
+    let addr = primary(recorded("ixfr-uptodate"));
+    let at = format!("@{}", addr.ip());
+    let port = addr.port().to_string();
+    dedens()
+        .args(["example.", "AXFR", &at, "-p", &port])
+        .assert()
+        .code(9);
+}
+
+#[test]
+fn a_transfer_goes_with_no_search_list() {
+    let conf = NamedTempFile::new().expect("a file");
+    std::fs::write(conf.path(), "nameserver 192.0.2.1\nsearch example.net\n").expect("written");
+    dedens()
+        .args(["zone", "AXFR", "@127.0.0.1", "+search"])
+        .env("DEDENS_RESOLV_CONF", conf.path())
+        .assert()
+        .code(2)
+        .stderr(contains("no +search"));
+}

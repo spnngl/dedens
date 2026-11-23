@@ -44,6 +44,15 @@ fn s5_4_a_round_trip() {
     assert_eq!(verifier.finish(), Ok(()));
 }
 
+/// The MAC an exchange keeps for the response of a request is the request'"'"'s own (RFC 8945 §5.3.1).
+#[test]
+fn s5_3_1_the_request_mac_is_the_one_signed() {
+    let key = capture_key();
+    let mut request = query(0x1234, "example.org.");
+    let verifier = sign_request(&key, &mut request, T).expect("room");
+    assert_eq!(verifier.request_mac(), tsig(&request).tsig.mac());
+}
+
 /// §5.4: a response that fails verification is not accepted and the client keeps waiting for the real one: every
 /// refusal leaves the verifier as it was, so the real response still verifies.
 #[test]

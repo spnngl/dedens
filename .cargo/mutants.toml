@@ -273,6 +273,9 @@ exclude_re = [
   # The transfer client (D210): an idle end equal to the transfer's deadline, which no test meets to the
   # nanosecond.
   'transfer/mod\.rs:\d+:\d+: replace < with <= in wait$',
+  # The CLI's cap of records kept to show (D212): a test of it holds 2^21 records, a transfer of the size of a minute
+  # of CPU and some 2 GB for a `>` that `==` and `>=` change by one record.
+  'run/transfer\.rs:\d+:\d+: replace > with (==|>=) in fetch$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never

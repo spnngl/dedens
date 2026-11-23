@@ -77,6 +77,22 @@ mod tests {
     }
 
     #[test]
+    fn a_file_is_read_up_to_its_limit() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("key");
+        // `kkk:` and a secret of 'A's: 4096 bytes in all, the last of them part of the key.
+        let key = format!("kkk:{}", "A".repeat(4092));
+        std::fs::write(&path, &key).expect("a file");
+        assert_eq!(read(&path).expect("a key").name().to_string(), "kkk.");
+        std::fs::write(&path, format!("{key}\n")).expect("a file");
+        let error = read(&path).expect_err("too long");
+        assert!(
+            error.to_string().contains("longer than 4096 bytes"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn what_is_no_key_is_refused() {
         for text in [
             "",

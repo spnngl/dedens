@@ -1081,6 +1081,25 @@ async fn exchange_refuses_oblivious_without_a_proxy() {
     assert!(error.is_local());
 }
 
+/// D212: nor does `Client::exchange_signed`.
+#[compio::test]
+async fn exchange_signed_refuses_oblivious_without_a_proxy() {
+    let mut options = Options::default();
+    options.transport = Transport::Odoh;
+    let addr: SocketAddr = "127.0.0.1:9".parse().expect("an address");
+    let key = dedens_tsig::Key::from_base64(
+        crate::util::name("k.example."),
+        dedens_tsig::Algorithm::HmacSha256,
+        "c2VjcmV0",
+    )
+    .expect("a key");
+    let error = Client::new()
+        .exchange_signed(query(), named(addr, NAME), &options, &key)
+        .await
+        .expect_err("no proxy");
+    assert!(matches!(error, ClientError::OdohWithoutProxy), "{error:?}");
+}
+
 /// D46: an Oblivious `DoH` socket that cannot be bound for want of resources is our failure; one the network
 /// refuses, or a status, is not.
 #[test]
