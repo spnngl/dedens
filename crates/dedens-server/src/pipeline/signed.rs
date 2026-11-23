@@ -27,6 +27,28 @@ impl fmt::Debug for Keys {
     }
 }
 
+/// The key a request was verified as signed with (RFC 8945 §5.2). Only a verification makes one, so what asks who
+/// may do what ([`ZoneAccess::permits`](crate::ZoneAccess::permits)) is never given a key found by the name a
+/// request claims.
+#[derive(Debug, Clone, Copy)]
+pub struct VerifiedKey<'k>(&'k Key);
+
+impl<'k> VerifiedKey<'k> {
+    /// The key of the request `wire`, signed with a key of `keys` and verified at time `now`, as the pipeline
+    /// verifies it; `None` for a request that is unsigned or that does not verify.
+    #[must_use]
+    pub fn from_request(keys: &'k Keyring, wire: &[u8], now: u64) -> Option<Self> {
+        let request = verify_request(keys, wire, now).ok()??;
+        Some(Self(request.key()))
+    }
+
+    /// The key.
+    #[must_use]
+    pub const fn key(self) -> &'k Key {
+        self.0
+    }
+}
+
 /// A request verified as signed, and the time it was: its reply is signed with its key at that time.
 pub(super) struct Signed<'k> {
     request: Request<'k>,
@@ -66,8 +88,8 @@ impl Keys {
 
 impl<'k> Signed<'k> {
     /// The key the request is signed with.
-    pub(super) const fn key(&self) -> &'k Key {
-        self.request.key()
+    pub(super) const fn key(&self) -> VerifiedKey<'k> {
+        VerifiedKey(self.request.key())
     }
 
     /// The reply of `len` bytes in `out` to `client`, signed (RFC 8945 §5.3).

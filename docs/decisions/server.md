@@ -2957,7 +2957,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     written `networks: ["0.0.0.0/0", "::/0"]`. A line has at least one network (Knot takes none as any: here it
     is written), a key one of `keys`; a list holds at most `MAX_LIST_NETWORKS` 1000 networks (D115; Knot, NSD and
     BIND bound none). `ZoneAccess::permits(action, address, key)`, found with the zone by
-    `Authoritative::access`: the step's planned `transport` parameter is dropped, no line says one (Knot's
+    `Authoritative::access`; `key` is a `VerifiedKey`, which only a verification makes (`pipeline/signed.rs`), so
+    no caller asks the lists with a key it found by the name a request claims: the step's planned `transport` parameter is dropped, no line says one (Knot's
     `protocol`, with XoT, RFC 9103 §9.4).
   - Refusal: steps 12 to 15 answer a request the list refuses REFUSED with EDE 18 (Prohibited), signed when the
     request is, as NSD's `answer_axfr_ixfr` (`axfr.c`) and RFC 2136 §3.3 for UPDATE. Knot answers NOTAUTH with no

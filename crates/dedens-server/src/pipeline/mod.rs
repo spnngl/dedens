@@ -20,6 +20,7 @@ use dedens_tsig::Keyring;
 
 use self::finish::{Finish, Refused, Ttls, prohibit, reply, servfail, slip};
 pub use self::prewarm::{Warm, Warmth};
+pub use self::signed::VerifiedKey;
 use self::signed::{Keys, Signed};
 use crate::access::{Access, Denial};
 use crate::authoritative::Authoritative;

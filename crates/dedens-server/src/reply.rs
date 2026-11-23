@@ -10,9 +10,9 @@ use dedens_proto::{
     Flags, HEADER_LEN, Header, MAX_MESSAGE_LEN, Message, Query, Question, Rcode, Transport,
     Violation,
 };
-use dedens_tsig::Key;
 use dedens_zone::{Answer as ZoneAnswer, Dnssec, Glue, Zone};
 
+use crate::pipeline::VerifiedKey;
 use crate::plugin::Answer;
 
 /// The UDP payload of a query without EDNS (RFC 1035 §4.2.1), and the least one with EDNS means (RFC 6891
@@ -44,7 +44,7 @@ pub(crate) struct Client<'q> {
     /// stage (D208).
     recursion: bool,
     /// The key the query is signed with, verified (D211): the reply keeps room for the TSIG record it gets.
-    key: Option<&'q Key>,
+    key: Option<VerifiedKey<'q>>,
 }
 
 /// The OPT record of a query, as its reply needs it: the reply has ours when the query had one, and only then (RFC
@@ -110,13 +110,13 @@ impl<'q> Client<'q> {
 
     /// The same client, its query verified as signed with `key` (D211): its replies keep room for their TSIG
     /// record (RFC 8945 §5.3).
-    pub(crate) const fn with_key(mut self, key: Option<&'q Key>) -> Self {
+    pub(crate) const fn with_key(mut self, key: Option<VerifiedKey<'q>>) -> Self {
         self.key = key;
         self
     }
 
     /// The key the query is signed with, verified, if it is.
-    pub(crate) const fn key(&self) -> Option<&'q Key> {
+    pub(crate) const fn key(&self) -> Option<VerifiedKey<'q>> {
         self.key
     }
 
@@ -411,7 +411,7 @@ impl<'q> Client<'q> {
     /// The room for a reply in `out`: [`Client::limit`], less the TSIG record a signed query's reply gets (RFC 8945
     /// §5.3).
     pub(crate) fn room(&self, out: &[u8]) -> usize {
-        let tsig = self.key.map_or(0, Key::record_len);
+        let tsig = self.key.map_or(0, |key| key.key().record_len());
         self.limit().min(out.len()).saturating_sub(tsig)
     }
 
