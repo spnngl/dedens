@@ -181,6 +181,13 @@ mod tests {
         for (name, apex) in cases {
             assert_eq!(found(&stage, name).as_deref(), Some(apex), "{name}");
         }
+        let sorted: Vec<_> = (stage.zones().iter())
+            .map(|zone| zone.apex().to_string())
+            .collect();
+        assert_eq!(
+            sorted,
+            [".", "example.", "a.example.", "b.c.example.", "org."]
+        );
     }
 
     #[test]

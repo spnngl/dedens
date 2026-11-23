@@ -104,13 +104,23 @@ fn a_reload_loads_the_zone_that_changed_and_keeps_one_that_fails() {
     let (example, isi) = zones(dir.path());
     let mut server = Server::configured(|listen| authoritative(listen, (&example, &isi)));
     assert_eq!(loaded(&server), ["example.", "ISI.EDU."]);
+    let warnings = "zone loaded with warnings";
+    assert_eq!(logged(&server, warnings), Vec::<serde_json::Value>::new());
 
+    // The next version adds a mailbox of another TTL to an `RRset`, a warning (RFC 2181 §5.2).
     let text = std::fs::read_to_string(&isi).expect("the zone");
     std::fs::write(&isi, text.replace("20     ; SERIAL", "21     ; SERIAL")).expect("rewritten");
+    let mailboxes = dir.path().join("mailboxes.zone");
+    let mut text = std::fs::read_to_string(&mailboxes).expect("the mailboxes");
+    text.push_str("MOE 60 MB B.ISI.EDU.\n");
+    std::fs::write(&mailboxes, text).expect("rewritten");
     server.hang_up();
     assert!(server.event("reloaded").is_some());
     assert_eq!(loaded(&server), ["example.", "ISI.EDU.", "ISI.EDU."]);
     assert_eq!(serial(&server), 21);
+    let warned = logged(&server, warnings);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert_eq!(warned[0]["fields"]["zone"], "ISI.EDU.");
 
     std::fs::write(&isi, "not a zone\n").expect("rewritten");
     server.hang_up();

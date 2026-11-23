@@ -571,19 +571,20 @@ fn host_authorities(
     authorities: BTreeMap<IpAddr, Answers>,
     zones: BTreeMap<IpAddr, Build>,
 ) {
+    let rng = |n| Rc::new(RefCell::new(Rng::new(seed, authority_stream(n))));
     let held = authorities.len();
-    for (n, (addr, answers)) in authorities.into_iter().enumerate() {
-        let rng = Rc::new(RefCell::new(Rng::new(seed, authority_stream(n))));
+    for ((addr, answers), n) in authorities.into_iter().zip(0..) {
+        let rng = rng(n);
         let (answers, trace) = (Rc::new(answers), trace.clone());
         sim.host(addr, move || {
             upstream::serve(Rc::clone(&answers), addr, Rc::clone(&rng), trace.clone())
         });
     }
-    for (n, (addr, build)) in zones.into_iter().enumerate() {
+    for ((addr, build), n) in zones.into_iter().zip(held..) {
         let server = Resolver {
             upstreams: Vec::new(),
             trust: None,
-            rng: Rc::new(RefCell::new(Rng::new(seed, authority_stream(held + n)))),
+            rng: rng(n),
             trace: trace.clone(),
             build,
             #[cfg(feature = "dnscrypt")]
