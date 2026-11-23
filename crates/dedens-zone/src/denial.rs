@@ -1,7 +1,7 @@
 //! The proofs of a pre-signed zone that a name or type is absent: from its NSEC chain (RFC 4035 §3.1.3) or its
 //! NSEC3 chain (RFC 5155 §7.2), indexed once at load (D209).
 
-use core::num::NonZeroUsize;
+use core::num::NonZeroU32;
 use core::ptr;
 
 use dedens_dnssec::crypto::nsec3_hash;
@@ -18,22 +18,25 @@ pub(crate) type Hash = [u8; 20];
 /// The NSEC3 records a node's name leads to, found at load so that a query hashes only the name it proves absent:
 /// the next closer name, which is no node (D209).
 ///
-/// Each is the place, in the nodes, of the owner of the record, kept as `place + 1` so that none is a niche: 16
-/// bytes in all.
+/// Each is the place, in the nodes, of the owner of the record, kept as `place + 1` so that none is a niche, in 32
+/// bits: 8 bytes in all, a `Node` of 80. The places are below [`Limits::names`](crate::Limits::names), 2²⁴ by
+/// default; a zone of 2³² - 1 names or more (343 GB of nodes) has no links, a bound nobody raises that far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Links {
     /// The record of the name's own hash, if the chain has one: not for an empty non-terminal made only by unsigned
     /// delegations of an opt-out chain (RFC 5155 §7.1), nor for a name that is no answer's: below a cut, or an
     /// NSEC3 owner.
-    matching: Option<NonZeroUsize>,
+    matching: Option<NonZeroU32>,
     /// The record that covers the hash of the name's wildcard, `*.` and the name (RFC 5155 §7.2.2), for a name that
     /// may be a closest encloser: not a delegation point.
-    wildcard: Option<NonZeroUsize>,
+    wildcard: Option<NonZeroU32>,
 }
 
 impl Links {
     fn of(matching: Option<usize>, wildcard: Option<usize>) -> Self {
-        let one = |place: Option<usize>| place.and_then(|p| NonZeroUsize::new(p.checked_add(1)?));
+        let one = |place: Option<usize>| {
+            place.and_then(|p| NonZeroU32::new(u32::try_from(p).ok()?.checked_add(1)?))
+        };
         Self {
             matching: one(matching),
             wildcard: one(wildcard),
@@ -42,12 +45,14 @@ impl Links {
 
     /// The place of the owner of the record of the name's hash.
     pub(crate) fn matching(self) -> Option<usize> {
-        self.matching.map(|p| p.get() - 1)
+        self.matching
+            .and_then(|p| usize::try_from(p.get() - 1).ok())
     }
 
     /// The place of the owner of the record that covers the hash of the name's wildcard.
     pub(crate) fn wildcard(self) -> Option<usize> {
-        self.wildcard.map(|p| p.get() - 1)
+        self.wildcard
+            .and_then(|p| usize::try_from(p.get() - 1).ok())
     }
 }
 

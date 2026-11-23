@@ -7,15 +7,18 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::hint::black_box;
+use std::net::Ipv4Addr;
 
 use dedens_bench::{ZONE_HOSTS, zone};
 use dedens_dnssec::crypto::nsec3_hash;
 use dedens_dnssec::denial::hashed_owner;
 use dedens_proto::edns::{Edns, EdnsFlags};
+use dedens_proto::rdata::RData;
 use dedens_proto::{
-    Flags, Header, Message, Name, Nsec3HashAlgorithm, Question, RecordType, ZoneEntry, ZoneReader,
+    Flags, Header, Message, Name, Nsec3HashAlgorithm, Question, Record, RecordType, ZoneEntry,
+    ZoneReader,
 };
-use dedens_zone::{Dnssec, Limits, Source, Zone};
+use dedens_zone::{Changeset, Dnssec, Limits, Source, Zone};
 use divan::Bencher;
 use domain::zonefile::inplace::Zonefile;
 use hickory_proto::serialize::txt::Parser;
@@ -56,6 +59,40 @@ fn load_nsec3(bencher: Bencher<'_, '_>) {
             default_ttl: None,
         };
         Zone::load(origin.clone(), source, &mut |_| Err(String::new()), &limits).expect("loads")
+    });
+}
+
+/// `Zone::apply` of a changeset of one record, an address added to a name, on the zone of [`load_nsec3`] (D207,
+/// D209): the zone is built again, so each name is hashed twice again; `docs/TODECIDE.md` asks for the links of
+/// the names the change leaves alone to be kept.
+#[divan::bench]
+fn apply_nsec3(bencher: Bencher<'_, '_>) {
+    let zone = nsec3_zone();
+    let soa = |serial: u32| {
+        let mut soa = zone.soa().clone();
+        soa.serial = serial;
+        Record::new(
+            zone.apex().clone(),
+            zone.class(),
+            zone.soa_ttl(),
+            &RData::Soa(soa),
+        )
+    };
+    let serial = zone.soa().serial;
+    let name = DATA.parse().expect("a name");
+    let address = Record::new(
+        name,
+        zone.class(),
+        zone.soa_ttl(),
+        &RData::A(Ipv4Addr::new(192, 0, 2, 200)),
+    );
+    let changeset = Changeset::new(soa(serial), soa(serial + 1), Vec::new(), vec![address])
+        .expect("a changeset");
+    let limits = Limits::default();
+    bencher.bench_local(|| {
+        black_box(&zone)
+            .apply(black_box(&changeset), &limits)
+            .expect("applies")
     });
 }
 

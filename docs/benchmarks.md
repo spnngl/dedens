@@ -1039,12 +1039,19 @@ the two runs of the with-DO column and, for the without-DO column, of the run af
   next closer, one SHA-1 block at 0 iterations and 13 at 12, and the records encoded. The closest encloser's
   record and the cover of its wildcard are links made at load (D209), where they cost two more names hashed, 0.6 µs
   at 0 iterations and 2.7 µs at 12. The iterations are the operator's (RFC 9276 §3.1 asks for 0; the load warns
-  of more and refuses above 2500, RFC 5155 §10.3), but their cost is a third of what it was; a client's name moves
-  it by its length only, the walk to the closest provable encloser starting at a node of the zone.
+  of more and refuses above 150, D74's validator cap), but their cost is a third of what it was; a client's name
+  moves it by its length only, the walk to the closest provable encloser starting at a node of the zone.
 - The load does it instead: `load_nsec3`, the generated zone of 100 000 names with its NSEC3 chain through
-  `Zone::load`, 134 ms before, 159 ms after (two more hashes of each name, at 0 iterations), peak memory 110.4 MB
-  and 111.7 MB. A `Node` is 88 bytes, 16 more (`size_of`). At 2500 iterations a hash is some 225 µs, so the same
-  zone would load in 45 s: the bound on iterations (D209) is also the bound on loading.
+  `Zone::load`, 134 ms before, 167 ms after (two more hashes of each name, at 0 iterations; the machine was shared
+  with other builds, `load_dedens` read 70 ms against 63 ms beside it), peak memory 110.4 MB and 110.9 MB. A `Node`
+  is 80 bytes, 8 more (`NonZeroU32` places; 16 more as first written, `usize`, which was 111.7 MB). At 150
+  iterations a hash is some 13.6 µs (151 SHA-1 blocks of 90 ns), so a load costs names × 2 × 151 blocks: 2.7 s
+  for this zone, 7.6 minutes for the 2²⁴ names `Limits::names` allows; at 2500, the first bound, 45 s and 2 hours.
+  The bound on iterations (D209) is also the bound on loading.
+- `apply_nsec3`: `Zone::apply` of a changeset of one record, an address added to `h4000.example.`, on that zone:
+  134 ms (125-216), the load less the reading of the text. `apply` builds the zone again, so a one-record IXFR
+  pays every name's two hashes again; 12 iterations add 12 × 2 × 90 ns a name (computed), 0.22 s for this zone
+  and 2.2 s for 1 000 000 names. `docs/TODECIDE.md` asks for the links of the names a change leaves alone to be kept.
 - NSEC costs no hash: two bisections, 0.5 µs with the signatures written.
 - The referral costs the same: the DS and its RRSIG take the room the optional glue had, and the glue stops being
   collected at the limit (D206).
