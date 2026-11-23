@@ -1,7 +1,7 @@
 //! The sections of a response from an [`Answer`], and its encoding (D206).
 
-use dedens_proto::rdata::RData;
 use dedens_proto::edns::EdnsFlags;
+use dedens_proto::rdata::RData;
 use dedens_proto::{EncodeError, Flags, Message, Name, Record, RecordType, Ttl, WireRdata};
 
 use crate::answer::{Answer, End, Entry, Link, Match};
@@ -102,7 +102,13 @@ impl Answer<'_> {
         for link in &self.chain {
             match link {
                 Link::Cname { name, at, rrset } => {
-                    out.signed(&mut message.answer, name, at.node(), RecordType::CNAME, rrset);
+                    out.signed(
+                        &mut message.answer,
+                        name,
+                        at.node(),
+                        RecordType::CNAME,
+                        rrset,
+                    );
                     out.prove_wildcard(name, at, &mut proofs);
                 }
                 Link::Dname {
@@ -111,7 +117,13 @@ impl Answer<'_> {
                     rrset,
                     target,
                 } => {
-                    out.signed(&mut message.answer, at.name, at.node, RecordType::DNAME, rrset);
+                    out.signed(
+                        &mut message.answer,
+                        at.name,
+                        at.node,
+                        RecordType::DNAME,
+                        rrset,
+                    );
                     message.answer.push(Record {
                         name: name.clone(),
                         class,
@@ -159,13 +171,25 @@ impl Answer<'_> {
                 }
                 if out.dnssec {
                     match cut.node.rrset(RecordType::DS) {
-                        Some(ds) => out.signed(&mut message.authority, cut.name, cut.node, RecordType::DS, ds),
+                        Some(ds) => out.signed(
+                            &mut message.authority,
+                            cut.name,
+                            cut.node,
+                            RecordType::DS,
+                            ds,
+                        ),
                         None => zone.prove_no_data(cut.name, &Match::Exact(*cut), &mut proofs),
                     }
                 }
             }
             End::YxDomain { at, rrset, .. } => {
-                out.signed(&mut message.answer, at.name, at.node, RecordType::DNAME, rrset);
+                out.signed(
+                    &mut message.answer,
+                    at.name,
+                    at.node,
+                    RecordType::DNAME,
+                    rrset,
+                );
             }
             End::NotAuth | End::Synthesized | End::Open { .. } => {}
         }
@@ -196,7 +220,13 @@ impl<'m> Out<'m> {
     }
 
     /// Under DO, adds the signatures of the `RRset` of `rtype` at `node`, owned by `owner`.
-    fn signatures(self, out: &mut Vec<Record<'m>>, owner: &Name<'m>, node: &'m Node, rtype: RecordType) {
+    fn signatures(
+        self,
+        out: &mut Vec<Record<'m>>,
+        owner: &Name<'m>,
+        node: &'m Node,
+        rtype: RecordType,
+    ) {
         if let (true, Some(signatures)) = (self.dnssec, node.signatures(rtype)) {
             records(out, owner, self.zone, signatures);
         }
@@ -220,7 +250,7 @@ impl<'m> Out<'m> {
         let ttl = zone.soa_ttl().min(Ttl::from_wire(zone.soa().minimum));
         let signatures = apex.signatures(RecordType::SOA).filter(|_| self.dnssec);
         let sets = apex.rrset(RecordType::SOA).into_iter().chain(signatures);
-        out.extend(sets.flat_map(|set| set.rdatas()).map(|rdata| Record {
+        out.extend(sets.flat_map(RrSet::rdatas).map(|rdata| Record {
             name: zone.apex().reborrow(),
             class: zone.class(),
             ttl,
