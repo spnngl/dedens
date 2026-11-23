@@ -537,11 +537,10 @@ mod tests {
             format!("        transfer:\n          - {{networks: ['192.0.2.0/24'], key: {key}}}\n")
         };
         let mut store = Store::default();
-        let started = read(
-            &guarded(dir.path(), &path, both, &granting("k")),
-            &mut store,
-        )
-        .unwrap();
+        let text = guarded(dir.path(), &path, both, &granting("k"));
+        // `other.key` is the same file as `secret.key`, so that only its path tells it from the one read.
+        fs::hard_link(dir.path().join("secret.key"), dir.path().join("other.key")).unwrap();
+        let started = read(&text, &mut store).unwrap();
         assert_eq!(started.keys().map(Keyring::len), Some(2));
         let reload = |text: &str, store: &mut Store| {
             crate::config::read(text, env, (&started, Some(1)), store).map(|config| config.pipeline)
