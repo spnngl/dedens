@@ -4,8 +4,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, ensure};
-use dedens_proto::Name;
+use dedens_proto::{Name, Question, RecordType};
 use dedens_server::{Authoritative, Stage};
+use dedens_zone::End;
 use serde::Deserialize;
 
 use crate::lists::Store;
@@ -70,7 +71,27 @@ pub(super) fn authoritative(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let stage = Authoritative::new(zones).with_context(|| format!("stage `{name}`"))?;
+    warn_undelegated(&stage);
     Ok(Stage::Authoritative(stage))
+}
+
+/// Warns of each zone served below another that has no NS at its apex: the parent denies the child's apex, and
+/// the names below, to a client that asks it for them, as NXDOMAIN, which RFC 8020 resolvers cache for the whole
+/// subtree. Knot answers so; NSD answers NODATA from its shared tree (D208).
+fn warn_undelegated(stage: &Authoritative) {
+    for zone in stage.zones() {
+        let Some(parent) = (zone.apex().parent()).and_then(|parent| stage.zone(&parent)) else {
+            continue;
+        };
+        let question = Question::new(zone.apex().clone(), RecordType::NS);
+        if !matches!(parent.answer(&question).end, End::Referral { .. }) {
+            tracing::warn!(
+                zone = %zone.apex(),
+                parent = %parent.apex(),
+                "zone served below a zone with no NS at its apex: the parent does not delegate it"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

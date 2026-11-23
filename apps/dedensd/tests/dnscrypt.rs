@@ -22,7 +22,7 @@ use dedens_testkit::responder::Responder;
 
 use crate::util::{Server, ask_tcp, ask_udp, decode, framed, write_config, write_key};
 
-const PROVIDER: &str = "2.dnscrypt-cert.test.example";
+pub(crate) const PROVIDER: &str = "2.dnscrypt-cert.test.example";
 
 /// The resolver stamp `text` is.
 fn resolver_stamp(text: &str) -> DnsCrypt {
