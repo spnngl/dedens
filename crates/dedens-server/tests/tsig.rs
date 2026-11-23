@@ -13,7 +13,7 @@ use dedens_proto::{
 use dedens_server::{Forward, Pipeline, Stage, Step};
 use dedens_testkit::authoritative::{self, Peer, Recording, TSIG_KEY};
 use dedens_testkit::dns;
-use dedens_tsig::{Key, Keyring, ResponseVerifier, Verified, sign_request};
+use dedens_tsig::{Key, Keyring, ResponseError, ResponseVerifier, Verified, sign_request};
 
 use crate::authoritative::zones;
 use crate::util::{decode, servers, wire};
@@ -206,9 +206,20 @@ fn s5_2_3_a_time_outside_the_fudge_is_answered_badtime_signed() {
     assert_eq!(decode(&reply).rcode(), Rcode::NOTAUTH);
     let record = tsig(&reply);
     assert_eq!(record.tsig.error, TsigError::BADTIME);
-    assert_eq!(record.tsig.mac().len(), key.algorithm().mac_len(), "signed");
-    // Other Data is the server's time (§5.2.3).
+    // Other Data is the server's time (§5.2.3); Time Signed and Fudge are the request's.
     assert_eq!(record.tsig.other(), &now.to_be_bytes()[2..]);
+    assert_eq!(record.tsig.time_signed(), signed.tsig.time_signed());
+    assert_eq!(record.tsig.fudge, signed.tsig.fudge);
+    // Signed over the request's MAC: it verifies, at the time it carries.
+    let mut verifier = ResponseVerifier::new(&key, signed.tsig.mac());
+    let refused = ResponseError::Refused {
+        error: TsigError::BADTIME,
+        authenticated: true,
+    };
+    assert_eq!(
+        verifier.verify(&reply, signed.tsig.time_signed()),
+        Err(refused)
+    );
 }
 
 #[test]
@@ -237,12 +248,16 @@ fn s5_2_4_a_truncated_mac_is_answered_badtrunc_signed() {
     truncated.extend_from_slice(&rdata);
     let reply = answer(&server(record.tsig.time_signed()), &truncated, transport);
     assert_eq!(decode(&reply).rcode(), Rcode::NOTAUTH);
-    let answered = tsig(&reply);
-    assert_eq!(answered.tsig.error, TsigError::BADTRUNC);
+    assert_eq!(tsig(&reply).tsig.error, TsigError::BADTRUNC);
+    // Signed over the request's MAC, the whole one: it verifies.
+    let mut verifier = ResponseVerifier::new(&key, mac);
+    let refused = ResponseError::Refused {
+        error: TsigError::BADTRUNC,
+        authenticated: true,
+    };
     assert_eq!(
-        answered.tsig.mac().len(),
-        key.algorithm().mac_len(),
-        "signed"
+        verifier.verify(&reply, record.tsig.time_signed()),
+        Err(refused)
     );
 }
 
