@@ -1,7 +1,7 @@
 //! The server's paths (D23, D43), as `dedensd` runs them for each datagram: a hit, `Pipeline::query` reading a
 //! query and answering it from the cache stage, and a miss, the query sent upstream and its response stored and
-//! answered; and a plugin answering with records it holds (D54). The allocation counts show the hit and plugin
-//! paths allocate nothing.
+//! answered; a plugin answering with records it holds (D54); and an authoritative stage answering from its zones
+//! (D208). The allocation counts show the hit and plugin paths allocate nothing.
 
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -12,9 +12,10 @@ use dedens_bench::CASES;
 use dedens_cache::{Cache, Checked, Config};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, Message, Query, Question, Record, RecordType, Transport, Ttl};
-use dedens_server::{Answer, Forward, Pipeline, Plugin, Records, Stage, Step};
+use dedens_proto::{Class, Message, Name, Query, Question, Record, RecordType, Transport, Ttl};
+use dedens_server::{Answer, Authoritative, Forward, Pipeline, Plugin, Records, Stage, Step};
 use dedens_testkit::{captured, query};
+use dedens_zone::{Limits, Source, Zone};
 use divan::Bencher;
 
 #[global_allocator]
@@ -200,6 +201,61 @@ fn plugin(bencher: Bencher<'_, '_>) {
         Records::new(&name, &records).expect("the records fit"),
     )))]);
     let mut query = Message::query(7, Question::new(name, RecordType::A));
+    query.edns = Some(Edns::default());
+    let query = query.to_vec().expect("a query fits");
+    let mut out = vec![0; 1232];
+    bencher.bench_local(|| {
+        let step = pipeline.query(
+            black_box(&query),
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
+        assert!(matches!(step, Step::Reply(_)));
+    });
+}
+
+/// The zone of `origin` in `testdata/{file}`, its `$INCLUDE` the mailboxes of RFC 1035 §5.3, records without a TTL
+/// at dedensd's 3600 seconds (D208).
+fn zone(origin: &str, file: &str) -> Arc<Zone> {
+    let text = std::fs::read(dedens_testkit::path(file)).expect("the zone file");
+    let source = Source {
+        name: file,
+        text: &text,
+        default_ttl: Some(Ttl::from_wire(3600)),
+    };
+    let mut include = |_: &str| {
+        std::fs::read(dedens_testkit::path("zones/rfc1035_isi_mailboxes.zone"))
+            .map_err(|e| e.to_string())
+    };
+    let origin: Name<'static> = origin.parse().expect("a name");
+    let loaded = Zone::load(origin, source, &mut include, &Limits::default());
+    Arc::new(loaded.expect("the zone loads").zone)
+}
+
+/// The questions of `authoritative`: data (two addresses), data with additional records (two MX and their four
+/// addresses), a name not there (NXDOMAIN with the SOA), and a referral of the captured root zone to `com.` (13 name
+/// servers, their glue).
+const AUTHORITATIVE: [(&str, RecordType); 4] = [
+    ("VENERA.ISI.EDU.", RecordType::A),
+    ("ISI.EDU.", RecordType::MX),
+    ("NOTHERE.ISI.EDU.", RecordType::A),
+    ("www.example.com.", RecordType::A),
+];
+
+/// A query answered by an authoritative stage serving the captured root zone and `ISI.EDU.` of RFC 1035 §5.3: read,
+/// its zone found, the answer filled and encoded into a 1232-byte buffer (D208).
+#[divan::bench(args = AUTHORITATIVE)]
+fn authoritative(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordType)) {
+    let zones = [
+        zone(".", "authoritative/zones/root.zone"),
+        zone("ISI.EDU.", "zones/rfc1035_isi.zone"),
+    ];
+    let pipeline = Pipeline::new(vec![Stage::Authoritative(
+        Authoritative::new(zones).expect("two zones"),
+    )]);
+    let mut query = Message::query(7, Question::new(name.parse().expect("a name"), qtype));
     query.edns = Some(Edns::default());
     let query = query.to_vec().expect("a query fits");
     let mut out = vec![0; 1232];

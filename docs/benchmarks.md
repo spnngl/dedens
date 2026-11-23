@@ -435,6 +435,13 @@ nothing validates.
 - `plugin` (D54): a plugin stage answering two A records it holds, into a 1232-byte buffer: the reply built
   as an empty `Message` and the records moved in after the question, 116 ns and one 128-byte allocation (the
   question list) → header, question and records copied from the query and the plugin: 83-125 ns, none.
+- `authoritative` (D208): an authoritative stage serving the captured root zone and `ISI.EDU.` of RFC 1035 §5.3
+  answering a query with EDNS into a 1232-byte buffer, the unit cost of an answer (medians of 100 samples, same
+  session): data, `VENERA.ISI.EDU.` A, 329 ns and 2 allocations (352 B); data with additional records,
+  `ISI.EDU.` MX, about 700 ns and 4 allocations (672 B); NXDOMAIN with its SOA, 456 ns and 2 allocations (352 B); the root's
+  referral to `com.`, 13 NS and their glue, 6.06 µs and 17 allocations (1.24 KB, 5 grows). Against `plugin`, 60 ns
+  in the same session, and `hit`, 105 ns: an answer costs what a few hits do, a referral of the root tens; no D117
+  budget counts them, as none counts a hit.
 
 ## Blocklist (D56, D58, D118, D120)
 
