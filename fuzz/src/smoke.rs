@@ -162,7 +162,8 @@ fn stamps() -> Vec<(String, Vec<u8>)> {
 }
 
 /// The configurations of `dedensd` the justfile's `fuzz-seeds` copies: the image's, the packages', `seeds/dnscrypt.yaml`,
-/// `seeds/odoh.yaml` and the examples of `apps/dedensd/src/config/mod.rs` (`example.yaml`, `example2.yaml`).
+/// `seeds/odoh.yaml` and the examples of `apps/dedensd/src/config/mod.rs` (`example.yaml`, `example2.yaml`,
+/// `example3.yaml`).
 fn configs() -> Vec<(String, Vec<u8>)> {
     let mut examples: Vec<String> = Vec::new();
     let mut open: Option<Vec<&str>> = None;
@@ -181,8 +182,8 @@ fn configs() -> Vec<(String, Vec<u8>)> {
             (_, None) => {}
         }
     }
-    let [forwarder, resolver] =
-        <[String; 2]>::try_from(examples).expect("the two example configurations");
+    let [forwarder, resolver, authoritative] =
+        <[String; 3]>::try_from(examples).expect("the three example configurations");
     vec![
         (
             "dedensd.yaml".into(),
@@ -202,6 +203,7 @@ fn configs() -> Vec<(String, Vec<u8>)> {
         ),
         ("example.yaml".into(), forwarder.into_bytes()),
         ("example2.yaml".into(), resolver.into_bytes()),
+        ("example3.yaml".into(), authoritative.into_bytes()),
     ]
 }
 

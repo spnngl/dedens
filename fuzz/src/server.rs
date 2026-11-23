@@ -12,9 +12,10 @@ use dedens_proto::{Flags, Header, MAX_MESSAGE_LEN, Message, Query, Rcode, Transp
 use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Marks, Reply, RrsetCache};
 use dedens_roots::{RootHints, Tlds};
 use dedens_server::{
-    Access, Cookies, Denial, Forward, Network, Pipeline, Rate, RateLimit, RateLimitConfig, Recurse,
-    Secret, Secrets, Stage, Standing, Step, Turn,
+    Access, Authoritative, Cookies, Denial, Forward, Network, Pipeline, Rate, RateLimit,
+    RateLimitConfig, Recurse, Secret, Secrets, Stage, Standing, Step, Turn,
 };
+use dedens_zone::{Limits, Source, Zone};
 
 use crate::odoh::Fixed;
 
@@ -97,6 +98,8 @@ static BUNDLED: LazyLock<Arc<Tlds>> = LazyLock::new(|| Arc::new(Tlds::bundled().
 /// with a Client Cookie from the bytes of the input gets a Server Cookie that verifies and lets the next through.
 /// A `tlds` stage (D128) answers the input, any class, with a conforming reply or passes it on. A `recurse` stage
 /// (D195) answers it, or resolves it with the input as each authoritative server's response, into a conforming reply.
+/// An `authoritative` stage (D208) before a forward stage answers a client the access lists deny with a conforming
+/// reply or nothing, never upstream.
 ///
 /// # Panics
 ///
@@ -108,6 +111,7 @@ pub fn serve_query(data: &[u8]) {
     let denying = Pipeline::default().with_access(Access::new([], [], Denial::Refuse));
     for transport in [Transport::Udp, Transport::Tcp] {
         recursing(data, transport, &mut out);
+        authoritative(data, transport, &mut out);
         match denying.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, &mut out) {
             Step::Drop => {}
             Step::Reply(len) => {
@@ -171,6 +175,43 @@ pub fn serve_query(data: &[u8]) {
             pipeline.query(&query, transport, Ipv4Addr::LOCALHOST.into(), 1, &mut out)
         {
             check_reply(&out[..len], id, transport);
+        }
+    }
+}
+
+/// The zone of RFC 4035 Appendix A, `example.`, loaded once: `serve_query` runs per input.
+static EXAMPLE: LazyLock<Arc<Zone>> = LazyLock::new(|| {
+    let source = Source {
+        name: "rfc4035_appendix_a.zone",
+        text: include_bytes!("../../testdata/zones/rfc4035_appendix_a.zone"),
+        default_ttl: None,
+    };
+    let mut include = |_: &str| Err("no include".to_owned());
+    let example = dedens_proto::Name::from_labels([b"example".as_slice()]).expect("a valid name");
+    Arc::new(
+        Zone::load(example, source, &mut include, &Limits::default())
+            .expect("the zone loads")
+            .zone,
+    )
+});
+
+/// The checks of `serve_query` on a pipeline of an authoritative stage then a forward stage, from a client the
+/// access lists deny: its names are answered, the others refused, none goes upstream.
+fn authoritative(data: &[u8], transport: Transport, out: &mut [u8]) {
+    let server = SocketAddr::from(([192, 0, 2, 1], 53));
+    let pipeline = Pipeline::new(vec![
+        Stage::Authoritative(Authoritative::new([Arc::clone(&EXAMPLE)]).expect("one zone")),
+        Stage::Forward(Forward::new([server]).expect("one server")),
+    ])
+    .with_access(Access::new([], [], Denial::Refuse));
+    match pipeline.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, out) {
+        Step::Drop => {}
+        Step::Reply(len) => {
+            let id = Header::peek(data).expect("a reply goes to a header").id;
+            check_reply(&out[..len], id, transport);
+        }
+        Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
+            panic!("a denied client's query goes upstream")
         }
     }
 }
