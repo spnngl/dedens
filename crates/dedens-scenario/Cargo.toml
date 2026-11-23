@@ -21,6 +21,9 @@ serde.workspace = true
 serde-saphyr.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+dedens-tsig.workspace = true
+
 [[test]]
 name = "tests"
 path = "tests/tests.rs"

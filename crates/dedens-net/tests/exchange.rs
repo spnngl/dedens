@@ -776,15 +776,16 @@ fn a_query_changed_by_a_fallback_is_signed_again() {
     let mut formerr = answer_to(&sent(&exchange), Rcode::FORMERR);
     formerr.edns = None;
     let answer = signed_by_server(exchange.wire(), &formerr, 1_000);
-    let exchange = expect_send(udp(exchange, &answer, now));
+    // Long after the start: the second query is signed at the time it goes, not at the first one'"'"'s.
+    let exchange = expect_send(udp(exchange, &answer, now + secs(400)));
     assert!(sent(&exchange).edns.is_none());
     assert!(find_tsig(exchange.wire()).expect("well formed").is_some());
     let answer = signed_by_server(
         exchange.wire(),
         &answer_to(&sent(&exchange), Rcode::NOERROR),
-        1_002,
+        1_400,
     );
-    let response = expect_response(udp(exchange, &answer, now + secs(2)));
+    let response = expect_response(udp(exchange, &answer, now + secs(401)));
     assert_eq!(response.tsig, Some(Ok(())));
 }
 

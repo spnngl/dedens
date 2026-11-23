@@ -221,7 +221,7 @@ impl Transfer {
         };
         for (index, record) in answer.iter().enumerate() {
             let soa = match record.data() {
-                RData::Soa(soa) if record.rtype() == RecordType::SOA => Some(soa.serial),
+                RData::Soa(soa) => Some(soa.serial),
                 _ => None,
             };
             if self.records == 0 && soa.is_none() {
@@ -233,7 +233,7 @@ impl Transfer {
             let closing = self.serial == Some(serial) && self.soas % 2 == 1;
             self.serial.get_or_insert(serial);
             self.soas += 1;
-            if closing && self.soas > 1 {
+            if closing {
                 if index + 1 < answer.len() {
                     report
                         .violations
