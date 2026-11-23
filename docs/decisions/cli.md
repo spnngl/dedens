@@ -205,7 +205,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   record is not in the sections: the verdict is the footer's `TSIG verified`, and `exchange.tsig` in JSON and YAML
   (`verified`, `error`). A transfer is one report: `transfer.messages`, the records in arrival order in `answer`,
   `--save-wire` writing its messages as received, with their TCP lengths. A key goes with a plain server, no
-  `+trace`, `+tld`, `+rdap` or `+validate`, `-y` and `-k` excluding each other. Key files: dedensd's `keys:` (step 09)
+  `+trace`, `+tld`, `+rdap` or `+validate`, `-y` and `-k` excluding each other. Key files: dedensd's `keys:` (D211)
   files hold the secret alone, its name and algorithm being in the YAML next to the path, so the CLI's file, which
   has no YAML, is `kdig`'s line, not the same file. Rejected: D210's reader for the CLI (hides what breaks, no
   arrival order, no counts); BIND's key file format and `kdig`'s `+tsig` display (TODECIDE); a transfer over TLS
