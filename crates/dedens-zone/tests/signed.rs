@@ -1,7 +1,9 @@
 //! The answers of pre-signed zones with DO (D209): the example responses of RFC 4035 Appendix B and RFC 5155
 //! Appendix B, from the zones of their Appendix A (RFC 4035 §3.1, RFC 5155 §7.2); every answer to the captured
-//! questions of `testdata/authoritative/` accepted by the validator of `dedens-dnssec` (RFC 4035 §5); and the
-//! proof of every negative or wildcard answer checked by `denial::prove` (RFC 4035 §5.4, RFC 5155 §8).
+//! questions of `testdata/authoritative/` accepted by the validator of `dedens-dnssec` (RFC 4035 §5), among them the
+//! NSEC3 zone Knot signed with ECDSA P-256 (RFC 5155 §7.2); the proof of every negative or wildcard answer checked by
+//! `denial::prove` (RFC 4035 §5.4, RFC 5155 §8); and two properties of every answer: without DO it is the answer with
+//! DO less the DNSSEC records, and with DO each `RRset` has its signature (RFC 4035 §3.1.1).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -19,7 +21,7 @@ use dedens_proto::{
 };
 use dedens_testkit::authoritative::Answers;
 use dedens_testkit::{dns, message};
-use dedens_zone::{Dnssec, Limits, Zone};
+use dedens_zone::{Dnssec, End, Limits, Zone};
 use proptest::prelude::*;
 
 use crate::util::{load_files, zone_file};
@@ -44,6 +46,11 @@ fn rfc5155() -> Zone {
 
 /// The response to `question` with DO, through the wire.
 fn respond(zone: &Zone, question: &Question<'_>) -> Message<'static> {
+    respond_as(zone, question, Dnssec::With)
+}
+
+/// The response to `question` with or without DO, through the wire.
+fn respond_as(zone: &Zone, question: &Question<'_>, dnssec: Dnssec) -> Message<'static> {
     let answer = zone.answer(question);
     let mut response = Message {
         header: Header {
@@ -52,12 +59,16 @@ fn respond(zone: &Zone, question: &Question<'_>) -> Message<'static> {
         },
         questions: vec![question.clone()],
         edns: Some(Edns {
-            flags: EdnsFlags::DO,
+            flags: if dnssec == Dnssec::With {
+                EdnsFlags::DO
+            } else {
+                EdnsFlags::default()
+            },
             ..Edns::default()
         }),
         ..Message::default()
     };
-    let glue = answer.fill(zone, &mut response, MAX_MESSAGE_LEN, Dnssec::With);
+    let glue = answer.fill(zone, &mut response, MAX_MESSAGE_LEN, dnssec);
     let mut buf = vec![0; MAX_MESSAGE_LEN];
     let len = glue.encode(&response, &mut buf).expect("encodes");
     message(&buf[..len])
@@ -411,14 +422,98 @@ const TYPES: [RecordType; 9] = [
     RecordType::TXT,
 ];
 
-/// Checks the proof of the response of `zone` to `name` and `rtype`.
+/// Whether a record of `response`, in the answer section or not, is one DO adds: a signature, an NSEC or NSEC3 of a
+/// proof, the DS of a referral. The type the question asked for is its data, in the answer.
+fn is_dnssec(
+    record: &Record<'_>,
+    in_answer: bool,
+    data: Option<RecordType>,
+    referral: bool,
+) -> bool {
+    let rtype = record.rtype();
+    let added = matches!(
+        rtype,
+        RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+    ) || (referral && !in_answer && rtype == RecordType::DS);
+    added && !(in_answer && data == Some(rtype))
+}
+
+/// D209, the first property: the response without DO is the one with DO less the records DO adds, section by
+/// section, in order.
+fn check_do_off(zone: &Zone, question: &Question<'_>) -> Result<(), TestCaseError> {
+    let with = respond(zone, question);
+    let without = respond_as(zone, question, Dnssec::Without);
+    let answer = zone.answer(question);
+    let data = match answer.end {
+        End::Data { rtype, .. } => Some(rtype),
+        _ => None,
+    };
+    let referral = matches!(answer.end, End::Referral { .. });
+    let kept = |records: &[Record<'static>], in_answer| -> Vec<Record<'static>> {
+        let kept = records.iter();
+        kept.filter(|r| !is_dnssec(r, in_answer, data, referral))
+            .cloned()
+            .collect()
+    };
+    prop_assert_eq!(without.header.flags, with.header.flags, "{:?}", question);
+    prop_assert_eq!(without.rcode(), with.rcode(), "{:?}", question);
+    prop_assert_eq!(&without.answer, &kept(&with.answer, true), "{:?}", question);
+    prop_assert_eq!(
+        &without.authority,
+        &kept(&with.authority, false),
+        "{:?}",
+        question
+    );
+    prop_assert_eq!(
+        &without.additional,
+        &kept(&with.additional, false),
+        "{:?}",
+        question
+    );
+    Ok(())
+}
+
+/// D209, the second property: under DO every `RRset` of the answer and authority sections has its signatures,
+/// but the NS of a referral, which is the child's to sign, and the CNAME a DNAME makes up, whose signature is the
+/// DNAME's (RFC 4035 §3.1.1, §3.1.4, RFC 6672 §5.3.1). Glue is in the additional section, signed or not.
+fn check_signed_sets(response: &Message<'_>) -> Result<(), TestCaseError> {
+    let referral = !response.header.flags.contains(Flags::AA);
+    for (records, in_answer) in [(&response.answer, true), (&response.authority, false)] {
+        for record in records {
+            let rtype = record.rtype();
+            if rtype == RecordType::RRSIG {
+                continue;
+            }
+            let made_up = rtype == RecordType::CNAME
+                && in_answer
+                && response.answer.iter().any(|d| {
+                    d.rtype() == RecordType::DNAME
+                        && record.name != d.name
+                        && record.name.is_within(&d.name)
+                });
+            let child_ns = referral && !in_answer && rtype == RecordType::NS;
+            let signed = records.iter().any(|s| {
+                matches!(s.data(), RData::Rrsig(sig) if sig.type_covered == rtype)
+                    && s.name == record.name
+            });
+            prop_assert!(
+                signed || made_up || child_ns,
+                "{record:?} has no RRSIG\n{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Checks the proof and the two DO properties of the response of `zone` to `name` and `rtype`.
 fn check_proof(zone: &Zone, name: Name<'static>, rtype: RecordType) -> Result<(), TestCaseError> {
     let question = Question::new(name, rtype);
     let response = respond(zone, &question);
     if let Some(proof) = proven(zone.apex(), &response) {
         prop_assert!(proof.is_ok(), "{question:?}: {proof:?}\n{response:?}");
     }
-    Ok(())
+    check_do_off(zone, &question)?;
+    check_signed_sets(&response)
 }
 
 proptest! {
@@ -475,8 +570,9 @@ fn verdict(validator: &Validator, zone: &Zone, response: &Message<'_>, now: u64)
     }
 }
 
-/// Whether `verdict` accepts the response: secure, a referral to a child signed as its DS says, or an answer of
-/// RRSIG records, which are not signed (RFC 4035 §3.1.5).
+/// Whether `verdict` accepts the response: secure, a referral to a child signed as its DS says, an answer of
+/// RRSIG records, which are not signed (RFC 4035 §3.1.5), or a proof by an opt-out NSEC3 span whose signatures the
+/// validator checked: it can only call the name insecure (RFC 5155 §6, §9.2).
 fn accepted(verdict: &Verdict, response: &Message<'_>) -> bool {
     let signed = response
         .authority
@@ -485,7 +581,7 @@ fn accepted(verdict: &Verdict, response: &Message<'_>) -> bool {
     match verdict {
         Verdict::Secure { .. }
         | Verdict::Insecure {
-            reason: InsecureReason::RrsigQuery,
+            reason: InsecureReason::RrsigQuery | InsecureReason::OptOut,
         } => true,
         Verdict::Referral { delegation, .. } => (*delegation == Delegation::Signed) == signed,
         _ => false,
@@ -546,16 +642,46 @@ fn rfc4035_s5_the_validator_accepts_every_answer_of_the_root_zone_to_the_capture
     assert!(checked > 20, "{checked}");
 }
 
+/// 2026-05-28 20:26:40 UTC, the time `just capture-signed` told Knot's signer it was: the signatures of
+/// `nsec3_signed.zone` start 90 minutes before and end 14 days after it.
+const NSEC3_SIGNED: u64 = 1_780_000_000;
+
+#[test]
+fn rfc5155_s7_2_the_validator_accepts_every_answer_of_an_nsec3_zone_signed_by_knot_to_the_captured_questions()
+ {
+    let answers = Answers::read("nsec3_signed");
+    let zone = zone("example.", "../authoritative/zones/nsec3_signed.zone");
+    let validator = anchored(&zone);
+    let (mut checked, mut secure) = (0, 0);
+    for reference in answers.answers.iter().filter(|r| r.dnssec_ok) {
+        let question = &reference.query().questions[0];
+        if !question.name.is_within(zone.apex()) {
+            continue;
+        }
+        let response = respond(&zone, question);
+        let verdict = verdict(&validator, &zone, &response, NSEC3_SIGNED);
+        assert!(accepted(&verdict, &response), "{verdict:?}\n{response:?}");
+        checked += 1;
+        secure += usize::from(matches!(verdict, Verdict::Secure { .. }));
+    }
+    assert!(checked > 50, "{checked}");
+    assert!(secure > 30, "{secure} of {checked}");
+}
+
 #[test]
 fn rfc5155_s7_2_every_answer_to_the_captured_questions_is_proven() {
-    for id in ["rfc4035_appendix_a", "rfc5155_appendix_a", "root"] {
+    for id in [
+        "rfc4035_appendix_a",
+        "rfc5155_appendix_a",
+        "root",
+        "nsec3_signed",
+    ] {
         let answers = Answers::read(id);
-        let file = answers.file.trim_start_matches("zones/");
-        let zone = if id == "root" {
-            zone(".", "../authoritative/zones/root.zone")
-        } else {
-            zone("example.", file)
-        };
+        let file = answers
+            .file
+            .strip_prefix("zones/")
+            .map_or_else(|| format!("../{}", answers.file), str::to_owned);
+        let zone = zone(&answers.zone.to_string(), &file);
         for reference in answers.answers.iter().filter(|r| r.dnssec_ok) {
             let response = respond(&zone, &reference.query().questions[0]);
             if let Some(proof) = proven(zone.apex(), &response) {

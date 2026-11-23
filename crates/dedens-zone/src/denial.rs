@@ -1,6 +1,7 @@
 //! The proofs of a pre-signed zone that a name or type is absent: from its NSEC chain (RFC 4035 §3.1.3) or its
 //! NSEC3 chain (RFC 5155 §7.2), indexed once at load (D209).
 
+use core::num::NonZeroUsize;
 use core::ptr;
 
 use dedens_dnssec::crypto::nsec3_hash;
@@ -9,10 +10,63 @@ use dedens_proto::rdata::{Nsec3, Nsec3Param, RData};
 use dedens_proto::{Name, Nsec3HashAlgorithm, RecordType};
 
 use crate::answer::{Entry, Match};
-use crate::{Node, Zone};
+use crate::{Kind, Node, Zone};
 
 /// A SHA-1 hash, the one NSEC3 has (RFC 5155 §11).
 pub(crate) type Hash = [u8; 20];
+
+/// The NSEC3 records a node's name leads to, found at load so that a query hashes only the name it proves absent:
+/// the next closer name, which is no node (D209).
+///
+/// Each is the place, in the nodes, of the owner of the record, kept as `place + 1` so that none is a niche: 16
+/// bytes in all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Links {
+    /// The record of the name's own hash, if the chain has one: not for an empty non-terminal made only by unsigned
+    /// delegations of an opt-out chain (RFC 5155 §7.1), nor for a name that is no answer's: below a cut, or an
+    /// NSEC3 owner.
+    matching: Option<NonZeroUsize>,
+    /// The record that covers the hash of the name's wildcard, `*.` and the name (RFC 5155 §7.2.2), for a name that
+    /// may be a closest encloser: not a delegation point.
+    wildcard: Option<NonZeroUsize>,
+}
+
+impl Links {
+    fn of(matching: Option<usize>, wildcard: Option<usize>) -> Self {
+        let one = |place: Option<usize>| place.and_then(|p| NonZeroUsize::new(p.checked_add(1)?));
+        Self {
+            matching: one(matching),
+            wildcard: one(wildcard),
+        }
+    }
+
+    /// The place of the owner of the record of the name's hash.
+    pub(crate) fn matching(self) -> Option<usize> {
+        self.matching.map(|p| p.get() - 1)
+    }
+
+    /// The place of the owner of the record that covers the hash of the name's wildcard.
+    pub(crate) fn wildcard(self) -> Option<usize> {
+        self.wildcard.map(|p| p.get() - 1)
+    }
+}
+
+/// The place, in the nodes, of the record of `hash` in `chain`.
+fn matching_in(chain: &[(Hash, usize)], hash: &Hash) -> Option<usize> {
+    let at = chain.binary_search_by(|(h, _)| h.cmp(hash)).ok()?;
+    chain.get(at).map(|(_, place)| *place)
+}
+
+/// The place of the owner of the record that covers `hash`: the last before it in hash order, or the last of all,
+/// whose next hash wraps to the first (RFC 5155 §3.1.7); the record of the hash itself if the chain has one.
+fn covering_in(chain: &[(Hash, usize)], hash: &Hash) -> Option<usize> {
+    let at = match chain.binary_search_by(|(h, _)| h.cmp(hash)) {
+        Ok(at) => at,
+        Err(0) => chain.len().checked_sub(1)?,
+        Err(at) => at - 1,
+    };
+    chain.get(at).map(|(_, place)| *place)
+}
 
 /// The parameters of an NSEC3 chain, which every record of it and the zone's NSEC3PARAM share (RFC 5155 §4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,10 +150,12 @@ pub(crate) enum Chain {
 }
 
 impl Denial {
-    /// The index of the records of `chain` in `nodes`; an NSEC3 owner hashed once, from its name.
+    /// The index of the records of `chain` in `nodes`; an NSEC3 owner hashed once, from its name. With NSEC3, each
+    /// node learns its [`Links`]: two more hashes of its name, so a load costs about three times the hashes of the
+    /// chain's records, the cost an answer then does not pay.
     pub(crate) fn new(
         chain: Option<Chain>,
-        nodes: &[(Name<'static>, Node)],
+        nodes: &mut [(Name<'static>, Node)],
         apex_labels: usize,
     ) -> Self {
         match chain {
@@ -120,9 +176,28 @@ impl Denial {
                     .filter_map(|(at, (name, _))| Some((owner_hash_of(name, apex_labels)?, at)))
                     .collect();
                 chain.sort_unstable();
+                for (name, node) in nodes.iter_mut() {
+                    node.nsec3 = Self::links(&params, &chain, name, node);
+                }
                 Self::Nsec3 { params, chain }
             }
         }
+    }
+
+    /// What `node`, named `name`, leads to in the chain: nothing for a name no answer is built from, an NSEC3
+    /// owner or a name below a cut (RFC 5155 §7.2.8, RFC 1034 §4.2.1).
+    fn links(params: &Params, chain: &[(Hash, usize)], name: &Name<'_>, node: &Node) -> Links {
+        let kind = node.kind();
+        if node.is_proof_only() || matches!(kind, Kind::Occluded { .. }) {
+            return Links::default();
+        }
+        let matching = params.hash(name).and_then(|hash| matching_in(chain, &hash));
+        let wildcard = (kind != Kind::Delegation)
+            .then(|| name.wildcard().ok())
+            .flatten()
+            .and_then(|wildcard| params.hash(&wildcard))
+            .and_then(|hash| covering_in(chain, &hash));
+        Links::of(matching, wildcard)
     }
 
     /// The type of the proofs' records: NSEC or NSEC3.
@@ -133,6 +208,16 @@ impl Denial {
             Self::Nsec3 { .. } => Some(RecordType::NSEC3),
         }
     }
+}
+
+/// A closest provable encloser (RFC 5155 §7.2.1).
+struct Provable<'a> {
+    /// The encloser.
+    encloser: Entry<'a>,
+    /// The owner of its NSEC3 record.
+    record: Entry<'a>,
+    /// The owner of the NSEC3 record that covers the next closer name, the encloser's child on the way to the name.
+    cover: Option<Entry<'a>>,
 }
 
 /// The owners of the NSEC or NSEC3 records that prove an answer, each once.
@@ -160,8 +245,8 @@ impl Zone {
             Denial::Unsigned => {}
             Denial::Nsec(owners) => add(proofs, self.nsec_covering(owners, name)),
             Denial::Nsec3 { params, chain } => {
-                let provable = self.closest_provable(params, chain, name, encloser.name);
-                add(proofs, provable.and_then(|(_, _, cover)| cover));
+                let provable = self.closest_provable(params, chain, name, *encloser);
+                add(proofs, provable.and_then(|provable| provable.cover));
             }
         }
     }
@@ -187,16 +272,19 @@ impl Zone {
                 add(proofs, self.nsec_at(owners, source));
             }
             (Denial::Nsec3 { params, chain }, Match::Exact(entry)) => {
-                let found = self.nsec3_matching(params, chain, entry.name);
+                let found = entry.node.nsec3.matching().and_then(|at| self.entry(at));
                 if found.is_some() {
                     add(proofs, found);
-                } else if let Some(parent) = entry.name.parent() {
-                    self.add_closest_provable(params, chain, entry.name, &parent, proofs);
+                } else if let Some(parent) = self.parent_of(entry) {
+                    self.add_closest_provable(params, chain, entry.name, parent, proofs);
                 }
             }
             (Denial::Nsec3 { params, chain }, Match::Wildcard { source, encloser }) => {
-                self.add_closest_provable(params, chain, name, encloser.name, proofs);
-                add(proofs, self.nsec3_matching(params, chain, source.name));
+                self.add_closest_provable(params, chain, name, *encloser, proofs);
+                add(
+                    proofs,
+                    source.node.nsec3.matching().and_then(|at| self.entry(at)),
+                );
             }
         }
     }
@@ -220,10 +308,10 @@ impl Zone {
             }
             Denial::Nsec3 { params, chain } => {
                 if let Some(provable) =
-                    self.add_closest_provable(params, chain, name, encloser.name, proofs)
-                    && let Ok(wildcard) = provable.wildcard()
+                    self.add_closest_provable(params, chain, name, *encloser, proofs)
                 {
-                    add(proofs, self.nsec3_covering(params, chain, &wildcard));
+                    let wildcard = provable.node.nsec3.wildcard();
+                    add(proofs, wildcard.and_then(|at| self.entry(at)));
                 }
             }
         }
@@ -246,16 +334,10 @@ impl Zone {
         self.entry(*owners.get(owner)?)
     }
 
-    /// The owner of the NSEC3 record of `name`, if the chain has one.
-    fn nsec3_matching<'a>(
-        &'a self,
-        params: &Params,
-        chain: &[(Hash, usize)],
-        name: &Name<'_>,
-    ) -> Option<Entry<'a>> {
-        let hash = params.hash(name)?;
-        let at = chain.binary_search_by(|(h, _)| h.cmp(&hash)).ok()?;
-        self.entry(chain.get(at)?.1)
+    /// The parent of `entry`: a node, as every ancestor of a node is (D204).
+    fn parent_of<'a>(&'a self, entry: &Entry<'_>) -> Option<Entry<'a>> {
+        let (name, node) = self.find(&entry.name.parent()?)?;
+        Some(Entry { name, node })
     }
 
     /// The owner of the NSEC3 record that covers the hash of `name`, the last before it in hash order, or the
@@ -268,37 +350,33 @@ impl Zone {
         name: &Name<'_>,
     ) -> Option<Entry<'a>> {
         let hash = params.hash(name)?;
-        let at = match chain.binary_search_by(|(h, _)| h.cmp(&hash)) {
-            Ok(at) => at,
-            Err(0) => chain.len().checked_sub(1)?,
-            Err(at) => at - 1,
-        };
-        self.entry(chain.get(at)?.1)
+        self.entry(covering_in(chain, &hash)?)
     }
 
-    /// The closest provable encloser of `name` at or above `from`, an ancestor of it, as its label count and
-    /// record, and the record that covers the next closer name, the encloser's child on the way to `name` (RFC
-    /// 5155 §7.2.1). It is `from` itself but in an opt-out chain, where an empty non-terminal made only by
-    /// unsigned delegations has no record (§7.1).
+    /// The closest provable encloser of `name`: `from`, an ancestor of it, or the nearest above that has an NSEC3
+    /// record (RFC 5155 §7.2.1). It is `from` itself but in an opt-out chain, where an empty non-terminal made
+    /// only by unsigned delegations has none (§7.1). Its record is a link made at load; what is hashed here is
+    /// the next closer name only.
     fn closest_provable<'a>(
         &'a self,
         params: &Params,
         chain: &[(Hash, usize)],
         name: &Name<'_>,
-        from: &Name<'_>,
-    ) -> Option<(usize, Entry<'a>, Option<Entry<'a>>)> {
+        from: Entry<'a>,
+    ) -> Option<Provable<'a>> {
         // `from` is a name of the zone, so the walk is bounded by the zone's depth, not by `name`'s.
-        (self.apex.label_count()..=from.label_count())
-            .rev()
-            .find_map(|labels| {
-                let encloser = self.nsec3_matching(params, chain, &name.ancestor(labels))?;
-                let next_closer = name.ancestor(labels + 1);
-                Some((
-                    labels,
+        let mut encloser = from;
+        loop {
+            if let Some(record) = encloser.node.nsec3.matching().and_then(|at| self.entry(at)) {
+                let next_closer = name.ancestor(encloser.name.label_count() + 1);
+                return Some(Provable {
                     encloser,
-                    self.nsec3_covering(params, chain, &next_closer),
-                ))
-            })
+                    record,
+                    cover: self.nsec3_covering(params, chain, &next_closer),
+                });
+            }
+            encloser = self.parent_of(&encloser)?;
+        }
     }
 
     /// Adds the closest provable encloser proof of `name` from `from` up: the encloser's record and the one
@@ -308,12 +386,12 @@ impl Zone {
         params: &Params,
         chain: &[(Hash, usize)],
         name: &Name<'_>,
-        from: &Name<'_>,
+        from: Entry<'a>,
         proofs: &mut Proofs<'a>,
-    ) -> Option<Name<'static>> {
-        let (labels, encloser, cover) = self.closest_provable(params, chain, name, from)?;
-        add(proofs, Some(encloser));
-        add(proofs, cover);
-        Some(name.ancestor(labels))
+    ) -> Option<Entry<'a>> {
+        let provable = self.closest_provable(params, chain, name, from)?;
+        add(proofs, Some(provable.record));
+        add(proofs, provable.cover);
+        Some(provable.encloser)
     }
 }

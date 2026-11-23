@@ -18,6 +18,18 @@ pub(crate) fn zone_file(name: &str) -> String {
     fs::read_to_string(dedens_testkit::path("zones").join(name)).expect("a zone file")
 }
 
+/// The text of the zone of RFC 4035 appendix A with names added between `b.example.` and `ns1.example.`: the NSEC of
+/// `b.example.` leads to `first`, and `added` is the lines of the new names, the last NSEC leading to
+/// `ns1.example.`. Each name of an NSEC chain has its NSEC (RFC 4035 §2.3); the signatures of the new ones are left
+/// out, which a load does not check (D209).
+pub(crate) fn with_names_after_b(text: &str, first: &str, added: &str) -> String {
+    let relinked = text.replace(
+        "3600 NSEC   ns1.example. NS RRSIG NSEC",
+        &format!("3600 NSEC   {first} NS RRSIG NSEC"),
+    );
+    format!("{relinked}{added}")
+}
+
 /// Loads `text` as the zone `origin`, with the files of `$INCLUDE` given by `files`: pairs of the name as written and
 /// the text.
 pub(crate) fn load_files(

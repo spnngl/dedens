@@ -1022,27 +1022,33 @@ bench:
 `reply_signed` in `crates/dedens-bench/benches/zone.rs`, `DO` false and true, the reply encoded in 1232 bytes:
 the generated zone of 100 000 records with a `*.wild` wildcard and an NSEC3 chain of no salt and 0 iterations over
 its names (unsigned: the load checks no signature, and the proofs are chosen the same), the zone of RFC 5155
-Appendix A (12 iterations and a salt) and the captured root zone (NSEC, signed). Medians of one run on a machine
-shared with other builds:
+Appendix A (12 iterations and a salt) and the captured root zone (NSEC, signed). Medians of two runs on a machine
+shared with other builds, the tree before the change (`539c42b7`) and after it run one after the other, medians of
+the two runs of the with-DO column and, for the without-DO column, of the run after:
 
-| | without DO | with DO |
-|---|---|---|
-| NSEC3, data (`h4000.example.`, no signature in this zone) | 331 ns | 331 ns |
-| NSEC3, NXDOMAIN (`nothing.example.`): 3 records, 3 names hashed | 830 ns | 1.67 µs |
-| NSEC3, wildcard answer: 1 record, 2 names hashed | 1.12 µs | 1.84 µs |
-| RFC 5155, NXDOMAIN (`a.c.x.w.example.`), 12 iterations | 497 ns | 4.99 µs |
-| root, NXDOMAIN (`nothing.invalid.`): 2 NSEC, signatures | 663 ns | 1.28 µs |
-| root, referral to `com.` with its DS | 5.78 µs | 5.78 µs |
+| | without DO | with DO, before | with DO, after |
+|---|---|---|---|
+| NSEC3, data (`h4000.example.`, no signature in this zone) | 330 ns | 331 ns | 331 ns |
+| NSEC3, NXDOMAIN (`nothing.example.`): 3 records, 1 name hashed (3 before) | 620 ns | 1.59 µs | 0.98 µs |
+| NSEC3, wildcard answer: 1 record, 1 name hashed (2 before) | 790 ns | 1.80 µs | 1.23 µs |
+| RFC 5155, NXDOMAIN (`a.c.x.w.example.`), 12 iterations | 375 ns | 4.75 µs | 2.01 µs |
+| root, NXDOMAIN (`nothing.invalid.`): 2 NSEC, signatures | 490 ns | 1.21 µs | 1.09 µs |
+| root, referral to `com.` with its DS | 5.58 µs | 5.70 µs | 5.61 µs |
 
-- An NSEC3 NXDOMAIN costs 0.8 µs more with 0 iterations: three names hashed (the closest encloser, the next
-  closer, the wildcard), each one SHA-1 block and a bisection of the chain, and the records encoded. At 12
-  iterations each name is 13 blocks: 4.5 µs more. The iterations are the operator's (RFC 9276 §3.1 asks for 0;
-  the load warns of more), so the cost is theirs; a client's name moves it by its length only, the walk to the
-  closest provable encloser starting at a node of the zone.
-- NSEC costs no hash: two bisections, 0.6 µs with the signatures written.
+- An NSEC3 NXDOMAIN costs 0.4 µs more than without DO with 0 iterations, 1.6 µs more at 12: one name hashed, the
+  next closer, one SHA-1 block at 0 iterations and 13 at 12, and the records encoded. The closest encloser's
+  record and the cover of its wildcard are links made at load (D209), where they cost two more names hashed, 0.6 µs
+  at 0 iterations and 2.7 µs at 12. The iterations are the operator's (RFC 9276 §3.1 asks for 0; the load warns
+  of more and refuses above 2500, RFC 5155 §10.3), but their cost is a third of what it was; a client's name moves
+  it by its length only, the walk to the closest provable encloser starting at a node of the zone.
+- The load does it instead: `load_nsec3`, the generated zone of 100 000 names with its NSEC3 chain through
+  `Zone::load`, 134 ms before, 159 ms after (two more hashes of each name, at 0 iterations), peak memory 110.4 MB
+  and 111.7 MB. A `Node` is 88 bytes, 16 more (`size_of`). At 2500 iterations a hash is some 225 µs, so the same
+  zone would load in 45 s: the bound on iterations (D209) is also the bound on loading.
+- NSEC costs no hash: two bisections, 0.5 µs with the signatures written.
 - The referral costs the same: the DS and its RRSIG take the room the optional glue had, and the glue stops being
   collected at the limit (D206).
-- About 600 000 NSEC3 NXDOMAIN replies a second on one core at 0 iterations, 200 000 at 12.
+- About 1 000 000 NSEC3 NXDOMAIN replies a second on one core at 0 iterations, 500 000 at 12.
 
 ## DNSSEC crypto (D71)
 

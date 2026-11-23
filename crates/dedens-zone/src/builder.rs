@@ -7,7 +7,7 @@ use dedens_proto::{
     Class, DecodedRecord, Name, Nsec3HashAlgorithm, Record, RecordType, Ttl, WireRdata,
 };
 
-use crate::denial::{Chain, Denial, Params, owner_hash_of};
+use crate::denial::{Chain, Denial, Links, Params, owner_hash_of};
 use crate::zone::find;
 use crate::{
     Bound, ErrorKind, Kind, Limits, Node, Place, Report, RrSet, Warning, WarningKind, Zone,
@@ -220,6 +220,7 @@ impl<'l> Builder<'l> {
             Bound::RrsetsPerName => self.limits.rrsets_per_name,
             Bound::RdataBytes => self.limits.rdata_bytes,
             Bound::IncludeDepth => self.limits.include_depth,
+            Bound::Nsec3Iterations => usize::from(self.limits.nsec3_iterations),
         };
         let kind = ErrorKind::Limit { bound, limit };
         if !self.report.errors.iter().any(|e| e.kind == kind) {
@@ -332,9 +333,9 @@ impl<'l> Builder<'l> {
     pub(crate) fn finish(mut self) -> Result<(Zone, Report), Report> {
         self.check_names();
         let chain = self.check_chain();
-        let (nodes, delegations) = self.nodes();
+        let (mut nodes, delegations) = self.nodes();
         self.check_glue(&nodes, delegations);
-        let denial = Denial::new(chain, &nodes, self.apex.label_count());
+        let denial = Denial::new(chain, &mut nodes, self.apex.label_count());
         let soa = find(&nodes, &self.apex).and_then(|(_, apex)| {
             let set = apex.rrset(RecordType::SOA)?;
             match set.rdatas().first()?.data() {
@@ -372,7 +373,8 @@ impl<'l> Builder<'l> {
 
     /// The chain that proves names and types absent, named by the apex: NSEC3 with an NSEC3PARAM of flags 0
     /// (RFC 5155 §4.1.2), else NSEC with an NSEC there. Each link must lead to the next of the chain, the last
-    /// to the first (RFC 4034 §4.1.1, RFC 5155 §7.1); the signatures are not checked (D209).
+    /// to the first (RFC 4034 §4.1.1, RFC 5155 §7.1); the signatures are not checked (D209). A zone that holds a
+    /// DNSKEY or signatures at its apex and has no chain is warned of: its answers prove nothing.
     fn check_chain(&mut self) -> Option<Chain> {
         let apex = self.names.get(&self.apex)?;
         if let Some(set) = apex.sets.get(&RecordType::NSEC3PARAM) {
@@ -389,11 +391,44 @@ impl<'l> Builder<'l> {
             self.check_nsec();
             return Some(Chain::Nsec);
         }
+        let signed = apex
+            .sets
+            .get(&RecordType::DNSKEY)
+            .or_else(|| apex.signatures.values().next())
+            .map(|b| b.at);
+        if let Some(at) = signed {
+            let kind = WarningKind::SignedWithoutChain;
+            self.warnings.push(Warning { at, kind });
+        }
         None
     }
 
-    /// Every NSEC leads to the owner of the next, in canonical order (RFC 4034 §4.1.1).
+    /// Every name with authoritative data or a delegation point NS has an NSEC (RFC 4035 §2.3), and each NSEC
+    /// leads to the owner of the next, in canonical order (RFC 4034 §4.1.1). A name below a cut has none to own,
+    /// and a name without one would be proved absent by the NSEC that covers it, while its answer is data.
     fn check_nsec(&mut self) {
+        let mut cut: Option<&Name<'static>> = None;
+        let mut missing = Vec::new();
+        for (name, pending) in &self.names {
+            if cut.is_some_and(|c| name.is_within(c)) {
+                continue;
+            }
+            let delegation = pending.sets.contains_key(&RecordType::NS) && name != &self.apex;
+            cut = (delegation || pending.sets.contains_key(&RecordType::DNAME)).then_some(name);
+            if !pending.sets.contains_key(&RecordType::NSEC)
+                && let Some(at) = pending
+                    .sets
+                    .values()
+                    .chain(pending.signatures.values())
+                    .map(|b| b.at)
+                    .min()
+            {
+                missing.push((at, name.clone()));
+            }
+        }
+        for (at, owner) in missing {
+            self.error(Some(at), ErrorKind::MissingNsec { owner });
+        }
         let links: Vec<(&Name<'static>, Name<'static>, Place)> = self
             .names
             .iter()
@@ -424,6 +459,10 @@ impl<'l> Builder<'l> {
         if params.algorithm() != Nsec3HashAlgorithm::SHA1 {
             let algorithm = params.algorithm();
             self.error(Some(at), ErrorKind::Nsec3Algorithm { algorithm });
+            return None;
+        }
+        if params.iterations() > self.limits.nsec3_iterations {
+            self.limit(Some(at), Bound::Nsec3Iterations);
             return None;
         }
         if params.iterations() > 0 {
@@ -650,6 +689,7 @@ impl<'l> Builder<'l> {
             wildcard,
             dname,
             proof_only: false,
+            nsec3: Links::default(),
             rrsets,
             signatures,
         }

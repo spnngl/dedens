@@ -251,8 +251,64 @@ fn rfc9276_s3_1_no_iteration_is_not_warned_of() {
 
 #[test]
 fn rfc5155_s4_1_2_an_nsec3param_of_other_flags_names_no_chain() {
-    // Flags other than 0 are for something else than serving (RFC 5155 §4.1.2): no chain, so no iteration warned.
-    assert_eq!(warnings("NSEC3PARAM 1 0 12", "NSEC3PARAM 1 1 12"), []);
+    // Flags other than 0 are for something else than serving (RFC 5155 §4.1.2): no chain, so no iteration warned,
+    // but the signed zone has no proof of absence.
+    assert_eq!(
+        warnings("NSEC3PARAM 1 0 12", "NSEC3PARAM 1 1 12"),
+        [WarningKind::SignedWithoutChain]
+    );
+}
+
+/// The warnings of [`APEX`] and `extra`, with the line each is at.
+fn warnings_of(extra: &str) -> Vec<(usize, WarningKind)> {
+    let loaded = load_extra(extra).expect("a zone");
+    let warnings = loaded.report.warnings;
+    warnings.into_iter().map(|w| (w.at.line, w.kind)).collect()
+}
+
+#[test]
+fn rfc4035_s3_1_3_a_dnskey_or_a_signature_at_the_apex_without_a_chain_is_warned_of() {
+    let dnskey = "@ DNSKEY 257 3 13 AwEAAQ==\n";
+    assert_eq!(
+        warnings_of(dnskey),
+        [(NEXT_LINE, WarningKind::SignedWithoutChain)]
+    );
+    let rrsig = "@ RRSIG SOA 13 1 3600 20300101000000 20200101000000 1 example. AAAA\n";
+    assert_eq!(
+        warnings_of(rrsig),
+        [(NEXT_LINE, WarningKind::SignedWithoutChain)]
+    );
+    // An unsigned zone is no such thing, nor is a signed one with its chain.
+    assert_eq!(warnings_of(""), []);
+    let signed = load(&zone_file("rfc4035_appendix_a.zone")).expect("a signed zone");
+    assert_eq!(signed.report.warnings, []);
+}
+
+// --- RFC 4035 §2.3 ---
+
+#[test]
+fn rfc4035_s2_3_a_name_with_data_and_no_nsec_is_refused() {
+    // A name added to the signed zone of RFC 4035 appendix A, which the chain does not lead to.
+    let text = zone_file("rfc4035_appendix_a.zone");
+    let line = text.lines().count() + 1;
+    let added = format!("{text}extra.example. 3600 IN TXT \"x\"\n");
+    assert_eq!(
+        errors(load(&added).expect_err("a refused zone")),
+        [(
+            Some(line),
+            ErrorKind::MissingNsec {
+                owner: dns("extra.example.")
+            }
+        )]
+    );
+}
+
+#[test]
+fn rfc4035_s2_3_a_name_below_a_cut_needs_no_nsec() {
+    // A name under the delegation of b.example. has no NSEC of its own (RFC 4035 §2.3).
+    let text = zone_file("rfc4035_appendix_a.zone");
+    let added = format!("{text}a.ns1.b.example. 3600 IN A 192.0.2.77\n");
+    load(&added).expect("glue needs no NSEC");
 }
 
 // --- RFC 2181 §5.2 ---

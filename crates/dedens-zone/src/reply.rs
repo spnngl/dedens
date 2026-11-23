@@ -275,7 +275,7 @@ impl<'m> Out<'m> {
     /// then under DO its signatures with that TTL too.
     fn soa(self, out: &mut Vec<Record<'m>>) {
         let zone = self.zone;
-        let Some((_, apex)) = zone.find(zone.apex()) else {
+        let Some(apex) = zone.apex_node() else {
             return;
         };
         let ttl = zone.soa_ttl().min(Ttl::from_wire(zone.soa().minimum));

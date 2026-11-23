@@ -35,6 +35,8 @@ pub enum Bound {
     RdataBytes,
     /// [`Limits::include_depth`](crate::Limits::include_depth).
     IncludeDepth,
+    /// [`Limits::nsec3_iterations`](crate::Limits::nsec3_iterations).
+    Nsec3Iterations,
 }
 
 impl fmt::Display for Bound {
@@ -46,6 +48,7 @@ impl fmt::Display for Bound {
             Self::RrsetsPerName => "RRsets at a name",
             Self::RdataBytes => "bytes of RDATA in the zone",
             Self::IncludeDepth => "levels of $INCLUDE",
+            Self::Nsec3Iterations => "NSEC3 iterations (RFC 5155 §10.3)",
         })
     }
 }
@@ -152,6 +155,13 @@ pub enum ErrorKind {
         /// The owner of the record.
         owner: Name<'static>,
     },
+    /// A name with authoritative data or a delegation point NS that has no NSEC, in a zone that proves absence by
+    /// NSEC (RFC 4035 §2.3): the NSEC that covers it would prove it absent, while its answer is data.
+    #[error("{owner} has no NSEC record (RFC 4035 §2.3)")]
+    MissingNsec {
+        /// The name.
+        owner: Name<'static>,
+    },
     /// An NSEC3PARAM of another hash algorithm than SHA-1, the only one (RFC 5155 §11): no name can be hashed to
     /// prove it absent.
     #[error("NSEC3PARAM of hash algorithm {algorithm}, not SHA-1 (RFC 5155 §11)")]
@@ -207,8 +217,16 @@ pub enum WarningKind {
         /// The owner of the record.
         owner: Name<'static>,
     },
+    /// The apex holds a DNSKEY or signatures, but no NSEC3PARAM of flags 0 and no NSEC names a chain: the answers
+    /// carry their RRSIGs and no proof that a name or type is absent, which a validating resolver takes as bogus
+    /// (RFC 4035 §3.1.3, RFC 5155 §4.1.2). A signer that left out the apex NSEC, or an NSEC3PARAM of flags 1 only
+    /// (not a chain to serve, RFC 5155 §4.1.2), shows so.
+    #[error(
+        "signed zone with no NSEC chain or NSEC3PARAM of flags 0: no proof of absence (RFC 4035 §3.1.3)"
+    )]
+    SignedWithoutChain,
     /// NSEC3 parameters of more than 0 iterations, which RFC 9276 §3.1 advises against: an answer that proves a
-    /// name absent hashes up to three names that many times more, and validators may take the zone as insecure
+    /// name absent hashes the next closer name that many times more, and validators may take the zone as insecure
     /// (§3.2).
     #[error("NSEC3PARAM of {iterations} iterations; RFC 9276 §3.1 advises 0")]
     Nsec3Iterations {

@@ -101,6 +101,11 @@ fn subset(a: &Rows<'_>, b: &Rows<'_>) -> bool {
     a.iter().all(|row| b.contains(row))
 }
 
+/// Whether `a` is the first rows of `b`, in order.
+fn prefix(a: &Rows<'_>, b: &Rows<'_>) -> bool {
+    b.get(..a.len()).is_some_and(|start| start == a.as_slice())
+}
+
 /// Whether the two sections hold the same rows.
 fn same(a: &Rows<'_>, b: &Rows<'_>) -> bool {
     subset(a, b) && subset(b, a)
@@ -269,7 +274,7 @@ fn compare(id: &str, server: Server, zone: &Zone, reference: &Reference, ours: &
         // Knot writes the names in the RDATA of NS uncompressed: its response may be full where ours is not, its
         // additional section cut short of one more address (D203).
         same(&additional, &their_additional)
-            || (subset(&their_additional, &whole)
+            || (prefix(&their_additional, &whole)
                 && theirs.len() + MIN_ADDRESS_LEN > limit(reference))
     } else {
         // Past the limit the additional section is cut where the server decides (D203): what each keeps is

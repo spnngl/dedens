@@ -33,6 +33,14 @@ pub struct Limits {
     /// Errors a load reports before it gives up: 100. A zone of wrong data would report each record; the first
     /// hundred are what a person reads. Knot's checker (`src/knot/zone/semantic-check.c`) reports them all.
     pub errors: usize,
+    /// Iterations of the NSEC3 chain the apex names: 2500, the most RFC 5155 §10.3 allows a zone owner ("MUST NOT",
+    /// for the largest keys: 150 and 500 for 1024 and 2048 bits). An answer that proves a name absent hashes
+    /// the next closer name, 1 + iterations SHA-1 blocks, and the load hashes each name twice more, so a zone a
+    /// third party supplies (a transfer) could make every query cost milliseconds and a load minutes. Knot and NSD serve any count up to 65 535; BIND's validator treats more than
+    /// 50 as insecure (`DNS_NSEC3_MAXITERATIONS`, `lib/dns/include/dns/nsec3.h`), Unbound's more than 150
+    /// (`val-nsec3-keysize-iterations`), and RFC 9276 §3.2 lets a validator do so above 0: a zone far above is
+    /// useless to its clients.
+    pub nsec3_iterations: u16,
 }
 
 impl Default for Limits {
@@ -45,6 +53,7 @@ impl Default for Limits {
             rdata_bytes: 1 << 30,
             include_depth: 8,
             errors: 100,
+            nsec3_iterations: 2500,
         }
     }
 }

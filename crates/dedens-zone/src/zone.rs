@@ -65,8 +65,12 @@ impl Zone {
     /// below it.
     #[must_use]
     pub fn soa_rrset(&self) -> Option<&RrSet> {
-        let (_, apex) = self.nodes.first()?;
-        apex.rrset(RecordType::SOA)
+        self.apex_node()?.rrset(RecordType::SOA)
+    }
+
+    /// The node of the apex: the first, as every other name is below it.
+    pub(crate) fn apex_node(&self) -> Option<&Node> {
+        self.nodes.first().map(|(_, node)| node)
     }
 
     /// Every node with its name, in canonical order.
