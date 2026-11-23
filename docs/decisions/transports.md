@@ -661,7 +661,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     valid certificate, a low-order key, a rotated certificate fetched after a silent try, a forged response, a closed
     TCP connection, a silent resolver); `apps/dedens/tests/dnscrypt.rs` (the command over UDP, TCP and as JSON, the
     list, the refusals, exit 9); the offline checks of `providers.yaml`; a fuzz seed for `parse_command_line`.
-- D99 (amended by D100, D101) `dedensd` is a DNSCrypt resolver and a client of DNSCrypt upstream servers, behind the feature `dnscrypt` of `dedensd`
+- D99 (amended by D100, D101, D208) `dedensd` is a DNSCrypt resolver and a client of DNSCrypt upstream servers, behind the feature `dnscrypt` of `dedensd`
   (off by default; it enables `dedens-net/dnscrypt` and pulls `dedens-dnscrypt`) and of `dedens-sim`. Without it
   `dnscrypt://`, the `dnscrypt` section and `sdns://` servers are config errors, and `dnscrypt-keygen` says so.
   - Listener: `dnscrypt://ADDR[:PORT]` in `listen` (port 443), UDP and TCP on one address, with the section
