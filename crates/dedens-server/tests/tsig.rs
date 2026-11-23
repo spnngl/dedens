@@ -6,14 +6,17 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use dedens_proto::edns::{Edns, EdnsFlags, EdnsOption, InfoCode};
+use dedens_proto::edns::{Cookie, Edns, EdnsFlags, EdnsOption, InfoCode};
 use dedens_proto::{
-    Flags, Message, Question, Rcode, RecordType, Transport, Tsig, TsigError, TsigRecord, find_tsig,
+    Flags, Message, Opcode, Question, Rcode, RecordType, Transport, Tsig, TsigError, TsigRecord,
+    find_tsig,
 };
-use dedens_server::{Forward, Pipeline, Stage, Step};
+use dedens_server::{Cookies, Forward, Pipeline, Secret, Secrets, Stage, Step};
 use dedens_testkit::authoritative::{self, Peer, Recording, TSIG_KEY};
 use dedens_testkit::dns;
-use dedens_tsig::{Key, Keyring, ResponseError, ResponseVerifier, Verified, sign_request};
+use dedens_tsig::{
+    Algorithm, Key, Keyring, ResponseError, ResponseVerifier, Verified, sign_request,
+};
 
 use crate::authoritative::zones;
 use crate::util::{decode, servers, wire};
@@ -296,4 +299,97 @@ fn s5_3_a_signed_query_past_the_zones_is_refused_signed() {
         matches!(&options[..], [EdnsOption::Ede(e)] if e.code == InfoCode::NOT_AUTHORITATIVE),
         "{options:?}"
     );
+}
+
+/// The key of the captures' secret under `name` and `algorithm`.
+fn named(name: &str, algorithm: Algorithm) -> Key {
+    Key::from_base64(dns(name), algorithm, TSIG_KEY.secret).expect("a valid secret")
+}
+
+/// The reply `pipeline` gives to the request of `key` for `query`, over `transport`, and what it is verified with.
+fn signed_answer<'k>(
+    pipeline: &Pipeline,
+    query: &Message<'_>,
+    key: &'k Key,
+    transport: Transport,
+) -> (Vec<u8>, ResponseVerifier<'k>) {
+    let (request, verifier) = signed(query, key);
+    let reply = answer(pipeline, &request, transport);
+    (reply, verifier)
+}
+
+#[test]
+fn s5_3_an_unsigned_query_is_answered_unsigned_by_a_server_with_keys() {
+    let query = Message::query(7, Question::new(dns("example."), RecordType::SOA));
+    let reply = answer(&server(NOW), &wire(&query), Transport::Udp);
+    assert_eq!(find_tsig(&reply).ok().flatten(), None, "unsigned");
+    let reply = decode(&reply);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    assert_eq!(reply.answer.len(), 1);
+    assert_eq!(reply.additional.len(), 0);
+}
+
+/// RFC 8945 §10: a key is a name and an algorithm; the name's key with another algorithm is not the server's.
+#[test]
+fn s5_2_1_the_keys_name_with_another_algorithm_is_badkey() {
+    let other = named(TSIG_KEY.name, Algorithm::HmacSha512);
+    let query = Message::query(7, Question::new(dns("example."), RecordType::SOA));
+    let (request, _) = signed(&query, &other);
+    let reply = answer(&server(NOW), &request, Transport::Udp);
+    assert_eq!(decode(&reply).rcode(), Rcode::NOTAUTH);
+    let record = tsig(&reply);
+    assert_eq!(record.tsig.error, TsigError::BADKEY);
+    assert!(record.tsig.mac().is_empty(), "unsigned");
+}
+
+/// RFC 8945 §4.3.3, RFC 4034 §6.2: names compare without case, so a request naming the key in capitals is the
+/// key's, and its reply verifies.
+#[test]
+fn s5_2_1_the_keys_name_in_another_case_is_the_key() {
+    let capitals = named(&TSIG_KEY.name.to_uppercase(), key().algorithm());
+    let query = Message::query(7, Question::new(dns("example."), RecordType::SOA));
+    let (reply, mut verifier) = signed_answer(&server(NOW), &query, &capitals, Transport::Udp);
+    assert_eq!(verifier.verify(&reply, NOW).ok(), Some(Verified::Signed));
+    assert_eq!(decode(&reply).rcode(), Rcode::NOERROR);
+}
+
+/// RFC 8945 §5.3: the TSIG is the last record of the reply, after the OPT record with the COOKIE and the Padding
+/// the reply carries (RFC 7873 §5.2.3, RFC 7830): signing adds it to what was built, whatever the options.
+#[test]
+fn s5_3_a_reply_with_a_cookie_and_padding_is_signed_after_them() {
+    let key = key();
+    let client = Cookie::new([1; 8], None).expect("a cookie");
+    let mut query = Message::query(7, Question::new(dns("example."), RecordType::SOA));
+    query.edns = Some(Edns {
+        options: vec![EdnsOption::Cookie(client), EdnsOption::Padding(0)],
+        ..Edns::default()
+    });
+    let secret: Secret = "e5e973e5a6b2a43f48e7dc849e37bfcf"
+        .parse()
+        .expect("a secret");
+    let cookies = Cookies::new(Secrets::new(secret, vec![]), Arc::new(|| 1_559_731_985));
+    let pipeline = server(NOW).with_cookies(cookies);
+    let (reply, mut verifier) = signed_answer(&pipeline, &query, &key, Transport::Tls);
+    assert_eq!(verifier.verify(&reply, NOW).ok(), Some(Verified::Signed));
+    let reply = decode(&reply);
+    assert_eq!(reply.rcode(), Rcode::NOERROR);
+    let options = reply.edns.expect("an OPT record").options;
+    assert!(
+        matches!(options.as_slice(), [EdnsOption::Cookie(cookie), EdnsOption::Padding(_)] if cookie.client() == client.client() && cookie.server().is_some()),
+        "{options:?}"
+    );
+    assert_eq!(reply.additional.len(), 1, "the TSIG alone, past the OPT");
+}
+
+/// RFC 1996 §4.7, RFC 8945 §5.3: a NOTIFY is not implemented yet (D211), and a signed one is told so signed.
+#[test]
+fn s5_3_a_signed_notify_is_answered_notimp_signed() {
+    let key = key();
+    let mut query = Message::query(7, Question::new(dns("example."), RecordType::SOA));
+    query.header.opcode = Opcode::NOTIFY;
+    let (reply, mut verifier) = signed_answer(&server(NOW), &query, &key, Transport::Udp);
+    assert_eq!(verifier.verify(&reply, NOW).ok(), Some(Verified::Signed));
+    let reply = decode(&reply);
+    assert_eq!(reply.rcode(), Rcode::NOTIMP);
+    assert_eq!(reply.header.opcode, Opcode::NOTIFY);
 }
