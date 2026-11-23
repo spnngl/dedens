@@ -2,6 +2,7 @@
 //! docs and in the names of its tests.
 
 mod access;
+mod authoritative;
 mod dnssec;
 #[cfg(feature = "metrics")]
 mod metrics;

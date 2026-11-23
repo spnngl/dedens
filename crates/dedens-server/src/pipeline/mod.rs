@@ -19,6 +19,7 @@ use dedens_proto::{
 use self::finish::{Finish, Refused, Ttls, prohibit, reply, servfail, slip};
 pub use self::prewarm::{Warm, Warmth};
 use crate::access::{Access, Denial};
+use crate::authoritative::Authoritative;
 use crate::budget::Spent;
 use crate::cache::{self, Looked, Read};
 use crate::cookie::{Cookies, Standing};
@@ -33,6 +34,9 @@ use crate::validate::{Check, Outcome, Payer, Progress, Source, Validating};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Stage {
+    /// Answers from the zones it holds, AA set, or passes the query on (D208). Before the first stage of another
+    /// kind, it answers every client: the access lists apply to the queries it passes on.
+    Authoritative(Authoritative),
     /// Answers from the cache, stores what a later stage asked upstream, and holds failures (D43). Shared: a
     /// pipeline built on reload keeps the cache of the one it replaces.
     Cache(Arc<Cache>),
@@ -49,6 +53,11 @@ pub enum Stage {
 #[derive(Debug, Default)]
 pub struct Pipeline {
     stages: Box<[Stage]>,
+    /// How many authoritative stages open the pipeline: they answer every client, and the access lists apply
+    /// past them (D208).
+    zones: usize,
+    /// Whether a forward or recurse stage is there: without one, no reply past the zones has RA (D208).
+    recursive: bool,
     access: Option<Access>,
     rate_limit: Option<Arc<RateLimit>>,
     cookies: Option<Cookies>,
@@ -159,8 +168,17 @@ impl Pipeline {
                 before
             })
             .collect();
+        let zones = stages
+            .iter()
+            .take_while(|stage| matches!(stage, Stage::Authoritative(_)))
+            .count();
+        let recursive = stages
+            .iter()
+            .any(|stage| matches!(stage, Stage::Forward(_) | Stage::Recurse(_)));
         Self {
             stages: stages.into(),
+            zones,
+            recursive,
             access: None,
             rate_limit: None,
             cookies: None,
@@ -216,23 +234,25 @@ impl Pipeline {
     }
 
     /// What the access lists do to the client at `from` (D91), `None` when it is answered. Counts nothing: for a
-    /// caller that must tell a denied client from a query the pipeline drops, or serve it nothing kept.
+    /// caller that must tell a denied client from a query the pipeline drops, or serve it nothing kept. Always
+    /// `None` when an authoritative stage opens the pipeline: the zones answer every client (D208).
     #[must_use]
     pub fn denial(&self, from: IpAddr) -> Option<Denial> {
         self.access
             .as_ref()
-            .filter(|access| !access.permits(from))
+            .filter(|access| self.zones == 0 && !access.permits(from))
             .map(Access::denial)
     }
 
     /// Whether the client at `from` is denied with [`Denial::Drop`] (D91): the caller sends it nothing, and takes
     /// no connection or state for it. Counts the denial. A client denied with [`Denial::Refuse`], or not denied,
-    /// is answered by [`Pipeline::query`].
+    /// is answered by [`Pipeline::query`]. Never when an authoritative stage opens the pipeline: the zones answer
+    /// every client, and [`Pipeline::query`] drops the queries they pass on (D208).
     #[must_use]
     pub fn drops(&self, from: IpAddr) -> bool {
-        self.access
-            .as_ref()
-            .is_some_and(|access| access.denial() == Denial::Drop && access.deny(from))
+        self.access.as_ref().is_some_and(|access| {
+            self.zones == 0 && access.denial() == Denial::Drop && access.deny(from)
+        })
     }
 
     /// Whether the client at `from` is denied, with either action (D91). Counts the denial. For a caller that serves
@@ -257,7 +277,8 @@ impl Pipeline {
     /// [`Denial::Drop`], else REFUSED with EDE 18 (Prohibited, RFC 8914 §4.19) built from the query in place, with
     /// no allocation, unless the bytes are a response or shorter than a header. An IPv4-mapped IPv6 address is the
     /// IPv4 one. Over UDP that REFUSED counts against the rate of the source network too, and is dropped past it
-    /// ([`Pipeline::with_rate_limit`]).
+    /// ([`Pipeline::with_rate_limit`]). When authoritative stages open the pipeline, the lists apply past them
+    /// instead, to the queries they pass on, with the same replies (D208, BIND's `allow-recursion`).
     ///
     /// Then, with cookies ([`Pipeline::with_cookies`]), a query with a Client Cookie is answered with a fresh Server
     /// Cookie whatever follows (RFC 7873 §5.2, D113), and over UDP a query without a valid Server Cookie counts
@@ -267,7 +288,9 @@ impl Pipeline {
     /// Then, before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
     /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
     /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
-    /// a forwarder does not do. Responses are dropped, never answered. A FORMERR to OPT records that break a rule,
+    /// a forwarder does not do, nor yet the authoritative stage. Responses are dropped, never answered. A reply
+    /// has RA, but when authoritative stages open the pipeline: then only when a forward or recurse stage follows
+    /// and the access lists permit the client (D208). A FORMERR to OPT records that break a rule,
     /// several (RFC 6891 §6.1.1), one outside the additional section, not owned by the root or with options
     /// overrunning it (§6.1.2), or with an invalid option, has our OPT record (§6.1.1, §7); one to a query it cannot
     /// read has none: none was read.
@@ -283,7 +306,8 @@ impl Pipeline {
         now: u32,
         out: &mut [u8],
     ) -> Step {
-        if let Some(access) = &self.access
+        if self.zones == 0
+            && let Some(access) = &self.access
             && access.deny(from)
         {
             return match access.denial() {
@@ -303,7 +327,7 @@ impl Pipeline {
                 return Step::Drop;
             };
             // No cookie can be read: the FORMERR counts against the rate as any reply (D113).
-            let client = Client::unread(header, transport);
+            let client = Client::unread(header, transport).with_recursion(self.recursion(from));
             return match self.admit(transport, from, now, Standing::NoCookie) {
                 Admission::Drop => Step::Drop,
                 Admission::Slip => slip(&client, out),
@@ -329,7 +353,9 @@ impl Pipeline {
             .as_mut()
             .zip(request)
             .map(|(cookies, request)| cookies.issue(request.client(), from));
-        let client = Client::of(&query, transport).with_cookie(fresh);
+        let client = Client::of(&query, transport)
+            .with_cookie(fresh)
+            .with_recursion(self.recursion(from));
         if admission == Admission::Slip {
             return slip(&client, out);
         }
@@ -367,6 +393,47 @@ impl Pipeline {
         reply(&client, Message::default(), rcode, out)
     }
 
+    /// Whether the client at `from` has recursion available, RA (D208): always, but when authoritative stages
+    /// open the pipeline; then when a forward or recurse stage follows them and the access lists permit the
+    /// client. Counts nothing.
+    fn recursion(&self, from: IpAddr) -> bool {
+        self.zones == 0
+            || (self.recursive
+                && self
+                    .access
+                    .as_ref()
+                    .is_none_or(|access| access.permits(from)))
+    }
+
+    /// The reply of the authoritative stages opening the pipeline to `client` at `from` (D208), or, for a query
+    /// they pass on, what the access lists do to it, as [`Pipeline::query`] does before the stages otherwise:
+    /// `None` when the query goes on. Counts the denial; the query counted against the rate already.
+    fn zones(&self, client: &Client<'_>, from: IpAddr, out: &mut [u8]) -> Option<Step> {
+        let zones = self
+            .stages
+            .get(..self.zones)
+            .filter(|zones| !zones.is_empty())?;
+        let answer = zones.iter().find_map(|stage| match stage {
+            Stage::Authoritative(zones) => zones.reply(client, out),
+            _ => None,
+        });
+        if answer.is_some() {
+            return answer;
+        }
+        let access = self.access.as_ref().filter(|access| access.deny(from))?;
+        Some(match access.denial() {
+            Denial::Drop => Step::Drop,
+            Denial::Refuse => client
+                .reply(
+                    Message::default(),
+                    Rcode::REFUSED,
+                    Some(InfoCode::PROHIBITED),
+                    out,
+                )
+                .map_or(Step::Drop, Step::Reply),
+        })
+    }
+
     /// What the rate limit does to a query from `from` over `transport` at `now`, with cookie `standing` (D113):
     /// only UDP is limited, and a source that proved its address with a valid Server Cookie is not spoofed (RFC 7873
     /// §5.2.5). Counts the query.
@@ -390,9 +457,10 @@ impl Pipeline {
         })
     }
 
-    /// Runs the stages on a query that passed the core's checks. Without RD, only fresh cached data answers: no
-    /// stale data (RFC 8767 §5), no upstream query (RFC 1034 §4.3.1), REFUSED with EDE 20 (Not Authoritative,
-    /// RFC 8914 §4.21) otherwise.
+    /// Runs the stages on a query that passed the core's checks. The authoritative stages answer whatever RD says
+    /// (D208); past them, without RD, only fresh cached data answers: no stale data (RFC 8767 §5), no upstream
+    /// query (RFC 1034 §4.3.1), REFUSED with EDE 20 (Not Authoritative, RFC 8914 §4.21) otherwise. The access
+    /// lists apply after the authoritative stages that open the pipeline ([`Pipeline::query`]).
     fn run(
         &self,
         query: &Query<'_>,
@@ -401,6 +469,9 @@ impl Pipeline {
         now: u32,
         out: &mut [u8],
     ) -> Step {
+        if let Some(step) = self.zones(client, source.address, out) {
+            return step;
+        }
         let recursion = client.header.flags.contains(Flags::RD);
         let stale = if recursion {
             StalePolicy::IfFailing
@@ -416,8 +487,13 @@ impl Pipeline {
                 .is_some_and(|q| q.qtype == RecordType::ANY);
         let mut cache = None;
         let mut expired = false;
-        for (index, stage) in self.stages.iter().enumerate() {
+        for (index, stage) in self.stages.iter().enumerate().skip(self.zones) {
             match stage {
+                Stage::Authoritative(zones) => {
+                    if let Some(step) = zones.reply(client, out) {
+                        return step;
+                    }
+                }
                 Stage::Cache(_) if truncate => {}
                 Stage::Cache(_) => {
                     match self.look(index, query, client, now, Read::Lookup(stale), out) {
@@ -519,7 +595,10 @@ impl Pipeline {
             .skip(from)
             .find_map(|(index, stage)| match stage {
                 Stage::Forward(forward) => Some((index, forward)),
-                Stage::Cache(_) | Stage::Plugin(_) | Stage::Recurse(_) => None,
+                Stage::Authoritative(_)
+                | Stage::Cache(_)
+                | Stage::Plugin(_)
+                | Stage::Recurse(_) => None,
             })
             .ok_or(Refused::NoServer)?;
         let question = query.question().ok_or(Refused::NoServer)?;
@@ -666,7 +745,10 @@ impl Pipeline {
                     .reviewer()?
                     .review(query, response)
                     .map(|answer| (at, answer)),
-                Stage::Cache(_) | Stage::Forward(_) | Stage::Recurse(_) => None,
+                Stage::Authoritative(_)
+                | Stage::Cache(_)
+                | Stage::Forward(_)
+                | Stage::Recurse(_) => None,
             })
     }
 
@@ -729,7 +811,10 @@ impl Pipeline {
     fn cache(&self, index: usize) -> Option<&Cache> {
         match self.stages.get(index) {
             Some(Stage::Cache(cache)) => Some(cache),
-            Some(Stage::Forward(_) | Stage::Plugin(_) | Stage::Recurse(_)) | None => None,
+            Some(
+                Stage::Authoritative(_) | Stage::Forward(_) | Stage::Plugin(_) | Stage::Recurse(_),
+            )
+            | None => None,
         }
     }
 
@@ -1018,7 +1103,9 @@ impl Pipeline {
     pub fn prime(&self, now: Duration) -> Option<Box<Resolving>> {
         self.stages.iter().find_map(|stage| match stage {
             Stage::Recurse(recurse) => recurse.priming(now),
-            Stage::Cache(_) | Stage::Forward(_) | Stage::Plugin(_) => None,
+            Stage::Authoritative(_) | Stage::Cache(_) | Stage::Forward(_) | Stage::Plugin(_) => {
+                None
+            }
         })
     }
 
@@ -1029,7 +1116,9 @@ impl Pipeline {
     pub fn root_keys(&self) -> Option<Box<Resolving>> {
         self.stages.iter().find_map(|stage| match stage {
             Stage::Recurse(recurse) => Some(recurse.root_keys()),
-            Stage::Cache(_) | Stage::Forward(_) | Stage::Plugin(_) => None,
+            Stage::Authoritative(_) | Stage::Cache(_) | Stage::Forward(_) | Stage::Plugin(_) => {
+                None
+            }
         })
     }
 }

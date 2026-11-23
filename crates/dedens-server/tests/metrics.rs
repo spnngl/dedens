@@ -1,4 +1,4 @@
-//! The counters of the `metrics` feature (D30, D91, D113).
+//! The counters of the `metrics` feature (D30, D91, D113, D208).
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
 use dedens_proto::{Flags, RecordType, Transport};
 use dedens_server::{
-    Access, Allowance, Budget, Budgets, Clock, Cookies, Denial, Network, Rate, RateLimit,
+    Access, Allowance, Budget, Budgets, Clock, Cookies, Denial, Network, Pipeline, Rate, RateLimit,
     RateLimitConfig, Secret, Secrets, Step, Validating,
 };
 use dedens_testkit::dnssec::Captures;
@@ -79,6 +79,45 @@ pub(crate) fn counted(
         .collect();
     counted.sort();
     counted
+}
+
+/// `dedensd_authoritative_answers_total{kind}` counts the answers of the authoritative stage by kind (D208); a
+/// query it passes on counts nothing.
+#[test]
+fn authoritative_answers_are_counted_by_kind() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let pipeline = metrics::with_local_recorder(&recorder, || {
+        Pipeline::new(vec![crate::authoritative::zones()])
+    });
+    let mut out = vec![0; 65535];
+    for (name, qtype) in [
+        ("ns1.example", RecordType::A),
+        ("ns1.example", RecordType::A),
+        ("ns1.example", RecordType::MX),
+        ("nothing.example", RecordType::A),
+        ("www.a.example", RecordType::A),
+        ("example.org", RecordType::A),
+    ] {
+        let query = client_query(name, qtype, Flags::NONE, false);
+        let _ = pipeline.query(
+            &query,
+            Transport::Udp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
+    }
+    let kinds = |pairs: &[(&str, u64)]| -> Vec<(String, u64)> {
+        pairs
+            .iter()
+            .map(|&(kind, n)| (kind.to_owned(), n))
+            .collect()
+    };
+    assert_eq!(
+        counted(&snapshotter, "dedensd_authoritative_answers_total", "kind"),
+        kinds(&[("data", 2), ("nodata", 1), ("nxdomain", 1), ("referral", 1)])
+    );
 }
 
 /// `dedensd_rrl_limited_total{action}` counts the UDP queries over the rate, by slip (TC) and drop; the queries

@@ -10,6 +10,7 @@ use dedens_proto::{
     Flags, HEADER_LEN, Header, MAX_MESSAGE_LEN, Message, Query, Question, Rcode, Transport,
     Violation,
 };
+use dedens_zone::{Answer as ZoneAnswer, Glue, Zone};
 
 use crate::plugin::Answer;
 
@@ -38,6 +39,9 @@ pub(crate) struct Client<'q> {
     pub(crate) transport: Transport,
     /// The cookie our reply carries: the client's, with the Server Cookie we made for it (D113).
     pub(crate) cookie: Option<Cookie>,
+    /// Whether recursion is available to the client, RA (RFC 1035 §4.1.1): always, but past an authoritative
+    /// stage (D208).
+    recursion: bool,
 }
 
 /// The OPT record of a query, as its reply needs it: the reply has ours when the query had one, and only then (RFC
@@ -78,6 +82,7 @@ impl<'q> Client<'q> {
             opt,
             transport,
             cookie: None,
+            recursion: true,
         }
     }
 
@@ -85,6 +90,18 @@ impl<'q> Client<'q> {
     pub(crate) const fn with_cookie(mut self, cookie: Option<Cookie>) -> Self {
         self.cookie = cookie;
         self
+    }
+
+    /// The same client, its replies without RA when `available` is false: no later stage forwards or recurses
+    /// for it (D208).
+    pub(crate) const fn with_recursion(mut self, available: bool) -> Self {
+        self.recursion = available;
+        self
+    }
+
+    /// Whether recursion is available to the client: its replies have RA.
+    pub(crate) const fn recursion(&self) -> bool {
+        self.recursion
     }
 
     /// The client of a query read no further than its header: the reply has no question and no OPT record, as
@@ -96,13 +113,15 @@ impl<'q> Client<'q> {
             opt: Opt::Absent,
             transport,
             cookie: None,
+            recursion: true,
         }
     }
 
     /// Writes `message` into `out` as the reply, with `rcode`, and returns its length; `None` when `out` cannot
     /// hold the header, the question and the OPT record.
     ///
-    /// The reply has the client's ID, opcode and question, in its case (RFC 4343 §4); QR and RA set, RD and CD
+    /// The reply has the client's ID, opcode and question, in its case (RFC 4343 §4); QR set, RA as
+    /// [`Client::with_recursion`] says, RD and CD
     /// copied (RFC 1035 §4.1.1, RFC 4035 §3.2.2), AD kept only when the query had AD or DO (RFC 6840 §5.8), AA
     /// cleared: the server is not the authority. It has an OPT record, ours, when the query had one, read or not
     /// (RFC 6891 §6.1.1, §7), with DO copied (RFC 3225 §3), the extended `error` if any (RFC 8914) and the
@@ -117,7 +136,7 @@ impl<'q> Client<'q> {
         error: Option<InfoCode>,
         out: &mut [u8],
     ) -> Option<usize> {
-        self.write(message, (rcode, error), Flags::NONE, out)
+        self.write(message, (rcode, error), (Flags::NONE, None), out)
     }
 
     /// Writes `message` as [`Client::reply`] does with NOERROR or `rcode`, AA set: the answer of a zone this server
@@ -128,17 +147,45 @@ impl<'q> Client<'q> {
         rcode: Rcode,
         out: &mut [u8],
     ) -> Option<usize> {
-        self.write(message, (rcode, None), Flags::AA, out)
+        self.write(message, (rcode, None), (Flags::AA, None), out)
     }
 
-    /// Writes `message` as [`Client::reply`] does, the flags of `set` set too.
-    fn write(
+    /// Writes `answer`, the answer of `zone`, as [`Client::authoritative`] does, AA as the answer has it: the
+    /// authoritative stage's (D208). TC is set when the glue a referral requires does not fit (RFC 9471 §3).
+    pub(crate) fn zone(
         &self,
-        mut message: Message<'q>,
-        (rcode, error): (Rcode, Option<InfoCode>),
-        set: Flags,
+        zone: &Zone,
+        answer: &ZoneAnswer<'_>,
         out: &mut [u8],
     ) -> Option<usize> {
+        let mut message = Message::default();
+        let glue = answer.fill(zone, &mut message, self.limit().min(out.len()));
+        let aa = if answer.authoritative() {
+            Flags::AA
+        } else {
+            Flags::NONE
+        };
+        self.write(message, (answer.rcode(), None), (aa, Some(glue)), out)
+    }
+
+    /// Writes `message` as [`Client::reply`] does, the flags of `set` set too, encoded by `glue` if any.
+    fn write<'m>(
+        &self,
+        mut message: Message<'m>,
+        (rcode, error): (Rcode, Option<InfoCode>),
+        (set, glue): (Flags, Option<Glue>),
+        out: &mut [u8],
+    ) -> Option<usize>
+    where
+        'q: 'm,
+    {
+        let encode = |message: &Message<'_>, out: &mut [u8]| match glue {
+            Some(glue) => glue.encode(message, out).ok(),
+            None => message
+                .encode_truncated(out)
+                .ok()
+                .map(|encoded| encoded.len),
+        };
         message.header = Header {
             flags: self.flags(message.header.flags) | set,
             ..self.header
@@ -160,11 +207,11 @@ impl<'q> Client<'q> {
             message.header.rcode = Rcode::SERVFAIL;
         }
         let limit = self.limit().min(out.len());
-        let len = message.encode_truncated(&mut out[..limit]).ok()?.len;
+        let len = encode(&message, &mut out[..limit])?;
         match (&mut message.edns, self.padding(len, limit)) {
             (Some(edns), Some(zeros)) => {
                 edns.options.push(EdnsOption::Padding(zeros));
-                Some(message.encode_truncated(&mut out[..limit]).ok()?.len)
+                encode(&message, &mut out[..limit])
             }
             _ => Some(len),
         }
@@ -292,11 +339,14 @@ impl<'q> Client<'q> {
         u16::try_from(end.checked_sub(head)?).ok()
     }
 
-    /// The flags of a reply carrying a response with `flags`: QR and RA, the client's RD and CD, and AD when the
-    /// response has it and the client asked with AD or DO.
+    /// The flags of a reply carrying a response with `flags`: QR, RA as [`Client::with_recursion`] says, the
+    /// client's RD and CD, and AD when the response has it and the client asked with AD or DO.
     fn flags(&self, flags: Flags) -> Flags {
         let asked = self.header.flags;
-        let reply = asked & (Flags::RD | Flags::CD) | Flags::QR | Flags::RA;
+        let mut reply = asked & (Flags::RD | Flags::CD) | Flags::QR;
+        if self.recursion {
+            reply = reply.with(Flags::RA);
+        }
         if flags.contains(Flags::AD) && (self.dnssec() || asked.contains(Flags::AD)) {
             reply.with(Flags::AD)
         } else {

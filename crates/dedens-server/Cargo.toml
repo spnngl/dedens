@@ -10,8 +10,8 @@ publish.workspace = true
 autotests = false
 
 [features]
-# Validation, access, rate limit and cookie counters through the `metrics` facade (D30, D77, D91, D113), and the
-# recursive resolver's (D191, D195).
+# Validation, access, rate limit, cookie and authoritative answer counters through the `metrics` facade (D30, D77,
+# D91, D113, D208), and the recursive resolver's (D191, D195).
 metrics = ["dep:metrics", "dedens-resolver/metrics"]
 # `Network`, `Denial`, `Secret` read from configuration files (D24, D91, D113).
 serde = ["dep:serde"]
@@ -21,6 +21,7 @@ dedens-cache.workspace = true
 dedens-dnssec.workspace = true
 dedens-proto.workspace = true
 dedens-resolver.workspace = true
+dedens-zone.workspace = true
 ipnet.workspace = true
 metrics = { workspace = true, optional = true }
 prefix-trie.workspace = true

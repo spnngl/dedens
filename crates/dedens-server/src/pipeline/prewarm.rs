@@ -133,6 +133,14 @@ impl Pipeline {
         let mut cache = None;
         for (index, stage) in self.stages.iter().enumerate() {
             match stage {
+                Stage::Authoritative(zones) => {
+                    if query
+                        .question()
+                        .is_some_and(|question| zones.zone(&question.name).is_some())
+                    {
+                        return Warmth::Local;
+                    }
+                }
                 Stage::Plugin(plugin) => {
                     if plugin.answer(&query).is_some() {
                         return Warmth::Local;
@@ -173,7 +181,9 @@ impl Pipeline {
         let query = Query::read(&wire).ok()?;
         let cache = self.stages.iter().find_map(|stage| match stage {
             Stage::Cache(cache) => Some(cache),
-            Stage::Plugin(_) | Stage::Forward(_) | Stage::Recurse(_) => None,
+            Stage::Authoritative(_) | Stage::Plugin(_) | Stage::Forward(_) | Stage::Recurse(_) => {
+                None
+            }
         });
         let refresh = cache?.refresh(&query, now)?;
         (!refresh.bogus).then(|| due(refresh))
