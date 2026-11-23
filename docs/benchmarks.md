@@ -949,35 +949,58 @@ Peak memory 47 MB (`max alloc` of the allocation profiler: 297 000 live allocati
 
 ### Answering from a zone (D206)
 
-`answer_zone`, `reply_zone`, `reply_root` and `lookup_*` in `crates/dedens-bench/benches/zone.rs`: the generated zone of
-100 000 records (`h4000.example.` data, `nothing.example.` NXDOMAIN, `anything.wild.example.` wildcard,
-`www.h4002.example.` CNAME then data, `long`: a name of 122 labels, the most under `example.`, that is not there,
-`growth`: 100 labels below a DNAME whose target is below its own owner, which makes the name longer at each link) and
-the captured root zone (a referral, a name under no delegation, `root_long`: 127 labels); `reply` is the answer, the
-message filled and encoded in 1232 bytes. Medians of one run, one query at a time, on a machine shared with other
-builds (read the ratios):
+`answer_zone`, `reply_zone`, `reply_mx`, `reply_ptr`, `reply_root` and `lookup_*` in
+`crates/dedens-bench/benches/zone.rs`: the generated zone of 100 000 records, with a wildcard, a DNAME and these names
+(`h4000.example.` data, `nothing.example.` NXDOMAIN, `anything.wild.example.` wildcard, `www.h4002.example.` CNAME then
+data; `long`: 123 labels that are not there; `deep`: a name of 120 labels that is a node, `below_deep` one label below
+it; `deep_cut`: 120 labels below a delegation; `growth`: 100 labels below a DNAME whose target is below its own owner,
+which makes the name longer at each link; `mx-auth`, `mx-cut`, `mx-many`: an MX of 100 hosts, with one address each,
+with one address each but 100 labels deep below a delegation, and with 100 A and 100 AAAA each), a reverse zone for IPv6
+(`ptr`: 34 labels) and the captured root zone (a referral, a name under no delegation, `root_long`: 127 labels).
+`reply` is the answer, the message filled and encoded in 1232 bytes. Medians of one run, one query at a time, on a
+machine shared with other builds (read the ratios). Before is the walk from the apex of 54d7f3ed (each ancestor looked
+up in turn, the first cut found by it), after is the bisection of D206 (`Kind::Occluded { cut }`), both run on this
+bench:
 
-| | `answer` alone | `reply` |
-|---|---|---|
-| data | 284 ns | 372 ns |
-| NXDOMAIN, SOA TTL | 578 ns | 695 ns |
-| wildcard | 833 ns | 956 ns |
-| CNAME, then data | 913 ns | 1.12 µs |
-| 122 labels, not there | 979 ns | 1.16 µs |
-| DNAME that grows the name | 15.1 µs | 22.2 µs |
-| root: name under no delegation | | 1.12 µs |
-| root: 127 labels | | 862 ns |
-| root: referral to `com.` (13 name servers, glue) | | 6.58 µs |
+| | before: `answer` | before: `reply` | after: `answer` | after: `reply` |
+|---|---|---|---|---|
+| data | 256 ns | 315 ns | 255 ns | 331 ns |
+| NXDOMAIN (`nothing.example.`) | 1.05 µs | 1.17 µs | 1.27 µs | 1.29 µs |
+| wildcard | 750 ns | 784 ns | 750 ns | 893 ns |
+| CNAME, then data | 826 ns | 995 ns | 581 ns | 703 ns |
+| `long`, 123 labels, not there | 493 µs | 500 µs | 11.9 µs | 12.1 µs |
+| `deep`, 120 labels, a node | 489 µs | 488 µs | 5.6 µs | 6.2 µs |
+| `below_deep` | 492 µs | 491 µs | 12.4 µs | 11.9 µs |
+| `deep_cut` | 1.4 µs | 2.4 µs | 7.5 µs | 8.8 µs |
+| DNAME that grows the name | 22.9 µs | 29.9 µs | 64.5 µs | 73.0 µs |
+| IPv6 PTR, 34 labels | | 28.7 µs | | 1.56 µs |
+| IPv6 PTR, last nibble missing | | 956 ns | | 1.50 µs |
+| MX, 100 hosts of the zone, 1 address each | | 43.2 µs | | 34.1 µs |
+| MX, 100 hosts 100 labels deep below a cut | | 764 µs | | 552 µs |
+| MX, 100 hosts with 200 addresses each | | 3.75 ms | | 4.9 µs |
+| root: name under no delegation | | 461 ns | | 513 ns |
+| root: 127 labels | | 794 ns | | 3.41 µs |
+| root: referral to `com.` (13 name servers, glue) | | 5.90 µs | | 5.66 µs |
 
-- The first version searched a name from itself up, a lookup for each ancestor to find the closest encloser, then
-  again for the cut above it: quadratic in the labels. The long names took (`answer` / `reply`) 369 µs / 359 µs
-  (122 labels), 3.47 ms / 4.2 ms (the DNAME growth, whose every link is a long name) and 476 µs for the root's 127
-  labels, against 0.3-0.9 µs for a normal name. Now one walk from
-  the apex down over the wire bytes of the name, stopping at the first suffix that is no node (D204: every ancestor
-  of a node is a node), recording the first cut on the way: 979 ns, 15.1 µs and 862 ns, 3.4 times a short name for
-  122 labels; the growth case is a chain of long names, a link each.
-- A short name's lookup is the same: data 292 → 284 ns, wildcard 791 → 833 ns, CNAME 664 → 913 ns, NXDOMAIN 1.54 µs → 578 ns (614 ns in
-  the first record of this section: runs vary by that much on this machine).
+- The cost of a lookup is that of a bisection, 17 comparisons of `Name`s, and a comparison costs the labels of the
+  names it compares: a name of 120 labels takes 5.6 µs (47 ns a label; 3 labels take 255 ns, 85 ns a label), and one
+  that is not there takes a second bisection for the wildcard of its closest encloser (`long`, `below_deep`: twice).
+  The walk of 54d7f3ed took one bisection for each label, of the name's suffixes: 120 for `deep`, 490 µs, 88 times
+  more; it took names under a shallow cut cheaply (`deep_cut`, `growth`: the cut was found two
+  labels down), which now cost the bisection of the long name each (5-7 µs; 11 of them for `growth`). That is the
+  price of a bound that no name or zone shape moves: every case is a bisection or two of its own length, 5-12 µs
+  for the longest names, a few dozen times a short query for forty times the labels; the worst a client can pick is
+  `growth`, 65 µs for 11 links, where the walk's worst was 3.5 ms.
+- A short name costs what it did: data 256 → 255 ns, NXDOMAIN 1.05 → 1.27 µs (the closest encloser is the apex, taken
+  from the first node, with no second bisection; the rest is the node before it), wildcard the same, CNAME 826 → 581 ns
+  (the exact match first, one bisection for each name). The names under a deep chain in this zone make every
+  bisection compare against long names near the first nodes, which is why the table's numbers are above the earlier
+  runs of this section (an `example.` bisection alone takes 750 ns here).
+- `mx-many` (D206: the additional section stops once the records taken pass the limit `fill` is given, 1232 bytes here):
+  4.9 µs for 100 hosts, where it took 3.75 ms to collect 20 000 addresses and drop them all at the encoding.
+- `mx-cut`: 100 hosts 100 labels deep, below a delegation, whose addresses are glue: 5.5 µs a host, one bisection each,
+  where the old walk stopped at the delegation after two labels: `address_node` reads the node's `cut`, which no
+  walk finds.
 - The lookup is most of a data answer: no allocation (`answer` allocates nothing but the chain's `Vec` when there is a
   link). `reply` allocates the message's `Vec`s: 1 allocation of 224 B for a data answer, 15 of 2.6 KB for the
   root's referral.
