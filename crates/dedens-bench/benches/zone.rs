@@ -42,6 +42,23 @@ fn read_dedens(bencher: Bencher<'_, '_>) {
     });
 }
 
+/// `load_dedens` of the zone with an NSEC3 chain over its names (D209): the load also finds, for each name, the
+/// records of its hash and of its wildcard's.
+#[divan::bench]
+fn load_nsec3(bencher: Bencher<'_, '_>) {
+    let text = nsec3_text();
+    let origin = Name::from_labels([b"example".as_slice()]).expect("a name");
+    let limits = Limits::default();
+    bencher.bench_local(|| {
+        let source = Source {
+            name: "zone",
+            text: black_box(text.as_bytes()),
+            default_ttl: None,
+        };
+        Zone::load(origin.clone(), source, &mut |_| Err(String::new()), &limits).expect("loads")
+    });
+}
+
 /// The reader of `read_dedens` and the checks of D204: every record filed into its name and `RRset`, the nodes in
 /// canonical order, the cuts marked. `AllocProfiler`'s `max alloc` is the peak memory of the load.
 #[divan::bench]
@@ -154,6 +171,12 @@ fn ptr_zone() -> Zone {
 /// The generated zone and a wildcard, with an NSEC3 chain of no salt and no iteration over its names (RFC 9276 §3.1),
 /// unsigned: the load checks no signature (D209), and the proofs are chosen the same way.
 fn nsec3_zone() -> Zone {
+    let apex = Name::from_labels([b"example".as_slice()]).expect("a name");
+    loaded(apex, &nsec3_text())
+}
+
+/// The text of [`nsec3_zone`].
+fn nsec3_text() -> String {
     let mut text = zone(ZONE_HOSTS);
     text.push_str("*.wild TXT \"wildcard\"\n");
     let apex = Name::from_labels([b"example".as_slice()]).expect("a name");
@@ -171,7 +194,7 @@ fn nsec3_zone() -> Zone {
         let next = std::str::from_utf8(next).expect("base32hex");
         writeln!(text, "{} NSEC3 1 0 0 - {next} A", owner(hash)).expect("writes");
     }
-    loaded(apex, &text)
+    text
 }
 
 /// The zone of RFC 5155 Appendix A: NSEC3 of 12 iterations and a salt.

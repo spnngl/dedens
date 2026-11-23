@@ -42,8 +42,9 @@ D209); `src/lib.rs` says what each type is.
   not one label below the apex is warned of at load (`WarningKind::Nsec3Owner`) and still differs from Knot (TODECIDE).
 - The `Denial` index (D209) holds node places: built in `finish` from the final nodes, after the chain is checked,
   so it is never patched; anything that moves nodes goes through `Builder`. Its NSEC3 hashes come from owner labels;
-  a name a query needs is hashed at query time with the zone's parameters, and never more than the closest
-  encloser, the next closer and the wildcard, plus the walk up from a node to the closest provable encloser.
+  each node also holds, from `Denial::new`, the places of its NSEC3 record and of the one covering its wildcard
+  (`Node::nsec3`, found by hashing at load). A query hashes the next closer name only, the one that is no node;
+  never hash another at query time (an NXDOMAIN's cost is the client's to choose, D209).
 - With DO every proof `fill` adds is checked twice in `tests/signed.rs`: by `dedens-dnssec`'s validator where the
   keys verify (RFC 4035 zone, root) and by `denial::prove` everywhere. A new proof case gets a case there; the
   RFC Appendix B responses are read from `docs/rfc/archive/`, never copied into the test.

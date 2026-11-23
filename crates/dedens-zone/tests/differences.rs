@@ -8,7 +8,7 @@ use dedens_proto::{Class, Question, Record, RecordType, Serial, Ttl};
 use dedens_testkit::dns;
 use dedens_zone::{Changeset, ChangesetError, End, ErrorKind, Kind, Limits, Node, RrSet, Zone};
 
-use crate::util::{APEX, load, load_files, zone_file};
+use crate::util::{APEX, load, load_files, with_names_after_b, zone_file};
 
 /// [`APEX`] at `serial`, then `extra`, loaded.
 fn version(serial: u32, extra: &str) -> Zone {
@@ -284,20 +284,30 @@ fn a_changeset_has_two_soa_ends_one_zone_and_a_serial_ahead() {
 fn signed_versions() -> Vec<Zone> {
     let edits: [fn(String) -> String; 5] = [
         |t| t,
-        |t| format!("{t}new 3600 IN A 192.0.2.99\n"),
         |t| {
-            format!(
-                "{}new 3600 IN A 192.0.2.99\nnew 600 IN TXT \"hi\"\n",
-                t.replace("3600 NS     ns2.example.\n", "")
+            let added = "new 3600 IN A 192.0.2.99\nnew 3600 NSEC ns1.example. A RRSIG NSEC\n";
+            with_names_after_b(&t, "new.example.", added)
+        },
+        |t| {
+            let added = "new 3600 IN A 192.0.2.99\nnew 600 IN TXT \"hi\"\n\
+                         new 3600 NSEC ns1.example. A TXT RRSIG NSEC\n";
+            with_names_after_b(
+                &t.replace("3600 NS     ns2.example.\n", ""),
+                "new.example.",
+                added,
             )
         },
         |t| {
-            format!(
-                "{}new 3600 IN A 192.0.2.99\nsub.new 3600 IN NS ns.sub.new\nns.sub.new 3600 IN A 192.0.2.7\n",
-                t.replace("3600 MX     1 xx.example.\n", "3600 MX     2 xx.example.\n")
-            )
+            let added = "new 3600 IN A 192.0.2.99\nnew 3600 NSEC sub.new.example. A RRSIG NSEC\n\
+                         sub.new 3600 IN NS ns.sub.new\nsub.new 3600 NSEC ns1.example. NS RRSIG NSEC\n\
+                         ns.sub.new 3600 IN A 192.0.2.7\n";
+            let t = t.replace("3600 MX     1 xx.example.\n", "3600 MX     2 xx.example.\n");
+            with_names_after_b(&t, "new.example.", added)
         },
-        |t| format!("{t}deep.er.est 3600 IN A 192.0.2.5\n"),
+        |t| {
+            let added = "deep.er.est 3600 IN A 192.0.2.5\ndeep.er.est 3600 NSEC ns1.example. A RRSIG NSEC\n";
+            with_names_after_b(&t, "deep.er.est.example.", added)
+        },
     ];
     edits
         .iter()

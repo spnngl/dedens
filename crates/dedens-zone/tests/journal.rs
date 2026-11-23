@@ -12,7 +12,7 @@ use dedens_zone::journal::{Journal, JournalError, JournalLimits, MAX_FILE, Store
 use dedens_zone::{Changeset, Limits, Zone};
 use tempfile::TempDir;
 
-use crate::util::{APEX, load, load_files, zone_file};
+use crate::util::{APEX, load, load_files, with_names_after_b, zone_file};
 
 /// [`APEX`] at `serial`, then `extra`, loaded.
 fn version(serial: u32, extra: &str) -> Zone {
@@ -66,10 +66,9 @@ fn the_fuzz_seed_is_the_journal_of_three_versions_of_an_example_zone() {
         signed(1_081_539_377, |t| t),
         signed(1_081_539_378, |t| t.replace("38519", "38520")),
         signed(1_081_539_379, |t| {
-            format!(
-                "{}\nextra.example. 3600 IN TXT \"added\"\n",
-                t.replace("38519", "38520")
-            )
+            let added =
+                "extra 3600 IN TXT \"added\"\nextra 3600 NSEC ns1.example. TXT RRSIG NSEC\n";
+            with_names_after_b(&t.replace("38519", "38520"), "extra.example.", added)
         }),
     ];
     let changesets: Vec<_> = versions

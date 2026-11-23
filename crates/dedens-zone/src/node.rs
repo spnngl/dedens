@@ -2,6 +2,8 @@
 
 use dedens_proto::{RecordType, Ttl, WireRdata};
 
+use crate::denial::Links;
+
 /// The records of one type at one name: one TTL (RFC 2181 §5.2) and distinct RDATA, in the order of the text.
 ///
 /// Two are equal when they have the same TTL and the same RDATA in any order: an `RRset` is a set (RFC 2181 §5),
@@ -65,6 +67,8 @@ pub struct Node {
     pub(crate) wildcard: bool,
     pub(crate) dname: bool,
     pub(crate) proof_only: bool,
+    /// The NSEC3 records of the name and of its wildcard, found at load (D209).
+    pub(crate) nsec3: Links,
     /// By type.
     pub(crate) rrsets: Vec<(RecordType, RrSet)>,
     /// By the type covered.

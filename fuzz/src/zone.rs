@@ -2,10 +2,10 @@
 //! answers of a zone.
 
 use dedens_proto::{
-    Flags, Header, MAX_MESSAGE_LEN, Message, Name, Question, Rcode, RecordType, Ttl,
+    Flags, Header, MAX_MESSAGE_LEN, Message, Name, Question, Rcode, Record, RecordType, Ttl,
 };
 use dedens_zone::journal::format::{self, MAGIC, Tail};
-use dedens_zone::{Dnssec, End, Kind, Limits, MAX_CHAIN, Source, Zone};
+use dedens_zone::{Answer, Dnssec, End, Kind, Limits, MAX_CHAIN, Source, Zone};
 
 /// How many `$INCLUDE`s the callback gives the text of: each one reads the same bytes again, so a file that
 /// includes itself must end.
@@ -63,6 +63,7 @@ fn load(data: &[u8], apex: &Name<'static>) -> Result<Zone, dedens_zone::Report> 
         rdata_bytes: 4096,
         include_depth: 2,
         errors: 16,
+        nsec3_iterations: 16,
     };
     Zone::load(apex.clone(), source, &mut include, &limits).map(|loaded| loaded.zone)
 }
@@ -149,6 +150,9 @@ fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType, dnssec: Dnssec) {
     };
     // The larger size: what 512 bytes keep of it is cut by `encode`, whole `RRset`s at a time.
     let glue = answer.fill(zone, &mut message, MAX_MESSAGE_LEN, dnssec);
+    if dnssec == Dnssec::With {
+        without_dnssec_is_with_less_its_records(zone, &question, &answer, &message);
+    }
     assert_eq!(message.rcode(), answer.rcode());
     assert_eq!(
         message.header.flags.contains(Flags::AA),
@@ -185,6 +189,60 @@ fn ask(zone: &Zone, name: &Name<'static>, qtype: RecordType, dnssec: Dnssec) {
     assert!(
         answer.rcode() != Rcode::REFUSED || message.answer.is_empty(),
         "{name}: a refusal with an answer"
+    );
+}
+
+/// D209: the answer without DO is the one with DO less its DNSSEC records: the signatures, the NSEC and NSEC3 of
+/// proofs, and the DS of a referral. The records of the type the question asked for stay: they are its data.
+fn without_dnssec_is_with_less_its_records<'a>(
+    zone: &Zone,
+    question: &Question<'static>,
+    answer: &Answer<'_>,
+    with: &Message<'a>,
+) {
+    let mut without = Message {
+        header: Header {
+            flags: Flags::QR,
+            ..Header::default()
+        },
+        questions: with.questions.clone(),
+        ..Message::default()
+    };
+    answer.fill(zone, &mut without, MAX_MESSAGE_LEN, Dnssec::Without);
+    let data = match &answer.end {
+        End::Data { rtype, .. } => Some(*rtype),
+        _ => None,
+    };
+    let referral = matches!(answer.end, End::Referral { .. });
+    let kept = |records: &[Record<'a>], in_answer: bool| -> Vec<Record<'a>> {
+        records
+            .iter()
+            .filter(|record| {
+                let rtype = record.rtype();
+                let dnssec = matches!(
+                    rtype,
+                    RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+                ) || (referral && !in_answer && rtype == RecordType::DS);
+                !dnssec || (in_answer && data == Some(rtype))
+            })
+            .cloned()
+            .collect()
+    };
+    let name = &question.name;
+    assert_eq!(
+        without.header, with.header,
+        "{name}: the header changes with DO"
+    );
+    assert_eq!(without.answer, kept(&with.answer, true), "{name}: answer");
+    assert_eq!(
+        without.authority,
+        kept(&with.authority, false),
+        "{name}: authority"
+    );
+    assert_eq!(
+        without.additional,
+        kept(&with.additional, false),
+        "{name}: additional"
     );
 }
 
