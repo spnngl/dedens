@@ -14,7 +14,7 @@ pub mod stream;
 
 use std::io;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::io::BufReader;
@@ -23,7 +23,7 @@ use dedens_proto::rdata::Soa;
 use dedens_proto::{
     Flags, Header, Message, Name, Opcode, Question, Rcode, Record, RecordType, Serial,
 };
-use dedens_tsig::{Key, ResponseVerifier, SignError, sign_request};
+use dedens_tsig::{Key, ResponseError, ResponseVerifier, SignError, sign_request};
 use dedens_zone::{Changeset, Loaded};
 use stream::{Asked, Reader, Step, StreamError, ixfr_soa, soa_response};
 
@@ -34,6 +34,9 @@ use crate::udp::{MAX_DATAGRAM, unspecified};
 /// How long an SOA query waits for its response, over UDP then TCP: NSD's `XFRD_UDP_TIMEOUT`, 10 s (`xfrd.c`);
 /// Knot waits 5 s (`tcp-remote-io-timeout`, `conf/schema.c`).
 pub const SOA_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What a limit that overflows the clock becomes: 30 years, as tokio's far future.
+const FAR: Duration = Duration::from_hours(262_800);
 
 /// What a transfer brought.
 #[derive(Debug)]
@@ -129,7 +132,9 @@ pub enum TransferError {
 }
 
 /// The SOA of `zone` at `primary`, the query signed with `key` if any: over UDP, then over TCP when truncated,
-/// within [`SOA_TIMEOUT`]. A datagram that is no response to the query is waited past.
+/// within [`SOA_TIMEOUT`]. A datagram that is no response to the query, or a response whose TSIG fails to verify,
+/// is waited past: anyone can send one, and the real response may follow (RFC 8945 §5.4, RFC 5452). Over TCP, a
+/// response that fails to verify ends the query.
 ///
 /// # Errors
 ///
@@ -140,9 +145,9 @@ pub async fn soa<N: Io>(
     zone: &Name<'static>,
     key: Option<&Key>,
 ) -> Result<Soa<'static>, TransferError> {
-    let deadline = io.now() + SOA_TIMEOUT;
+    let deadline = after(io, SOA_TIMEOUT);
     let id = draw_id(io)?;
-    let (wire, verifier) = signed(query(zone, RecordType::SOA, None, id), key)?;
+    let (wire, verifier) = signed(io, query(zone, RecordType::SOA, None, id), key)?;
     let udp = io
         .udp_bind(unspecified(primary))
         .await
@@ -161,12 +166,27 @@ pub async fn soa<N: Io>(
             continue;
         };
         if !flags.contains(Flags::TC) {
-            return Ok(soa_response(&response, id, zone, verifier, unix_now())?);
+            // A failed verification leaves the verifier as it was, but `soa_response` takes it: a copy.
+            match soa_response(&response, id, zone, verifier.clone(), io.unix_time()) {
+                Err(StreamError::Tsig { error, .. })
+                    if !matches!(
+                        error,
+                        ResponseError::Refused {
+                            authenticated: true,
+                            ..
+                        }
+                    ) =>
+                {
+                    debug!(%primary, %error, "soa response not verified, waiting on");
+                    continue;
+                }
+                done => return Ok(done?),
+            }
         }
         debug!(%primary, "soa response truncated, asking over tcp");
         let mut tcp = Tcp::open(io, primary, &wire, deadline, SOA_TIMEOUT).await?;
         let response = tcp.next().await?;
-        return Ok(soa_response(&response, id, zone, verifier, unix_now())?);
+        return Ok(soa_response(&response, id, zone, verifier, io.unix_time())?);
     }
 }
 
@@ -185,7 +205,7 @@ pub async fn transfer<N: Io>(
     key: Option<&Key>,
     limits: &Limits,
 ) -> Result<Transfer, TransferError> {
-    let deadline = io.now() + limits.time;
+    let deadline = after(io, limits.time);
     let Some(serial) = from else {
         return ask(io, primary, zone, Asked::Axfr(None), key, limits, deadline).await;
     };
@@ -223,12 +243,12 @@ async fn ask<N: Io>(
         Asked::Ixfr(serial) => Some(ixfr_soa(zone, serial)),
         Asked::Axfr(_) => None,
     };
-    let (wire, verifier) = signed(query(zone, asked.qtype(), authority, id), key)?;
+    let (wire, verifier) = signed(io, query(zone, asked.qtype(), authority, id), key)?;
     let mut reader = Reader::new(zone.clone(), id, asked, verifier, limits);
     let mut tcp = Tcp::open(io, primary, &wire, deadline, limits.idle).await?;
     loop {
         let message = tcp.next().await?;
-        match reader.message(&message, unix_now())? {
+        match reader.message(&message, io.unix_time())? {
             Step::More(next) => reader = next,
             Step::Done(transfer) => {
                 debug!(%primary, zone = %zone, "transfer done");
@@ -296,7 +316,7 @@ async fn wait<N: Io, F: Future>(
     idle: Duration,
     future: F,
 ) -> Result<F::Output, TransferError> {
-    let idle_by = io.now() + idle;
+    let idle_by = after(io, idle);
     io.timeout_at(deadline.min(idle_by), future)
         .await
         .map_err(|_| {
@@ -306,6 +326,12 @@ async fn wait<N: Io, F: Future>(
                 Limit::Time
             })
         })
+}
+
+/// `after` from now, or [`FAR`] on when the clock cannot count so far: a limit set to `Duration::MAX` means none.
+fn after(io: &impl Io, after: Duration) -> Instant {
+    let now = io.now();
+    now.checked_add(after).unwrap_or_else(|| now + FAR)
 }
 
 /// A random query ID (RFC 5452 §4.3).
@@ -342,12 +368,13 @@ fn query(
 }
 
 /// `wire` signed with `key`, if any, and the verifier of its responses.
-fn signed(
+fn signed<'k>(
+    io: &impl Io,
     mut wire: Vec<u8>,
-    key: Option<&Key>,
-) -> Result<(Vec<u8>, Option<ResponseVerifier<'_>>), TransferError> {
+    key: Option<&'k Key>,
+) -> Result<(Vec<u8>, Option<ResponseVerifier<'k>>), TransferError> {
     let verifier = key
-        .map(|key| sign_request(key, &mut wire, unix_now()))
+        .map(|key| sign_request(key, &mut wire, io.unix_time()))
         .transpose()
         .map_err(TransferError::Sign)?;
     Ok((wire, verifier))
@@ -357,15 +384,4 @@ fn signed(
 fn response_flags(response: &[u8], id: u16) -> Option<Flags> {
     let header = Header::peek(response)?;
     (header.id == id && header.flags.contains(Flags::QR)).then_some(header.flags)
-}
-
-/// The time, Unix seconds, for TSIG (RFC 8945 §5.2.3): `Io` has a monotonic clock only.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "TSIG needs the wall clock, which `Io` does not give"
-)]
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
 }

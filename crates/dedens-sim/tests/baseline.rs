@@ -3,7 +3,7 @@
 //! from these. The last test has the seed pick the faults.
 
 use std::cell::{Cell, RefCell};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -11,6 +11,7 @@ use dedens_cache::Config;
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_net::client::ClientError;
 use dedens_net::exchange::Failure;
+use dedens_net::io::Io;
 use dedens_net::tcp::TcpError;
 use dedens_proto::edns::{EdnsFlags, EdnsOption};
 use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
@@ -19,11 +20,12 @@ use dedens_sim::attacker::{Attacker, Injection, Reaction};
 use dedens_sim::client::Carrier;
 use dedens_sim::fault::{Fault, Node, Server};
 use dedens_sim::framing;
+use dedens_sim::io::Sim;
 use dedens_sim::resolver::{pipeline_validating, pipeline_with, wall_clock};
-use dedens_sim::seed::{self, Seed};
+use dedens_sim::seed::{self, Rng, Seed};
 use dedens_sim::stub::{CheckError, Outcome, question};
 use dedens_sim::topology::{Topology, World};
-use dedens_sim::trace::{Event, What};
+use dedens_sim::trace::{Event, Trace, What};
 use dedens_sim::upstream::{Answers, Behaviour, Verdict};
 
 use crate::util::{SECOND, SEEDS, answers, served};
@@ -417,6 +419,13 @@ fn the_run_starts_at_its_epoch() {
         world.client(async move |_| {
             let now = turmoil::since_epoch().ok_or("outside a simulation")?;
             assert!(now >= epoch && now < epoch + SECOND, "{now:?}");
+            // The runtime's wall clock, as `Io::unix_time`, is the simulation's (D210).
+            let runtime = Sim::new(
+                Rc::new(RefCell::new(Rng::new(seed, 0))),
+                IpAddr::from([10, 0, 0, 1]),
+                Trace::new(),
+            );
+            assert_eq!(runtime.unix_time(), epoch.as_secs());
             Ok(())
         });
         world.run().expect("the run passes its checks");

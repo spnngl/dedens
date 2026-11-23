@@ -12,7 +12,7 @@ use dedens_proto::{
     Class, DecodeError, Flags, Message, Name, Opcode, Question, Rcode, Record, RecordType, Section,
     Serial, Ttl, Violation,
 };
-use dedens_tsig::{ResponseError, ResponseVerifier};
+use dedens_tsig::{ResponseError, ResponseVerifier, Verified};
 use dedens_zone::{Changeset, ChangesetError, Report, Zone};
 
 use super::{Limit, Limits, Transfer};
@@ -113,6 +113,16 @@ pub enum StreamError {
     /// A changeset that cannot be: a serial going back, an SOA of another zone (RFC 1995 §4).
     #[error("bad changeset: {0}")]
     Changeset(ChangesetError),
+    /// An IXFR changeset that ends past the opening SOA's serial: the chain would go round the serial space to
+    /// reach it, as NSD refuses ("bad middle serial"; RFC 1995 §4: the changes lead to the newest version, the
+    /// opening SOA's).
+    #[error("a changeset ends at serial {to}, past the opening SOA's {opening}")]
+    BadMiddleSerial {
+        /// Where the changeset ends.
+        to: Serial,
+        /// The opening SOA's.
+        opening: Serial,
+    },
     /// A zone or an IXFR answer of a serial not ahead of the client's (RFC 1982 §3.2).
     #[error("the primary's serial {theirs} is not ahead of ours, {ours}")]
     NotNewer {
@@ -295,6 +305,15 @@ impl<'k> Reader<'k> {
                 if serial != asked {
                     return Err(StreamError::WrongStart { asked, got: serial });
                 }
+                // Changes that lead from the client's serial to one not ahead of it can only go round.
+                if let Some(theirs) = self.serial
+                    && theirs.partial_cmp(&asked) != Some(core::cmp::Ordering::Greater)
+                {
+                    return Err(StreamError::NotNewer {
+                        ours: asked,
+                        theirs,
+                    });
+                }
                 (
                     State::Removing(Changes {
                         done: Vec::new(),
@@ -325,10 +344,26 @@ impl<'k> Reader<'k> {
                 {
                     return Err(StreamError::Changeset(ChangesetError::NotConsecutive));
                 }
-                let reached = Some(changeset.to_serial()) == self.serial;
+                let to_serial = changeset.to_serial();
+                let reached = Some(to_serial) == self.serial;
+                match self.serial {
+                    Some(opening)
+                        if !reached
+                            && opening.partial_cmp(&to_serial)
+                                != Some(core::cmp::Ordering::Greater) =>
+                    {
+                        return Err(StreamError::BadMiddleSerial {
+                            to: to_serial,
+                            opening,
+                        });
+                    }
+                    _ => {}
+                }
                 changes.done.push(changeset);
                 if reached {
-                    // The latest version reached: this SOA closes the stream, and must be the opening one.
+                    // The latest version reached: this SOA closes the stream, and must be the opening one, by
+                    // serial alone as in Knot and BIND (the rest of the SOA is not compared).
+                    //
                     if Some(serial) != self.serial {
                         return Err(StreamError::SoaInside(serial));
                     }
@@ -346,7 +381,8 @@ impl<'k> Reader<'k> {
         Ok(end)
     }
 
-    /// The AXFR form: `record` added to `records`, or the end when it is the closing SOA, the opening one again.
+    /// The AXFR form: `record` added to `records`, or the end when it is the closing SOA, the opening one again
+    /// (RFC 5936 §2.2: matched on the serial alone, as in Knot and BIND; the rest of the SOA is not compared).
     fn full(
         &self,
         mut records: Vec<Record<'static>>,
@@ -414,24 +450,34 @@ fn check<'w>(
 ) -> Result<Message<'w>, StreamError> {
     let decoded = Message::decode(wire).map_err(StreamError::Malformed)?;
     let message = decoded.message;
+    // A message of another ID ends the stream, unsigned or not, though RFC 5936 §2.2.1 (note a) lets an unsigned
+    // one be skipped: an attacker able to inject one on the connection can already cut it, and a server that
+    // interleaves answers on a transfer's connection is not one to wait on.
     if message.header.id != id {
         return Err(StreamError::WrongId {
             expected: id,
             got: message.header.id,
         });
     }
-    if let Some(verifier) = verifier {
-        verifier
-            .verify(wire, now)
-            .map_err(|error| StreamError::Tsig {
-                error,
-                rcode: message.rcode(),
-            })?;
-    }
+    let outcome = verifier
+        .map(|verifier| verifier.verify(wire, now))
+        .transpose()
+        .map_err(|error| StreamError::Tsig {
+            error,
+            rcode: message.rcode(),
+        })?;
     if !message.header.flags.contains(Flags::QR) || message.header.opcode != Opcode::QUERY {
         return Err(StreamError::NotResponse);
     }
     if message.rcode() != Rcode::NOERROR {
+        // An error with no TSIG after signed messages is not the server's to trust: it ends the response unsigned
+        // (RFC 8945 §5.3.1), so a TSIG failure, which no AXFR fallback follows.
+        if outcome == Some(Verified::Unsigned) {
+            return Err(StreamError::Tsig {
+                error: ResponseError::UnsignedEnd,
+                rcode: message.rcode(),
+            });
+        }
         return Err(StreamError::Rcode(message.rcode()));
     }
     let question_ok = match message.questions.as_slice() {

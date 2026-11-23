@@ -16,8 +16,8 @@ use dedens_proto::rdata::RData;
 use dedens_proto::{Flags, Message, Name, Rcode, Record, RecordType, Serial, find_tsig};
 use dedens_testkit::authoritative::{Answers, Peer, Recording, Server, TSIG_KEY, Transport};
 use dedens_testkit::dns;
-use dedens_tsig::{Key, Keyring, ResponseError, ResponseVerifier, verify_request};
-use dedens_zone::{ChangesetError, Loaded, Source, Zone};
+use dedens_tsig::{Key, Keyring, Refusal, ResponseError, ResponseVerifier, verify_request};
+use dedens_zone::{ChangesetError, Loaded, Source, WarningKind, Zone};
 
 /// What a primary does on a connection once it read the query: writes `bytes`, then closes its side when `close`,
 /// or holds the connection open, until the client goes either way.
@@ -146,9 +146,25 @@ fn strip(wire: &[u8]) -> Vec<u8> {
     stripped
 }
 
+/// What a signed stream replayed by [`resigned_with`] gets wrong.
+#[derive(Clone, Copy)]
+enum Fault {
+    /// The last message has no TSIG.
+    UnsignedEnd,
+    /// The MAC of the message of that index is not the one computed.
+    BadMac(usize),
+    /// The message of that index is a SERVFAIL with no TSIG.
+    UnsignedServfail(usize),
+}
+
 /// Replays the responses of the signed recording `id`, their TSIG made again for the query, now: the last one left
 /// unsigned when `unsigned_end`.
 fn resigned(id: &str, unsigned_end: bool) -> Script {
+    resigned_with(id, unsigned_end.then_some(Fault::UnsignedEnd))
+}
+
+/// [`resigned`] with `fault`, if any.
+fn resigned_with(id: &str, fault: Option<Fault>) -> Script {
     let messages = responses(id);
     Box::new(move |query| {
         let keys = Keyring::new([key()]).expect("one key");
@@ -162,14 +178,31 @@ fn resigned(id: &str, unsigned_end: bool) -> Script {
             .enumerate()
             .map(|(n, m)| {
                 let mut m = with_id(&strip(m), query);
-                if !(unsigned_end && n == last) {
-                    signer.sign(&mut m, unix_now()).expect("signed");
+                match fault {
+                    Some(Fault::UnsignedEnd) if n == last => {}
+                    Some(Fault::UnsignedServfail(at)) if n == at => {
+                        // The RCODE is the low 4 bits of the header's fourth byte: SERVFAIL, 2.
+                        m[3] = (m[3] & 0xF0) | 2;
+                    }
+                    _ => {
+                        signer.sign(&mut m, unix_now()).expect("signed");
+                        if matches!(fault, Some(Fault::BadMac(at)) if n == at) {
+                            corrupt_mac(&mut m);
+                        }
+                    }
                 }
                 frame(&m).expect("under 64 KiB")
             })
             .collect();
         Reply { bytes, close: true }
     })
+}
+
+/// `wire` with the last byte of its MAC changed: the TSIG record is the last, and ends with the original ID, the
+/// error and an empty Other Data, 6 bytes, as a NOERROR response's does.
+fn corrupt_mac(wire: &mut [u8]) {
+    let last_of_mac = wire.len() - 7;
+    wire[last_of_mac] ^= 1;
 }
 
 /// Reads the query and holds the connection, answering nothing.
@@ -718,6 +751,17 @@ async fn limits_each_bound_refuses() {
     assert_eq!(limit(bounded(silent(), idle).await), Limit::Idle);
 }
 
+/// A time or idle limit of `Duration::MAX`, as a caller says "none", is no overflow of the clock.
+#[compio::test]
+async fn limits_of_no_end_do_not_overflow_the_clock() {
+    let limits = Limits {
+        time: Duration::MAX,
+        idle: Duration::MAX,
+        ..Limits::default()
+    };
+    full(bounded(recorded("axfr-root"), limits).await);
+}
+
 #[compio::test]
 async fn limits_records_per_rrset_refuse_the_zone() {
     // The root's 13 NS records are one RRset.
@@ -776,4 +820,255 @@ async fn rfc7766_5_truncated_soa_goes_over_tcp() {
         .await
         .expect("an SOA");
     assert_eq!(Serial::new(soa.serial), serial(&root_soa()));
+}
+
+/// Knot's SOA response to `query`, a signed one, signed for it: its MAC changed when `corrupt`.
+fn signed_soa(query: &[u8], corrupt: bool) -> Vec<u8> {
+    let keys = Keyring::new([key()]).expect("one key");
+    let request = verify_request(&keys, query, unix_now())
+        .expect("a request signed with the key")
+        .expect("signed");
+    let mut response = with_id(&root_soa(), query);
+    request
+        .signer()
+        .sign(&mut response, unix_now())
+        .expect("signed");
+    if corrupt {
+        corrupt_mac(&mut response);
+    }
+    response
+}
+
+/// RFC 8945 §5.4, RFC 5452: anyone can send a datagram of the right ID, so one that fails verification, forged MAC
+/// or none, is waited past, and the real response after it is the answer.
+#[compio::test]
+async fn rfc8945_5_4_udp_soa_waits_past_responses_that_fail_verification() {
+    let datagrams = |query: &[u8]| {
+        let unsigned = with_id(&root_soa(), query);
+        vec![signed_soa(query, true), unsigned, signed_soa(query, false)]
+    };
+    let key = key();
+    let primary = primary(Some(datagrams), Vec::new());
+    let soa = soa(&Compio, primary, &Name::root(), Some(&key))
+        .await
+        .expect("an SOA");
+    assert_eq!(Serial::new(soa.serial), serial(&root_soa()));
+}
+
+/// A BADTIME answer, signed, is the primary's own refusal and ends the query: it verifies, so no forger sent it.
+#[compio::test]
+async fn rfc8945_5_4_udp_soa_a_signed_tsig_error_ends_the_query() {
+    let datagrams = |query: &[u8]| {
+        let keys = Keyring::new([key()]).expect("one key");
+        // The primary's clock is far from the request's.
+        let Err(Refusal::NotAuth(refusal)) = verify_request(&keys, query, unix_now() + 3600) else {
+            panic!("not a BADTIME");
+        };
+        let mut response = with_id(&root_soa(), query);
+        refusal
+            .sign(&mut response, unix_now() + 3600)
+            .expect("signed");
+        vec![response]
+    };
+    let key = key();
+    let primary = primary(Some(datagrams), Vec::new());
+    let result = soa(&Compio, primary, &Name::root(), Some(&key)).await;
+    assert!(
+        matches!(
+            result,
+            Err(TransferError::Stream(StreamError::Tsig {
+                error: ResponseError::Refused {
+                    authenticated: true,
+                    ..
+                },
+                ..
+            }))
+        ),
+        "{result:?}"
+    );
+}
+
+/// A response over TCP that fails verification ends the query: nothing else is to come on the connection.
+#[compio::test]
+async fn rfc8945_5_4_tcp_soa_that_fails_verification_is_refused() {
+    let truncated = |query: &[u8]| {
+        let mut response = with_id(&root_soa(), query);
+        response[2] |= 0x02;
+        vec![response]
+    };
+    let script: Script = Box::new(|query| Reply {
+        bytes: vec![frame(&signed_soa(query, true)).expect("under 64 KiB")],
+        close: true,
+    });
+    let key = key();
+    let primary = primary(Some(truncated), vec![script]);
+    let result = soa(&Compio, primary, &Name::root(), Some(&key)).await;
+    assert!(
+        matches!(
+            result,
+            Err(TransferError::Stream(StreamError::Tsig {
+                error: ResponseError::BadSig,
+                ..
+            }))
+        ),
+        "{result:?}"
+    );
+}
+
+/// RFC 1995 §4: the changes lead from the client's serial to the opening SOA's, a newer one. A chain of steps of
+/// less than 2^31 each that goes round the serial space to reach an opening SOA that is not newer, or one that
+/// passes it on the way, is refused (NSD's "bad middle serial"), signed or not.
+#[test]
+fn rfc1995_4_changes_that_go_round_the_serial_space_are_refused() {
+    let ours = serial(&request("ixfr-difference-tcp"));
+    let at = |step: u32| Serial::new(ours.get().wrapping_add(step));
+    let half = 0x7FFF_FFFF;
+    let cases = [
+        // Ahead of the client's, but the first step passes it.
+        (
+            10,
+            StreamError::BadMiddleSerial {
+                to: at(half),
+                opening: at(10),
+            },
+        ),
+        // One behind the client's, which three steps reach.
+        (
+            u32::MAX,
+            StreamError::NotNewer {
+                ours,
+                theirs: at(u32::MAX),
+            },
+        ),
+        // The client's own, which three steps come back to.
+        (0, StreamError::NotNewer { ours, theirs: ours }),
+    ];
+    for (opening, expected) in cases {
+        let result = read(
+            "ixfr-difference-tcp",
+            "example.",
+            Asked::Ixfr(ours),
+            |mut message| {
+                let template = message.answer.pop().expect("the closing SOA");
+                // [opening, then three changes of 2^31 - 1, 2^31 - 1 and 12 or so, and the opening again.]
+                message.answer = [opening, 0, half, half, 2 * half, 2 * half, opening, opening]
+                    .map(|step| with_serial(&template, at(step)))
+                    .to_vec();
+                encoded(&message)
+            },
+        );
+        assert_eq!(result.expect_err("refused"), expected, "opening {opening}");
+    }
+}
+
+/// A record of an AXFR outside the zone is dropped with a warning, as Knot does (D210): the zone is the rest.
+#[test]
+fn d210_a_record_outside_the_zone_in_an_axfr_is_dropped_with_a_warning() {
+    let result = read(
+        "axfr-zonetransfer.me",
+        "zonetransfer.me.",
+        Asked::Axfr(None),
+        |mut message| {
+            if message.answer.len() > 1 {
+                let mut stranger = message.answer[1].clone();
+                stranger.name = dns("stranger.example.");
+                message.answer.insert(1, stranger);
+            }
+            encoded(&message)
+        },
+    );
+    let Ok(Transfer::Full(loaded)) = result else {
+        panic!("not a full zone: {result:?}");
+    };
+    assert_eq!(
+        loaded.zone,
+        text("zonetransfer.me.zone", "zonetransfer.me.")
+    );
+    let kinds: Vec<_> = (loaded.report.warnings.iter())
+        .map(|warning| warning.kind.clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        [WarningKind::OutsideZone {
+            owner: dns("stranger.example."),
+        }]
+    );
+}
+
+/// A signed IXFR of changes, not only an up to date one, verifies and applies.
+#[compio::test]
+async fn rfc8945_5_3_1_signed_ixfr_with_changes_verifies() {
+    let key = key();
+    let primary = primary(None, vec![resigned("root-ixfr", false)]);
+    let result = from(primary, ".", Some(ROOT_PREVIOUS), Some(&key)).await;
+    let Ok(Transfer::Incremental(changesets)) = result else {
+        panic!("not incremental: {result:?}");
+    };
+    let mut zone = text("root-previous.zone", ".");
+    for changeset in &changesets {
+        zone = zone
+            .apply(changeset, &dedens_zone::Limits::default())
+            .map_err(|report| report.to_string())
+            .expect("applies")
+            .zone;
+    }
+    assert_eq!(zone, text("root.zone", "."));
+}
+
+/// A TSIG failure in the middle of a signed IXFR ends the transfer: no AXFR is asked (RFC 8945 §5.3.1; an AXFR
+/// would meet the same primary). The second script would serve the AXFR, which would make a zone.
+#[compio::test]
+async fn rfc8945_5_3_1_tsig_failure_mid_ixfr_is_not_retried_as_an_axfr() {
+    let key = key();
+    let cases = [
+        (
+            Fault::BadMac(5),
+            StreamError::Tsig {
+                error: ResponseError::BadSig,
+                rcode: Rcode::NOERROR,
+            },
+        ),
+        // An error with no TSIG after signed messages cannot be told from a forged one.
+        (
+            Fault::UnsignedServfail(5),
+            StreamError::Tsig {
+                error: ResponseError::UnsignedEnd,
+                rcode: Rcode::SERVFAIL,
+            },
+        ),
+    ];
+    for (fault, expected) in cases {
+        let scripts = vec![
+            resigned_with("root-ixfr", Some(fault)),
+            resigned("axfr-tsig-stream", false),
+        ];
+        let primary = primary(None, scripts);
+        let error = stream_error(from(primary, ".", Some(ROOT_PREVIOUS), Some(&key)).await);
+        assert_eq!(error, expected);
+    }
+}
+
+/// RFC 5452 §4.3: the ID of each query is drawn at random: the IXFR's and the AXFR asked after it, over several
+/// transfers, do not all carry one value.
+#[compio::test]
+async fn rfc5452_4_3_query_ids_are_random() {
+    let (sent, received) = std::sync::mpsc::channel::<[u8; 2]>();
+    let ours = Serial::new(2_019_100_800);
+    for _ in 0..2 {
+        let scripts: Vec<Script> = (0..2)
+            .map(|_| {
+                let sent = sent.clone();
+                let script: Script = Box::new(move |query| {
+                    sent.send([query[0], query[1]]).expect("received");
+                    recorded("axfr-zonetransfer.me")(query)
+                });
+                script
+            })
+            .collect();
+        let primary = primary(None, scripts);
+        full(from(primary, "zonetransfer.me.", Some(ours), None).await);
+    }
+    drop(sent);
+    let ids: std::collections::HashSet<_> = received.iter().collect();
+    assert!(ids.len() > 1, "four queries, one ID: {ids:?}");
 }

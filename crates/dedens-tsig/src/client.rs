@@ -100,7 +100,10 @@ pub enum Verified {
 
 /// Verifies the messages of one response in order (RFC 8945 §5.4, §5.3.1): the first message is a standard answer
 /// to the request, a later one is chained to the previous MAC; up to 99 in a row may carry no TSIG.
-#[derive(Debug)]
+///
+/// A clone keeps the state at that point: over UDP, a datagram is verified on a clone, so that a forged one leaves
+/// the original to verify the real response.
+#[derive(Debug, Clone)]
 pub struct ResponseVerifier<'k> {
     key: &'k Key,
     prior: Vec<u8>,

@@ -10,12 +10,13 @@
 //!   (the response stream of a zone transfer, D210).
 //! - On compio: `udp`, `tcp`, `quic`, `http3`, `doc` (feature `doc`) the transports, `dial` the QUIC endpoints and
 //!   connections, `client` the exchange run over the transports, `authoritative` the client of a recursive
-//!   resolver, a socket per query (D190), `transfer` the client of a zone transfer (D210), `io` the seam of the UDP and TCP pools (D134), `tls`
-//!   the TLS configurations, `odoh` (feature `odoh`, D79) Oblivious `DoH`: its requests, responses and target
-//!   classifier are sans-IO, but `odoh::client` fetches the configurations over `http3` and keeps them by the clock,
-//!   `dnscrypt` (feature `dnscrypt`, D98) the `DNSCrypt` client: a resolver's certificates, fetched and kept by the
-//!   clock, and the sealing of each query, which `client` sends over `udp` and `tcp`, and `entropy` draws the
-//!   system's randomness for both, and for each step of a recursive resolution (D195).
+//!   resolver, a socket per query (D190), `transfer` the client of a zone transfer (D210), `io` the seam of the UDP
+//!   and TCP pools (D134), `tls` the TLS configurations, `odoh` (feature `odoh`, D79) Oblivious `DoH`: its requests,
+//!   responses and target classifier are sans-IO, but `odoh::client` fetches the configurations over `http3` and
+//!   keeps them by the clock, `dnscrypt` (feature `dnscrypt`, D98) the `DNSCrypt` client: a resolver's
+//!   certificates, fetched and kept by the clock, and the sealing of each query, which `client` sends over `udp`
+//!   and `tcp`, and `entropy` draws the system's randomness for both, and for each step of a recursive resolution
+//!   (D195).
 
 #![forbid(unsafe_code)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]

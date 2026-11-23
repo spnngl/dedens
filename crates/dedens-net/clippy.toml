@@ -11,7 +11,7 @@ allow-dbg-in-tests = true
 # simulated one can stand in. `io.rs` holds the one call of each.
 disallowed-methods = [
   { path = "std::time::Instant::now", reason = "use `Io::now`" },
-  { path = "std::time::SystemTime::now", reason = "use `Io::now`: a simulation runs its own clock" },
+  { path = "std::time::SystemTime::now", reason = "use `Io::unix_time`: a simulation runs its own clock" },
   { path = "getrandom::fill", reason = "use `Io::random`" },
   { path = "getrandom::fill_uninit", reason = "use `Io::random`" },
   { path = "getrandom::u32", reason = "use `Io::random`" },

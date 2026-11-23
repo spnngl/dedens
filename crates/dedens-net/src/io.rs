@@ -18,7 +18,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use compio::BufResult;
 use compio::buf::{IoBuf, IoBufMut};
@@ -78,6 +78,10 @@ pub trait Io: Clone + Debug + 'static {
 
     /// The time now, from the clock all of this `Io`'s timers run on.
     fn now(&self) -> Instant;
+
+    /// The wall clock, Unix seconds, for what is signed with a time (TSIG, RFC 8945 §5.2.3): [`Io::now`] is
+    /// monotonic, with no epoch. 0 when the clock reads before 1970.
+    fn unix_time(&self) -> u64;
 
     /// Runs `task` on this thread's runtime until it ends or the returned handle drops.
     fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task;
@@ -247,6 +251,13 @@ impl Io for Compio {
     #[inline]
     fn now(&self) -> Instant {
         Instant::now()
+    }
+
+    #[inline]
+    fn unix_time(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs())
     }
 
     #[inline]

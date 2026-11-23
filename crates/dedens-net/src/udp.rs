@@ -460,6 +460,10 @@ mod tests {
             Compio.now()
         }
 
+        fn unix_time(&self) -> u64 {
+            Compio.unix_time()
+        }
+
         fn spawn(&self, task: impl Future<Output = ()> + 'static) -> Self::Task {
             Compio.spawn(task)
         }
