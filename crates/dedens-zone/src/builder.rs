@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use dedens_proto::rdata::RData;
-use dedens_proto::{Class, DecodedRecord, Name, Record, RecordType, Ttl, WireRdata};
+use dedens_proto::{Class, DecodedRecord, Name, Nsec3HashAlgorithm, Record, RecordType, Ttl, WireRdata};
 
+use crate::denial::{Chain, Denial, Params, owner_hash_of};
 use crate::zone::find;
 use crate::{
     Bound, ErrorKind, Kind, Limits, Node, Place, Report, RrSet, Warning, WarningKind, Zone,
@@ -328,8 +329,10 @@ impl<'l> Builder<'l> {
     /// The [`Report`] of every error, if any.
     pub(crate) fn finish(mut self) -> Result<(Zone, Report), Report> {
         self.check_names();
+        let chain = self.check_chain();
         let (nodes, delegations) = self.nodes();
         self.check_glue(&nodes, delegations);
+        let denial = Denial::new(chain, &nodes, self.apex.label_count());
         let soa = find(&nodes, &self.apex).and_then(|(_, apex)| {
             let set = apex.rrset(RecordType::SOA)?;
             match set.rdatas().first()?.data() {
@@ -359,9 +362,111 @@ impl<'l> Builder<'l> {
                 soa_ttl,
                 nodes,
                 records: self.records,
+                denial,
             },
             self.report,
         ))
+    }
+
+    /// The chain that proves names and types absent, named by the apex: NSEC3 with an NSEC3PARAM of flags 0
+    /// (RFC 5155 §4.1.2), else NSEC with an NSEC there. Each link must lead to the next of the chain, the last
+    /// to the first (RFC 4034 §4.1.1, RFC 5155 §7.1); the signatures are not checked (D209).
+    fn check_chain(&mut self) -> Option<Chain> {
+        let apex = self.names.get(&self.apex)?;
+        if let Some(set) = apex.sets.get(&RecordType::NSEC3PARAM) {
+            let params = set.rdatas.iter().find_map(|rdata| match rdata.data() {
+                RData::Nsec3Param(p) if p.flags == 0 => Some(Params::of(&p)),
+                _ => None,
+            });
+            if let Some(params) = params {
+                let at = set.at;
+                return self.check_nsec3(params, at).map(Chain::Nsec3);
+            }
+        }
+        if apex.sets.contains_key(&RecordType::NSEC) {
+            self.check_nsec();
+            return Some(Chain::Nsec);
+        }
+        None
+    }
+
+    /// Every NSEC leads to the owner of the next, in canonical order (RFC 4034 §4.1.1).
+    fn check_nsec(&mut self) {
+        let links: Vec<(&Name<'static>, Name<'static>, Place)> = self
+            .names
+            .iter()
+            .filter_map(|(name, pending)| {
+                let set = pending.sets.get(&RecordType::NSEC)?;
+                let next = set.rdatas.iter().find_map(|rdata| match rdata.data() {
+                    RData::Nsec(nsec) => Some(nsec.next.into_owned()),
+                    _ => None,
+                })?;
+                Some((name, next, set.at))
+            })
+            .collect();
+        let broken: Vec<(Place, Name<'static>)> = links
+            .iter()
+            .zip(links.iter().cycle().skip(1))
+            .filter(|((_, next, _), (following, _, _))| next != *following)
+            .map(|((owner, _, at), _)| (*at, (*owner).clone()))
+            .collect();
+        for (at, owner) in broken {
+            let rtype = RecordType::NSEC;
+            self.error(Some(at), ErrorKind::BrokenChain { rtype, owner });
+        }
+    }
+
+    /// The records of the chain of `params`, at `at`, sorted by the hash their owner names, each lead to the
+    /// next hash (RFC 5155 §7.1); an owner whose label is no hash breaks it.
+    fn check_nsec3(&mut self, params: Params, at: Place) -> Option<Params> {
+        if params.algorithm() != Nsec3HashAlgorithm::SHA1 {
+            let algorithm = params.algorithm();
+            self.error(Some(at), ErrorKind::Nsec3Algorithm { algorithm });
+            return None;
+        }
+        if params.iterations() > 0 {
+            let iterations = params.iterations();
+            let kind = WarningKind::Nsec3Iterations { iterations };
+            self.warnings.push(Warning { at, kind });
+        }
+        let apex_labels = self.apex.label_count();
+        let mut links = Vec::new();
+        let mut broken = Vec::new();
+        for (name, pending) in &self.names {
+            let Some(set) = pending.sets.get(&RecordType::NSEC3) else {
+                continue;
+            };
+            let next = set.rdatas.iter().find_map(|rdata| match rdata.data() {
+                RData::Nsec3(n) if params.holds(&n) => Some(n.next_hashed_owner().to_vec()),
+                _ => None,
+            });
+            // Records of other parameters are of another chain, one being made or retired (RFC 5155 §10.4).
+            let Some(next) = next else { continue };
+            if name.label_count() != apex_labels + 1 {
+                // Off the chain, warned as WarningKind::Nsec3Owner.
+                continue;
+            }
+            match owner_hash_of(name, apex_labels) {
+                Some(hash) => links.push((hash, next, set.at, name.clone())),
+                None => broken.push((set.at, name.clone())),
+            }
+        }
+        links.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        broken.extend(
+            links
+                .iter()
+                .zip(links.iter().cycle().skip(1))
+                .filter(|((_, next, _, _), (following, _, _, _))| next.as_slice() != following)
+                .map(|((_, _, at, owner), _)| (*at, owner.clone())),
+        );
+        if links.is_empty() {
+            broken.push((at, self.apex.clone()));
+        }
+        for (at, owner) in broken {
+            let rtype = RecordType::NSEC3;
+            self.error(Some(at), ErrorKind::BrokenChain { rtype, owner });
+        }
+        Some(params)
     }
 
     /// What each name holds must go together (RFC 2181 §10.1, RFC 6672 §2.3, §2.4).

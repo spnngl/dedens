@@ -238,7 +238,7 @@ impl Zone {
     }
 
     /// The node at `at` in the nodes, with its name.
-    fn entry(&self, at: usize) -> Option<Entry<'_>> {
+    pub(crate) fn entry(&self, at: usize) -> Option<Entry<'_>> {
         self.nodes.get(at).map(|(name, node)| Entry { name, node })
     }
 
