@@ -355,11 +355,11 @@ fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdat
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
 # of fuzz/seeds/stamps.txt, one to a file in fuzz/target/seeds/stamps; dedensd's configurations, the image's, the
 # packages', those of fuzz/seeds/dnscrypt.yaml and odoh.yaml and the examples of its config module (example.yaml,
-# example2.yaml, example3.yaml), in fuzz/target/seeds/configs (D181); the root's DS records, the root hints, the test copy of the TLD list (D126),
-# ICANN's CA bundle (D127) and the root key rollover state of fuzz/seeds/root-5011.state (D200) in
-# fuzz/target/seeds/roots; the responses of the captured resolutions of testdata/recursion and
-# testdata/recursion/minimised (D188), kept there in base64, one to a file in fuzz/target/seeds/recursion; the journal file
-# of fuzz/seeds/example.journal (D207) in fuzz/target/seeds/journal.
+# example2.yaml, example3.yaml), in fuzz/target/seeds/configs (D181); the root's DS records, the root hints, the
+# test copy of the TLD list (D126), ICANN's CA bundle (D127) and the root key rollover state of
+# fuzz/seeds/root-5011.state (D200) in fuzz/target/seeds/roots; the responses of the captured resolutions of
+# testdata/recursion and testdata/recursion/minimised (D188), kept there in base64, one to a file in
+# fuzz/target/seeds/recursion; the journal file of fuzz/seeds/example.journal (D207) in fuzz/target/seeds/journal.
 # `seeds()` of fuzz/src/smoke.rs reads the same.
 [private]
 fuzz-seeds:
