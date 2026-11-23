@@ -335,8 +335,12 @@ mod tests {
             read(),
             [metric(LOADS, "1"), metric(SERIAL, "20"), metric(ZONES, "1")]
         );
-        // A reading that does not name the zone drops it: its series reads 0, none is left to remove.
+        // A reading that does not name the zone drops it: its series reads 0, none is left to remove. A snapshot
+        // of the recorder resets its gauges, so the zone is named again, and the next reading, the one read, drops it.
         metrics::with_local_recorder(&recorder, || {
+            held.begin();
+            held.zone(&apex(), &path).unwrap();
+            held.end();
             held.begin();
             held.end();
         });
