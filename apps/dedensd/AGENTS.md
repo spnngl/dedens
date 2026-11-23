@@ -33,3 +33,5 @@ belongs in `crates/dedens-server` and its sans-IO tests.
   accepted, and a reload that cannot read them keeps those `Held` in the `Store`. The RFC 5011 state (`rollover.rs`,
   D200) is read through it too, written only by `Rollover` from answers it verified, and held in the `Store`
   across reloads: only the thread reloading touches it.
+- A zone file (D208) is read through `zones::Held`, in the `Store`: its `$INCLUDE` only inside the zone file's
+  directory, canonical path checked; a zone failing to load once serving keeps its last version, never fails the reload.

@@ -15,7 +15,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D77, D111, D114, D185, D186) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D77, D111, D114, D185, D186, D208) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
@@ -178,7 +178,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   may still answer; the 65536 IDs and the stall check bound them); waiting for room in a full queue (it holds an ID, freed on every way to give up).
   Not measured: no Linux bench host here; the changes add no work per message on the TCP read path, and UDP's
   per-query lookup replaces the scan of the shared inbox.
-- D54 (amends D23; amended by D64, D110, D118, D120, D128) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
+- D54 (amends D23; amended by D64, D110, D118, D120, D128, D208) Plugins (D23's custom stage types, for built-in stages too): `dedens_server::Plugin`, a trait object in
   `Stage::Plugin`, answers a query at once from what it holds, or passes it on; no upstream, no cache entry.
   Plugins live in `dedens-plugins`, configured in `dedensd` under their own `type`; cache and forward stay core
   stages, tied to the upstream steps. An answer is a response code, records already in wire form
@@ -204,7 +204,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     (`127.0.0.1 localhost`, `127.0.0.1 local`), and blocking `local` would block all of mDNS's `.local`. A plain line
     of one label: D56.
     Any class asked (D110). Formats, duplicates and the allowlist in D56.
-- D55 (amended by D64, D96, D107, D122) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
+- D55 (amended by D64, D96, D107, D122, D208) `dedensd` reloads its configuration file on SIGHUP (systemd's `ExecReload=kill -HUP $MAINPID`): the file
   is read and the pipeline built as at start, then swapped in. Each serving thread compares a generation counter
   before each query (one atomic load) and takes the new pipeline under a lock only when it changed (a thread no query reaches takes it when woken by the reload, D107), holding it in
   an `Rc` so a query touches no count shared between threads; a query waiting on upstream ends on the pipeline it
@@ -586,7 +586,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     listed, was 403: the CLI exits 10 with "the proxy answered HTTP status 403". Not checked live: a client other than
     ours against this proxy, `dns_timeout`, a host with one IP family only.
 
-- D91 (amends D44, D47, D90; amended by D94, D113) Client access lists: `dedensd` answers the networks it is told to, so it is no open
+- D91 (amends D44, D47, D90; amended by D94, D113, D208) Client access lists: `dedensd` answers the networks it is told to, so it is no open
   resolver (RFC 5358 §4). The client's address enters `Pipeline::query` with the transport, from every listener
   (UDP, TCP, TLS, QUIC, DoH, DoC, and ODoH where `dedensd` is the target, the proxy's address being the client's
   there), an IPv4-mapped IPv6 address read as its IPv4 one. A `Pipeline` holds an optional `Access`: the library
@@ -2606,6 +2606,72 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     record after a refused one kept (a hole breaks the chain); one `Changeset` per RRset (RFC 1995 §4's sequence is
     per version); keeping a changeset over the limit alone and dropping the rest (the oldest of a chain is what
     goes first, NSD).
+- D208 (amends D41, D54, D55, D91) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
+  `authoritative` stage): `dedensd` answers the zones it is the authority for, from `dedens-zone`'s `Zone` (D204,
+  D206), in the same pipeline as its other stages (the phase's choice 1: no second binary). The stage holds its
+  zones as `Arc<Zone>` sorted by apex in canonical order (RFC 4034 §6.1), no apex twice (`Duplicate`); the zone of a
+  name is the one whose apex is the longest it is at or below (RFC 1034 §4.3.2 step 2), found by a bisection per
+  label the name shares with the zone before it, without allocating. Not the recurse stage's local zones (RFC 6303, D195) as the model: the first match, and an allocation.
+  - In the pipeline (choice 2, BIND's `allow-query` against `allow-recursion`): authoritative stages open it, and
+    `dedensd` places one first or refuses the configuration. The checks before the stages stay: FORMERR, NOTIMP,
+    BADVERS, AXFR and IXFR REFUSED (D41), the rate limit and cookies (D113); then a zone answers its names to every
+    client, AA set (RFC 1034 §4.3.2), whatever RD says, and the access lists (D91) apply only to the queries the
+    zones pass on, with their action (REFUSED with EDE 18, or nothing). With such a pipeline `Pipeline::denial` is
+    `None` and `Pipeline::drops` false, so that no transport drops a client before the zones see it. A name of
+    another class than its zone's passes on; so does a referral (no AA) to a client that asked with RD and may
+    recurse, as BIND resolves it for a client `allow-recursion` permits. With no stage after, a name outside every
+    zone is REFUSED, as D41's query no stage answers.
+  - RA (RFC 1035 §4.1.1, "recursion available"): set on every reply as D41 says when no authoritative stage opens
+    the pipeline, so a forwarder replies as before; with one, only when a forward or recurse stage follows and the
+    access lists permit the client (`Client::with_recursion`). An authoritative server alone sets none, as Knot and
+    NSD; BIND sets it for the clients `allow-recursion` permits.
+  - The reply: `Answer::fill` (D206) into the message `Client` writes, limited to what the client can take, encoded
+    by `Glue::encode`: TC when the glue a referral requires does not fit (RFC 9471 §3), the client's EDNS, cookie and
+    padding as for any reply. AA as the answer has it (`Client::authoritative` keeps setting it for the plugins,
+    D54). Counted by `dedensd_authoritative_answers_total{kind}`, `kind` the end of the answer: `data`, `nodata`,
+    `nxdomain`, `referral`, `yxdomain`, `synthesized`, `open`.
+  - Cost: one answer from the zones, measured (`benches/server.rs` `authoritative`, `docs/benchmarks.md`): 0.3-0.7
+    µs and 2 to 4 allocations for data and NXDOMAIN, 6 µs and 17 allocations for the root's referral to `com.`; a
+    hit is 0.1 µs. No D117 budget counts it: a budget bounds the upstream work a client sets off, and a zone's answer
+    sets off none; RRL (D113) bounds what it reflects.
+  - Configuration: `type: authoritative`, `zones:` a list of `{name, file}`, at least one and at most `MAX_ZONES`
+    10 000 (D115; Knot, NSD and BIND bound none, NSD serves millions from its `zonelist`: past ten thousand a catalog
+    of zones, RFC 9432, is the tool). A zone file, and each file it includes, is at most `MAX_ZONE_FILE_BYTES` 2^32
+    bytes (the text is read whole; Knot's `zs_set_input_file`, NSD's `zonec_read`, BIND's `isc_lex_openfile` stream
+    it without a bound), its records bounded by `dedens_zone::Limits` (D204, `$INCLUDE` 8 deep). `$INCLUDE` reads a
+    file inside the directory of the zone file only, after resolving symbolic links and `..`: a zone file cannot
+    make `dedensd` read another file it can (RFC 1035 §5.1 leaves the path to the server; Knot and BIND take any
+    path). A record without TTL before any `$TTL` gets 3600 s (RFC 2308 §4; Knot's `default-ttl`, NSD's
+    `DEFAULT_TTL`; BIND takes the SOA's MINIMUM). Zone files are among the files read again as the user after a
+    drop (D122): one the user cannot read refuses the start, at the check.
+  - Reload (amends D55): the zones live in the `Store` of the lists (D120), by apex and file, with the `Stamp` of
+    the zone file and of each file it included. A reload loads again only the zones whose files changed, and keeps
+    the same `Arc` for the others; the new stage is swapped in with the pipeline. A zone that fails to load while
+    `dedensd` serves keeps its last version, the error logged and counted (`dedensd_authoritative_loads_total
+    {result="error"}`), and the other zones and the rest of the configuration are reloaded: one broken file of ten
+    thousand zones does not hold the others back. Knot (`src/knot/events/handlers/load.c`) and BIND
+    (`zone_postload`, `lib/dns/zone.c`) keep serving the zone's old version too. A zone that never loaded (at the
+    start, or new to the configuration) fails the start or the reload as D55's files do. Gauges
+    `dedensd_authoritative_serial{zone}` (the serial served) and `dedensd_authoritative_zones`; every load logged
+    with zone, file, serial and records (`info!`).
+  - Closes the question of a private domain `dedensd` answers for (aardvark-dns, CoreDNS's `cluster.local`): its
+    zone file in an authoritative stage gives NXDOMAIN with AA and the SOA to unknown names, never sent upstream.
+    Zone files are no plugin's (amends D54): the stage, not a plugin, answers from them. A `zone:` option on hosts
+    waits for the Kubernetes stage, which may need names a stage after the zones makes.
+  - Tests: `crates/dedens-server/tests/authoritative.rs` (AA whatever RD, NXDOMAIN with its SOA, a referral without
+    AA, REFUSED outside the zones with no later stage, AXFR still refused, RA only for the clients recursion serves,
+    the names outside the zones forwarded for permitted clients only, a referral passed on to recursion); `dedensd`
+    (`apps/dedensd/tests/authoritative.rs`: answers with AA from the RFC zones of `testdata/zones/`, a reload that
+    loads the zone changed and keeps the one that fails, no query dropped across a reload; unit tests of the store,
+    the `$INCLUDE` confinement and the bounds); `dedens-sim` (`tests/authoritative.rs`): `dedensd` recursing from
+    the root through four `dedensd` authoritative servers of the root zone of RFC 1034 §6.1
+    (`testdata/zones/rfc1034_root.zone`) and `ISI.EDU.` of RFC 1035 §5.3 (D133). Fuzz: `serve_query` runs an
+    authoritative stage before a forward stage with every client denied: a reply checked, nothing sent upstream.
+  - Rejected: the access lists before the zones (an authoritative server must answer the Internet, and a resolver
+    beside it must not); RA on every reply (it tells a client recursion it will not get); a reload refused whole by
+    one zone (D55 as it was: a zone file edited mid-save blocks every other change); several authoritative stages
+    in `dedensd` or one after another stage (zones answer before the cache: a cached copy of a zone's answer would
+    outlive a reload); a zone file reread without a change of its stamp (D120 already tells it).
 - D209 (amends D203, D204, D206) Pre-signed DNSSEC answers (`dedens-zone`, the authoritative phase): a zone signed
   elsewhere is served as given, its signatures and its denial chain in every answer to a query with DO (RFC 4035
   §3.1, RFC 5155 §7.2); dedens signs nothing and checks no signature (out of the phase's scope). `Answer::fill`

@@ -48,7 +48,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D38 [CLI](cli.md) (amended by D177): several `@servers`: each query asked of each
 - D39 [CLI](cli.md): `--repeat N` asks in a row and reports latency
 - D40 [CLI](cli.md) (amended by D76, D126): `+trace` walks the referrals down from the root servers
-- D41 [server](server.md) (amended by D43, D46, D77, D111, D114, D185, D186): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
+- D41 [server](server.md) (amended by D43, D46, D77, D111, D114, D185, D186, D208): server core `dedens-server` is sans-IO: `Pipeline::query` returns a step
 - D42 [server](server.md) (amended by D45, D47-D49, D52, D65, D66, D84, D115, D122): `dedensd` I/O: one compio thread per core, `SO_REUSEPORT` sockets
 - D43 [server](server.md) (amended by D45, D46, D77, D96, D114, D124): cache stage in the pipeline, time passed in by the caller
 - D44 [server](server.md) (amended by D64-D66, D84, D91, D113, D115, D116, D122): `dedensd` configuration: one YAML file
@@ -61,8 +61,8 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D51 [server](server.md) (amended by D107, D123): io_uring runs completion work cooperatively; older kernels use poll
 - D52 [server](server.md) (superseded by D63): TCP replies after upstream reuse kept 65535-byte buffers
 - D53 [server](server.md): upstream TCP writer sends queued queries in one write
-- D54 [server](server.md) (amended by D64, D110, D118, D120, D128): plugins: a `Plugin` trait object as a stage
-- D55 [server](server.md) (amended by D64, D96, D107, D122): `dedensd` reloads its configuration file on SIGHUP
+- D54 [server](server.md) (amended by D64, D110, D118, D120, D128, D208): plugins: a `Plugin` trait object as a stage
+- D55 [server](server.md) (amended by D64, D96, D107, D122, D208): `dedensd` reloads its configuration file on SIGHUP
 - D56 [server](server.md) (amended by D118, D120): blocklist contents: the line formats read
 - D57 [server](server.md) (amended by D64, D104, D115, D118, D120): `dedensd` downloads blocklists and allowlists with `ureq`
 - D58 [server](server.md) (amended by D110, D120): a blocklist holds a keyed 64-bit SipHash of each name
@@ -97,7 +97,7 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D88 [server](server.md): the blocklist file is parsed: durations, status
 - D89 [CLI](cli.md): loopback test servers count queries; no test frees a port
 - D90 [server](server.md) (superseded by D113 for UDP and DoC: kept for TCP, TLS, QUIC and HTTPS; amended by D91): per-client rate limits are the deployment's
-- D91 [server](server.md) (amended by D94, D113): client access lists: no open resolver
+- D91 [server](server.md) (amended by D94, D113, D208): client access lists: no open resolver
 - D92 [scope](scope.md): the key cache keeps no bogus zone
 - D93 [server](server.md) (amended by D124): an insecure answer is cached a day at most
 - D94 [server](server.md) (amended by D117): `dedensd` is an Oblivious DoH proxy too
@@ -209,4 +209,5 @@ assigned). A replaced decision is marked superseded, and an amendment is named i
 - D205 [server](server.md): TSIG in `dedens-tsig`, sans-I/O: SHA-1 (interop), SHA-256/384/512, no MD5; checks in RFC 8945 §5.2's order; truncated MACs BADTRUNC; fudge 300 s, never adjusting a clock; client accepts up to 99 unsigned messages in a stream; Knot's unknown-key answer
 - D206 [server](server.md) (amended by D209): the answer of a zone, `Zone::answer`: RFC 1034 §4.3.2 with wildcards, DNAME and glue, a chain of links and one end, chains up to 11, ANY one `RRset`, SOA TTL min(TTL, MINIMUM), TC only for missing in-domain glue; names found by one bisection, two when absent, an occluded node knowing its cut; a wildcard delegation refers; addresses in an answer or a referral from authoritative nodes, delegation points and glue below one, none below a DNAME, collected up to the size the response can hold; nodes a sorted `Vec`
 - D207 [server](server.md): zone differences and the journal in `dedens-zone`: `Changeset` (RFC 1995 §4, condensed §6), `Zone::diff` and `Zone::apply` through the `Builder`; `Serial` (RFC 1982); one append-only CRC-framed file per zone, `fsync` before done, a torn tail cut on open, 100 MiB and 20 changesets as Knot, the oldest dropped
+- D208 [server](server.md): the authoritative stage: zones as `Arc<Zone>` by longest apex, first in the pipeline, AA whatever RD, to every client; the access lists past the zones, RA only when recursion follows and permits; `$INCLUDE` inside the zone file's directory, 10 000 zones, 4 GiB files; a reload loads the changed zones, a failing one keeps its last version
 - D209 [server](server.md): pre-signed DNSSEC answers in `dedens-zone`: `Answer::fill` takes `Dnssec`; RRSIGs after each `RRset`, Knot's choice of NSEC and NSEC3 proofs from a `Denial` index built at load (NSEC places, NSEC3 owner hashes sorted, each node's NSEC3 links: one hash a query), chains checked closed, an NSEC for each name, no signature checked, iterations above 0 warned and above 150 refused (D74's cap), a name of NSEC3 records only not asked for an NSEC; TC when a proof does not fit
