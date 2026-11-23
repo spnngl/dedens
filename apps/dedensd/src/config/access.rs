@@ -7,6 +7,9 @@ use serde::Deserialize;
 use super::Config;
 use super::listen::Listen;
 
+/// The zones a log line names: the others are counted.
+const ZONES_SHOWN: usize = 20;
+
 /// The access lists, as written (D91).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,20 +56,42 @@ impl AccessSource {
 impl Config {
     /// Warns of access lists that answer little or nothing, for a server on `listen`: unset lists on a listen
     /// address outside the local networks (a wildcard address listens on every interface, public ones included),
-    /// and written ones allowing nothing.
+    /// and written ones allowing nothing. With an authoritative stage the lists do not apply to its zones, which
+    /// answer every client (D208): the warnings say so, and the zones are logged.
     pub(crate) fn warn_access(&self, listen: &[Listen]) {
+        let zoned = !self.zones.is_empty();
+        if zoned {
+            // The names of the first few: ten thousand are no line to read.
+            let shown = self
+                .zones
+                .iter()
+                .take(ZONES_SHOWN)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            tracing::info!(
+                count = self.zones.len(),
+                zones = shown,
+                "every client can query these zones, whatever `access` says (D208)"
+            );
+        }
+        let outside = if zoned {
+            " for the names outside the zones"
+        } else {
+            ""
+        };
         match self.access {
             AccessSource::Unset => {
                 let local = Access::local(Denial::default());
                 for listen in listen.iter().filter(|l| !local.permits(l.addr().ip())) {
                     tracing::warn!(
                         ?listen,
-                        "no `access` configured: only loopback, private and link-local clients are answered (D91)"
+                        "no `access` configured: only loopback, private and link-local clients are answered{outside} (D91)"
                     );
                 }
             }
             AccessSource::NoAllow => {
-                tracing::warn!("`access` allows no network: no client is answered (D91)");
+                tracing::warn!("`access` allows no network: no client is answered{outside} (D91)");
             }
             AccessSource::Written => {}
         }

@@ -56,20 +56,28 @@ fn keygen() -> (String, DnsCrypt) {
 
 /// A `dnscrypt://` server forwarding to `upstream`, with `extra` lines in its `dnscrypt` section and `access` lines
 /// at the top; the key file is a new one. Its stamp is the one it logged, which names its address.
-struct Resolver {
-    server: Server,
-    stamp: DnsCrypt,
+pub(crate) struct Resolver {
+    pub(crate) server: Server,
+    pub(crate) stamp: DnsCrypt,
     /// The stamp `dnscrypt-keygen` printed for the key the server reads.
     keygen: DnsCrypt,
 }
 
 fn resolver(extra: &str, access: &str, upstream: &str) -> Resolver {
+    let stages = format!(
+        "pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n"
+    );
+    resolver_of(extra, access, &stages)
+}
+
+/// [`resolver`] with `stages`, the `pipeline` and `stages` lines, in place of the forward stage.
+pub(crate) fn resolver_of(extra: &str, access: &str, stages: &str) -> Resolver {
     let (secret, keygen) = keygen();
     let key: PathBuf = write_config("").with_extension("dnscrypt.key");
     write_key(&key, secret);
     let mut server = Server::configured(|listen| {
         format!(
-            "listen: ['dnscrypt://{listen}']\n{access}dnscrypt:\n  provider_name: {PROVIDER}\n  secret_key: '{}'\n{extra}pipeline: [up]\nstages:\n  up:\n    type: forward\n    servers: ['{upstream}']\n    timeout_ms: 2000\n    tries: 1\n",
+            "listen: ['dnscrypt://{listen}']\n{access}dnscrypt:\n  provider_name: {PROVIDER}\n  secret_key: '{}'\n{extra}{stages}",
             key.display()
         )
     });
@@ -98,7 +106,21 @@ fn ask(
     case: &str,
     transport: Transport,
 ) -> Result<dedens_net::exchange::Response, ClientError> {
-    let query = dedens_testkit::query(case, 0x0102);
+    ask_message(
+        client,
+        stamp,
+        dedens_testkit::query(case, 0x0102),
+        transport,
+    )
+}
+
+/// [`ask`] with the `query` itself.
+pub(crate) fn ask_message(
+    client: &Client,
+    stamp: &DnsCrypt,
+    query: Message<'static>,
+    transport: Transport,
+) -> Result<dedens_net::exchange::Response, ClientError> {
     Runtime::new()
         .expect("a runtime")
         .block_on(client.exchange_dnscrypt(query, stamp, &quick(transport)))

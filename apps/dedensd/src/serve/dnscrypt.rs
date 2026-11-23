@@ -128,7 +128,7 @@ impl Keys {
         packet: &[u8],
         carrier: Carrier,
     ) -> Open {
-        if pipeline.denies(from) {
+        if pipeline.silences(from) {
             dropped("none");
             return Open::Drop;
         }
@@ -372,7 +372,7 @@ impl Codec for Encrypted {
 
     fn silenced(&self, pipeline: &Pipeline, ip: IpAddr) -> bool {
         // Both actions: a client denied gets no answer, sealed or not (D99).
-        pipeline.denies(ip)
+        pipeline.silences(ip)
     }
 
     fn open<N: Io>(&self, thread: &Thread<N>, from: IpAddr, message: Vec<u8>) -> Opened<Reply> {

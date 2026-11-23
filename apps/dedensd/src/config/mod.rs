@@ -3,9 +3,9 @@
 //! digits, `_./:@+=%~#-`) but for a null (`~`, `null`) alone, single-quoted when alone as a value, escaped
 //! between the template's own quotes, refused anywhere else. A TLS, `ODoH` or `DNSCrypt` key file readable by
 //! others is refused, by its group warned about. After the drop (D122) a reload reads as `user`: the files it reads
-//! (the certificate and its key, lists, zone files, `upstream_ca`, saved downloads) must be readable by it, and `downloads.dir`
-//! writable. The start reads the configuration again as `user` right after the drop, and ends if it cannot. A
-//! reload warns of a change to `user` or `group` as written: `user: 990` for `user: dedens` warns too.
+//! (the certificate and its key, lists, zone files, `upstream_ca`, saved downloads) must be readable by it, and
+//! `downloads.dir` writable. The start reads the configuration again as `user` right after the drop, and ends if it
+//! cannot. A reload warns of a change to `user` or `group` as written: `user: 990` for `user: dedens` warns too.
 //!
 //! ```yaml
 //! listen: ["127.0.0.1:53", "[::1]:53", "tls://0.0.0.0", "quic://0.0.0.0", "https://0.0.0.0/dns-query", "dnscrypt://0.0.0.0"]
@@ -268,6 +268,8 @@ pub(crate) struct Config {
     pub(crate) pipeline: Pipeline,
     /// Where the access lists come from (D91).
     access: AccessSource,
+    /// The apexes of the zones the authoritative stage answers to every client, in canonical order (D208).
+    zones: Vec<String>,
     pub(crate) downloads: Downloads,
     /// What upstream servers over TLS and QUIC are checked against.
     pub(crate) trust: Trust,
@@ -393,6 +395,15 @@ fn build(
     // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
     // validator, or none, does not stand behind them (D77).
     flush(&mut built, previous)?;
+    let zones = built
+        .iter()
+        .filter_map(|stage| match stage {
+            Stage::Authoritative(zones) => Some(zones.zones()),
+            _ => None,
+        })
+        .flatten()
+        .map(|zone| zone.apex().to_string())
+        .collect();
     let pipeline = guard.around(built, previous)?.with_prewarm(warmed);
     Ok(Config {
         listen: file.listen,
@@ -405,6 +416,7 @@ fn build(
         dnscrypt,
         pipeline,
         access: source,
+        zones,
         downloads,
         trust: trusted(file.upstream_ca.as_deref())?,
     })
