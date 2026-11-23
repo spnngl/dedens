@@ -115,7 +115,7 @@ it, their code does not do it; "partial": what is missing follows.
 | Hosts file, PTR from addresses | `crates/dedens-plugins/src/hosts.rs` (D54) | `crates/telltale-policy/src/local.rs` `add_hosts`, generated PTR (DNS-010 P0) |
 | Local records (A, AAAA, CNAME, TXT, SRV, MX, wildcard) | partial: A, AAAA, PTR (D54) | `crates/telltale-policy/src/local.rs` (DNS-010 P0) |
 | Zone file parser | full RFC 1035 text, every type (`crates/dedens-proto/src/text/zone.rs`, D25) | subset: 7 types and apex SOA, NS (`crates/telltale/src/import.rs`) |
-| Authoritative local zones | no: parser only | `crates/telltale/src/server.rs` `load_zones`, per group (DNS-018 P1) |
+| Authoritative local zones | zone files by longest apex, first in the pipeline, signed ones with DO: `crates/dedens-server/src/authoritative.rs` (D208, D209); against Knot and NSD in [`authoritative.md`](authoritative.md) | `crates/telltale/src/server.rs` `load_zones`, per group (DNS-018 P1) |
 | Rewrites | no | `crates/telltale-filter/src/rewrite.rs`, group rewrites (FLT-014 P1) |
 | Special-use names (RFC 6761, 6303) | no | `crates/telltale-policy/src/special.rs`: localhost, `.invalid`, private reverse zones, Firefox canary |
 | DNS64 (RFC 6147) | no | `crates/telltale/src/pipeline.rs` `dns64_for` (DNS-016 P1) |
@@ -140,7 +140,7 @@ it, their code does not do it; "partial": what is missing follows.
 | Per-client query rate | no (RRL is UDP and DoC only) | per /32 or /64, any transport, REFUSED or drop (`crates/telltale-policy/src/ratelimit.rs`, DNS-014 P0) |
 | Server cookies (RFC 7873, 9018) | `crates/dedens-server/src/cookie.rs`, constant-time (D113, D136) | no; spec `03-resolution-pipeline.md` reads the option |
 | Per-client work budget | validation and decapsulation per /24 or /48 (`crates/dedens-server/src/budget.rs`, D117) | no: 4096 upstream permits, global |
-| ANY (RFC 8482), AXFR and IXFR | `crates/dedens-server/src/pipeline/mod.rs` (D114) | `crates/telltale/src/pipeline.rs` (DNS-019 P0) |
+| ANY (RFC 8482), AXFR and IXFR | ANY one `RRset` in a zone (`crates/dedens-zone/src/answer.rs`, D206); AXFR and IXFR refused, other opcodes NOTIMP: `crates/dedens-server/src/pipeline/mod.rs` (D114); transfers planned, [`authoritative.md`](authoritative.md) | `crates/telltale/src/pipeline.rs` (DNS-019 P0) |
 | Malformed input | FORMERR, QDCOUNT over one too (`crates/dedens-server/src/pipeline/mod.rs`, D41) | `crates/telltale-proto/src/query.rs` (DNS-019 P0) |
 | Configuration bounds | D115 | schema checks (`crates/telltale-config/src/validate.rs`) |
 
@@ -309,7 +309,7 @@ dedens lacks:
 2. DoH over HTTP/2: most DoH clients (browsers, OSes) ask HTTP/2, dedens serves HTTP/3 only (D84).
 3. Conditional forwarding: a domain or reverse zone sent to its own servers.
 4. Server choice and upstream health: in order only, no breaker, no fastest or parallel.
-5. Local records beyond A, AAAA, PTR, and authoritative local zones from the zone parser dedens already has.
+5. Local records beyond A, AAAA, PTR (authoritative zones are served from files, D208; transfers are planned).
 6. A recursive resolver (planned `dedens-resolver`).
 7. A query log: dnstap, or JSON lines.
 8. Per-client policy: groups, client ids from DoH paths or SNI.

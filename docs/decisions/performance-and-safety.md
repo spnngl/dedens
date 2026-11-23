@@ -442,3 +442,49 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: BIND (not asked for; no image pinned); one Knot or NSD run for all zones (three are `example.`); the
     ISI zone with its types dropped (a zone edited by hand is no capture); waiting for a second root serial (hours,
     and the capture of the next day would differ).
+
+- D213 (builds on D183, D201, D203, D209) The authoritative stage is measured against Knot DNS and NSD by `just
+  bench-compare authoritative` and `authoritative-dnssec` (`compare.sh`, `compare.py`, `authzones.py`, the files
+  `compare/*-authoritative.*`), which D183's rules govern but where this decision says otherwise:
+  - The servers: `dedensd` (a `zones` stage first and alone), Knot at its pinned image (digest) and NSD 4.15.4 built
+    from the tarball by checksum in the compare image (the target `authoritative`, built alone for these modes, with
+    no Unbound or CoreDNS), each in its own container on `cores` cores, serving files, no upstream, no cache, no
+    zone written back, no journal. Not measured: BIND (no image pinned, D203), TelltaleDNS (no authoritative zones
+    that serve a signed one), Unbound and CoreDNS (not authoritative).
+  - The zones: the root zone of the capture of D203 (`testdata/authoritative/zones/root.zone`: signed, NSEC, about 25
+    000 records, 2.2 MB) and `big.example.`, which `authzones.py` generates from a fixed seed to 100 000 records
+    before signing: 2 000 delegations of two out-of-zone name servers, 3 000 CNAMEs, 100 wildcards, 10 DNAMEs to a
+    name with a wildcard, the hosts (A, AAAA and TXT each) for the rest. `kzonesign` signs it (ECDSA P-256, NSEC3 with
+    no iterations and no salt, the policy of D183's signed modes), which makes it 268 000 records and 34 MB: the
+    servers load the same two files, DNAMEs in the generic form of RFC 3597 §5 for `dedens-zone`, which has no text form of
+    the type. `DEDENS_ZONES` (`root`, `big`) serves one alone. Both modes serve signed zones; they differ in the DO bit
+    of the queries (`dnsperf -D`) and so in what an answer carries.
+  - The queries: a million `name type` lines from the zones' names, each line a zone of `DEDENS_ZONES` at random and
+    then a kind by share, the same seed and so the same file (its hash in `compare/corpora.sha256`). Root: 50 %
+    names below a delegation (referral), 15 % DS of a signed delegation, 25 % NXDOMAIN (a random TLD, half of them
+    with `www.`), 10 % the apex (SOA, NS, DNSKEY, AAAA, which has no data). `big.example.`: 40 % A, 10 % AAAA, 5 %
+    TXT, 5 % MX of a host (no data), 15 % NXDOMAIN, 10 % below a delegation, 5 % a CNAME (the A of it asked), 5 % a
+    wildcard's, 5 % below a DNAME.
+  - Right answers first: Knot's answers to the first 20 questions of the check file are the reference. A server
+    answers all 1 000 questions of the check pass with the rcodes the mix gives (NOERROR or NXDOMAIN), none lost, and
+    `dedens` gets from it the same rcode, AA and answer section (signatures kept with DO) as from Knot, and the same
+    authority and additional sections when the answer is empty. A positive answer's authority and additional are
+    not compared: NSD adds the apex NS set and its addresses, which Knot and `dedensd` do not (D203, difference 1).
+    A run is void by D183's rules, and an NXDOMAIN is no wrong rcode here.
+  - Measured: saturation and half of it, a common rate, latency and CPU a query, as D183; memory after loading (the
+    container's anonymous memory when the first answer to a question of each zone arrives, then after the load, and
+    the peak), and the time from the container's start to the first answer to the SOA of the last zone, as D183's
+    start, which for these modes is the load. Both from `/w/start`, written by the container, answered by
+    `probe.py` in the loader: the clocks are one.
+  - On a Mac, the engine's Linux VM (`podman machine`) is the machine: `compare.sh` accepts Darwin, the CPU recorded is
+    the host's and the kernel the VM's, and the load average of the host at the start and the end is in the result:
+    the numbers are indicative, the other work on the machine shares the cores of the VM. The run of record is on the
+    VPS of D183, left to the user.
+  - A regression: recorded, not a gate. A run is read against the last of the same hardware: `dedensd`'s saturation
+    rate against Knot's and NSD's in the same run, the memory after loading, the load time. A drop of more than a
+    tenth of `dedensd`'s own rate, or a gap to the slower of the two that widens, is a `docs/TODECIDE.md` entry or a
+    step with its own bench, as D183.
+  Rejected: the root zone alone (a name server's work is bigger than a referral: wildcards, CNAMEs and DNAMEs are in the
+  second zone); the zone made unsigned for one mode (the stage serves what it is given: the DO bit is what changes);
+  signing in the harness's own code (Knot's `kzonesign` is the signer the captures use, D203); a bench over a zone served
+  from memory by a test harness (the transport is part of what a server does).
