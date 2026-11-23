@@ -380,6 +380,28 @@ Open questions, each with its proposed default. Once answered, record the outcom
   wildcard (RFC 5155 §9.2: the name may be an unsigned delegation). `tests/signed.rs` pins what the validator says
   today. Default: leave the validator, so a resolver of dedens treats such an answer from an opt-out zone as bogus
   where Unbound calls it insecure. Alternative: accept it in `denial::nsec3`, as `Proof::opt_out`, an insecure NODATA.
+- Recursion from the zone's cut (D208), BIND's way: a client that asks for recursion and may have it, for a name
+  below a delegation of a zone `dedensd` serves, gets the referral (no AA) today, as Knot and NSD answer it. BIND
+  starts the resolver from the zone's NS and glue and answers the resolved data, so that such a client gets an
+  answer where the zone delegates to servers it can reach. The same start would let an answer that ends in a CNAME
+  out of the zone (`End::Open`, which D208 answers with the chain so far, AA and RA set, whose target the client
+  asks for in a second query) continue into the resolver. Default: none, the referral and the partial chain;
+  alternative: pass the question to the recursion stage with the zone's NS and glue as its starting servers, once a
+  user runs a resolver and zones in one `dedensd`.
+- An `access` per authoritative stage (D208): the access lists are those of the server, applied to the names the
+  zones pass on, and the zones answer every client. A server that serves a private zone to some networks and a
+  public one to all cannot say so; a stage after another authoritative one is refused. Default: one `access`, the
+  zones public; alternative: `access:` in the stage's settings, evaluated first for its zones.
+- `$INCLUDE` confinement without a race (D208): the path is resolved and compared, then opened, two steps, so a
+  link swapped between them in the zone's directory gets out. Only a user who writes in that directory can, and
+  that user already writes the zone. Linux's `openat2` with `RESOLVE_BENEATH` does both in one step. Default: the
+  two steps; alternative: `openat2` on Linux, the two steps elsewhere, with `rustix` or `nix`.
+- The room `Answer::fill` leaves a reply (D206, D208): `Client::zone` gives it the client's limit whole, and the
+  header, the question, the OPT record, the cookie, the EDE and the padding come out of the buffer after the
+  addresses were collected, so a large additional section is collected a little past what fits. The encoder is
+  exact (`Glue::encode` drops whole `RRset`s, TC when required glue goes), so the cost is the records built and
+  dropped, bounded by the limit. Default: as is; alternative: `limit` less those sizes, which `Glue::encode`'s
+  `limit` check (the buffer at most the `limit` of `fill`) would have to follow.
 
 ## Later
 
