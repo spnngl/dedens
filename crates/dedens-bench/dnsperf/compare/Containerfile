@@ -7,7 +7,7 @@ ARG COREDNS_VERSION
 RUN git clone -q --depth 1 --branch "v${COREDNS_VERSION}" https://github.com/coredns/coredns /src \
     && make -C /src
 
-FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS unbound
+FROM docker.io/library/debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS unbound
 ARG UNBOUND_VERSION
 ARG UNBOUND_SHA256
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl \
@@ -18,7 +18,7 @@ RUN curl -fsSLO "https://nlnetlabs.nl/downloads/unbound/unbound-${UNBOUND_VERSIO
     && cd "unbound-${UNBOUND_VERSION}" && ./configure -q && make -s -j"$(nproc)" && make -s install
 
 # NSD as testdata/authoritative/Containerfile builds it for the captures (D203), at the version compare.sh pins.
-FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS nsd
+FROM docker.io/library/debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS nsd
 ARG NSD_VERSION
 ARG NSD_SHA256
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl \
@@ -32,7 +32,7 @@ RUN curl -fsSLO "https://nlnetlabs.nl/downloads/nsd/nsd-${NSD_VERSION}.tar.gz" \
 
 # The authoritative modes' image (`--target authoritative`): the loader and NSD, without Unbound and CoreDNS.
 # git: TelltaleDNS's bench.py records its checkout's commit (crosscheck).
-FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS authoritative
+FROM docker.io/library/debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS authoritative
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends dnsperf bind9-dnsutils python3 openssl \
     libssl3t64 libexpat1 libevent-2.1-7t64 ca-certificates git >/dev/null && rm -rf /var/lib/apt/lists/*
 COPY --from=nsd /out/usr/local /usr/local
