@@ -405,10 +405,13 @@ Open questions, each with its proposed default. Once answered, record the outcom
   exact (`Glue::encode` drops whole `RRset`s, TC when required glue goes), so the cost is the records built and
   dropped, bounded by the limit. Default: as is; alternative: `limit` less those sizes, which `Glue::encode`'s
   `limit` check (the buffer at most the `limit` of `fill`) would have to follow.
-- The default limits of a transfer (D210, step 13): `Limits::records` 2^24 and `bytes` 1 GiB bound what a primary
-  can send, but a transfer holds about 1 KB a record while it runs (measured on the root's AXFR), so 2^24 records
-  would peak at some 16 GB. Default: the limits as they are, a secondary sets those of each zone. Alternative:
-  defaults of a few million records, or a bound on the memory of all the transfers at once.
+- The access lists of a secondary zone without a version (D215): the stage holds such a zone by its apex alone
+  (`Authoritative::with_unavailable`), so its `notify` and `transfer` lines are not in the stage, and a NOTIFY
+  for it (step 15) would find none. Default: step 15 gives an unavailable apex its `ZoneAccess`; alternative: NOTIFY
+  of a zone without a version answered from the secondaries' own list.
+- Settings per secondary zone (D215): the timer clamps and `transfer::Limits` are the same for every zone, D210's
+  limits letting a primary's transfer hold some 16 GB at 2^24 records. Default: none until a user asks;
+  alternative: Knot's `refresh-min-interval` and friends, and a records or bytes cap, under `secondary:`.
 - Signed queries past the zones (D211): a signed request for a name no zone holds is REFUSED, EDE 20, signed. The
   cache, forward and recurse stages answer later, from upstream, outside `Pipeline::query`, where the request's key
   and MAC are gone, and a forwarder would have to pass the TSIG on unchanged (RFC 8945 §5.5). Default: refused;
