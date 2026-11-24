@@ -199,10 +199,12 @@ fn rfc5936_2_2_a_secondary_zone_is_transferred_kept_and_served_after_a_restart()
         .expect("logged");
     assert_eq!(read["fields"]["serial"], ROOT);
     serves(&again, ".", ROOT);
-    assert_eq!(
-        logged(&again, "secondary zone refresh failed"),
-        Vec::<serde_json::Value>::new()
-    );
+    for message in [
+        "secondary zone refresh failed",
+        "journal does not start at the zone file, emptied",
+    ] {
+        assert_eq!(logged(&again, message), Vec::<serde_json::Value>::new());
+    }
 }
 
 /// RFC 1995 §4: a zone kept at an older serial is brought to the primary's by the difference, journaled.

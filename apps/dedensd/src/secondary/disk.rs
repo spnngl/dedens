@@ -319,4 +319,56 @@ mod tests {
             assert!(read == zone, "{file}");
         }
     }
+
+    /// The zone of RFC 4035 Appendix A at serial `serial`, read from a copy in `dir`.
+    fn example(dir: &Path, serial: u32) -> Zone {
+        let text =
+            fs::read_to_string(dedens_testkit::path("zones/rfc4035_appendix_a.zone")).unwrap();
+        let text = text.replace("1081539377", &serial.to_string());
+        let path = dir.join(format!("example-{serial}.zone"));
+        fs::write(&path, text).unwrap();
+        crate::zones::stored(&"example.".parse().unwrap(), &path).unwrap()
+    }
+
+    /// RFC 1995 §4: an IXFR's changesets are journaled and the text stays while the journal starts at it; the
+    /// version read back is the text with the journal applied. A text the journal does not start at empties it.
+    #[test]
+    fn rfc1995_4_the_journal_brings_the_text_up_to_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let (copies, files) = (dir.path().join("copies"), dir.path().join("zone"));
+        fs::create_dir(&copies).unwrap();
+        let apex: Name<'static> = "example.".parse().unwrap();
+        let first = example(&copies, 1);
+        let second = example(&copies, 2);
+        let kept = Kept {
+            refreshed: 0,
+            expires: 1,
+        };
+        let mut disk = Disk::new(files.clone());
+        disk.full(&first, kept).unwrap();
+        let changeset = Zone::diff(&first, &second).unwrap();
+        disk.incremental(&[changeset], &second, kept).unwrap();
+        let text = crate::zones::stored(&apex, &files.join(ZONE)).unwrap();
+        assert_eq!(text.soa().serial, 1, "the journal starts at the text");
+        let (read, _) = Disk::new(files.clone()).load(&apex).unwrap().unwrap();
+        assert!(read == second, "the text with the journal applied");
+
+        let third = example(&copies, 3);
+        disk.full(&third, kept).unwrap();
+        drop(disk);
+        let journal = || Journal::open(files.join(JOURNAL), JournalLimits::default()).unwrap();
+        assert!(journal().is_empty(), "a full transfer empties the journal");
+        let mut disk = Disk::new(files.clone());
+        disk.full(&first, kept).unwrap();
+        let changeset = Zone::diff(&first, &second).unwrap();
+        disk.incremental(&[changeset], &second, kept).unwrap();
+        drop(disk);
+        fs::copy(copies.join("example-3.zone"), files.join(ZONE)).unwrap();
+        let (read, _) = Disk::new(files.clone()).load(&apex).unwrap().unwrap();
+        assert!(read == third, "the text alone");
+        assert!(
+            journal().is_empty(),
+            "a journal not starting at the text is emptied"
+        );
+    }
 }
