@@ -1,10 +1,12 @@
 //! The server side: verifying a request (RFC 8945 §5.2), signing the response or the stream of responses (§5.3,
 //! §5.3.1) and the error returns (§5.3.2).
 
+use std::borrow::Cow;
+
 use dedens_proto::{Class, DecodeError, Name, Tsig, TsigError, find_tsig};
 
 use crate::FUDGE;
-use crate::digest::{Digest, SignError, Signature, append, matches, original_id, sign};
+use crate::digest::{Digest, SignError, Signature, append, grown, matches, original_id, sign};
 use crate::key::{Key, Keyring};
 
 /// A request that is not to be served as a signed one, with the answer it is owed.
@@ -75,8 +77,18 @@ impl NotAuth<'_> {
     ///
     /// [`SignError`] when `wire` is no message or has no room for the record.
     pub fn sign(&self, wire: &mut Vec<u8>, now: u64) -> Result<(), SignError> {
+        grown(wire, |message| Ok(((), self.sign_in(message, now)?)))
+    }
+
+    /// As [`NotAuth::sign`], for the response of `len` bytes at the start of `out`, the record written after it in
+    /// `out`; returns the signed response's length.
+    ///
+    /// # Errors
+    ///
+    /// As [`NotAuth::sign`], `out` being the room; `out` is unchanged then.
+    pub fn sign_in(&self, (out, len): (&mut [u8], usize), now: u64) -> Result<usize, SignError> {
         let Some(signed) = &self.signed else {
-            let id = original_id(wire)?;
+            let id = original_id(out.get(..len).ok_or(SignError::TooLong)?)?;
             let tsig = Tsig::new(
                 self.algorithm.clone(),
                 self.time,
@@ -86,7 +98,7 @@ impl NotAuth<'_> {
                 self.error,
                 &[],
             )?;
-            return append(wire, &self.owner, &tsig);
+            return append((out, len), &self.owner, &tsig);
         };
         let mut digest = Digest::new(signed.key);
         digest.mac(&signed.request_mac);
@@ -103,7 +115,7 @@ impl NotAuth<'_> {
             other,
             timers_only: false,
         };
-        sign(signed.key, digest, wire, &signature).map(drop)
+        sign(signed.key, digest, (out, len), &signature).map(|(_, len)| len)
     }
 }
 
@@ -196,7 +208,7 @@ impl<'k> Request<'k> {
     #[must_use]
     pub fn signer(&self) -> ResponseSigner<'k> {
         ResponseSigner {
-            key: self.key,
+            key: Cow::Borrowed(self.key),
             prior: self.mac.clone(),
             first: true,
         }
@@ -206,12 +218,28 @@ impl<'k> Request<'k> {
 /// Signs the messages of one response in order, each with the MAC of the one before (RFC 8945 §5.3, §5.3.1).
 #[derive(Debug, Clone)]
 pub struct ResponseSigner<'k> {
-    key: &'k Key,
+    key: Cow<'k, Key>,
     prior: Vec<u8>,
     first: bool,
 }
 
 impl ResponseSigner<'_> {
+    /// The key the messages are signed with.
+    #[must_use]
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
+
+    /// The same signer, with its own copy of the key: a stream of messages outlives the keyring it began with.
+    #[must_use]
+    pub fn into_owned(self) -> ResponseSigner<'static> {
+        ResponseSigner {
+            key: Cow::Owned(self.key.into_owned()),
+            prior: self.prior,
+            first: self.first,
+        }
+    }
+
     /// Appends the TSIG record to `wire`, a message of the response, at time `now`.
     ///
     /// The first message takes the request MAC and the TSIG variables, the next ones the previous MAC and the
@@ -222,7 +250,21 @@ impl ResponseSigner<'_> {
     ///
     /// [`SignError`] when `wire` is no message or has no room for the record; the signer is unchanged then.
     pub fn sign(&mut self, wire: &mut Vec<u8>, now: u64) -> Result<(), SignError> {
-        let mut digest = Digest::new(self.key);
+        grown(wire, |message| Ok(((), self.sign_in(message, now)?)))
+    }
+
+    /// As [`ResponseSigner::sign`], for the message of `len` bytes at the start of `out`, the record written after
+    /// it in `out`, no copy made; returns the signed message's length.
+    ///
+    /// # Errors
+    ///
+    /// As [`ResponseSigner::sign`], `out` being the room; the signer and `out` are unchanged then.
+    pub fn sign_in(
+        &mut self,
+        (out, len): (&mut [u8], usize),
+        now: u64,
+    ) -> Result<usize, SignError> {
+        let mut digest = Digest::new(&self.key);
         digest.mac(&self.prior);
         let signature = Signature {
             time_signed: now,
@@ -231,8 +273,9 @@ impl ResponseSigner<'_> {
             other: &[],
             timers_only: !self.first,
         };
-        self.prior = sign(self.key, digest, wire, &signature)?;
+        let (mac, len) = sign(&self.key, digest, (out, len), &signature)?;
+        self.prior = mac;
         self.first = false;
-        Ok(())
+        Ok(len)
     }
 }
