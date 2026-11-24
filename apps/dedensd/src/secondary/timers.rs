@@ -72,16 +72,13 @@ impl Intervals {
 /// When a zone that has no version is tried again after its `tries`-th try in a row failed at `now`: Knot's
 /// `zone_bootstrap_next` (`src/knot/zone/zone.c`), 5 s × tries², at most [`MAX_BOOTSTRAP`], plus a draw below
 /// 5 s × (tries + 1), at most 30 s, so that many zones of a restarted server do not try together.
-pub(super) const fn bootstrap_at(now: u64, tries: u32, draw: u64) -> u64 {
-    let tries = tries as u64;
-    let wait = tries.saturating_mul(tries).saturating_mul(5);
-    let wait = if wait < MAX_BOOTSTRAP {
-        wait
-    } else {
-        MAX_BOOTSTRAP
-    };
-    let spread = 5 * tries.saturating_add(1);
-    let spread = if spread < 30 { spread } else { 30 };
+pub(super) fn bootstrap_at(now: u64, tries: u32, draw: u64) -> u64 {
+    let tries = u64::from(tries);
+    let wait = tries
+        .saturating_mul(tries)
+        .saturating_mul(5)
+        .min(MAX_BOOTSTRAP);
+    let spread = (5 * tries.saturating_add(1)).min(30);
     now.saturating_add(wait).saturating_add(draw % spread)
 }
 
@@ -93,8 +90,8 @@ const fn jitter(seconds: u64, draw: u64) -> u64 {
     if seconds <= 10 {
         return seconds;
     }
-    let base = seconds / 10 * 9 + seconds % 10 * 9 / 10;
-    base + draw % (seconds - base)
+    let tenth = seconds / 10;
+    seconds - tenth + draw % tenth
 }
 
 #[cfg(test)]
@@ -138,8 +135,10 @@ mod tests {
         assert_eq!(root.expire_at(0), 604_800);
         // 10 s and below: as written.
         assert_eq!(Intervals::of(&soa(10, 7, 3)).refresh_at(0, 5), 10);
-        assert_eq!(jitter(11, 0), 9);
-        assert_eq!(jitter(11, 1), 10);
+        assert_eq!(jitter(11, 0), 10);
+        assert_eq!(jitter(25, 0), 23);
+        assert_eq!(jitter(25, 1), 24);
+        assert_eq!(jitter(25, 2), 23);
     }
 
     #[test]
