@@ -172,8 +172,9 @@ pub(super) async fn answer<N: Io>(
                 Step::Reply(len) | Step::Refresh(len, _) => {
                     (copy_out(&out[..len], transport), None)
                 }
-                // `receive` does not park: the query was admitted; nor does a forward stage resolve.
-                Step::Drop | Step::Park(_) | Step::Resolve(_) => (None, None),
+                // `receive` does not park: the query was admitted; nor does a forward stage resolve, nor an
+                // upstream response transfer a zone.
+                Step::Drop | Step::Park(_) | Step::Resolve(_) | Step::Transfer(_) => (None, None),
                 Step::Upstream(next) => (None, Some(next)),
             }
         };

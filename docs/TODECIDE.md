@@ -420,6 +420,14 @@ Open questions, each with its proposed default. Once answered, record the outcom
   as it arrives for `--short`, JSON lines. BIND's key files (`Kname.+163+id.key`, `key "name" { ... };`) and
   kdig's `+tsig` (the TSIG record in the output): default: `-y`/`-k` in kdig's one-line format only. XoT (RFC 9103,
   a transfer over TLS) and `+onesoa`: default: refused as usage errors.
+- XoT over TLS 1.2 (D214): RFC 9103 §7.2 says XoT MUST use TLS 1.3 only, and the DoT listener takes TLS 1.2 too
+  (D66, `crates/dedens-net/src/tls.rs` `acceptor`); compio-tls's `TlsStream` tells the ALPN agreed, not the
+  version, so a transfer over TLS 1.2 is served. Knot's and NSD's TLS are 1.3 only (`knot_tls_priority`,
+  `src/libknot/quic/tls_common.c`; `server_tls_ctx_create`, NSD's `server.c`). Default: DoT TLS 1.3 only, for every
+  client, as Knot and NSD; alternative: accept with `rustls` directly and refuse a transfer over 1.2 with EDE 21.
+- The history of a zone across restarts (D214): IXFR is answered from changesets kept in memory since the start, so
+  a secondary's first refresh after a restart gets the zone whole. Default: write each changeset to D207's journal
+  in the state directory once steps 13 and 14 settle who writes there; alternative: in memory, as now.
 
 ## Later
 

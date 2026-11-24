@@ -12,8 +12,8 @@ use dedens_proto::{Flags, Header, MAX_MESSAGE_LEN, Message, Query, Rcode, Transp
 use dedens_resolver::{Caches, DEFAULT_CAPACITY, InfraCache, Marks, Reply, RrsetCache};
 use dedens_roots::{RootHints, Tlds};
 use dedens_server::{
-    Access, Authoritative, Cookies, Denial, Forward, Network, Pipeline, Rate, RateLimit,
-    RateLimitConfig, Recurse, Secret, Secrets, Stage, Standing, Step, Turn,
+    Access, Action, Authoritative, Cookies, Denial, Forward, Grant, Network, Next, Pipeline, Rate,
+    RateLimit, RateLimitConfig, Recurse, Secret, Secrets, Stage, Standing, Step, Turn, ZoneAccess,
 };
 use dedens_zone::{Limits, Source, Zone};
 
@@ -124,9 +124,11 @@ pub fn serve_query(data: &[u8]) {
                     "a denied client is refused"
                 );
             }
-            Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
-                panic!("a denied client's query goes upstream")
-            }
+            Step::Upstream(_)
+            | Step::Refresh(..)
+            | Step::Park(_)
+            | Step::Resolve(_)
+            | Step::Transfer(_) => panic!("a denied client's query goes on"),
         }
         let top_level = Pipeline::new(vec![Stage::Plugin(Box::new(TopLevel::new(
             Arc::clone(&BUNDLED),
@@ -196,19 +198,37 @@ static EXAMPLE: LazyLock<Arc<Zone>> = LazyLock::new(|| {
 });
 
 /// The checks of `serve_query` on a pipeline of an authoritative stage then a forward stage, from a client the
-/// access lists deny: its names are answered, the others refused, none goes upstream.
+/// access lists deny but the zone's `transfer` list permits: its names are answered, the others refused, none goes
+/// upstream; a transfer (D214), over TCP alone, is a stream of conforming messages under the query's ID that ends.
 fn authoritative(data: &[u8], transport: Transport, out: &mut [u8]) {
     let server = SocketAddr::from(([192, 0, 2, 1], 53));
+    let local: Network = "127.0.0.1/32".parse().expect("a network");
+    let access = ZoneAccess::default().with(Action::Transfer, [Grant::new([local], None)]);
+    let zones = Authoritative::guarded([(Arc::clone(&EXAMPLE), access)]).expect("one zone");
     let pipeline = Pipeline::new(vec![
-        Stage::Authoritative(Authoritative::new([Arc::clone(&EXAMPLE)]).expect("one zone")),
+        Stage::Authoritative(zones),
         Stage::Forward(Forward::new([server]).expect("one server")),
     ])
     .with_access(Access::new([], [], Denial::Refuse));
+    let id = || Header::peek(data).expect("a reply goes to a header").id;
     match pipeline.query(data, transport, Ipv4Addr::LOCALHOST.into(), 0, out) {
         Step::Drop => {}
-        Step::Reply(len) => {
-            let id = Header::peek(data).expect("a reply goes to a header").id;
-            check_reply(&out[..len], id, transport);
+        Step::Reply(len) => check_reply(&out[..len], id(), transport),
+        Step::Transfer(mut transfer) => {
+            assert_eq!(
+                transport,
+                Transport::Tcp,
+                "a transfer is made over TCP alone"
+            );
+            // The zone's records, each a message at most, and its two SOAs.
+            for _ in 0..=EXAMPLE.record_count() + 2 {
+                match transfer.next(&pipeline, out) {
+                    Next::Message(len) => check_reply(&out[..len], id(), transport),
+                    Next::Ended => return,
+                    Next::Cut => panic!("an unsigned transfer of a served zone is cut"),
+                }
+            }
+            panic!("a transfer does not end");
         }
         Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
             panic!("a denied client's query goes upstream")

@@ -21,7 +21,9 @@ belongs in `crates/dedens-server` and its sans-IO tests.
 - A transport turns a `Step::Upstream` of `Pipeline::query` into an `Ask` with `Ask::after`, or its query jumps the
   line of those waiting for the validation allowance (D186), and hands a `Step::Park` to `upstream::answer`, which
   waits; a `Step::Resolve` becomes `Ask::Resolve`, which `serve/recurse.rs` drives (D195): its queries in flight
-  are the thread's own, never shared across threads.
+  are the thread's own, never shared across threads. A `Step::Transfer` comes over TCP and TLS only (the pipeline
+  refuses transfers elsewhere, D214): `serve/tcp.rs`'s `send` streams it, `thread.pipeline()` again for each
+  message; the other transports drop it.
 - Measure a change to `src/serve/` with `just bench-dnsperf <base> <mode>` (modes in the justfile) and record it in
   `docs/benchmarks.md`. It builds on glibc, with the system allocator: measure a change to the allocator or its
   settings with `just bench-compare`, which runs the `Containerfile`'s musl binary.

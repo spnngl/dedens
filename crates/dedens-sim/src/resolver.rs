@@ -301,7 +301,8 @@ impl Shared {
                 self.send(transport, &out[..len], false, &mut deliver).await;
                 return;
             }
-            Step::Drop => return,
+            // No zone transfer is simulated: dedensd's connections stream them (D214).
+            Step::Drop | Step::Transfer(_) => return,
             // The cached answer goes out, then the cache is refreshed.
             Step::Refresh(len, upstream) => {
                 self.send(transport, &out[..len], false, &mut deliver).await;
@@ -392,8 +393,8 @@ impl Shared {
                     self.send(transport, &out[..len], false, &mut deliver).await;
                     return;
                 }
-                // `receive` does not park: the query was admitted.
-                Step::Drop | Step::Park(_) => return,
+                // `receive` does not park: the query was admitted; nor transfers a zone.
+                Step::Drop | Step::Park(_) | Step::Transfer(_) => return,
                 Step::Upstream(next) => upstream = next,
                 // `receive` answers for a forward stage, never a recurse one.
                 Step::Resolve(_) => recursion(),

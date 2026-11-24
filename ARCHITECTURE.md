@@ -7,7 +7,7 @@
 | `crates/dedens-proto` | Wire format and zone-file text: messages, names, records, EDNS | none (sans-IO) |
 | `crates/dedens-cache` | Response cache for the server: sharded, serve-stale; its byte-budgeted `Store` (D193) | none, time passed in |
 | `crates/dedens-resolver` | Recursive resolver: the iteration (D191), a response scrubbed to what the zone asked may say, into ranked `RRsets` (D192); the `RRset` cache (D193), the infra cache of authoritative servers (D194); the answer validated by `dedens-dnssec`, its questions iterated (D197) | none (sans-IO), time and randomness passed in |
-| `crates/dedens-server` | Server core: client access lists (D91), signed requests and zone access lists (D211), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself, the recurse stage and the zones it serves locally (D195), the authoritative stage answering from `dedens-zone`'s zones (D208) | none (sans-IO) |
+| `crates/dedens-server` | Server core: client access lists (D91), signed requests and zone access lists (D211), UDP and DoC rate limit and Server Cookies (D113), client budgets (D117), the stage pipeline and the replies it builds itself, the recurse stage and the zones it serves locally (D195), the authoritative stage answering from `dedens-zone`'s zones (D208) and the AXFR and IXFR it sends, message by message (`transfer.rs`, D214) | none (sans-IO) |
 | `crates/dedens-plugins` | Plugin stages (D54): hosts, blocklist | none (sans-IO) |
 | `crates/dedens-dnssec` | DNSSEC validation (D69): signatures, denial of existence, chain of trust and the verdict on a response; IANA's signed root anchors (D127, `fetch-anchors`); the root's key rollover by RFC 5011 (D200) | none (sans-IO), time passed in |
 | `crates/dedens-zone` | A zone for the authoritative phase (D204): zone text loaded into an immutable `Zone`, its names in canonical order with the delegations, DNAMEs, wildcards and empty non-terminals marked, checked per RFC 1035 §5.2 and RFC 2181 §10.1, bounded by `Limits`; changesets between versions (`Zone::diff`, `Zone::apply`) and their journal file (D207); `Zone::answer` (D206): the answer to a question, RFC 1034 §4.3.2 with wildcards, DNAME and glue, filled into a `Message`, with DO the signatures and NSEC or NSEC3 proofs of a pre-signed zone (D209, hashing through `dedens-dnssec`) | the journal's file (blocking), `$INCLUDE` through a callback |
@@ -44,6 +44,9 @@
   `recurse/` (D195; `apps/dedensd/src/serve/recurse.rs` steps the resolution, `dedens-resolver`, over `dedens-net`'s
   authoritative mode, D190); a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to
   the query by `reply.rs` → send (UDP: the socket's `Outbox`, D123).
+- Server, a zone transfer out: the pipeline's `check` → `Step::Transfer` (`crates/dedens-server/src/transfer.rs`,
+  D214; IXFR from the reloads' `History`, `apps/dedensd/src/zones.rs`) → `apps/dedensd/src/serve/tcp.rs` `send`,
+  a message each time the writer has room, its turn taken in `serve/transfer.rs`.
 - Server, a response from upstream: `Message::decode` (D28) → `forward::usable` → with `dnssec: validate`,
   `validate.rs` (D77; its cost: `budget.rs`, D117; questions in flight shared: `apps/dedensd/src/flights.rs`, D86)
   → `Cache::insert` or `Cache::insert_checked`, encoded once there and served as a hit from then on (D43).

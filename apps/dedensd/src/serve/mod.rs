@@ -23,6 +23,7 @@ pub(crate) mod prewarm;
 mod quic;
 mod recurse;
 mod tcp;
+pub(crate) mod transfer;
 mod udp;
 mod upstream;
 
@@ -42,7 +43,7 @@ use dedens_net::client::Client;
 use dedens_net::io::{Compio, Io, TimedOut, Udp as _};
 use dedens_net::tls::{self, Presented, Trust};
 use dedens_proto::{MAX_MESSAGE_LEN, Transport};
-use dedens_server::{Parking, Pipeline, Step};
+use dedens_server::{Parking, Pipeline, Step, Transfer};
 use futures_util::future::{Either, join, select, select_all};
 use socket2::{Domain, Socket, Type};
 
@@ -306,6 +307,7 @@ pub(crate) fn describe() {
     isolate::describe();
     prewarm::describe();
     recurse::describe();
+    transfer::describe();
     upstream::describe();
     #[cfg(feature = "dnscrypt")]
     dnscrypt::describe();
@@ -724,6 +726,8 @@ enum Started {
     Done,
     /// To ask upstream, in a place of the thread's upstream queries.
     Upstream(Ask, Slot),
+    /// A zone transfer, for the connection to send (D214).
+    Transfer(Box<Transfer>),
 }
 
 /// Runs `query`, from the client at `from` over `transport`, through `pipeline`, handing `push` the reply made in the thread's
@@ -751,6 +755,7 @@ fn start<N: Io>(
         }
         Step::Park(parked) => Ask::Parked(parked),
         Step::Resolve(resolving) => Ask::Resolve(resolving),
+        Step::Transfer(transfer) => return Some(Started::Transfer(transfer)),
     };
     let Some(slot) = thread.upstream.take() else {
         tracing::debug!("too many upstream queries: SERVFAIL");

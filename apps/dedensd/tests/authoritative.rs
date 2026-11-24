@@ -21,7 +21,7 @@ use crate::util::{Server, ask_udp, decode, framed, read_framed, write_key};
 
 /// The zones of RFC 4035 Appendix A and of RFC 1035 §5.3, the latter's `$INCLUDE` named as in `dir`, copied to
 /// `dir`: the files of `example.` and `ISI.EDU.`.
-fn zones(dir: &Path) -> (PathBuf, PathBuf) {
+pub(crate) fn zones(dir: &Path) -> (PathBuf, PathBuf) {
     let testdata = dedens_testkit::path("zones");
     let example = dir.join("example.zone");
     std::fs::copy(testdata.join("rfc4035_appendix_a.zone"), &example).expect("copied");

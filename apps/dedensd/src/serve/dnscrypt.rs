@@ -502,7 +502,8 @@ async fn step<N: Io>(
     }
     match started {
         Some(Started::Upstream(upstream, slot)) => Some((upstream, slot, reply)),
-        Some(Started::Done) | None => None,
+        // The pipeline makes a transfer over TCP and TLS alone (D214).
+        Some(Started::Done | Started::Transfer(_)) | None => None,
     }
 }
 

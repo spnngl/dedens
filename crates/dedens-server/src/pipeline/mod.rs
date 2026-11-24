@@ -16,7 +16,7 @@ use dedens_proto::edns::{Cookie, EdnsOption, InfoCode};
 use dedens_proto::{
     Class, Decoded, Flags, Header, Message, Opcode, Query, Question, Rcode, RecordType, Transport,
 };
-use dedens_tsig::Keyring;
+use dedens_tsig::{Key, Keyring};
 
 use self::finish::{Finish, Refused, Ttls, prohibit, reply, servfail, slip};
 pub use self::prewarm::{Warm, Warmth};
@@ -32,6 +32,7 @@ use crate::plugin::{Answer, Plugin};
 use crate::recurse::{Asker, Asking, Ended, Recurse, Resolving};
 use crate::reply::Client;
 use crate::rrl::{Admission, RateLimit};
+use crate::transfer::Transfer;
 use crate::validate::{Check, Clock, Outcome, Payer, Progress, Source, Validating};
 
 /// A stage of the pipeline (D23).
@@ -101,6 +102,9 @@ pub enum Step {
     /// Step the resolution, sending each query it gives, until it is done, then hand it to
     /// [`Pipeline::resolved`] (D195).
     Resolve(Box<Resolving>),
+    /// Send the messages of the zone transfer, each made by [`Transfer::next`] with the pipeline of the time, in
+    /// turn as the connection has room for them, then read the next query (D214). Only TCP and TLS make it.
+    Transfer(Box<Transfer>),
 }
 
 /// A client's query to validate that found the allowance spent (D186): made, holding its share's unit (D117), and
@@ -245,6 +249,12 @@ impl Pipeline {
         self.keys.as_ref()?.verified_key(wire)
     }
 
+    /// The time to sign a message of a transfer with `key` at, the clock's; `None` once the pipeline's keys have no
+    /// key of its name and algorithm (D211, D214).
+    pub(crate) fn signing_time(&self, key: &Key) -> Option<u64> {
+        self.keys.as_ref()?.signing_time(key)
+    }
+
     /// The cookies made and checked, if any.
     #[must_use]
     pub const fn cookies(&self) -> Option<&Cookies> {
@@ -335,8 +345,9 @@ impl Pipeline {
     ///
     /// Then, before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
     /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
-    /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
-    /// a forwarder does not do, nor yet the authoritative stage. Responses are dropped, never answered. A reply
+    /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3). A zone transfer goes to the authoritative
+    /// stage of the zone, as [`Step::Transfer`] when permitted (D214); REFUSED when there are no zones, a forwarder
+    /// doing no transfer, NOTAUTH when none is the zone's. Responses are dropped, never answered. A reply
     /// has RA, but when authoritative stages open the pipeline: then only when a forward or recurse stage follows
     /// and the access lists permit the client (D208). A FORMERR to OPT records that break a rule,
     /// several (RFC 6891 §6.1.1), one outside the additional section, not owned by the root or with options
@@ -422,6 +433,9 @@ impl Pipeline {
             self.check(&query, &client, standing, from, now, out),
         ) {
             (Some(signed), Step::Reply(len)) => signed.seal(&client, len, out),
+            (Some(signed), Step::Transfer(transfer)) => {
+                Step::Transfer(Box::new(transfer.signed(signed.signer())))
+            }
             // Only replies come of a signed request: the stages past the zones are refused it.
             (Some(_), _) => Step::Drop,
             (None, step) => step,
@@ -457,7 +471,7 @@ impl Pipeline {
                 }
                 None => Rcode::FORMERR,
                 Some(question) if matches!(question.qtype, RecordType::AXFR | RecordType::IXFR) => {
-                    Rcode::REFUSED
+                    return self.transfer(query, client, from, out);
                 }
                 Some(_) => {
                     // A connection cannot be spoofed, nor a valid Server Cookie; a datagram, UDP or DoC, can (D113).
@@ -471,6 +485,31 @@ impl Pipeline {
             }
         };
         reply(client, Message::default(), rcode, out)
+    }
+
+    /// The answer to a zone transfer request (D214): the authoritative stage's whose zone has the question's name as
+    /// its apex; else NOTAUTH, when there are zones (RFC 5936 §2.2.1, Knot's `axfr.c` and NSD's `query_axfr`),
+    /// or REFUSED, a forwarder doing no transfer.
+    fn transfer(
+        &self,
+        query: &Query<'_>,
+        client: &Client<'_>,
+        from: IpAddr,
+        out: &mut [u8],
+    ) -> Step {
+        let zones = &self.stages[..self.zones];
+        let step = zones.iter().find_map(|stage| match stage {
+            Stage::Authoritative(zones) => zones.transfer(query, client, from, out),
+            _ => None,
+        });
+        step.unwrap_or_else(|| {
+            let rcode = if zones.is_empty() {
+                Rcode::REFUSED
+            } else {
+                Rcode::NOTAUTH
+            };
+            reply(client, Message::default(), rcode, out)
+        })
     }
 
     /// Whether the client at `from` has recursion available, RA (D208): always, but when authoritative stages

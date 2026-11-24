@@ -3,6 +3,9 @@
 //! A zone is loaded again only when its file, or a file it includes, changed, as the lists are (D120's [`Stamp`]).
 //! Once the server serves, a zone whose files fail to load keeps its last version (D55), the error logged and
 //! counted; before, at the start, the failure fails the start.
+//!
+//! A zone loaded again keeps the changes from its last version, `Zone::diff`, which IXFR answers from (D214): in
+//! memory, lost to a restart.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -12,6 +15,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, anyhow, ensure};
 use dedens_proto::{Name, Ttl};
+use dedens_server::History;
 use dedens_zone::{Limits, Source, Zone};
 
 use crate::lists::Stamp;
@@ -57,6 +61,8 @@ type Files = Vec<(PathBuf, Option<Stamp>)>;
 #[derive(Debug)]
 struct Kept {
     zone: Arc<Zone>,
+    /// The changes that led to `zone` while the server ran.
+    history: History,
     /// The files read.
     files: Files,
     /// The files a later load that failed read: while they are unchanged, loading again would fail the same, and the
@@ -140,9 +146,13 @@ impl Held {
                     records = zone.record_count(),
                     "zone loaded"
                 );
+                let history = self.zones.get(&key).map_or_else(History::default, |kept| {
+                    changes(apex, &kept.zone, &zone, kept.history.clone())
+                });
                 let zone = Arc::new(zone);
                 let kept = Kept {
                     zone: Arc::clone(&zone),
+                    history,
                     files,
                     failed: None,
                     used: true,
@@ -166,6 +176,26 @@ impl Held {
                 kept.used = true;
                 Ok(Arc::clone(&kept.zone))
             }
+        }
+    }
+
+    /// The changes that led to the zone [`Held::zone`] returned last for `apex` and `path`.
+    pub(crate) fn history(&self, apex: &Name<'static>, path: &Path) -> History {
+        let key = (apex.clone(), path.to_owned());
+        self.zones
+            .get(&key)
+            .map_or_else(History::default, |kept| kept.history.clone())
+    }
+}
+
+/// `history`, the changes that led to `old`, with those from `old` to `new`; none when `new` is no next version
+/// of `old`, its serial not ahead: an IXFR from before then gets the zone whole (RFC 1995 §4).
+fn changes(apex: &Name<'static>, old: &Zone, new: &Zone, history: History) -> History {
+    match Zone::diff(old, new) {
+        Ok(changeset) => history.with(changeset, new.record_count()),
+        Err(error) => {
+            tracing::info!(zone = %apex, %error, "zone changed with no difference IXFR can send");
+            History::default()
         }
     }
 }

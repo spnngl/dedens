@@ -19,6 +19,7 @@ use crate::lists::Store;
 use crate::privileges::Identity;
 use crate::rollover::{self, Probe, Wake};
 use crate::roots::{self, Refresh};
+use crate::serve::transfer::Transfers;
 use crate::sync::{self, AtomicU64, Mutex, Ordering, PoisonError};
 
 /// The pipeline in use. Serving threads ask [`Current::newer`] before each query: one atomic load, and the new
@@ -34,6 +35,8 @@ pub(crate) struct Current {
     flights: Flights,
     /// When the root's keys are asked next, for all threads and across reloads (D200).
     probe: Probe,
+    /// The zone transfers running, for all threads and across reloads (D214).
+    transfers: Transfers,
 }
 
 impl Current {
@@ -44,6 +47,7 @@ impl Current {
             followers: Mutex::default(),
             flights: Flights::default(),
             probe: Probe::default(),
+            transfers: Transfers::default(),
         }
     }
 
@@ -53,6 +57,10 @@ impl Current {
 
     pub(crate) const fn probe(&self) -> &Probe {
         &self.probe
+    }
+
+    pub(crate) const fn transfers(&self) -> &Transfers {
+        &self.transfers
     }
 
     /// Bumped by each [`Current::replace`], after the pipeline is.

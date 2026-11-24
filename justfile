@@ -362,7 +362,8 @@ fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdat
 # testdata/recursion and testdata/recursion/minimised (D188), kept there in base64, one to a file in
 # fuzz/target/seeds/recursion; the journal file of fuzz/seeds/example.journal (D207) in fuzz/target/seeds/journal; the
 # zone transfers over TCP of testdata/authoritative/recordings, each message behind its length in two octets, but
-# the unsigned root's (D210), one to a file in fuzz/target/seeds/transfer.
+# the unsigned root's (D210), one to a file in fuzz/target/seeds/transfer, and the request of each alone, over any
+# transport, beside it (D214).
 # `seeds()` of fuzz/src/smoke.rs reads the same.
 [private]
 fuzz-seeds:
@@ -381,8 +382,13 @@ fuzz-seeds:
         if ($ARGV ne $file) { $file = $ARGV; ($id = $ARGV) =~ s{.*/|\.yaml$}{}g; undef $out }
         next if $id eq "axfr-root";
         $tcp = $1 eq "tcp" if /^\s*transport: (\w+)$/;
+        $client = $1 eq "client" if /^\s*from: (\w+)$/;
         my $seed = $b64 ? $_ : /^\s*message: ([^>\s]\S*)$/ ? $1 : undef;
         $b64 = /^\s*message: >-$/;
+        if (defined $seed && $client && !-e "fuzz/target/seeds/transfer/$id-request") {
+            open my $request, ">", "fuzz/target/seeds/transfer/$id-request" or die;
+            print $request decode_base64($seed)
+        }
         if (defined $seed && $tcp) {
             my $wire = decode_base64($seed);
             open $out, ">", "fuzz/target/seeds/transfer/$id" or die unless $out;
@@ -604,6 +610,11 @@ odoh-live:
 # `dedensd` as an Oblivious DoH target for Cloudflare's odoh-rs over HTTP/3 (aioquic): needs uv and the network.
 odoh-interop:
     uv run tests/interop/odoh.py
+
+# Knot DNS as a secondary of `dedensd`: every test zone by AXFR, two by IXFR after a reload, unsigned and signed
+# (D214). Needs the Knot image of `authoritative-images`, `kdig` and `openssl`.
+transfer-interop:
+    DEDENS_CONTAINER={{ container }} bash tests/interop/knot-transfer.sh
 
 # Download every list of docs/blocklists/blocklists.yaml and check its format and freshness (D87, D88).
 # GITHUB_TOKEN, when set, lifts GitHub's limit of 60 API requests an hour.

@@ -29,4 +29,6 @@ mod rfc6761;
 mod rfc9718;
 #[cfg(unix)]
 mod tlds;
+#[cfg(unix)]
+mod transfer;
 mod util;

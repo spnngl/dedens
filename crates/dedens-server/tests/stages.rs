@@ -1441,9 +1441,11 @@ mod upstream {
                     };
                     step = pipeline.receive(upstream, response, 0, &mut out);
                 }
-                Step::Drop | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
-                    unreachable!("a reply comes")
-                }
+                Step::Drop
+                | Step::Refresh(..)
+                | Step::Park(_)
+                | Step::Resolve(_)
+                | Step::Transfer(_) => unreachable!("a reply comes"),
             }
         };
         assert_eq!(asked[..3], [servers()[0], servers()[0], servers()[1]]);

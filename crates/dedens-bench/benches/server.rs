@@ -1,8 +1,8 @@
 //! The server's paths (D23, D43), as `dedensd` runs them for each datagram: a hit, `Pipeline::query` reading a
 //! query and answering it from the cache stage, and a miss, the query sent upstream and its response stored and
 //! answered; a plugin answering with records it holds (D54); and an authoritative stage answering from its zones
-//! (D208), without keys and with them, its query unsigned and signed (D211). The allocation counts show the hit
-//! and plugin paths allocate nothing.
+//! (D208), without keys and with them, its query unsigned and signed (D211); the AXFR of the root zone, unsigned
+//! and signed (D214). The allocation counts show the hit and plugin paths allocate nothing.
 
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -14,7 +14,10 @@ use dedens_cache::{Cache, Checked, Config};
 use dedens_proto::edns::{Edns, EdnsFlags};
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Message, Name, Query, Question, Record, RecordType, Transport, Ttl};
-use dedens_server::{Answer, Authoritative, Forward, Pipeline, Plugin, Records, Stage, Step};
+use dedens_server::{
+    Action, Answer, Authoritative, Forward, Grant, Network, Next, Pipeline, Plugin, Records, Stage,
+    Step, ZoneAccess,
+};
 use dedens_testkit::{captured, query};
 use dedens_tsig::{Algorithm, Key, Keyring, sign_request};
 use dedens_zone::{Limits, Source, Zone};
@@ -332,4 +335,40 @@ fn authoritative_signed(bencher: Bencher<'_, '_>, (name, qtype): (&str, RecordTy
         &serving(Some(&key)),
         &authoritative_query(name, qtype, Some(&key)),
     );
+}
+
+/// The AXFR of the captured root zone (D214), unsigned and signed with [`key`]: the query read and permitted, each
+/// message filled, encoded, signed when the request was, into one 65535-byte buffer, as `dedensd`'s TCP connection
+/// drains it. The allocations are the transfer's own, the zone shared.
+#[divan::bench(args = [false, true])]
+fn axfr_root(bencher: Bencher<'_, '_>, signed: bool) {
+    let key = key();
+    let local: Network = "127.0.0.1/32".parse().expect("a network");
+    let grant = Grant::new([local], signed.then_some(&key));
+    let access = ZoneAccess::default().with(Action::Transfer, [grant]);
+    let root = zone(".", "authoritative/zones/root.zone");
+    let zones = Authoritative::guarded([(root, access)]).expect("one zone");
+    let pipeline = Pipeline::new(vec![Stage::Authoritative(zones)]).with_keys(
+        Keyring::new([key.clone()]).expect("one key"),
+        Arc::new(|| NOW),
+    );
+    let query = authoritative_query(".", RecordType::AXFR, signed.then_some(&key));
+    let mut out = vec![0; 65535];
+    bencher.bench_local(|| {
+        let step = pipeline.query(
+            black_box(&query),
+            Transport::Tcp,
+            Ipv4Addr::LOCALHOST.into(),
+            0,
+            &mut out,
+        );
+        let Step::Transfer(mut transfer) = step else {
+            unreachable!("a permitted AXFR is a transfer: {step:?}");
+        };
+        let mut bytes = 0;
+        while let Next::Message(len) = transfer.next(&pipeline, &mut out) {
+            bytes += len;
+        }
+        bytes
+    });
 }
