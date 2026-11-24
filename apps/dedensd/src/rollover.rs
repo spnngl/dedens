@@ -56,6 +56,8 @@ pub(crate) enum Wake {
     Hangup,
     /// The answer to the root's keys asked by a serving thread, with its signatures; empty when it failed.
     RootKeys(Vec<Record<'static>>),
+    /// An UPDATE a serving thread asks to make (D216).
+    Update(Box<crate::updates::Asked>),
 }
 
 /// When the root's keys are next asked, shared by the serving threads and set by the thread reloading, which the

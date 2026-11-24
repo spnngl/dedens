@@ -9,7 +9,7 @@ use std::{io, thread};
 
 use dedens_dnssec::TrustAnchors;
 use dedens_net::tls::{Presented, Trust};
-use dedens_proto::Record;
+use dedens_proto::{Rcode, Record};
 use dedens_server::Pipeline;
 
 use crate::config::{Downloads, Listen, unix_seconds};
@@ -20,6 +20,7 @@ use crate::privileges::Identity;
 use crate::rollover::{self, Probe, Wake};
 use crate::roots::{self, Refresh};
 use crate::sync::{self, AtomicU64, Mutex, Ordering, PoisonError};
+use crate::updates::{Asked, Updates};
 
 /// The pipeline in use. Serving threads ask [`Current::newer`] before each query: one atomic load, and the new
 /// pipeline under the lock only when the generation changed; a reload wakes them too, so that
@@ -34,6 +35,8 @@ pub(crate) struct Current {
     flights: Flights,
     /// When the root's keys are asked next, for all threads and across reloads (D200).
     probe: Probe,
+    /// Where the threads hand updates (D216).
+    updates: Updates,
 }
 
 impl Current {
@@ -44,6 +47,7 @@ impl Current {
             followers: Mutex::default(),
             flights: Flights::default(),
             probe: Probe::default(),
+            updates: Updates::default(),
         }
     }
 
@@ -53,6 +57,10 @@ impl Current {
 
     pub(crate) const fn probe(&self) -> &Probe {
         &self.probe
+    }
+
+    pub(crate) const fn updates(&self) -> &Updates {
+        &self.updates
     }
 
     /// Bumped by each [`Current::replace`], after the pipeline is.
@@ -199,7 +207,8 @@ impl Ticks {
 /// Starts the thread that replaces the pipeline: on each SIGHUP, reading `file` again (D55), and once the lists of
 /// `downloads` changed, fetched at once, after each SIGHUP, then every refresh interval (D57), building `text`, the
 /// configuration last loaded, again without reading `file`; and once the root keys a serving thread asked changed
-/// the anchors they are followed to (RFC 5011, D200), building `text` again too. One thread for all, so a refresh
+/// the anchors they are followed to (RFC 5011, D200), building `text` again too; and once it made the updates a
+/// serving thread handed it (D216), answered once their zones serve. One thread for all, so a refresh
 /// never replaces the pipeline of a reload with an older one. A panic while fetching or reloading is logged and
 /// counts as a failure; the thread goes on, and a reload that failed after the lists or the anchors followed
 /// changed is tried again on the next tick (D104). The SIGHUP handler is installed before this returns: a SIGHUP once the server logged that it
@@ -220,6 +229,7 @@ pub(crate) fn control(
     store.zones.serve();
     let (hangup, wakes) = mpsc::channel::<Wake>();
     current.probe().connect(hangup.clone());
+    current.updates().connect(hangup.clone());
     #[cfg(unix)]
     {
         let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGHUP])?;
@@ -253,6 +263,7 @@ pub(crate) fn control(
             let mut ticks = Ticks::new();
             let mut refresh = Refresh::default();
             let mut following = false;
+            let mut made = Vec::new();
             loop {
                 let wait = if ticks.fetches(downloads.is_empty()) {
                     let fetched = guarded("list download", || {
@@ -297,11 +308,15 @@ pub(crate) fn control(
                     };
                     let followed = (current.probe(), downloads.followed.as_ref());
                     let (dir, now) = (&downloads.state_dir, unix_seconds());
-                    let Some(asked) = woken(wake, wakes.try_iter(), followed, dir, &mut store, now)
-                    else {
+                    let queued = (wake, wakes.try_iter());
+                    let asked = woken(queued, followed, dir, &mut store, now, &mut made);
+                    let Some(asked) = asked else {
+                        answer(&mut made);
                         continue;
                     };
                     let new = reload(&file, asked.read, &mut text, &current, &fixed, &mut store);
+                    // Saved, and served unless the reload failed.
+                    answer(&mut made);
                     let served = new.is_some();
                     if let Some(new) = new {
                         downloads = new;
@@ -332,36 +347,53 @@ fn follow(probe: &Probe, following: &mut bool, follows: bool) {
 
 /// The reload `wake` asks for, `None` for none, the wakes `queued` after it taken too: an answer of the root's keys
 /// reloads when the anchors trusted changed (D200); a SIGHUP reloads the file, and those queued with it ask for the
-/// same (D104), an answer among them followed all the same, whether it changed the anchors told in the reload.
-/// `followed` is the probe and the anchors seeding the rollover, kept in `state_dir`, `None` when no stage follows
-/// one; `now` the time in Unix seconds.
+/// same (D104), an answer among them followed all the same, whether it changed the anchors told in the reload. An
+/// UPDATE is made, in the order they came (RFC 2136 §3.7), and pushed on `made` with the RCODE of its reply: the
+/// wakes after it are taken as after a SIGHUP, and one that changed a zone reloads the text last loaded to serve
+/// it (D216). `followed` is the probe and the anchors seeding the rollover, kept in `state_dir`, `None` when no
+/// stage follows one; `now` the time in Unix seconds.
 fn woken(
-    wake: Wake,
-    queued: impl Iterator<Item = Wake>,
+    (wake, queued): (Wake, impl Iterator<Item = Wake>),
     followed: (&Probe, Option<&TrustAnchors>),
     state_dir: &Path,
     store: &mut Store,
     now: u64,
+    made: &mut Vec<(Box<Asked>, Rcode)>,
 ) -> Option<Reload> {
-    match wake {
-        Wake::RootKeys(answer) => {
-            root_keys(&answer, followed, state_dir, store, now).then_some(Reload {
-                read: Read::Last,
-                anchors_changed: true,
-            })
-        }
-        Wake::Hangup => {
-            let mut anchors_changed = false;
-            for wake in queued {
-                if let Wake::RootKeys(answer) = wake {
-                    anchors_changed |= root_keys(&answer, followed, state_dir, store, now);
-                }
+    if let Wake::RootKeys(answer) = wake {
+        return root_keys(&answer, followed, state_dir, store, now).then_some(Reload {
+            read: Read::Last,
+            anchors_changed: true,
+        });
+    }
+    let (mut read, mut anchors_changed, mut changed) = (None, false, false);
+    for wake in std::iter::once(wake).chain(queued) {
+        match wake {
+            Wake::Hangup => read = Some(Read::File),
+            Wake::RootKeys(answer) => {
+                anchors_changed |= root_keys(&answer, followed, state_dir, store, now);
             }
-            Some(Reload {
-                read: Read::File,
-                anchors_changed,
-            })
+            Wake::Update(asked) => {
+                let result = guarded("update", || store.zones.update(&asked.update));
+                let rcode = result.map_or(Rcode::SERVFAIL, |result| {
+                    changed |= result == Ok(true);
+                    result.err().unwrap_or(Rcode::NOERROR)
+                });
+                made.push((asked, rcode));
+            }
         }
+    }
+    let read = read.or_else(|| (anchors_changed || changed).then_some(Read::Last))?;
+    Some(Reload {
+        read,
+        anchors_changed,
+    })
+}
+
+/// Hands each UPDATE of `made` the RCODE of its reply.
+fn answer(made: &mut Vec<(Box<Asked>, Rcode)>) {
+    for (asked, rcode) in made.drain(..) {
+        asked.answer(rcode);
     }
 }
 
@@ -484,14 +516,77 @@ const RELOADS: &str = "dedensd_reloads_total";
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
+    use std::sync::mpsc;
     use std::time::Duration;
 
-    use super::{RETRY, Read, Reload, Ticks, follow, guarded, woken};
+    use dedens_proto::Rcode;
+
+    use super::{RETRY, Read, Reload, Ticks, TrustAnchors, Updates, answer, follow, guarded};
     use crate::config::unix_seconds;
     use crate::download::Fetched;
     use crate::lists::Store;
     use crate::rollover::tests::{AUGUST_2017, JULY_2017, seed, snapshot};
     use crate::rollover::{Probe, STATE, Wake};
+
+    /// [`super::woken`], no UPDATE among the wakes.
+    fn woken(
+        wake: Wake,
+        queued: impl Iterator<Item = Wake>,
+        followed: (&Probe, Option<&TrustAnchors>),
+        dir: &Path,
+        store: &mut Store,
+        now: u64,
+    ) -> Option<Reload> {
+        let mut made = Vec::new();
+        let reload = super::woken((wake, queued), followed, dir, store, now, &mut made);
+        assert!(made.is_empty());
+        reload
+    }
+
+    /// D216: an UPDATE is made and answered in the order the wakes came; one that changed no zone reloads nothing,
+    /// one queued after a SIGHUP is made too, before the file is read.
+    #[test]
+    fn an_update_is_made_with_the_wakes_queued() {
+        use dedens_proto::{Message, Opcode, Question, RecordType, Update};
+
+        let mut message = Message::query(
+            1,
+            Question::new("example.".parse().unwrap(), RecordType::SOA),
+        );
+        message.header.opcode = Opcode::UPDATE;
+        let update = Update::read(message).unwrap();
+        let updates = Updates::default();
+        let (reload, wakes) = mpsc::channel();
+        updates.connect(reload);
+        let (first, second) = (
+            updates.ask(update.clone()).unwrap(),
+            updates.ask(update).unwrap(),
+        );
+        let state = tempfile::tempdir().unwrap();
+        let (probe, mut store, mut made) = (Probe::default(), Store::default(), Vec::new());
+        let mut woken = |wake, queued: Vec<Wake>| {
+            let followed = (&probe, None);
+            let woken = (wake, queued.into_iter());
+            super::woken(
+                woken,
+                followed,
+                state.path(),
+                &mut store,
+                JULY_2017,
+                &mut made,
+            )
+        };
+        let update = wakes.try_recv().unwrap();
+        assert_eq!(woken(update, Vec::new()), None, "no zone changed");
+        let update = wakes.try_recv().unwrap();
+        let reload = woken(Wake::Hangup, vec![update]);
+        assert_eq!(reload.map(|reload| reload.read), Some(Read::File));
+        answer(&mut made);
+        // No zone held takes it.
+        assert_eq!(first.try_recv(), Ok(Rcode::NOTAUTH));
+        assert_eq!(second.try_recv(), Ok(Rcode::NOTAUTH));
+    }
 
     /// D200: the root's keys are asked at once when a configuration starts following them, not again at a reload
     /// that still does, and no more once one does not.

@@ -18,7 +18,7 @@ zerocopy.workspace = true
 vstd.workspace = true
 
 [dev-dependencies]
-dedens-testkit.workspace = true
+dedens-testkit = { workspace = true, features = ["authoritative"] }
 insta.workspace = true
 proptest.workspace = true
 

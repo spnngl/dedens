@@ -2,7 +2,8 @@
 //!
 //! A zone is loaded again only when its file, or a file it includes, changed, as the lists are (D120's [`Stamp`]).
 //! Once the server serves, a zone whose files fail to load keeps its last version (D55), the error logged and
-//! counted; before, at the start, the failure fails the start.
+//! counted; before, at the start, the failure fails the start. A zone that takes updates has a directory in
+//! `state_dir`, which a load restores it from and each update saves it in (D216, [`crate::updates`]).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -11,10 +12,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, anyhow, ensure};
-use dedens_proto::{Name, Ttl};
+use dedens_proto::{Name, Rcode, Ttl, Update};
+use dedens_zone::journal::Journal;
 use dedens_zone::{Limits, Source, Zone};
 
 use crate::lists::Stamp;
+use crate::updates;
 
 /// The most bytes a zone file, or a file it includes, holds: 1 GiB (2³⁰), the most RDATA a zone may hold
 /// (`dedens_zone::Limits::rdata_bytes`). The text is read whole before it is parsed, so a bound on it is a bound on
@@ -35,6 +38,9 @@ const LOADS: &str = "dedensd_authoritative_loads_total";
 const SERIAL: &str = "dedensd_authoritative_serial";
 /// The zones served.
 const ZONES: &str = "dedensd_authoritative_zones";
+/// Updates counted by result: `changed`, `unchanged` (none to make, RFC 2136 §3.4.2.7), `rejected` (a
+/// prerequisite not met, §3.2, or a change refused) or `failed` (not saved, §3.4.2.1).
+const UPDATES: &str = "dedensd_authoritative_updates_total";
 
 /// Describes the metrics of the zones.
 pub(crate) fn describe() {
@@ -47,6 +53,11 @@ pub(crate) fn describe() {
         "The SOA serial of each zone the authoritative stage serves, by zone (D208)."
     );
     metrics::describe_gauge!(ZONES, "The zones the authoritative stage serves (D208).");
+    metrics::describe_counter!(
+        UPDATES,
+        "Updates of the zones of the authoritative stage, by result: changed, unchanged, rejected (a \
+         prerequisite not met or a change refused), or failed (not saved) (D216)."
+    );
 }
 
 /// The files a load read, with their stamps: the zone file, then each it includes, a link it followed as well as
@@ -64,6 +75,8 @@ struct Kept {
     failed: Option<Files>,
     /// Whether the reading under way used it: what is not is dropped at its end.
     used: bool,
+    /// Its directory in `state_dir` when it takes updates, and its journal there once opened (D216).
+    state: Option<(PathBuf, Option<Journal>)>,
 }
 
 /// The zones loaded so far, by apex and file. Part of the [`Store`](crate::lists::Store).
@@ -108,15 +121,25 @@ impl Held {
     }
 
     /// The zone of apex `apex` in the file at `path`: the one loaded before while none of its files changed, else
-    /// loaded again; when that fails and the server serves, the last version.
+    /// loaded again; when that fails and the server serves, the last version. `state` is its directory when it
+    /// takes updates: a load restores the version saved there, unless the file's serial is ahead (D216).
     ///
     /// # Errors
     ///
     /// A file that cannot be read, an `$INCLUDE` outside the directory of the zone file, a zone the loader refuses,
     /// and no version to keep: at the start, or a zone new to the configuration.
-    pub(crate) fn zone(&mut self, apex: &Name<'static>, path: &Path) -> anyhow::Result<Arc<Zone>> {
+    pub(crate) fn zone(
+        &mut self,
+        apex: &Name<'static>,
+        path: &Path,
+        state: Option<PathBuf>,
+    ) -> anyhow::Result<Arc<Zone>> {
         let key = (apex.clone(), path.to_owned());
         if let Some(kept) = self.zones.get_mut(&key) {
+            let kept_state = kept.state.as_ref().map(|(dir, _)| dir);
+            if kept_state != state.as_ref() {
+                kept.state = state.clone().map(|dir| (dir, None));
+            }
             if unchanged(&kept.files) {
                 kept.used = true;
                 return Ok(Arc::clone(&kept.zone));
@@ -130,7 +153,11 @@ impl Held {
         }
         let file = path.display();
         let mut files = Files::new();
-        match load(apex, path, MAX_ZONE_FILE_BYTES, &mut files) {
+        let loaded = load(apex, path, MAX_ZONE_FILE_BYTES, &mut files);
+        match loaded.map(|zone| match &state {
+            Some(dir) => updates::restore(zone, dir),
+            None => zone,
+        }) {
             Ok(zone) => {
                 metrics::counter!(LOADS, "result" => "ok").increment(1);
                 tracing::info!(
@@ -146,6 +173,7 @@ impl Held {
                     files,
                     failed: None,
                     used: true,
+                    state: state.map(|dir| (dir, None)),
                 };
                 self.zones.insert(key, kept);
                 Ok(zone)
@@ -167,6 +195,58 @@ impl Held {
                 Ok(Arc::clone(&kept.zone))
             }
         }
+    }
+
+    /// Makes `update` on the version held of its zone (RFC 2136 §3), and saves the new one in the zone's
+    /// directory before it is held (§3.5): served from the next reading. Whether it changed the zone, else the
+    /// RCODE of the reply: NOTAUTH for a zone held without a directory, which takes no UPDATE; the RCODE of a
+    /// prerequisite not met or a change refused; SERVFAIL when the new version is not saved (§3.4.2.1).
+    ///
+    /// # Errors
+    ///
+    /// The RCODE of a reply other than NOERROR.
+    pub(crate) fn update(&mut self, update: &Update<'_>) -> Result<bool, Rcode> {
+        let found = (self.zones.iter_mut())
+            .find(|((apex, _), kept)| apex == update.zone() && kept.used && kept.state.is_some());
+        let Some(((apex, _), kept)) = found else {
+            return Err(Rcode::NOTAUTH);
+        };
+        let Some((dir, journal)) = &mut kept.state else {
+            return Err(Rcode::NOTAUTH);
+        };
+        let result =
+            |result: &'static str| metrics::counter!(UPDATES, "result" => result).increment(1);
+        let updated = match kept.zone.update(update, &Limits::default()) {
+            Ok(Some(updated)) => updated,
+            Ok(None) => {
+                result("unchanged");
+                return Ok(false);
+            }
+            Err(rejection) => {
+                result("rejected");
+                tracing::debug!(zone = %apex, %rejection, "update rejected");
+                return Err(rejection.rcode());
+            }
+        };
+        if let Err(error) = updates::save(dir, &updated, journal) {
+            result("failed");
+            tracing::error!(zone = %apex, dir = %dir.display(), error = format!("{error:#}"), "update not saved");
+            // What is on disk is unknown: the journal is read again at the next.
+            *journal = None;
+            return Err(Rcode::SERVFAIL);
+        }
+        result("changed");
+        let zone = updated.loaded.zone;
+        tracing::info!(
+            zone = %apex,
+            from = kept.zone.soa().serial,
+            serial = zone.soa().serial,
+            records = zone.record_count(),
+            "zone updated"
+        );
+        metrics::gauge!(SERIAL, "zone" => apex.to_string()).set(f64::from(zone.soa().serial));
+        kept.zone = Arc::new(zone);
+        Ok(true)
     }
 }
 
@@ -303,6 +383,44 @@ mod tests {
         "ISI.EDU.".parse().unwrap()
     }
 
+    /// D216: an update is saved in the zone's directory and held, a load restores it, and the zone file with its
+    /// serial ahead replaces it; a zone held without a directory takes none.
+    #[test]
+    fn an_update_is_restored_until_the_zone_file_is_ahead() {
+        use dedens_proto::rdata::RData;
+        use dedens_proto::{Class, Message, Opcode, Question, Record, RecordType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (path, state) = (isi(dir.path()), dir.path().join("state"));
+        let name: Name<'static> = "NEW.ISI.EDU.".parse().unwrap();
+        let mut message = Message::query(1, Question::new(apex(), RecordType::SOA));
+        message.header.opcode = Opcode::UPDATE;
+        let data = RData::A([10, 0, 0, 1].into());
+        let ttl = Ttl::from_wire(3600);
+        message
+            .authority
+            .push(Record::new(name.clone(), Class::IN, ttl, &data));
+        let update = Update::read(message).unwrap();
+        let mut held = Held::default();
+        assert_eq!(held.update(&update), Err(Rcode::NOTAUTH), "no zone");
+        held.zone(&apex(), &path, None).unwrap();
+        assert_eq!(held.update(&update), Err(Rcode::NOTAUTH), "no directory");
+        let first = held.zone(&apex(), &path, Some(state.clone())).unwrap();
+        assert_eq!(held.update(&update), Ok(true));
+        assert_eq!(held.update(&update), Ok(false), "made already");
+        let updated = held.zone(&apex(), &path, Some(state.clone())).unwrap();
+        assert_eq!(updated.soa().serial, first.soa().serial + 1);
+        assert!(updated.node(&name).is_some());
+        assert!(state.join("journal").exists());
+        let restored = Held::default().zone(&apex(), &path, Some(state.clone()));
+        assert!(restored.unwrap() == updated, "restored");
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.replace(" 20 ", " 22 ")).unwrap();
+        let edited = Held::default().zone(&apex(), &path, Some(state)).unwrap();
+        assert_eq!(edited.soa().serial, 22);
+        assert!(edited.node(&name).is_none(), "the update dropped");
+    }
+
     #[test]
     fn the_zones_are_counted_and_a_reading_drops_those_it_did_not_use() {
         use metrics_util::debugging::{DebugValue, DebuggingRecorder};
@@ -330,7 +448,7 @@ mod tests {
         metrics::with_local_recorder(&recorder, || {
             describe();
             held.begin();
-            held.zone(&apex(), &path).unwrap();
+            held.zone(&apex(), &path, None).unwrap();
             held.end();
         });
         let metric = |name: &str, value: &str| (name.to_owned(), true, value.to_owned());
@@ -342,7 +460,7 @@ mod tests {
         // of the recorder resets its gauges, so the zone is named again, and the next reading, the one read, drops it.
         metrics::with_local_recorder(&recorder, || {
             held.begin();
-            held.zone(&apex(), &path).unwrap();
+            held.zone(&apex(), &path, None).unwrap();
             held.end();
             held.begin();
             held.end();
@@ -414,15 +532,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = isi(dir.path());
         let mut held = Held::default();
-        let first = held.zone(&apex(), &path).unwrap();
+        let first = held.zone(&apex(), &path, None).unwrap();
         assert_eq!(first.soa().serial, 20);
-        let again = held.zone(&apex(), &path).unwrap();
+        let again = held.zone(&apex(), &path, None).unwrap();
         assert!(Arc::ptr_eq(&first, &again), "kept");
         // The included file changes, longer: its stamp shows it.
         let mut mailboxes = fs::read_to_string(dir.path().join("mailboxes.zone")).unwrap();
         mailboxes.push_str("ADDED MB F.ISI.ARPA.\n");
         fs::write(dir.path().join("mailboxes.zone"), mailboxes).unwrap();
-        let changed = held.zone(&apex(), &path).unwrap();
+        let changed = held.zone(&apex(), &path, None).unwrap();
         assert!(!Arc::ptr_eq(&first, &changed), "loaded again");
         assert_eq!(changed.record_count(), first.record_count() + 1);
     }
@@ -432,22 +550,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = isi(dir.path());
         let mut held = Held::default();
-        let first = held.zone(&apex(), &path).unwrap();
+        let first = held.zone(&apex(), &path, None).unwrap();
         fs::write(&path, "this is not a zone\n").unwrap();
-        let error = held.zone(&apex(), &path).unwrap_err();
+        let error = held.zone(&apex(), &path, None).unwrap_err();
         assert!(
             format!("{error:#}").contains("loading zone `ISI.EDU.`"),
             "{error:#}"
         );
         held.serve();
         held.begin();
-        let kept = held.zone(&apex(), &path).unwrap();
+        let kept = held.zone(&apex(), &path, None).unwrap();
         assert!(Arc::ptr_eq(&first, &kept));
         held.end();
         assert_eq!(held.zones.len(), 1);
         // A zone new to the configuration has no version to keep.
         let other: Name<'static> = "other.example.".parse().unwrap();
-        assert!(held.zone(&other, &path).is_err());
+        assert!(held.zone(&other, &path, None).is_err());
     }
 
     #[test]
@@ -467,7 +585,7 @@ mod tests {
             &dir.path().join("mailboxes.zone").display().to_string(),
         ] {
             fs::write(&path, text.replace("mailboxes.zone", name)).unwrap();
-            let error = Held::default().zone(&apex(), &path).unwrap_err();
+            let error = Held::default().zone(&apex(), &path, None).unwrap_err();
             assert!(
                 format!("{error:#}").contains("the directory of the zone file"),
                 "{error:#}"
@@ -479,7 +597,7 @@ mod tests {
             std::os::unix::fs::symlink(dir.path().join("mailboxes.zone"), zones.join("link.zone"))
                 .unwrap();
             fs::write(&path, text.replace("mailboxes.zone", "link.zone")).unwrap();
-            let error = Held::default().zone(&apex(), &path).unwrap_err();
+            let error = Held::default().zone(&apex(), &path, None).unwrap_err();
             assert!(
                 format!("{error:#}").contains("the directory of the zone file"),
                 "{error:#}"
@@ -504,12 +622,12 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         fs::write(&path, text.replace("mailboxes.zone", link)).unwrap();
         let mut held = Held::default();
-        let first = held.zone(&apex(), &path).unwrap();
+        let first = held.zone(&apex(), &path, None).unwrap();
         // The files the link and its target are both stamped.
         assert!(held.zones.values().next().unwrap().files.len() >= 3);
         fs::remove_file(dir.path().join(link)).unwrap();
         std::os::unix::fs::symlink(two, dir.path().join(link)).unwrap();
-        let again = held.zone(&apex(), &path).unwrap();
+        let again = held.zone(&apex(), &path, None).unwrap();
         assert_eq!(again.record_count(), first.record_count() + 1);
     }
 
@@ -564,7 +682,7 @@ mod tests {
                 .count()
         };
         let mut held = Held::default();
-        let first = held.zone(&apex(), &path).unwrap();
+        let first = held.zone(&apex(), &path, None).unwrap();
         held.serve();
         // The included file goes: a failure, recorded with the state of the file that is not there.
         let mailboxes = dir.path().join("mailboxes.zone");
@@ -572,13 +690,16 @@ mod tests {
         fs::remove_file(&mailboxes).unwrap();
         metrics::with_local_recorder(&recorder, || {
             for _ in 0..3 {
-                assert!(Arc::ptr_eq(&first, &held.zone(&apex(), &path).unwrap()));
+                assert!(Arc::ptr_eq(
+                    &first,
+                    &held.zone(&apex(), &path, None).unwrap()
+                ));
             }
         });
         assert_eq!(errors(), 1, "tried once, the others skipped");
         // The file is back: its state is not the one that failed, the zone loads.
         fs::write(&mailboxes, text).unwrap();
-        let again = held.zone(&apex(), &path).unwrap();
+        let again = held.zone(&apex(), &path, None).unwrap();
         assert!(!Arc::ptr_eq(&first, &again), "loaded again");
         assert!(held.zones.values().next().unwrap().failed.is_none());
     }

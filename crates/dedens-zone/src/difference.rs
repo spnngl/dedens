@@ -96,7 +96,7 @@ impl Zone {
     }
 
     /// The SOA as a record.
-    fn soa_record(&self) -> Record<'static> {
+    pub(crate) fn soa_record(&self) -> Record<'static> {
         Record::new(
             self.apex.clone(),
             self.class,
@@ -114,15 +114,15 @@ fn decoded(record: &Record<'static>) -> DecodedRecord<'static> {
 }
 
 /// Where the records of a difference go.
-struct Sink<'a> {
-    class: Class,
-    removed: &'a mut Vec<Record<'static>>,
-    added: &'a mut Vec<Record<'static>>,
+pub(crate) struct Sink<'a> {
+    pub(crate) class: Class,
+    pub(crate) removed: &'a mut Vec<Record<'static>>,
+    pub(crate) added: &'a mut Vec<Record<'static>>,
 }
 
 impl Sink<'_> {
     /// The records of `old` and `new`, the `RRset`s of `rtype` at `name`, that make the difference.
-    fn set(
+    pub(crate) fn set(
         &mut self,
         name: &Name<'static>,
         rtype: RecordType,
@@ -179,12 +179,12 @@ fn sets_of(node: Option<&Node>) -> (&TypedSets, &TypedSets) {
     node.map_or((&[], &[]), |n| (&n.rrsets, &n.signatures))
 }
 
-fn pairs(sets: &TypedSets) -> impl Iterator<Item = (&RecordType, &RrSet)> {
+pub(crate) fn pairs(sets: &TypedSets) -> impl Iterator<Item = (&RecordType, &RrSet)> {
     sets.iter().map(|(t, s)| (t, s))
 }
 
 /// The entries of two sorted sequences by key, in order, each with its value in either or both.
-fn merge<'a, K: Ord + 'a, V: 'a>(
+pub(crate) fn merge<'a, K: Ord + 'a, V: 'a>(
     old: impl Iterator<Item = (&'a K, &'a V)>,
     new: impl Iterator<Item = (&'a K, &'a V)>,
 ) -> impl Iterator<Item = (&'a K, Option<&'a V>, Option<&'a V>)> {

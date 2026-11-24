@@ -235,6 +235,8 @@ pub(crate) struct Downloads {
     /// The root anchors of D128, downloaded or bundled, that seed the rollover a validating recurse stage without
     /// `trust_anchors` follows by RFC 5011 (D200); `None` when no stage follows one.
     pub(crate) followed: Option<TrustAnchors>,
+    /// Whether a zone takes updates, kept in `state_dir/zones` (D216).
+    pub(crate) updated: bool,
     /// Where the root files come from.
     sources: RootsFile,
 }
@@ -290,6 +292,7 @@ impl Downloads {
             state_dir: state_dir.unwrap_or_else(|| STATE_DIR.into()),
             roots: Used::default(),
             followed: None,
+            updated: false,
             sources: roots,
         })
     }
@@ -315,6 +318,12 @@ impl Downloads {
             dirs.push(self.state_dir.as_path());
         }
         dirs
+    }
+
+    /// The directory of the zones that take updates, made for `user` when root is dropped: not writing it fails
+    /// each update (D216).
+    pub(crate) fn updated_dir(&self) -> Option<PathBuf> {
+        self.updated.then(|| self.state_dir.join("zones"))
     }
 
     /// The TLD list of a `tlds` stage: the saved copy in `dir`, held in `store`, and fetched from now on, unless
@@ -1056,6 +1065,7 @@ mod tests {
                 state_dir: STATE_DIR.into(),
                 roots: Used::default(),
                 followed: None,
+                updated: false,
                 sources: RootsFile::default(),
             }
         );

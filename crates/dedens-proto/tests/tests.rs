@@ -9,5 +9,6 @@ mod serial;
 mod svcb;
 mod text;
 mod tsig;
+mod update;
 mod util;
 mod wire;

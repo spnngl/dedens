@@ -26,7 +26,7 @@ use crate::util::{decode, servers, wire};
 const NOW: u64 = 1_750_000_000;
 
 /// The key the captures were signed with, as Knot holds it.
-fn key() -> Key {
+pub(crate) fn key() -> Key {
     Key::from_base64(
         dns(TSIG_KEY.name),
         TSIG_KEY.algorithm.parse().expect("an algorithm"),
@@ -47,7 +47,7 @@ fn server(now: u64) -> Pipeline {
 }
 
 /// The first request of the capture `id`, and its transport.
-fn captured(id: &str) -> (Vec<u8>, Transport) {
+pub(crate) fn captured(id: &str) -> (Vec<u8>, Transport) {
     let packet = (Recording::read(id).messages.into_iter())
         .find(|packet| packet.from == Peer::Client)
         .expect("a request");
@@ -85,11 +85,11 @@ fn signed<'k>(query: &Message<'_>, key: &'k Key) -> (Vec<u8>, ResponseVerifier<'
 fn s5_3_knots_signed_requests_get_signed_replies() {
     let key = key();
     for (id, rcode) in [
-        // A zone transfer, which the core refuses until the transfer server (D41), and an UPDATE, which it does
-        // not implement: their opcodes and types do not matter to the TSIG.
+        // A zone transfer, which the core refuses until the transfer server (D41), and an UPDATE of a zone not
+        // served, NOTAUTH (D216): their opcodes and types do not matter to the TSIG.
         ("axfr-tsig", Rcode::REFUSED),
         ("ixfr-tsig-uptodate", Rcode::REFUSED),
-        ("update-signed", Rcode::NOTIMP),
+        ("update-signed", Rcode::NOTAUTH),
     ] {
         let (request, transport) = captured(id);
         let record = tsig(&request);

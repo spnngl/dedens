@@ -58,6 +58,7 @@ mod serial;
 mod text;
 mod transport;
 mod tsig;
+mod update;
 mod wire;
 
 // One path per item (D160): `rdata` and `edns` are the namespaces a reader names; every other item is here.
@@ -79,4 +80,5 @@ pub use text::{
 };
 pub use transport::Transport;
 pub use tsig::{MAX_TIME_SIGNED, Tsig, TsigDataError, TsigRecord, find_tsig};
+pub use update::{Change, Fault, Prerequisite, Update, UpdateError};
 pub use wire::MAX_MESSAGE_LEN;

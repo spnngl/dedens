@@ -4,6 +4,7 @@
 mod finish;
 mod prewarm;
 mod signed;
+mod update;
 
 use std::net::IpAddr;
 use std::num::NonZeroU8;
@@ -22,6 +23,7 @@ use self::finish::{Finish, Refused, Ttls, prohibit, reply, servfail, slip};
 pub use self::prewarm::{Warm, Warmth};
 pub use self::signed::VerifiedKey;
 use self::signed::{Keys, Signed};
+pub use self::update::Updating;
 use crate::access::{Access, Denial};
 use crate::authoritative::Authoritative;
 use crate::budget::Spent;
@@ -101,6 +103,8 @@ pub enum Step {
     /// Step the resolution, sending each query it gives, until it is done, then hand it to
     /// [`Pipeline::resolved`] (D195).
     Resolve(Box<Resolving>),
+    /// Make the update, then hand it to [`Pipeline::updated`] for the reply (D216).
+    Update(Box<Updating>),
 }
 
 /// A client's query to validate that found the allowance spent (D186): made, holding its share's unit (D117), and
@@ -334,8 +338,8 @@ impl Pipeline {
     /// (Not Authoritative): a later stage's reply comes from upstream (D211).
     ///
     /// Then, before the stages, the core replies itself to what they cannot answer (D41): FORMERR to a query it cannot
-    /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); NOTIMP to an opcode other
-    /// than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
+    /// read, that breaks a rule (D9) or has no question (RFC 1035 §4.1.1, RFC 9619); an UPDATE goes to the zones
+    /// when authoritative stages open the pipeline ([`Step::Update`], D216); NOTIMP to another opcode than QUERY; BADVERS to an EDNS version above 0 (RFC 6891 §6.1.3); REFUSED to a zone transfer, which
     /// a forwarder does not do, nor yet the authoritative stage. Responses are dropped, never answered. A reply
     /// has RA, but when authoritative stages open the pipeline: then only when a forward or recurse stage follows
     /// and the access lists permit the client (D208). A FORMERR to OPT records that break a rule,
@@ -423,8 +427,9 @@ impl Pipeline {
         ) {
             (Some(signed), Step::Reply(len)) => signed.seal(&client, len, out),
             // Only replies come of a signed request: the stages past the zones are refused it.
-            (Some(_), _) => Step::Drop,
-            (None, step) => step,
+            (Some(_), step) if !matches!(step, Step::Update(_)) => Step::Drop,
+            // An update's reply is sealed by `Pipeline::updated`, the request verified again.
+            (_, step) => step,
         }
     }
 
@@ -441,6 +446,11 @@ impl Pipeline {
         let header = query.header();
         let rcode = if !query.violations().is_empty() {
             Rcode::FORMERR
+        } else if header.opcode == Opcode::UPDATE
+            && self.zones > 0
+            && query.edns().is_none_or(|edns| edns.version == 0)
+        {
+            return self.update(query, client, from, out);
         } else if header.opcode != Opcode::QUERY {
             Rcode::NOTIMP
         } else if query.edns().is_some_and(|edns| edns.version > 0) {

@@ -309,6 +309,7 @@ impl Shared {
             }
             Step::Upstream(upstream) => upstream,
             Step::Resolve(_) => recursion(),
+            Step::Update(_) => update(),
             // Given up at once: the line of D186 is left out.
             Step::Park(parked) => {
                 if let Step::Reply(len) = self.pipeline.shed(parked, self.now(), out) {
@@ -397,9 +398,23 @@ impl Shared {
                 Step::Upstream(next) => upstream = next,
                 // `receive` answers for a forward stage, never a recurse one.
                 Step::Resolve(_) => recursion(),
+                Step::Update(_) => update(),
             }
         }
     }
+}
+
+/// Stops the run at an UPDATE, which this driver does not make: [`Resolver::serve_dedensd`] does (D216).
+///
+/// # Panics
+///
+/// Always.
+#[expect(
+    clippy::panic,
+    reason = "a pipeline the driver cannot serve is a broken scenario"
+)]
+fn update() -> ! {
+    panic!("the driver makes no update: use Resolver::serve_dedensd (D216)")
 }
 
 /// Stops the run at a resolution from the root, which this driver does not serve: [`Resolver::serve_dedensd`] does.

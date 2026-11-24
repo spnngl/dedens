@@ -23,6 +23,7 @@ mod rollover;
 mod roots;
 mod serve;
 mod sync;
+mod updates;
 mod zones;
 
 use std::io::{self, Write};
@@ -437,7 +438,10 @@ fn drop_root(
 ) -> anyhow::Result<Option<(String, Config)>> {
     let dropping = matches!(plan, privileges::Plan::Drop { .. });
     let downloads = &previous.downloads;
-    privileges::apply(plan, downloads.written_dir(), &downloads.roots_dirs())?;
+    let updated = downloads.updated_dir();
+    let mut dirs = downloads.roots_dirs();
+    dirs.extend(updated.as_deref());
+    privileges::apply(plan, downloads.written_dir(), &dirs)?;
     if !dropping {
         return Ok(None);
     }

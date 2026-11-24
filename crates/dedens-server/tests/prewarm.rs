@@ -61,7 +61,11 @@ fn play(
                 step = pipeline.receive(upstream, response.as_deref(), now, &mut out);
             }
             Step::Drop => return sent,
-            step @ (Step::Reply(_) | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_)) => {
+            step @ (Step::Reply(_)
+            | Step::Refresh(..)
+            | Step::Park(_)
+            | Step::Resolve(_)
+            | Step::Update(_)) => {
                 unreachable!("a prewarm does not reply: {step:?}")
             }
         }

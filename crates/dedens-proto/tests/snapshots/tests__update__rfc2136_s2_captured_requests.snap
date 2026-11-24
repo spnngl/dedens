@@ -1,0 +1,88 @@
+---
+source: crates/dedens-proto/tests/update.rs
+expression: out
+---
+# update-add-cname-conflict
+zone example. IN
+add xx.example.	300	IN	CNAME	ai.example.
+# update-add-duplicate
+zone example. IN
+add ns1.example.	3600	IN	A	192.0.2.1
+# update-add-name
+zone example. IN
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-add-outside-zone
+NOTZONE record 0 of the Authority section: its name is outside the zone
+# update-add-to-rrset
+zone example. IN
+add xx.example.	3600	IN	A	192.0.2.2
+# update-bad-secret
+zone zonetransfer.me. IN
+add dedens-new.zonetransfer.me.	300	IN	A	192.0.2.1
+# update-delete-absent
+zone example. IN
+delete rrset nothere.example. A
+# update-delete-apex-ns
+zone example. IN
+delete rrset example. NS
+# update-delete-name
+zone example. IN
+delete name xx.example.
+# update-delete-record
+zone example. IN
+delete example. NS ns2.example.
+# update-delete-rrset
+zone example. IN
+delete rrset xx.example. A
+# update-delete-soa
+zone example. IN
+delete rrset example. SOA
+# update-prereq-nxdomain
+zone example. IN
+not in use nothere.example.
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-nxdomain-fails
+zone example. IN
+not in use xx.example.
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-nxrrset
+zone example. IN
+absent xx.example. MX
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-nxrrset-fails
+zone example. IN
+absent xx.example. A
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-yxdomain
+zone example. IN
+in use xx.example.
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-yxdomain-fails
+zone example. IN
+in use nothere.example.
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-yxrrset
+zone example. IN
+exists xx.example. A
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-yxrrset-fails
+zone example. IN
+exists xx.example. MX
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-yxrrset-value
+zone example. IN
+equals example. NS [ns1.example., ns2.example.]
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-prereq-yxrrset-value-fails
+zone example. IN
+equals example. NS [ns1.example.]
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-signed
+zone zonetransfer.me. IN
+add dedens-new.zonetransfer.me.	300	IN	A	192.0.2.1
+# update-signed-key-not-allowed
+zone example. IN
+add dedens-new.example.	300	IN	A	192.0.2.1
+# update-unsigned-refused
+zone zonetransfer.me. IN
+add dedens-new.zonetransfer.me.	300	IN	A	192.0.2.1

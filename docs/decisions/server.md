@@ -15,7 +15,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D77, D111, D114, D185, D186, D208, D211) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D77, D111, D114, D185, D186, D208, D211, D216) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
@@ -1127,7 +1127,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     100 restarts under load, Linux), `serve/isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
     noise (`docs/benchmarks.md`); not measured on `io_uring`.
 
-- D122 (amends D42, D44, D55, D66, D104, D107, D115; amended by D128, D211) `dedensd` drops root once its sockets are bound, from the audit (S5): a
+- D122 (amends D42, D44, D55, D66, D104, D107, D115; amended by D128, D211, D216) `dedensd` drops root once its sockets are bound, from the audit (S5): a
   server started as root to bind :53, :443 and :853 kept root while it parsed hostile input.
   - Configuration: top-level `user:` (a name or a numeric id, number or string) and `group:` (the same; only with
     `user`). Linux only: `PR_SET_NO_NEW_PRIVS` and the `/proc/PID/status` that the checks read are Linux's, and
@@ -2365,7 +2365,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
     over a finished `Zone` (the errors would lose their lines).
 
-- D205 (amended by D211) TSIG (RFC 8945, `dedens-tsig`): sans-I/O, in a crate of its own: the keys and the signing belong to the
+- D205 (amended by D211, D216) TSIG (RFC 8945, `dedens-tsig`): sans-I/O, in a crate of its own: the keys and the signing belong to the
   authoritative server (steps 09 to 15) and to `dedens` (transfers, updates), not to the wire format, and the crate
   adds `ring`'s HMAC, `subtle` and `zeroize` to what depends on it only. `dedens-proto` has what is the wire format:
   `RecordType::TKEY` and `TSIG`, `TsigError` (BADSIG 16, BADKEY 17, BADTIME 18, BADTRUNC 22: the TSIG error field is
@@ -2607,7 +2607,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     record after a refused one kept (a hole breaks the chain); one `Changeset` per RRset (RFC 1995 §4's sequence is
     per version); keeping a changeset over the limit alone and dropping the rest (the oldest of a chain is what
     goes first, NSD).
-- D208 (amends D41, D54, D55, D91, D99; amended by D211) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
+- D208 (amends D41, D54, D55, D91, D99; amended by D211, D216) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
   `authoritative` stage): `dedensd` answers the zones it is the authority for, from `dedens-zone`'s `Zone` (D204,
   D206), in the same pipeline as its other stages (the phase's choice 1: no second binary). The stage holds its
   zones as `Arc<Zone>` sorted by apex in canonical order (RFC 4034 §6.1), no apex twice (`Duplicate`); the zone of a
@@ -2910,7 +2910,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     fallback after a TSIG failure or a limit (Knot does it on all but I/O; an AXFR is then refused the same and
     costs a second connection); the SOA query over TCP after a UDP timeout (the secondary's retry does it).
 
-- D211 (amends D41, D122, D205, D208) Signed requests and zone access lists: `dedensd` verifies the TSIG of a
+- D211 (amends D41, D122, D205, D208; amended by D216) Signed requests and zone access lists: `dedensd` verifies the TSIG of a
   request (RFC 8945, D205's `dedens-tsig`), signs its reply, and says per zone who may transfer it, notify the
   server of it or update it, by network and key. Steps 12 to 15 ask the lists; this step answers nothing new.
   - Keys: top-level `keys:`, a list of `{name, algorithm, secret_file}`, the algorithm one of D205's (any case), the
@@ -2994,3 +2994,81 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: verifying only where a rule asks (Knot, above); reading the keys at every reload (the user would
     have to read the secrets); deny lines (Knot's `deny`, NSD's `BLOCKED`), until a user needs one: the lists
     permit, nothing else does.
+- D216 (amends D41, D122, D205, D208, D211) Dynamic UPDATE (RFC 2136, the authoritative phase): a zone whose
+  `update` list (D211) permits the client takes its updates, made one at a time on the version held, saved in
+  `state_dir` before the reply, then served.
+  - Message (`dedens_proto::Update`): `Update::read` parses a decoded UPDATE into its zone, prerequisites (§2.4:
+    `Exists`, `Equals`, `Absent`, `InUse`, `NotInUse`) and changes (§2.5: `Add`, `DeleteRrset`, `DeleteName`,
+    `Delete`), an illegal form unrepresentable past it. The zone section holds one SOA question (§3.1.1, FORMERR);
+    each record is checked by §3.2.5 and the prescan of §3.4.1.3 (FORMERR, NOTZONE for a name outside the zone),
+    the whole message before any prerequisite is compared: §3.2 compares as it reads, Knot compares the
+    prerequisites before it prescans the updates (`ddns_process_prereqs`, `ddns_precheck_update`,
+    `src/knot/updates/ddns.c`), so a malformed update behind a prerequisite not met is FORMERR here, that
+    prerequisite's code there. The `Equals` records of a name and type gather into one set (§3.2.4). A record of
+    class ANY or NONE with no RDATA decodes (§2.4, §2.5: `Record::from_raw` and `Query::read` accepted none
+    before). Fuzz target `update_message`, seeded with the captured requests.
+  - Zone (`Zone::update(&Update, &Limits) -> Result<Option<Updated>, Rejection>`, `dedens-zone`): the
+    prerequisites against the version held (§3.2; a name is in use when it owns a record, an empty non-terminal
+    is not), then each change in order on a copy of the names it touches (§3.4.2): an SOA added at the apex only,
+    replacing the SOA when its serial is ahead (RFC 1982), deleted never; the apex's NS RRset never deleted whole,
+    its last NS kept, a deletion of the apex name keeping SOA and NS (§3.4.2.3, §3.4.2.4); a CNAME onto other data
+    and data onto a CNAME ignored (§3.4.2.2, RFC 2181 §10.1), a DNAME as a CNAME there (RFC 6672 §5.2, Knot's
+    `process_add_cname`); a record already present ignored, its TTL becoming its RRset's (Knot's
+    `solve_add_different_ttl`, `src/knot/updates/zone-update.c`, RFC 2181 §5.2). The names touched give a
+    `Changeset` (D207) whose SOA is the one added, else the serial plus one (§3.6, choice 12), and `Zone::apply`
+    builds and checks the new version: a check that fails is REFUSED (Knot's answer to its semantic checks). No
+    change is `None`: NOERROR, no new version, the serial kept, as Knot (`update-delete-apex-ns`). RRSIG, NSEC,
+    NSEC3 and NSEC3PARAM are refused (REFUSED; RFC 3007 §3.1.1; Knot refuses NSEC3PARAM, `check_update`), and so
+    is every change to a signed zone, one with an NSEC or NSEC3 chain or a signature: zones are pre-signed (D209,
+    choice 3) and an update would leave their signatures and chain stale. A DNSKEY without signatures
+    (zonetransfer.me) is not signed.
+  - Pipeline (amends D41, D211): UPDATE is no longer NOTIMP once an authoritative stage opens the pipeline
+    (without one it is, as before). The request is read whole (`Message::decode`, `Update::read`), its zone
+    found among the zones by its exact apex, else NOTAUTH (§3.1.1); the client is asked of the zone's `update`
+    list, else REFUSED with EDE 18 (§3.3, D211). It leaves as `Step::Update(Box<Updating>)`: the request's bytes
+    and what its reply needs, owned. `Pipeline::updated(&Updating, rcode, ede, out)` writes the reply once the
+    update is made: the request read and its TSIG verified again (a request past its fudge then is BADTIME), the
+    header and the zone section copied, the other sections empty (§3.8), signed as the request (D211). The replies
+    are Knot's to the byte on the 20 captured requests that reach it. A secondary's zone (step 13) has no `update`
+    list: it refuses, nothing is forwarded (§6).
+  - `dedensd` (amends D208): the serving thread hands the update to the thread reloading, which holds the zones
+    (`Held`, D55's `Store`), through `Current`'s `Updates`, and waits for its RCODE in an upstream query's place.
+    That thread makes the updates as they come, those queued behind one taken with it, one at a time on the
+    version held (§3.7; Knot's event handler takes its queue whole, `src/knot/events/handlers/update.c`), saves
+    each new version (§3.5), builds the pipeline again from the text it last read (D55's reload, no file read) so
+    the next query is answered from it, then answers. At most `MAX_PENDING` 100 wait (BIND's `update-quota`,
+    `bin/include/defaultconfig.h`; Knot refuses past 8 only while frozen, `update_process_query`,
+    `src/knot/nameserver/update.c`): past it, REFUSED with EDE 14 (Not Ready). An update waits while the thread
+    downloads lists; a reload that fails after the save answers NOERROR all the same: the version is saved, and
+    served from the next reload. Metric `dedensd_authoritative_updates_total` by result (`changed`, `unchanged`,
+    `rejected`, `failed`).
+  - Storage (amends D122): `state_dir/zones/<apex>/`, the apex in lower case (`/` written `\047`, the root `@`):
+    `zone`, the version whole as text, replaced (written, synced, renamed) at each update, then `journal`, D207's,
+    the changeset appended for IXFR (step 12), bounded by `JournalLimits`' default (100 MiB, 20 changesets); a
+    journal whose tip is not the changeset's start, after a crash between the two writes, is cleared. A failed
+    write is SERVFAIL (§3.4.2.1), the version held unchanged. At a load the saved zone serves unless the zone
+    file's serial is ahead of it (RFC 1982): an operator's edit with a higher serial replaces the updates, warned
+    of. The directory is made for the user when root is dropped, as the root files' (D128). A record count per
+    UPDATE has no bound but the message's 65 535 bytes (Knot, NSD and BIND none either); the zone's by `Limits`.
+  - Replay (amends D205): no last Time Signed per key, §5.2.3's SHOULD, decided against: an UPDATE replayed as is
+    carries the same Time Signed, which that check passes (it refuses an earlier one only), so it would stop only
+    an older request replayed after a newer one; it would answer BADTIME to a client's own updates reordered over
+    UDP (knsupdate does not retry); Knot and NSD keep none (`src/libknot/tsig-op.c`, `tsig.c`); a client's
+    prerequisites make its replayed update a no-op; the window is the fudge, 300 s, and needs a capture on the
+    path, which a transport with TLS closes.
+  - Not yet: per-name and per-type limits on a line (RFC 3007 §3.1's SHOULD, Knot's `update-owner` and
+    `update-type`; `docs/TODECIDE.md`); UPDATE of a signed zone (online signing); forwarding (§6); GSS-TSIG and
+    SIG(0); an UPDATE from `dedens` (TODECIDE, D212).
+  - Tests: `dedens-proto`'s `tests/update.rs` the captured requests (D203) as `Update`s (snapshot), each FORMERR
+    and NOTZONE of §3.1.1, §3.2.5 and §3.4.1.3; `dedens-zone`'s `tests/update.rs` every captured UPDATE of
+    `example.` against Knot's RCODE and Knot's zone after it (its AXFR, signatures stripped from both), the SOA,
+    TTL, apex and signing rules; `dedens-server`'s `tests/update.rs` Knot's reply bytes, a signed reply verified,
+    REFUSED with EDE 18, NOTAUTH, NOTIMP without zones; `dedensd`'s the bound on waiting updates, the order with
+    the other wakes, a load restoring the saved version unless the file is ahead, and `tests/authoritative.rs` a
+    signed UPDATE over TCP to the binary served and kept across a restart, the unsigned one REFUSED. `just
+    update-interop` (outside the gate) runs Knot's `knsupdate` and `kdig` against `dedensd`.
+  - Rejected: a swappable zone in `Authoritative` the serving threads read under a lock (the thread reloading owns
+    the zones already, and a reload swaps the whole pipeline lock-free for them); making the update on the serving
+    thread (its writes and fsync would stall its queries); replaying the journal over the zone file at each load,
+    as Knot's `zonefile-load: difference` (the saved zone is whole, the journal is for IXFR); a per-key last Time
+    Signed (above).

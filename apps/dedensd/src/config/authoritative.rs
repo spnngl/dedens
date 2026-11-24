@@ -10,8 +10,10 @@ use dedens_server::{Action, Authoritative, Grant, Network, Stage, ZoneAccess};
 use dedens_zone::End;
 use serde::Deserialize;
 
+use super::Downloads;
 use super::tsig::Keys;
 use crate::lists::Store;
+use crate::updates;
 
 /// The most zones an `authoritative` stage serves: 10 000 (D115). Each is a file read and stamped at every reload
 /// (D120), and a line of the configuration; past that, a catalog of zones (RFC 9432) is the tool, which the
@@ -71,7 +73,8 @@ impl TryFrom<String> for Domain {
     }
 }
 
-/// The `authoritative` stage `name` of `file`, its zones from `store`, the keys of its access lists from `keys`.
+/// The `authoritative` stage `name` of `file`, its zones from `store`, the keys of its access lists from `keys`; a
+/// zone with an `update` list kept in `downloads.state_dir` (D216).
 ///
 /// # Errors
 ///
@@ -82,7 +85,7 @@ pub(super) fn authoritative(
     name: &str,
     file: &AuthoritativeFile,
     keys: &Keys,
-    store: &mut Store,
+    (downloads, store): (&mut Downloads, &mut Store),
 ) -> anyhow::Result<Stage> {
     let count = file.zones.len();
     ensure!(count > 0, "stage `{name}`: `zones` is empty");
@@ -94,7 +97,10 @@ pub(super) fn authoritative(
         .map(|zone| {
             let context = || format!("stage `{name}`, zone `{}`", zone.name.0);
             let access = access(zone, keys).with_context(context)?;
-            let loaded = store.zones.zone(&zone.name.0, &zone.file);
+            let updated = !zone.update.is_empty();
+            downloads.updated |= updated;
+            let state = updated.then(|| updates::dir(&downloads.state_dir, &zone.name.0));
+            let loaded = store.zones.zone(&zone.name.0, &zone.file, state);
             Ok((loaded.with_context(context)?, access))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
