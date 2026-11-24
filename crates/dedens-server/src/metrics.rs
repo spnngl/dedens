@@ -138,6 +138,7 @@ pub(crate) struct Answers {
     yxdomain: metrics::Counter,
     synthesized: metrics::Counter,
     open: metrics::Counter,
+    unavailable: metrics::Counter,
 }
 
 /// The counters of the authoritative stage's answers: none without the `metrics` feature.
@@ -151,8 +152,8 @@ impl Answers {
         const ANSWERS: &str = "dedensd_authoritative_answers_total";
         metrics::describe_counter!(
             ANSWERS,
-            "Answers of the authoritative stage, by kind: data, nodata, nxdomain, referral, yxdomain, synthesized \
-             or open."
+            "Answers of the authoritative stage, by kind: data, nodata, nxdomain, referral, yxdomain, synthesized, \
+             open, or unavailable (SERVFAIL for a zone without a version)."
         );
         Self {
             data: metrics::counter!(ANSWERS, "kind" => "data"),
@@ -162,7 +163,13 @@ impl Answers {
             yxdomain: metrics::counter!(ANSWERS, "kind" => "yxdomain"),
             synthesized: metrics::counter!(ANSWERS, "kind" => "synthesized"),
             open: metrics::counter!(ANSWERS, "kind" => "open"),
+            unavailable: metrics::counter!(ANSWERS, "kind" => "unavailable"),
         }
+    }
+
+    /// Counts a SERVFAIL for a zone without a version (D215).
+    pub(crate) fn unavailable(&self) {
+        self.unavailable.increment(1);
     }
 
     pub(crate) fn count(&self, end: &End<'_>) {
@@ -192,6 +199,12 @@ impl Answers {
         reason = "the same calls with and without the feature"
     )]
     pub(crate) const fn count(&self, _: &End<'_>) {}
+
+    #[expect(
+        clippy::unused_self,
+        reason = "the same calls with and without the feature"
+    )]
+    pub(crate) const fn unavailable(&self) {}
 }
 
 /// The counters of queries by cookie.
