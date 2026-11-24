@@ -198,6 +198,20 @@ impl Ticks {
     }
 }
 
+/// Removes the `.part` files a run killed mid-write left of the copies of `downloads` and of the files it keeps in
+/// `state_dir` (D104).
+fn leftovers(downloads: &Downloads) {
+    let mut copies: Vec<_> = (downloads.urls.iter())
+        .map(|url| download::copy(&downloads.dir, url))
+        .collect();
+    if let Some(tlds) = &downloads.roots.tlds {
+        copies.push(roots::tlds_copy(&downloads.dir, &tlds.url));
+    }
+    sweep(&copies, &downloads.dir);
+    let kept = [roots::ANCHORS, rollover::STATE].map(|name| downloads.state_dir.join(name));
+    sweep(&kept, &downloads.state_dir);
+}
+
 /// Starts the thread that replaces the pipeline: on each SIGHUP, reading `file` again (D55), and once the lists of
 /// `downloads` changed, fetched at once, after each SIGHUP, then every refresh interval (D57), building `text`, the
 /// configuration last loaded, again without reading `file`; and once the root keys a serving thread asked changed
@@ -243,18 +257,7 @@ pub(crate) fn control(
             // Held here, so `wakes` is never disconnected, SIGHUP or not.
             let _hangup = hangup;
             let client = Fetcher::new();
-            guarded("leftover sweep", || {
-                let mut copies: Vec<_> = (downloads.urls.iter())
-                    .map(|url| download::copy(&downloads.dir, url))
-                    .collect();
-                if let Some(tlds) = &downloads.roots.tlds {
-                    copies.push(roots::tlds_copy(&downloads.dir, &tlds.url));
-                }
-                sweep(&copies, &downloads.dir);
-                let kept =
-                    [roots::ANCHORS, rollover::STATE].map(|name| downloads.state_dir.join(name));
-                sweep(&kept, &downloads.state_dir);
-            });
+            guarded("leftover sweep", || leftovers(&downloads));
             let mut ticks = Ticks::new();
             let mut refresh = Refresh::default();
             let mut following = false;
