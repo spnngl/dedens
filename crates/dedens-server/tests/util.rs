@@ -118,6 +118,7 @@ pub(crate) fn run_at(
             }
             Step::Park(parked) => step = pipeline.shed(parked, now, &mut out),
             Step::Resolve(_) => unreachable!("no recurse stage"),
+            Step::Update(_) => unreachable!("no UPDATE"),
         }
     };
     Run {
@@ -234,6 +235,7 @@ pub(crate) fn run_captured_from(
             }
             Step::Park(parked) => step = pipeline.shed(parked, now, &mut out),
             Step::Resolve(_) => unreachable!("no recurse stage"),
+            Step::Update(_) => unreachable!("no UPDATE"),
         }
     };
     Run {
@@ -265,6 +267,7 @@ pub(crate) fn run_together(
         Step::Drop => replies.push(None),
         Step::Park(_) => unreachable!("given up before"),
         Step::Resolve(_) => unreachable!("no recurse stage"),
+        Step::Update(_) => unreachable!("no UPDATE"),
     };
     for _ in 0..queries {
         let step = pipeline.query(

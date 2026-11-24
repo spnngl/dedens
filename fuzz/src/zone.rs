@@ -1,8 +1,11 @@
-//! Targets of dedens-zone: zone text on its way into a checked zone, a journal file into changesets, and the
-//! answers of a zone.
+//! Targets of dedens-zone: zone text on its way into a checked zone, a journal file into changesets, the
+//! answers of a zone, and an UPDATE made to one.
+
+use std::sync::LazyLock;
 
 use dedens_proto::{
-    Flags, Header, MAX_MESSAGE_LEN, Message, Name, Question, Rcode, Record, RecordType, Ttl,
+    Flags, Header, MAX_MESSAGE_LEN, Message, Name, Question, Rcode, Record, RecordType, Serial,
+    Ttl, Update,
 };
 use dedens_zone::journal::format::{self, MAGIC, Tail};
 use dedens_zone::{Answer, Dnssec, End, Kind, Limits, MAX_CHAIN, Source, Zone};
@@ -341,4 +344,59 @@ fn whole(zone: &Zone, apex: &Name<'static>) {
         assert_eq!(hidden_by, cut, "{name} is hidden by another cut");
     }
     assert_eq!(records, zone.record_count());
+}
+
+/// The zone UPDATE requests are made to: RFC 5155 Appendix A's names, unsigned (`testdata/zones/nsec3_source.zone`,
+/// D209), with a delegation, a wildcard, an empty non-terminal and a CNAME.
+static UPDATED: LazyLock<Zone> = LazyLock::new(|| {
+    let source = Source {
+        name: "nsec3_source.zone",
+        text: include_bytes!("../../testdata/zones/nsec3_source.zone"),
+        default_ttl: None,
+    };
+    let mut include = |_: &str| Err("no include".to_owned());
+    Zone::load(apex(), source, &mut include, &Limits::default())
+        .expect("the zone loads")
+        .zone
+});
+
+/// An UPDATE request made to [`UPDATED`] (D216): a refusal has the RCODE of a prerequisite or a policy; a change
+/// moves the serial ahead, its changeset is the difference of the two versions, and the new version is whole; no
+/// change leaves the version as it is.
+///
+/// # Panics
+///
+/// On an update breaking those rules, or a bug in the update.
+pub(crate) fn update(update: &Update<'_>) {
+    let zone = &*UPDATED;
+    match zone.update(update, &Limits::default()) {
+        Ok(None) => {}
+        Ok(Some(updated)) => {
+            let new = &updated.loaded.zone;
+            whole(new, zone.apex());
+            assert_eq!(
+                updated.changeset.from_serial(),
+                Serial::new(zone.soa().serial)
+            );
+            assert_eq!(updated.changeset.to_serial(), Serial::new(new.soa().serial));
+            assert!(updated.changeset.to_serial() > updated.changeset.from_serial());
+            assert_eq!(
+                Zone::diff(zone, new).as_ref(),
+                Ok(&updated.changeset),
+                "the changeset is the difference"
+            );
+        }
+        Err(rejection) => assert!(
+            matches!(
+                rejection.rcode(),
+                Rcode::NOTAUTH
+                    | Rcode::YXDOMAIN
+                    | Rcode::NXDOMAIN
+                    | Rcode::YXRRSET
+                    | Rcode::NXRRSET
+                    | Rcode::REFUSED
+            ),
+            "{rejection}"
+        ),
+    }
 }

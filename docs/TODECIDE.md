@@ -606,11 +606,10 @@ Open questions, each with its proposed default. Once answered, record the outcom
   kinds name servers of transports we have (certificate hashes, host names with ports, bootstrap addresses, a DoH
   path), so `@sdns://...` could be an upstream of `dedens` and of the `forward` stage. Default: not read.
   Alternative: read them, as the published lists hold 497 of them, and map each to the transport's upstream.
-- Replay of a signed UPDATE inside the TSIG fudge window (D205, step 14): RFC 8945 §5.2.3 recommends the server to
-  keep the last Time Signed of each key and refuse an earlier one; `dedens-tsig` keeps none, as Knot and NSD, so a
-  captured UPDATE is accepted again for the fudge its signer chose (300 s from Knot's tools and this crate) either
-  side of its time (a read-only AXFR or IXFR replayed gains nothing). Default: as is, until step 14 serves UPDATE. Alternative: the server's per-key last Time Signed, checked
-  after `verify_request` for UPDATE only, or for every signed request.
+- Per-name and per-type limits on an `update` line (D216): RFC 3007 §3.1 says a server SHOULD let the operator
+  limit a key to names and types; a line permits the whole zone. Knot's ACL has `update-owner` (key, zone or
+  names, with `update-owner-match`) and `update-type`; BIND's `update-policy`. Default: none, a key per zone.
+  Alternative: `names` and `types` on a line, checked against each change of the `Update` before it is queued.
 - The authoritative stage's speed (D213, step 11): on one core `dedensd` answers at a third to six tenths of the rate of Knot and
   NSD (`docs/benchmarks.md`, "Authoritative service against Knot and NSD") and spends 2 to 3 times their CPU a query,
   mostly in user time, and its peak memory while loading the 268 000-record signed zone is almost three times its

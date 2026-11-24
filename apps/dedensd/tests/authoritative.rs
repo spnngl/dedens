@@ -1,7 +1,7 @@
 //! `dedensd`'s `authoritative` stage (D208): its zones answered with AA (RFC 1034 §4.3.2), a reload loading again the
 //! zone whose files changed and no other (D120), a zone that fails to load serving its last version (D55), and the
 //! queries asked while it reloads all answered; requests signed with a key of `keys` answered signed (RFC 8945 §5.3,
-//! D211).
+//! D211); an UPDATE permitted made, saved and kept across a restart (RFC 2136 §3, D216).
 
 use std::io::Write as _;
 use std::net::{SocketAddr, TcpStream};
@@ -314,6 +314,67 @@ fn rfc8945_5_3_a_signed_query_is_answered_signed() {
         Ok(None),
         "an unsigned query answered signed"
     );
+}
+
+/// RFC 2136 §3, D216: an UPDATE signed with the key of the zone's `update` list is made, saved in `state_dir`,
+/// served, and answered signed once served; a start restores it. The same unsigned is REFUSED.
+#[test]
+fn rfc2136_3_an_update_permitted_is_served_and_kept() {
+    use dedens_proto::{Class, Opcode, Record, Ttl};
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let (example, isi) = zones(dir.path());
+    let (secret, state) = (dir.path().join("tsig.key"), dir.path().join("state"));
+    write_key(&secret, TSIG_KEY.secret);
+    let config = |listen: &str| {
+        let list = format!(
+            "{{name: ISI.EDU, update: [{{networks: ['127.0.0.0/8'], key: {}}}], ",
+            TSIG_KEY.name
+        );
+        format!(
+            "keys:\n  - {{name: {}, algorithm: {}, secret_file: '{}'}}\nstate_dir: '{}'\n{}",
+            TSIG_KEY.name,
+            TSIG_KEY.algorithm,
+            secret.display(),
+            state.display(),
+            authoritative(listen, (&example, &isi)).replace("{name: ISI.EDU, ", &list)
+        )
+    };
+    let mut server = Server::configured(config);
+    assert!(server.event("zone loaded").is_some());
+    let mut message = Message::query(
+        3,
+        Question::new("ISI.EDU.".parse().expect("a name"), RecordType::SOA),
+    );
+    message.header.opcode = Opcode::UPDATE;
+    let (name, data) = ("NEW.ISI.EDU.", RData::A([10, 0, 0, 1].into()));
+    let record = Record::new(
+        name.parse().expect("a name"),
+        Class::IN,
+        Ttl::from_wire(3600),
+        &data,
+    );
+    message.authority.push(record);
+    let wire = message.to_vec().expect("an update fits");
+    assert_eq!(
+        ask_udp(server.addr, &wire).rcode(),
+        Rcode::REFUSED,
+        "unsigned"
+    );
+    let (known, mut signed) = (key(TSIG_KEY.name), wire.clone());
+    let mut verifier = sign_request(&known, &mut signed, now()).expect("signed");
+    let reply = exchange_tcp(server.addr, &signed);
+    assert_eq!(verifier.verify(&reply, now()), Ok(Verified::Signed));
+    assert_eq!(decode(&reply).rcode(), Rcode::NOERROR);
+    let updated = server.event("zone updated").expect("the update logged");
+    assert_eq!(updated["fields"]["serial"], 21, "{updated}");
+    assert_eq!(ask(&server, name, RecordType::A).answer.len(), 1);
+    assert_eq!(serial(&server), 21);
+    assert!(state.join("zones/isi.edu./journal").exists());
+    drop(server);
+    let server = Server::configured(config);
+    assert_eq!(serial(&server), 21, "restored");
+    assert_eq!(ask(&server, name, RecordType::A).answer.len(), 1);
 }
 
 /// D211, D115: a key file others can read is refused at start.

@@ -1441,7 +1441,11 @@ mod upstream {
                     };
                     step = pipeline.receive(upstream, response, 0, &mut out);
                 }
-                Step::Drop | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
+                Step::Drop
+                | Step::Refresh(..)
+                | Step::Park(_)
+                | Step::Resolve(_)
+                | Step::Update(_) => {
                     unreachable!("a reply comes")
                 }
             }

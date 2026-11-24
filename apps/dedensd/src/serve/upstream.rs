@@ -13,8 +13,8 @@ use dedens_net::client::{ClientError, Server};
 use dedens_net::exchange::{Failure, Options, Response};
 use dedens_net::io::Io;
 use dedens_net::tcp::frame;
-use dedens_proto::{Message, Transport};
-use dedens_server::{Parked, Pipeline, Resolving, Step, Upstream, Via};
+use dedens_proto::{Message, Rcode, Transport};
+use dedens_server::{Parked, Pipeline, Resolving, Step, Updating, Upstream, Via};
 
 use super::{Thread, pause, recurse};
 use crate::flights::{Entered, Flights, Key, Lead};
@@ -33,11 +33,12 @@ pub(super) fn describe() {
 }
 
 /// What a query asks upstream: now, or once the validation allowance admits it (D186), or the authoritative servers
-/// (D195).
+/// (D195); or the thread reloading, to make an UPDATE (D216).
 pub(super) enum Ask {
     Now(Box<Upstream>),
     Parked(Parked),
     Resolve(Box<Resolving>),
+    Update(Box<Updating>),
 }
 
 impl From<Box<Upstream>> for Ask {
@@ -70,6 +71,7 @@ impl Ask {
             Self::Now(upstream) => pipeline.abandon(&upstream, out),
             Self::Parked(parked) => pipeline.shed(parked, now, out),
             Self::Resolve(resolving) => pipeline.resolved(&resolving, now, out),
+            Self::Update(updating) => pipeline.updated(&updating, Rcode::SERVFAIL, None, out),
         }
     }
 }
@@ -79,7 +81,7 @@ impl Ask {
 /// ([`copy_out`]): expired data when the client response timer runs out first, resolution going on to refresh the
 /// cache (RFC 8767 §5), then the response's unless that went out; none after a prefetch. A query parked waits for
 /// the allowance first ([`wait`]), and is given up if it waits too long. A query the recurse stage resolves goes to
-/// [`recurse::resolve`].
+/// [`recurse::resolve`], an UPDATE to [`update`].
 pub(super) async fn answer<N: Io>(
     thread: &Thread<N>,
     pipeline: &Pipeline,
@@ -98,14 +100,12 @@ pub(super) async fn answer<N: Io>(
             ))
             .await;
         }
+        Ask::Update(updating) => {
+            return update(thread, pipeline, &updating, transport, deliver).await;
+        }
         Ask::Parked(parked) => match wait(thread, pipeline, parked, since).await {
             Ok(upstream) => upstream,
-            Err(parked) => {
-                if let Some(reply) = given_up(thread, pipeline, parked, transport) {
-                    deliver(reply).await;
-                }
-                return;
-            }
+            Err(parked) => return given_up(thread, pipeline, parked, transport, deliver).await,
         },
     };
     let mut options = Options::default();
@@ -172,8 +172,8 @@ pub(super) async fn answer<N: Io>(
                 Step::Reply(len) | Step::Refresh(len, _) => {
                     (copy_out(&out[..len], transport), None)
                 }
-                // `receive` does not park: the query was admitted; nor does a forward stage resolve.
-                Step::Drop | Step::Park(_) | Step::Resolve(_) => (None, None),
+                // `receive` does not park: the query was admitted; nor does a forward stage resolve or update.
+                Step::Drop | Step::Park(_) | Step::Resolve(_) | Step::Update(_) => (None, None),
                 Step::Upstream(next) => (None, Some(next)),
             }
         };
@@ -237,17 +237,48 @@ async fn wait<N: Io>(
     }
 }
 
-/// The reply to `parked`, from `pipeline`, given up (D186), copied out of the thread's buffer.
-fn given_up<N: Io>(
+/// Hands `deliver` the reply to `updating`, from `pipeline`, once the thread reloading made it (D216), copied out
+/// of the thread's buffer: the RCODE it made, SERVFAIL when it is gone, REFUSED with EDE 14 when too many wait.
+async fn update<N: Io>(
+    thread: &Thread<N>,
+    pipeline: &Pipeline,
+    updating: &Updating,
+    transport: Transport,
+    mut deliver: impl AsyncFnMut(Vec<u8>),
+) {
+    let (rcode, error) = match thread.current.updates().ask(updating.update().clone()) {
+        Ok(made) => (made.recv_async().await.unwrap_or(Rcode::SERVFAIL), None),
+        Err(refused) => refused,
+    };
+    let reply = {
+        let mut out = thread.scratch.borrow_mut();
+        match pipeline.updated(updating, rcode, error, &mut out) {
+            Step::Reply(len) => copy_out(&out[..len], transport),
+            _ => None,
+        }
+    };
+    if let Some(reply) = reply {
+        deliver(reply).await;
+    }
+}
+
+/// Hands `deliver` the reply to `parked`, from `pipeline`, given up (D186), copied out of the thread's buffer.
+async fn given_up<N: Io>(
     thread: &Thread<N>,
     pipeline: &Pipeline,
     parked: Parked,
     transport: Transport,
-) -> Option<Vec<u8>> {
-    let mut out = thread.scratch.borrow_mut();
-    match pipeline.shed(parked, thread.now(), &mut out) {
-        Step::Reply(len) => copy_out(&out[..len], transport),
-        _ => None,
+    mut deliver: impl AsyncFnMut(Vec<u8>),
+) {
+    let reply = {
+        let mut out = thread.scratch.borrow_mut();
+        match pipeline.shed(parked, thread.now(), &mut out) {
+            Step::Reply(len) => copy_out(&out[..len], transport),
+            _ => None,
+        }
+    };
+    if let Some(reply) = reply {
+        deliver(reply).await;
     }
 }
 

@@ -201,8 +201,8 @@ pub(crate) fn resolve(identity: Option<&Identity>) -> anyhow::Result<Plan> {
 /// The drop `plan` decided, after every socket is bound and every file read at start that needs it; it creates what
 /// the dropped user must write first ([`os::prepare`]), and logs it. `downloads` is the directory of the lists to
 /// download, if the configuration has any: one that `urls` adds at a reload needs a directory the user can write
-/// already. `roots` are the directories of the root files (D128), made for the user too; one that cannot be is warned
-/// of only: its copy, or the bundled one, serves.
+/// already. `roots` are the directories of the root files (D128) and of the zones updated (D216), made for the user
+/// too; one that cannot be is warned of only: a root file's copy, or the bundled one, serves; an update fails.
 ///
 /// # Errors
 ///
@@ -229,7 +229,7 @@ pub(crate) fn apply(plan: Plan, downloads: Option<&Path>, roots: &[&Path]) -> an
             }
             for dir in roots {
                 if let Err(error) = os::prepare(dir, user.uid, gid) {
-                    tracing::warn!(dir = %dir.display(), error = format!("{error:#}"), "the directory of a root file not made (D128)");
+                    tracing::warn!(dir = %dir.display(), error = format!("{error:#}"), "the directory of a root file or of the zones updated not made (D128, D216)");
                 }
             }
             os::drop_to(&user, gid)?;

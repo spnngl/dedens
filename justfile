@@ -350,7 +350,7 @@ image:
 
 # The directories, from fuzz/, every fuzz target starts from: all of testdata/, whatever format the target reads,
 # with the seeds `fuzz-seeds` writes out.
-fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots target/seeds/recursion target/seeds/journal target/seeds/transfer"
+fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdata/odoh ../testdata/dnscrypt ../testdata/doh ../testdata/plugins ../testdata/rdap target/seeds/coap target/seeds/command_lines target/seeds/stamps target/seeds/configs target/seeds/roots target/seeds/recursion target/seeds/journal target/seeds/transfer target/seeds/update"
 
 # The CoAP datagrams of testdata/coap, kept there as hex lines, one to a file in fuzz/target/seeds/coap; the command
 # lines of fuzz/seeds/command_lines.txt, NUL between two arguments, in fuzz/target/seeds/command_lines; the stamps
@@ -362,14 +362,15 @@ fuzz_seeds := "../testdata/proto ../testdata/zones ../testdata/dnssec ../testdat
 # testdata/recursion and testdata/recursion/minimised (D188), kept there in base64, one to a file in
 # fuzz/target/seeds/recursion; the journal file of fuzz/seeds/example.journal (D207) in fuzz/target/seeds/journal; the
 # zone transfers over TCP of testdata/authoritative/recordings, each message behind its length in two octets, but
-# the unsigned root's (D210), one to a file in fuzz/target/seeds/transfer.
+# the unsigned root's (D210), one to a file in fuzz/target/seeds/transfer; the first request of each UPDATE recording
+# there (D216), one to a file in fuzz/target/seeds/update.
 # `seeds()` of fuzz/src/smoke.rs reads the same.
 [private]
 fuzz-seeds:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal fuzz/target/seeds/transfer
-    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal fuzz/target/seeds/transfer
+    rm -rf fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal fuzz/target/seeds/transfer fuzz/target/seeds/update
+    mkdir -p fuzz/target/seeds/coap fuzz/target/seeds/command_lines fuzz/target/seeds/stamps fuzz/target/seeds/configs fuzz/target/seeds/roots fuzz/target/seeds/recursion fuzz/target/seeds/journal fuzz/target/seeds/transfer fuzz/target/seeds/update
     cp fuzz/seeds/example.journal fuzz/target/seeds/journal/
     cp crates/dedens-dnssec/src/root.ds crates/dedens-roots/src/named.root crates/dedens-roots/tests/data/tlds.json \
         crates/dedens-dnssec/src/icannbundle.pem fuzz/seeds/root-5011.state fuzz/target/seeds/roots/
@@ -388,6 +389,16 @@ fuzz-seeds:
             open $out, ">", "fuzz/target/seeds/transfer/$id" or die unless $out;
             print $out pack("n", length $wire), $wire
         }' testdata/authoritative/recordings/axfr-*.yaml testdata/authoritative/recordings/ixfr-*.yaml
+    perl -MMIME::Base64 -ne '
+        if ($ARGV ne $file) { $file = $ARGV; ($id = $ARGV) =~ s{.*/|\.yaml$}{}g; $done = 0 }
+        $client = $1 eq "client" if /^\s*from: (\w+)$/;
+        my $seed = $b64 ? $_ : /^\s*message: ([^>\s]\S*)$/ ? $1 : undef;
+        $b64 = /^\s*message: >-$/;
+        if (defined $seed && $client && !$done) {
+            open my $out, ">", "fuzz/target/seeds/update/$id" or die;
+            print $out decode_base64($seed);
+            $done = 1
+        }' testdata/authoritative/recordings/update-*.yaml
     cp deploy/dedensd.yaml fuzz/target/seeds/configs/dedensd.yaml
     cp deploy/packages/dedensd.conf.yaml fuzz/target/seeds/configs/dedensd.conf.yaml
     cp fuzz/seeds/dnscrypt.yaml fuzz/target/seeds/configs/dnscrypt.yaml
@@ -572,6 +583,47 @@ capture-authoritative *stages="sources answers exchanges root-ixfr signed-stream
 capture-signed:
     cargo run -q -p dedens-testkit --features authoritative --example capture_authoritative -- \
         testdata/authoritative signed
+
+# Dynamic UPDATE (D216): Knot's knsupdate, signed, against `dedensd` serving zonetransfer.me on the loopback; an add,
+# a prerequisite not met (YXDOMAIN), an unsigned update (REFUSED), a delete, each checked by kdig, then a restart that
+# keeps the serial. Outside the gate: needs Knot's tools (knsupdate, kdig) and openssl.
+update-interop port="53999":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    pid=
+    trap 'if [ -n "$pid" ]; then kill "$pid"; wait "$pid" || true; fi; rm -rf "$tmp"' EXIT
+    cargo build -q -p dedensd
+    secret="$(openssl rand -base64 32)"
+    printf '%s' "$secret" > "$tmp/key"
+    chmod 600 "$tmp/key"
+    printf '%s\n' "listen: ['127.0.0.1:{{ port }}']" "state_dir: '$tmp/state'" \
+        "keys: [{name: update-key, algorithm: hmac-sha256, secret_file: '$tmp/key'}]" \
+        "pipeline: [zones]" "stages:" "  zones:" "    type: authoritative" "    zones:" \
+        "      - {name: zonetransfer.me, file: '$PWD/testdata/authoritative/zones/zonetransfer.me.zone', update: [{networks: ['127.0.0.1/32'], key: update-key}]}" \
+        > "$tmp/dedensd.yaml"
+    start() { target/debug/dedensd --config "$tmp/dedensd.yaml" 2>> "$tmp/log" & pid=$!; sleep 1; }
+    stop() { kill "$pid"; wait "$pid" || true; pid=; }
+    ask() { kdig @127.0.0.1 -p {{ port }} +short "$@"; }
+    update() { printf 'server 127.0.0.1 {{ port }}\nzone zonetransfer.me.\n%s\nsend\n' "$1" | knsupdate "${@:2}" 2>&1; }
+    fails() { out="$(update "${@:2}" || true)"; grep -q "$1" <<< "$out" || { echo "not $1: $out"; return 1; }; }
+    signed=(-y "hmac-sha256:update-key:$secret")
+    name=dedens-new.zonetransfer.me.
+    start
+    before="$(ask zonetransfer.me. SOA | cut -d' ' -f3)"
+    update "update add $name 300 A 192.0.2.1" "${signed[@]}"
+    test "$(ask $name A)" = 192.0.2.1
+    test "$(ask zonetransfer.me. SOA | cut -d' ' -f3)" = "$((before + 1))"
+    fails YXDOMAIN "prereq nxdomain $name"$'\n'"update add $name 300 A 192.0.2.2" "${signed[@]}"
+    fails REFUSED "update add $name 300 A 192.0.2.3"
+    test "$(ask $name A)" = 192.0.2.1
+    stop
+    start
+    test "$(ask zonetransfer.me. SOA | cut -d' ' -f3)" = "$((before + 1))"
+    update "update delete $name A" "${signed[@]}"
+    test -z "$(ask $name A)"
+    test "$(ask zonetransfer.me. SOA | cut -d' ' -f3)" = "$((before + 2))"
+    echo "knsupdate and dedensd agree: serial $before -> $((before + 2))"
 
 # Capture the root's DNSKEY RRset through the KSK-2010 to KSK-2017 rollover (D200) into testdata/dnssec/rollover-*.zone:
 # the DNSKEY and RRSIG DNSKEY lines of the root zone IANA served at each moment, from the Internet Archive's copies

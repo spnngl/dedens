@@ -65,6 +65,3 @@ varies by run: IDs, TSIG times and MACs, times between messages.
 | `root-ixfr` | IXFR between two root serials: 99 messages |
 | `update-*` | UPDATE (RFC 2136): each prerequisite form met and unmet, adds, deletes, the cases ignored or refused, signed and not |
 | `notify-load`, `notify-command`, `notify-after-update` | The NOTIFY Knot sends (RFC 1996 §3.11) |
-
-`dedens-proto` does not parse every UPDATE (RFC 2136 §2.4, §2.5): records of class ANY or NONE have empty RDATA, which
-it reads as invalid RDATA of their type (NS: not at all); the step of UPDATE parses them itself.

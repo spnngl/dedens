@@ -69,6 +69,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "update_message"
+path = "fuzz_targets/update_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "parse_zone"
 path = "fuzz_targets/parse_zone.rs"
 test = false

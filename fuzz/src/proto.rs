@@ -4,8 +4,9 @@
 use dedens_proto::edns::EdnsView;
 use dedens_proto::rdata::{RData, SvcParam};
 use dedens_proto::{
-    DecodeErrorKind, DecodedRecord, EncodeError, Flags, Message, Name, Query, Question, Record,
-    RecordType, Section, Ttl, Violation, ZoneEntry, ZoneReader, ttl_offsets,
+    Change, DecodeErrorKind, DecodedRecord, EncodeError, Flags, Message, Name, Prerequisite, Query,
+    Question, Rcode, Record, RecordType, Section, Ttl, Update, Violation, ZoneEntry, ZoneReader,
+    ttl_offsets,
 };
 use dedens_scenario::QueryFile;
 use hickory_proto::op::{Message as HickoryMessage, OpCode};
@@ -273,6 +274,64 @@ pub fn read_query(data: &[u8]) {
         format!("{decoded:?}"),
         "query reader and decoder agree"
     );
+}
+
+/// A DNS message off the wire read as an UPDATE request (D216): what it accepts is inside its zone, each
+/// value-dependent prerequisite holds distinct RDATAs of its type, each change stores or deletes data of a type a
+/// zone holds, in the zone's class; and owned it reads the same. A refusal is FORMERR or NOTZONE. Then it is made to
+/// a zone (`crate::zone::update`).
+///
+/// # Panics
+///
+/// On a request breaking those rules, or a bug in the reader or in the update.
+pub fn update_message(data: &[u8]) {
+    let Ok(decoded) = Message::decode(data) else {
+        return;
+    };
+    let update = match Update::read(decoded.message) {
+        Ok(update) => update,
+        Err(e) => {
+            assert!(matches!(e.rcode(), Rcode::FORMERR | Rcode::NOTZONE), "{e}");
+            return;
+        }
+    };
+    let zone = update.zone();
+    for prerequisite in update.prerequisites() {
+        let name = match prerequisite {
+            Prerequisite::Equals(name, rtype, rdatas) => {
+                assert!(!rdatas.is_empty(), "{prerequisite:?} without RDATA");
+                for (i, rdata) in rdatas.iter().enumerate() {
+                    assert_eq!(rdata.rtype(), *rtype, "{prerequisite:?}");
+                    assert!(!rdatas[..i].contains(rdata), "{prerequisite:?} twice");
+                }
+                name
+            }
+            Prerequisite::Exists(name, _)
+            | Prerequisite::Absent(name, _)
+            | Prerequisite::InUse(name)
+            | Prerequisite::NotInUse(name) => name,
+        };
+        assert!(name.is_within(zone), "{prerequisite:?} outside {zone}");
+    }
+    for change in update.changes() {
+        let (name, rtype) = match change {
+            Change::Add(record) => {
+                assert_eq!(record.class, update.class(), "{change:?}");
+                (&record.name, Some(record.rtype()))
+            }
+            Change::DeleteRrset(name, rtype) => (name, Some(*rtype)),
+            Change::DeleteName(name) => (name, None),
+            Change::Delete(name, rdata) => (name, Some(rdata.rtype())),
+        };
+        assert!(name.is_within(zone), "{change:?} outside {zone}");
+        assert!(rtype.is_none_or(RecordType::is_data), "{change:?}");
+    }
+    assert_eq!(
+        format!("{:?}", update.clone().into_owned()),
+        format!("{update:?}"),
+        "owned"
+    );
+    crate::zone::update(&update);
 }
 
 /// A DNS message off the wire.

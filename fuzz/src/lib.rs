@@ -46,6 +46,7 @@ pub use odoh::{odoh_decrypt, parse_odoh_configs, parse_odoh_message, read_odoh_h
 pub use plugins::parse_lists;
 pub use proto::{
     decode_message, differential_hickory, parse_name, parse_query_file, parse_zone, read_query,
+    update_message,
 };
 pub use resolver::{resolve_replay, rrset_cache_insert, scrub_response};
 pub use roots::{parse_root_hints, parse_tlds_json};
@@ -76,6 +77,7 @@ macro_rules! targets {
 targets! {
     decode_message,
     read_query,
+    update_message,
     parse_zone,
     load_zone,
     journal_read,

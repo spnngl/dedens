@@ -751,6 +751,7 @@ fn start<N: Io>(
         }
         Step::Park(parked) => Ask::Parked(parked),
         Step::Resolve(resolving) => Ask::Resolve(resolving),
+        Step::Update(updating) => Ask::Update(updating),
     };
     let Some(slot) = thread.upstream.take() else {
         tracing::debug!("too many upstream queries: SERVFAIL");

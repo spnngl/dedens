@@ -127,6 +127,7 @@ pub fn serve_query(data: &[u8]) {
             Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
                 panic!("a denied client's query goes upstream")
             }
+            Step::Update(_) => panic!("an update made without zones"),
         }
         let top_level = Pipeline::new(vec![Stage::Plugin(Box::new(TopLevel::new(
             Arc::clone(&BUNDLED),
@@ -213,6 +214,8 @@ fn authoritative(data: &[u8], transport: Transport, out: &mut [u8]) {
         Step::Upstream(_) | Step::Refresh(..) | Step::Park(_) | Step::Resolve(_) => {
             panic!("a denied client's query goes upstream")
         }
+        // No `update` list permits it (D216).
+        Step::Update(_) => panic!("an update made without permission"),
     }
 }
 

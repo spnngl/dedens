@@ -45,7 +45,7 @@ How:
 | Transfer in (secondary zones) | no: planned; the difference of two zones and the journal of them exist (`crates/dedens-zone/src/difference.rs`, `journal/`; D207) | yes, by remote, with `master` ACLs (`src/knot/events/handlers/refresh.c`) | yes, in the `xfrd` process (`xfrd.c`) | yes, `primaries` (`lib/dns/zone.c`, `lib/dns/xfrin.c`) |
 | XoT (RFC 9103) | no: planned | yes: `listen-tls`, a remote's `tls`, ACL `protocol` (`src/knot/conf/schema.c`) | yes: `tls-service-pem`, `tls-auth`, `tls-auth-xfr-only` (`nsd.conf.5.in`) | yes: strict, opportunistic and mutual (`doc/arm/reference.rst`, `lib/ns/query.c`) |
 | NOTIFY (RFC 1996) | no: NOTIMP to the opcode (`pipeline/mod.rs`); planned | both ways, ACL `notify` (`src/knot/events/handlers/notify.c`, `src/knot/nameserver/notify.c`) | both ways, `allow-notify` (`xfrd-notify.c`, `query.c` `answer_notify`) | both ways, `also-notify`, `allow-notify` (`lib/dns/zone.c` `zone_notify`) |
-| Dynamic UPDATE (RFC 2136) | no: NOTIMP to the opcode; planned. The difference and the journal it will write exist (D207) | yes: prerequisites, TSIG ACL, journal (`src/knot/updates/ddns.c`, `src/knot/nameserver/update.c`) | no: NOTIMP, or dropped (`query.c`, `drop-updates`) | yes: `allow-update`, `update-policy`, SIG(0), journal (`lib/ns/update.c` `ns_update_start`) |
+| Dynamic UPDATE (RFC 2136) | yes, unsigned zones of a primary: prerequisites, the zone's `update` list by network and TSIG key, Knot's results on its captured requests, the zone and a journal saved in `state_dir` before the reply (`crates/dedens-zone/src/update.rs`, `crates/dedens-server/src/pipeline/update.rs`, `apps/dedensd/src/zones.rs`, D216); no per-name or per-type limits, no SIG(0) | yes: prerequisites, TSIG ACL, journal (`src/knot/updates/ddns.c`, `src/knot/nameserver/update.c`) | no: NOTIMP, or dropped (`query.c`, `drop-updates`) | yes: `allow-update`, `update-policy`, SIG(0), journal (`lib/ns/update.c` `ns_update_start`) |
 | TSIG (RFC 8945) | SHA-1 (interop), SHA-256, 384 and 512, no MD5; RFC 8945 §5.2's order of checks; a library for now, no stage uses it yet (`crates/dedens-tsig/src/`, D205) | hmac-md5 to sha512, default sha256 (`src/knot/conf/schema.c`) | the same six through OpenSSL (`tsig-openssl.c`) | the six and truncated forms (`lib/dns/include/dns/tsig.h`) |
 | Catalog zones (RFC 9432) | no: planned | consumer and producer (`src/knot/catalog/interpret.c`, `generate.c`) | consumer and producer (`xfrd-catalog-zones.c`) | consumer only (`lib/dns/catz.c`) |
 | Response rate limiting | per client network, not per answer: TC to a source over its rate on UDP, so a spoofed flood cannot dodge it by varying the name; no per-answer limit (`crates/dedens-server/src/rrl.rs`, D113) | module `mod-rrl`, `rate-limit`, `slip`, off by default (`src/knot/modules/rrl/rrl.c`) | built in, `rrl-ratelimit`, `rrl-slip` (`rrl.c`) | `rate-limit {}`, per answer and class (`lib/dns/rrl.c` `dns_rrl`) |
@@ -55,7 +55,7 @@ How:
 
 Where dedens is behind, and what lands in the authoritative phase:
 
-- Transfers out and in, XoT, NOTIFY, UPDATE, catalog zones: planned, each its own step of the authoritative phase,
+- Transfers out and in, XoT, NOTIFY, catalog zones: planned, each its own step of the authoritative phase,
   with its own decision, per-zone access lists and TSIG on every one of them.
 - Signing: not planned. A pre-signed zone is what the stage serves (D209); keys and rollovers belong to a signer
   (`kzonesign` and `keymgr` of Knot sign this bench's zone).

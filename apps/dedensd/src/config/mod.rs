@@ -579,7 +579,9 @@ fn stages(
                     .transpose()?;
                 recurse(name, file, (&built, previous), (root, allowance))?
             }
-            StageFile::Authoritative(file) => authoritative(name, &file, keys, store)?,
+            StageFile::Authoritative(file) => {
+                authoritative(name, &file, keys, (&mut *downloads, store))?
+            }
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
                 downloads.tlds(store)?,
                 Ttl::from_wire(PLUGIN_TTL),
