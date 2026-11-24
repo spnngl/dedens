@@ -204,9 +204,10 @@ fn start(
 }
 
 /// When the task has something to do next, Unix seconds: refresh a zone or expire its version. Refreshes do not
-/// count when no more can start (`full`): one ending wakes the task.
-fn soonest(held: &BTreeMap<Name<'static>, Held>, full: bool) -> Option<u64> {
-    let next = |zone: &Held| (!full && zone.refreshing.is_none()).then_some(zone.next);
+/// count when no more can start, `in_flight` being under way: one ending wakes the task.
+fn soonest(held: &BTreeMap<Name<'static>, Held>, in_flight: usize) -> Option<u64> {
+    let room = in_flight < IN_FLIGHT;
+    let next = |zone: &Held| (room && zone.refreshing.is_none()).then_some(zone.next);
     let expires = |zone: &Held| zone.version.as_ref().map(|(_, kept)| kept.expires);
     (held.values())
         .flat_map(|zone| next(zone).into_iter().chain(expires(zone)))
@@ -265,7 +266,7 @@ async fn run<N: Io>(
         for (apex, primaries, ours, number) in start(&mut held, now, room, &mut numbers) {
             refreshing.push(refresh(&io, apex, primaries, ours, number));
         }
-        let soonest = soonest(&held, refreshing.len() >= IN_FLIGHT);
+        let soonest = soonest(&held, refreshing.len());
         let event = {
             let command = pin!(commands.recv_async());
             let refreshed = pin!(async {
@@ -685,8 +686,8 @@ mod tests {
         assert_eq!(started.last().map(|start| start.3), Some(7));
         let serial = started.first().and_then(|start| start.2);
         assert_eq!(serial.map(Serial::get), Some(1_081_539_377));
-        assert_eq!(soonest(&zones, false), Some(3600));
-        assert_eq!(soonest(&zones, true), Some(3_600_000));
+        assert_eq!(soonest(&zones, IN_FLIGHT - 1), Some(3600));
+        assert_eq!(soonest(&zones, IN_FLIGHT), Some(3_600_000));
         assert_eq!(start(&mut zones, 3600, 1, &mut numbers).len(), 1);
         assert!(start(&mut zones, 3600, 1, &mut numbers).is_empty());
     }
