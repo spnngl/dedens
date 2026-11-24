@@ -3043,7 +3043,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     The primaries are the operator's, trusted with one transfer's memory; `IN_FLIGHT` bounds how many at once.
   - Metrics: `dedensd_authoritative_refreshes_total` by `result` (`full`, `incremental`, `uptodate`, `behind`,
     `refused`, `failed`), `dedensd_authoritative_expired_total`; the serial and zones gauges count secondaries
-    (amends D208); `dedens_server_answers_total` kind `unavailable`.
+    (amends D208); `dedensd_authoritative_answers_total` kind `unavailable`.
   - Test data (D203): a primary on the loopback address replays Knot's captures: the root's AXFR, kept and served
     after a restart without the primary; Knot's IXFR from the root's previous serial applied to that zone on disk,
     journaled; a primary whose SOA is behind ours not followed; a zone on disk past its expire answered SERVFAIL,

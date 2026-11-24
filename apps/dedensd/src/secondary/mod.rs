@@ -86,9 +86,12 @@ enum Command {
     /// The secondary zones are now these.
     Configure(Vec<Secondary>),
     /// Refresh this zone now.
-    #[expect(
-        dead_code,
-        reason = "NOTIFY sends it, step 15 of the authoritative phase"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "NOTIFY sends it, step 15 of the authoritative phase"
+        )
     )]
     Refresh(Name<'static>),
 }
@@ -116,10 +119,10 @@ impl Secondaries {
 
     /// The secondary zones are now `secondaries`, of a configuration whose `state_dir` is `state_dir`: those new to
     /// the thread are read from their files, those no longer there dropped. The thread starts with the first; one
-    /// that cannot start is logged, and tried again at the next call. The files stay in the `state_dir` of the
-    /// start.
+    /// that cannot start is logged, and tried again at the next call. Once it runs, the files stay in the
+    /// `state_dir` of the start.
     pub(crate) fn configure(&mut self, state_dir: &Path, secondaries: Vec<Secondary>) {
-        if !secondaries.is_empty() && dir(state_dir) != self.zones {
+        if self.commands.is_some() && dir(state_dir) != self.zones {
             tracing::warn!("changes to `state_dir` take a restart for the secondary zones");
         }
         if self.commands.is_none() && !secondaries.is_empty() {
@@ -143,9 +146,12 @@ impl Secondaries {
 
     /// Refreshes the secondary zone of apex `apex` now, as a NOTIFY asks (RFC 1996 §3.11); nothing when it is not
     /// one, or a refresh of it is under way.
-    #[expect(
-        dead_code,
-        reason = "NOTIFY calls it, step 15 of the authoritative phase"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "NOTIFY calls it, step 15 of the authoritative phase"
+        )
     )]
     pub(crate) fn refresh(&self, apex: Name<'static>) {
         if let Some(commands) = &self.commands {
@@ -696,5 +702,66 @@ mod tests {
         expire(&mut zones, 3_600_000, &wakes);
         assert!(zones[&apex()].version.is_none());
         assert!(matches!(woken.try_recv(), Ok(Wake::Zone(apex, None)) if apex == self::apex()));
+    }
+
+    /// RFC 1996 §3.11: the refresh a NOTIFY asks reaches the thread once it runs, and nothing before.
+    #[test]
+    fn a_refresh_asked_reaches_the_running_thread() {
+        use super::{Command, Secondaries};
+
+        let (wakes, _woken) = mpsc::channel();
+        let mut secondaries = Secondaries::new(Path::new("/nonexistent"), wakes);
+        secondaries.refresh(apex());
+        let (commands, received) = flume::unbounded();
+        secondaries.commands = Some(commands);
+        secondaries.refresh(apex());
+        assert!(matches!(received.try_recv(), Ok(Command::Refresh(asked)) if asked == apex()));
+        assert!(received.is_empty());
+    }
+
+    /// The counters of the refreshes, by result, and of the expires are described and counted.
+    #[test]
+    fn refreshes_and_expires_are_counted() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        use super::{EXPIRED, REFRESHES, describe};
+
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let mut zones = BTreeMap::from([(apex(), held(dir.path()))]);
+        let (wakes, _woken) = mpsc::channel();
+        metrics::with_local_recorder(&recorder, || {
+            describe();
+            if let Some(zone) = zones.get_mut(&apex()) {
+                refreshed_zone(&apex(), zone, Outcome::UpToDate, (0, 0));
+                refreshed_zone(&apex(), zone, Outcome::Failed, (0, 0));
+            }
+            expire(&mut zones, 3_600_000, &wakes);
+        });
+        let mut counted: Vec<_> = (snapshotter.snapshot().into_vec().into_iter())
+            .map(|(key, _, description, value)| {
+                let labels: Vec<_> = key.key().labels().map(|l| l.value().to_owned()).collect();
+                let count = match value {
+                    DebugValue::Counter(count) => count,
+                    _ => u64::MAX,
+                };
+                let name = key.key().name().to_owned();
+                (name, labels, description.is_some(), count)
+            })
+            .collect();
+        counted.sort();
+        let metric = |name: &str, label: &[&str]| {
+            let labels = label.iter().map(|&l| l.to_owned()).collect();
+            (name.to_owned(), labels, true, 1)
+        };
+        assert_eq!(
+            counted,
+            [
+                metric(EXPIRED, &[]),
+                metric(REFRESHES, &["failed"]),
+                metric(REFRESHES, &["uptodate"]),
+            ]
+        );
     }
 }

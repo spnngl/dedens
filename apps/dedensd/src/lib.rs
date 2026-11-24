@@ -443,7 +443,12 @@ fn drop_root(
     let zones = secondary::dir(&downloads.state_dir);
     let written: Vec<_> = (downloads.written_dir().map(|dir| ("downloads.dir", dir)))
         .into_iter()
-        .chain((!previous.secondaries.is_empty()).then_some(("state_dir", zones.as_path())))
+        .chain(
+            previous
+                .secondaries
+                .first()
+                .map(|_| ("state_dir", zones.as_path())),
+        )
         .collect();
     privileges::apply(plan, &written, &downloads.roots_dirs())?;
     if !dropping {

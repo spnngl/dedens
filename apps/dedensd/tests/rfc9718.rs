@@ -2,7 +2,8 @@
 //! server for a validating forward stage: a pair that verifies is kept in `state_dir`, its keys and signing time,
 //! and read by the validators of the reload that follows; under a later floor, that of a newer pair kept, it is
 //! refused and the kept file stays in use. A kept file that does not read refuses the start, and leaves the anchors
-//! in use at a reload. A `state_dir` that cannot be written is warned of, and the bundled anchors serve.
+//! in use at a reload. A `state_dir` that cannot be written is warned of, and the bundled anchors serve. The `.part`
+//! file a killed run left is swept at start (D104).
 
 use std::fs;
 use std::path::Path;
@@ -36,10 +37,15 @@ fn rfc9718_3_a_verified_pair_is_kept_and_never_rolled_back() {
     files.serve("/root-anchors.xml", captured("root-anchors.xml"));
     files.serve("/root-anchors.p7s", captured("root-anchors.p7s"));
     let state = tempfile::tempdir().expect("a directory");
+    // What a run killed while writing the kept file leaves: swept at start (D104).
+    let leftover = state.path().join("root-anchors.x1y2.part");
+    fs::write(&leftover, "").expect("written");
     let (_upstream, at) = silent();
     let at = at.to_string();
     let url = files.url("/root-anchors.xml");
     let mut server = Server::configured(|listen| config(listen, &url, state.path(), &at));
+    assert!(server.event("removed a leftover of a download").is_some());
+    assert!(!leftover.exists());
     let downloaded = server
         .event("root trust anchors downloaded")
         .expect("downloaded");

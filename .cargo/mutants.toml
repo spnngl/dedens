@@ -276,6 +276,9 @@ exclude_re = [
   # The CLI's cap of records kept to show (D212): a test of it holds 2^21 records, a transfer of the size of a minute
   # of CPU and some 2 GB for a `>` that `==` and `>=` change by one record.
   'run/transfer\.rs:\d+:\d+: replace > with (==|>=) in fetch$',
+  # A zone and an unavailable apex holding one name with as many labels are the same apex, which `with_unavailable`
+  # refuses (D215): `>=` is `>`.
+  'authoritative\.rs:\d+:\d+: replace > with >= in Authoritative::holder$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never

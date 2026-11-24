@@ -199,7 +199,8 @@ fn target() -> Option<(String, u32)> {
 
 /// D122, the "done when" of step 14: started as root with `user:`, the server serves on :53 as that user, and no
 /// thread has a capability, a user id of root, a group of root, or a way to gain privileges; a reload reads as the
-/// user, and the downloads directory made before the drop belongs to it.
+/// user, and the downloads directory made before the drop belongs to it, as `state_dir/zones` for a secondary zone
+/// (D215).
 #[test]
 #[ignore = "needs Linux, root and a free 127.0.0.1:53"]
 fn root_drops_to_the_user_and_serves_on_port_53() {
@@ -209,8 +210,10 @@ fn root_drops_to_the_user_and_serves_on_port_53() {
     let work =
         Work(std::env::temp_dir().join(format!("dedensd-privileges-{}", std::process::id())));
     let downloads = work.0.join("lists");
+    let state = work.0.join("state");
     let text = format!(
-        "listen: ['127.0.0.1:53']\nthreads: 2\nuser: {name}\ndownloads:\n  dir: '{}'\npipeline: [hosts, block]\nstages:\n  block:\n    type: blocklist\n    urls: ['http://127.0.0.1:9/list']\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 www.example']\n",
+        "listen: ['127.0.0.1:53']\nthreads: 2\nuser: {name}\nstate_dir: '{}'\ndownloads:\n  dir: '{}'\npipeline: [zones, hosts, block]\nstages:\n  zones:\n    type: authoritative\n    zones:\n      - {{name: secondary.example, secondary: {{primaries: [{{address: '127.0.0.1:9'}}]}}}}\n  block:\n    type: blocklist\n    urls: ['http://127.0.0.1:9/list']\n  hosts:\n    type: hosts\n    entries: ['192.0.2.1 www.example']\n",
+        state.display(),
         downloads.display()
     );
     let daemon = Daemon::start(&write_config(&text));
@@ -262,12 +265,14 @@ fn root_drops_to_the_user_and_serves_on_port_53() {
     for ask in [ask_tcp, ask_udp] {
         assert_eq!(ask(address, &query).answer.len(), 1);
     }
-    assert_eq!(
-        std::fs::metadata(&downloads)
-            .expect("made before the drop")
-            .uid(),
-        uid
-    );
+    for dir in [downloads, state.join("zones")] {
+        assert_eq!(
+            std::fs::metadata(&dir).expect("made before the drop").uid(),
+            uid,
+            "{}",
+            dir.display()
+        );
+    }
     // The reload reads the configuration, as the user.
     let status = Command::new("kill")
         .arg("-HUP")

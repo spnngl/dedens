@@ -16,7 +16,8 @@
 //!
 //! - `dedensd_authoritative_answers_total{kind}`: answers of the authoritative stage (D208), by where the way from
 //!   the name asked ends: `data`, `nodata`, `nxdomain`, `referral`, `yxdomain`, `synthesized` (the CNAME of a
-//!   DNAME asked for) or `open` (a chain leaving the zone).
+//!   DNAME asked for) or `open` (a chain leaving the zone); `unavailable` is the SERVFAIL of a secondary zone without
+//!   a version (D215).
 //!
 //! Handles are taken once, when the forward stage's validator, the access lists, the rate limit, the cookies or the
 //! authoritative stage are built, from the recorder installed then.

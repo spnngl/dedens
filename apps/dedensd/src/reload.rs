@@ -611,6 +611,39 @@ mod tests {
         assert_eq!(trusted, Some(last()));
     }
 
+    /// D215: a secondary zone's version reaches the store and rebuilds the last text, unless a SIGHUP in the same
+    /// batch reads the file, whatever their order.
+    #[test]
+    fn a_zone_transferred_reloads_the_last_text_unless_a_hangup_reads_the_file() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, probe) = (state.path(), Probe::default());
+        let mut store = Store::default();
+        let zone = |name: &str| Wake::Zone(name.parse().unwrap(), None);
+        let mut wake = |first, queued: Vec<Wake>| {
+            woken(
+                first,
+                queued.into_iter(),
+                (&probe, None),
+                dir,
+                &mut store,
+                0,
+            )
+        };
+        assert_eq!(wake(zone("a.example."), vec![]), Some(last()));
+        assert_eq!(
+            wake(zone("a.example."), vec![zone("b.example.")]),
+            Some(last())
+        );
+        assert_eq!(
+            wake(Wake::Hangup, vec![zone("a.example.")]),
+            Some(file(true))
+        );
+        assert_eq!(
+            wake(zone("a.example."), vec![Wake::Hangup]),
+            Some(file(true))
+        );
+    }
+
     /// A reload of the file asked, `changed` or not.
     const fn file(changed: bool) -> Reload {
         Reload {

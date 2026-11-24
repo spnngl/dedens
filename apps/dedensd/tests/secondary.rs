@@ -1,6 +1,6 @@
 //! `dedensd`'s secondary zones (D215), against a primary on the loopback address that replays the captures of Knot
 //! (D203): the first transfer an AXFR (RFC 5936 §2.2), the next an IXFR from the version kept on disk (RFC 1995 §4),
-//! a restart serving that version, a primary whose serial is behind ours not followed (RFC 1982 §3.2), and a zone
+//! a restart serving that version (another `state_dir` taking one), a primary whose serial is behind ours not followed (RFC 1982 §3.2), and a zone
 //! past its SOA expire (RFC 1034 §4.3.5) answered SERVFAIL with EDE 24 (RFC 8914 §4.25).
 
 use std::io::{Read as _, Write as _};
@@ -178,6 +178,14 @@ fn rfc5936_2_2_a_secondary_zone_is_transferred_kept_and_served_after_a_restart()
     serves(&server, ".", ROOT);
     let dir = state.path().join("zones/root");
     assert!(dir.join("zone").is_file() && dir.join("timers").is_file());
+    // The files stay where the thread started: another `state_dir` takes a restart.
+    let elsewhere = tempfile::tempdir().expect("a directory");
+    let listen = server.addr.to_string();
+    let text = secondary(&listen, ".", root, elsewhere.path());
+    std::fs::write(&server.config, text).expect("rewritten");
+    server.hang_up();
+    let changed = "changes to `state_dir` take a restart for the secondary zones";
+    assert!(server.event(changed).is_some());
     drop(server);
 
     let (_quiet, nobody) = silent();

@@ -499,3 +499,38 @@ fn rfc1034_4_3_2_a_name_of_another_class_goes_on() {
     let step = pipeline.query(&wire(&query), Transport::Udp, addr(INSIDE), 0, &mut out);
     assert!(matches!(step, Step::Upstream(_)), "{step:?}");
 }
+
+/// D215: the names of a secondary zone without a version, never transferred or expired, are answered SERVFAIL with
+/// EDE 24 Invalid Data (RFC 8914 §4.25), in classes IN and ANY; another class goes on, as for a zone.
+#[test]
+fn rfc8914_4_25_a_zone_without_a_version_is_servfail() {
+    let unavailable = Authoritative::new([example()])
+        .and_then(|stage| stage.with_unavailable([dns("org")]))
+        .expect("two apexes");
+    let pipeline = Pipeline::new(vec![
+        Stage::Authoritative(unavailable),
+        Stage::Forward(Forward::new(servers()).expect("servers")),
+    ]);
+    for qclass in [Class::IN, Class::ANY, Class::CH] {
+        let mut question = Question::new(dns("www.org"), RecordType::A);
+        question.qclass = qclass;
+        let mut query = Message::query(7, question);
+        query.edns = Some(Edns::default());
+        let mut out = vec![0; 65535];
+        let step = pipeline.query(&wire(&query), Transport::Udp, addr(INSIDE), 0, &mut out);
+        if qclass == Class::CH {
+            assert!(matches!(step, Step::Upstream(_)), "{step:?}");
+            continue;
+        }
+        let Step::Reply(len) = step else {
+            panic!("{qclass}: {step:?}")
+        };
+        let reply = decode(&out[..len]);
+        assert_eq!(reply.rcode(), Rcode::SERVFAIL, "{qclass}");
+        let options = reply.edns.map(|edns| edns.options).unwrap_or_default();
+        assert!(
+            matches!(&options[..], [EdnsOption::Ede(error)] if error.code == InfoCode::INVALID_DATA),
+            "{qclass}: {options:?}"
+        );
+    }
+}
