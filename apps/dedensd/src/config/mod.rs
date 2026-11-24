@@ -131,6 +131,10 @@
 //!         transfer:                  # each line: its networks, signed with `key` or unsigned without it
 //!           - {networks: ["192.0.2.0/24"], key: secondary}
 //!         notify: []                 # and `update`: up to 1000 networks a list
+//!       - name: example.net          # a secondary zone, kept in `state_dir`/zones (D215)
+//!         secondary:
+//!           primaries:               # asked in order; port 53 unless written
+//!             - {address: "192.0.2.53", key: secondary}
 //!   cache: {type: cache}
 //!   root: {type: recurse}
 //! ```
@@ -203,6 +207,7 @@ use self::tsig::{KeyFile, Keys, keys};
 use self::upstream::{Dnssec, Validation, forward};
 use crate::lists::Store;
 use crate::privileges::{Account, Identity};
+use crate::secondary::Secondary;
 
 /// The configuration file, as written.
 #[derive(Debug, Deserialize)]
@@ -285,6 +290,8 @@ pub(crate) struct Config {
     /// The apexes of the zones the authoritative stage answers to every client, in canonical order (D208).
     zones: Vec<String>,
     pub(crate) downloads: Downloads,
+    /// The secondary zones of the authoritative stages, which their thread transfers (D215).
+    pub(crate) secondaries: Vec<Secondary>,
     /// What upstream servers over TLS and QUIC are checked against.
     pub(crate) trust: Trust,
 }
@@ -406,24 +413,39 @@ fn build(
     let none = Keyring::default();
     let kept = started.map(|_| previous.keys().unwrap_or(&none));
     let keys = keys(&file.keys, kept, &mut store.key_files)?;
+    let mut secondaries = Vec::new();
     let (mut built, warmed) = stages(
         &file.pipeline,
         file.stages,
         (previous, allowance, &keys),
         &mut downloads,
-        store,
+        (store, &mut secondaries),
     )?;
+    // Each keeps its files in a directory of its apex (D215).
+    let mut apexes: Vec<_> = secondaries
+        .iter()
+        .map(|secondary| &secondary.apex)
+        .collect();
+    apexes.sort_unstable();
+    if let Some([apex, _]) = apexes
+        .windows(2)
+        .find(|pair| matches!(pair, [a, b] if a == b))
+    {
+        bail!("secondary zone `{apex}` is in two stages");
+    }
     // Answers kept across a reload carry the verdict of the validator that made them, AD included: another
     // validator, or none, does not stand behind them (D77).
     flush(&mut built, previous)?;
     let zones = built
         .iter()
         .filter_map(|stage| match stage {
-            Stage::Authoritative(zones) => Some(zones.zones()),
+            Stage::Authoritative(zones) => {
+                Some((zones.zones().iter().map(|zone| zone.apex())).chain(zones.unavailable()))
+            }
             _ => None,
         })
         .flatten()
-        .map(|zone| zone.apex().to_string())
+        .map(ToString::to_string)
         .collect();
     let authoritative = matches!(built.first(), Some(Stage::Authoritative(_)));
     ensure!(
@@ -447,6 +469,7 @@ fn build(
         access: source,
         zones,
         downloads,
+        secondaries,
         trust: trusted(file.upstream_ca.as_deref())?,
     })
 }
@@ -490,7 +513,7 @@ fn stages(
     mut defined: BTreeMap<String, StageFile>,
     (previous, allowance, keys): (&Pipeline, Allowance, &Keys),
     downloads: &mut Downloads,
-    store: &mut Store,
+    (store, secondaries): (&mut Store, &mut Vec<Secondary>),
 ) -> anyhow::Result<(Vec<Stage>, Vec<Question<'static>>)> {
     forwards_or_recurses(order, &defined)?;
     let mut built = Vec::with_capacity(order.len());
@@ -579,7 +602,9 @@ fn stages(
                     .transpose()?;
                 recurse(name, file, (&built, previous), (root, allowance))?
             }
-            StageFile::Authoritative(file) => authoritative(name, &file, keys, store)?,
+            StageFile::Authoritative(file) => {
+                authoritative(name, &file, keys, (store, secondaries))?
+            }
             StageFile::Tlds {} => Stage::Plugin(Box::new(TopLevel::new(
                 downloads.tlds(store)?,
                 Ttl::from_wire(PLUGIN_TTL),

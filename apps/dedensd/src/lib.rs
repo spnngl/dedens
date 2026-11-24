@@ -21,6 +21,7 @@ mod privileges;
 mod reload;
 mod rollover;
 mod roots;
+mod secondary;
 mod serve;
 mod sync;
 mod zones;
@@ -124,7 +125,8 @@ pub fn main() -> anyhow::Result<()> {
     // has started a thread yet, so none keeps root; a reload reads as the user (D122). What was read as root is
     // replaced, not kept beside what serves.
     if let Some((again, read)) = drop_root(plan, &config, &file, &mut store)? {
-        (text, config.pipeline, config.downloads) = (again, read.pipeline, read.downloads);
+        (text, config.pipeline, config.downloads, config.secondaries) =
+            (again, read.pipeline, read.downloads, read.secondaries);
     }
     let listen = config.listen.clone();
     let presented = config.presented.map(Arc::new);
@@ -146,7 +148,7 @@ pub fn main() -> anyhow::Result<()> {
             dnscrypt: config.dnscrypt.clone(),
         },
         config.downloads,
-        store,
+        (store, config.secondaries),
     )
     .context("cannot handle SIGHUP")?;
     log::notices(&listen, &services);
@@ -363,6 +365,7 @@ impl Ending {
 fn process() {
     serve::describe();
     rollover::describe();
+    secondary::describe();
     zones::describe();
     isolate::hook();
     #[cfg(unix)]
@@ -437,7 +440,12 @@ fn drop_root(
 ) -> anyhow::Result<Option<(String, Config)>> {
     let dropping = matches!(plan, privileges::Plan::Drop { .. });
     let downloads = &previous.downloads;
-    privileges::apply(plan, downloads.written_dir(), &downloads.roots_dirs())?;
+    let zones = secondary::dir(&downloads.state_dir);
+    let written: Vec<_> = (downloads.written_dir().map(|dir| ("downloads.dir", dir)))
+        .into_iter()
+        .chain((!previous.secondaries.is_empty()).then_some(("state_dir", zones.as_path())))
+        .collect();
+    privileges::apply(plan, &written, &downloads.roots_dirs())?;
     if !dropping {
         return Ok(None);
     }

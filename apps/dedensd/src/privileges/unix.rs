@@ -332,7 +332,7 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(move || wait.recv());
             for error in [
-                apply(Plan::Already, None, &[]).unwrap_err(),
+                apply(Plan::Already, &[], &[]).unwrap_err(),
                 drop_to(&member, me.gid).unwrap_err(),
             ] {
                 assert!(
@@ -382,7 +382,7 @@ mod tests {
             },
             gid: me.gid,
         };
-        let error = apply(plan, Some(&dir), &[]).unwrap_err();
+        let error = apply(plan, &[("downloads.dir", &dir)], &[]).unwrap_err();
         assert!(error.to_string().starts_with("cannot give"), "{error}");
     }
 

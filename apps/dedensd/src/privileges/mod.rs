@@ -199,16 +199,17 @@ pub(crate) fn resolve(identity: Option<&Identity>) -> anyhow::Result<Plan> {
 }
 
 /// The drop `plan` decided, after every socket is bound and every file read at start that needs it; it creates what
-/// the dropped user must write first ([`os::prepare`]), and logs it. `downloads` is the directory of the lists to
-/// download, if the configuration has any: one that `urls` adds at a reload needs a directory the user can write
-/// already. `roots` are the directories of the root files (D128), made for the user too; one that cannot be is warned
-/// of only: its copy, or the bundled one, serves.
+/// the dropped user must write first ([`os::prepare`]), and logs it. `written` are the directories the user writes,
+/// each with the setting naming it: that of the lists to download, if the configuration has any (one that `urls`
+/// adds at a reload needs a directory the user can write already), that of the secondary zones (D215). `roots` are
+/// the directories of the root files (D128), made for the user too; one that cannot be is warned of only: its copy,
+/// or the bundled one, serves.
 ///
 /// # Errors
 ///
 /// A call the OS refuses, or one that left a way back to root: the process must then end, it may be half dropped;
-/// a second thread; a `downloads` directory the user cannot write.
-pub(crate) fn apply(plan: Plan, downloads: Option<&Path>, roots: &[&Path]) -> anyhow::Result<()> {
+/// a second thread; a `written` directory the user cannot write.
+pub(crate) fn apply(plan: Plan, written: &[(&str, &Path)], roots: &[&Path]) -> anyhow::Result<()> {
     match plan {
         Plan::Unprivileged => {}
         Plan::Root => tracing::warn!(
@@ -224,7 +225,7 @@ pub(crate) fn apply(plan: Plan, downloads: Option<&Path>, roots: &[&Path]) -> an
             );
         }
         Plan::Drop { user, gid } => {
-            if let Some(dir) = downloads {
+            for (_, dir) in written {
                 os::prepare(dir, user.uid, gid)?;
             }
             for dir in roots {
@@ -233,10 +234,10 @@ pub(crate) fn apply(plan: Plan, downloads: Option<&Path>, roots: &[&Path]) -> an
                 }
             }
             os::drop_to(&user, gid)?;
-            if let Some(dir) = downloads {
+            for (setting, dir) in written {
                 tempfile::tempfile_in(dir).with_context(|| {
                     format!(
-                        "`downloads.dir` {} is not writable by uid {}: chown it",
+                        "`{setting}` {} is not writable by uid {}: chown it",
                         dir.display(),
                         user.uid
                     )
