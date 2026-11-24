@@ -34,6 +34,7 @@ mod plugin;
 mod recurse;
 mod reply;
 mod rrl;
+mod transfer;
 mod validate;
 mod zone_access;
 
@@ -47,5 +48,6 @@ pub use pipeline::{Parked, Pipeline, Stage, Step, Upstream, VerifiedKey, Warm, W
 pub use plugin::{Answer, Plugin, Records, Reviewer};
 pub use recurse::{NotLocal, Recurse, Resolving, Turn};
 pub use rrl::{Admission, MAX_BURST, Rate, RateLimit, RateLimitConfig, RateLimitError};
+pub use transfer::{History, MESSAGE_LEN, Next, Transfer};
 pub use validate::{Allowance, Clock, DEFAULT_SHARE, Validating};
 pub use zone_access::{Action, Grant, ZoneAccess};

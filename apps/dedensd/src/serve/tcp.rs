@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::io;
 use std::net::IpAddr;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use compio::BufResult;
 use compio::io::BufReader;
@@ -18,11 +18,12 @@ use compio::runtime::JoinHandle;
 use compio::tls::TlsAcceptor;
 use dedens_net::io::{Io, Listener as _, Stream as _};
 use dedens_net::tcp::{Inbound, Outbound, Polled, frame};
-use dedens_proto::{MAX_MESSAGE_LEN, Transport};
-use dedens_server::Pipeline;
+use dedens_proto::{MAX_MESSAGE_LEN, Rcode, Transport};
+use dedens_server::{Next, Pipeline, Transfer};
 use socket2::Socket;
 
 use super::isolate::{Listener, Origin};
+use super::transfer::{TRANSFER_TIME, TRANSFERS_TOTAL};
 use super::upstream::answer;
 use super::{ERROR_PAUSE, Started, TCP_IDLE, Thread, local, pause, start, supervised};
 
@@ -294,6 +295,23 @@ async fn connection<N: Io, C: Codec>(
         }) {
             Some(Started::Upstream(upstream, slot)) => (upstream, slot),
             Some(Started::Done) => continue,
+            Some(Started::Transfer(transfer)) => {
+                let seal = |wire: &[u8]| codec.seal(thread, &context, wire);
+                let deadline = thread.io.now() + TRANSFER_TIME;
+                if send(
+                    thread,
+                    *transfer,
+                    from,
+                    (&replies, &wait_room),
+                    seal,
+                    deadline,
+                )
+                .await
+                {
+                    continue;
+                }
+                break;
+            }
             None => break,
         };
         if pending.send_async(()).await.is_err() {
@@ -318,6 +336,73 @@ async fn connection<N: Io, C: Codec>(
     // other way to wait for. A clone kept elsewhere would hang here, the connection open.
     while wait_room.recv_async().await.is_ok() {}
     drop(writing);
+}
+
+/// Sends the messages of `transfer` to `client`, each made once no more than [`TCP_QUEUED`] bytes wait for the
+/// writer: a slow reader holds its connection, the zone's version and one queue's worth of messages, nothing more
+/// (D214). The connection reads no query meanwhile, as Knot's and NSD's; the replies of queries in flight before
+/// may come between the messages (RFC 9103 §6.3.2). Past [`TRANSFERS`](super::transfer::TRANSFERS) at once, or
+/// [`TRANSFERS_PER_CLIENT`](super::transfer::TRANSFERS_PER_CLIENT) to `client`, the answer is SERVFAIL (RFC 9103
+/// §6.3.3). `false` when the connection is to close: the transfer cut ([`Next::Cut`], or past `deadline`), or the
+/// writer gone.
+async fn send<N: Io>(
+    thread: &Thread<N>,
+    mut transfer: Transfer,
+    client: IpAddr,
+    (replies, wait_room): (&Replies, &flume::Receiver<()>),
+    seal: impl Fn(&[u8]) -> Option<Vec<u8>>,
+    deadline: Instant,
+) -> bool {
+    let kind = if transfer.incremental() {
+        "ixfr"
+    } else {
+        "axfr"
+    };
+    let count = |outcome: &'static str| {
+        metrics::counter!(TRANSFERS_TOTAL, "type" => kind, "outcome" => outcome).increment(1);
+    };
+    let Some(_turn) = thread.current.transfers().take(client) else {
+        tracing::debug!(%client, "too many transfers: SERVFAIL");
+        count("refused");
+        let pipeline = thread.pipeline();
+        let mut out = thread.scratch.borrow_mut();
+        let refused = transfer.refuse(&pipeline, (Rcode::SERVFAIL, None), &mut out);
+        return refused
+            .and_then(|len| seal(&out[..len]))
+            .is_none_or(|framed| replies.queue(framed));
+    };
+    loop {
+        while replies.full() {
+            if wait_room.recv_async().await.is_err() {
+                count("cut");
+                return false;
+            }
+        }
+        if thread.io.now() >= deadline {
+            tracing::debug!(%client, "transfer past its time: closed");
+            count("cut");
+            return false;
+        }
+        let pipeline = thread.pipeline();
+        let mut out = thread.scratch.borrow_mut();
+        let framed = match transfer.next(&pipeline, &mut out) {
+            Next::Message(len) => seal(&out[..len]),
+            Next::Ended => {
+                count("done");
+                return true;
+            }
+            Next::Cut => {
+                tracing::debug!(%client, "transfer cut: closed");
+                count("cut");
+                return false;
+            }
+        };
+        drop(out);
+        if framed.is_some_and(|framed| !replies.queue(framed)) {
+            count("cut");
+            return false;
+        }
+    }
 }
 
 /// A place of a connection's in-flight queries, given back when dropped: a query that panics gives it back too, else

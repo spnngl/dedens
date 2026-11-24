@@ -9,6 +9,7 @@ mod metrics;
 mod prewarm;
 mod recurse;
 mod stages;
+mod transfer;
 mod tsig;
 mod util;
 mod wire;

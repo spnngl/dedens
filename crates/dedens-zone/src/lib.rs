@@ -26,4 +26,4 @@ pub use limits::Limits;
 pub use load::{Include, Loaded, Source};
 pub use node::{Kind, Node, RrSet};
 pub use reply::{Dnssec, Glue};
-pub use zone::Zone;
+pub use zone::{At, Zone};

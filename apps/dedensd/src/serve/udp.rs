@@ -393,7 +393,8 @@ async fn udp_step<N: Io>(
     drop(datagram);
     let (len, upstream) = match step {
         Step::Reply(len) => (Some(len), None),
-        Step::Drop => (None, None),
+        // The pipeline makes a transfer over TCP and TLS alone (D214).
+        Step::Drop | Step::Transfer(_) => (None, None),
         Step::Upstream(upstream) => (None, Some(Ask::after(thread, pipeline, upstream))),
         Step::Refresh(len, upstream) => (Some(len), Some(Ask::Now(upstream))),
         Step::Park(parked) => (None, Some(Ask::Parked(parked))),

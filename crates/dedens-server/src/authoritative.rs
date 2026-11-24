@@ -2,15 +2,21 @@
 //! [`Zone`] (D206), with its access lists (D211).
 
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::Arc;
 
-use dedens_proto::{Class, MAX_NAME_LEN, Name, Question, RecordType};
+use dedens_proto::edns::InfoCode;
+use dedens_proto::rdata::RData;
+use dedens_proto::{
+    Class, MAX_NAME_LEN, Message, Name, Query, Question, Rcode, RecordType, Serial, Transport,
+};
 use dedens_zone::Zone;
 
 use crate::Step;
 use crate::metrics::Answers;
 use crate::reply::Client;
-use crate::zone_access::ZoneAccess;
+use crate::transfer::{History, Transfer};
+use crate::zone_access::{Action, ZoneAccess};
 
 /// The zones a server is the authority for, found by the longest apex a name is at or below (RFC 1034 §4.3.2
 /// step 2). Each is shared: a reload keeps the zones whose files did not change, and swaps in the others whole
@@ -21,6 +27,8 @@ pub struct Authoritative {
     zones: Box<[Arc<Zone>]>,
     /// The access lists of the zone at the same index of `zones`.
     access: Box<[ZoneAccess]>,
+    /// The changes that led to the zone at the same index of `zones`, IXFR's answers (D214).
+    histories: Box<[History]>,
     answers: Answers,
 }
 
@@ -58,10 +66,28 @@ impl Authoritative {
         }
         let (zones, access): (Vec<_>, Vec<_>) = zones.into_iter().unzip();
         Ok(Self {
+            histories: vec![History::default(); zones.len()].into(),
             zones: zones.into(),
             access: access.into(),
             answers: Answers::new(),
         })
+    }
+
+    /// The same stage, the zone of apex `apex` with `history`, the changes that led to its version, IXFR's answers
+    /// (D214); unchanged when no zone has that apex. A history that does not end at the zone's serial answers
+    /// nothing.
+    #[must_use]
+    pub fn with_history(mut self, apex: &Name<'_>, history: History) -> Self {
+        if let Some(index) = self.apex(apex) {
+            self.histories[index] = history;
+        }
+        self
+    }
+
+    /// The index in `zones` of the zone of apex `apex`.
+    fn apex(&self, apex: &Name<'_>) -> Option<usize> {
+        self.index(apex)
+            .filter(|&index| self.zones[index].apex() == apex)
     }
 
     /// The zones, sorted by apex in canonical order.
@@ -144,6 +170,79 @@ impl Authoritative {
                 .map_or(Step::Drop, Step::Reply),
         )
     }
+}
+
+impl Authoritative {
+    /// The answer to `query`, an AXFR or IXFR from `client` at `from`, when a zone has its name as apex and its
+    /// class (RFC 5936 §2.2, RFC 1995 §3); `None` passes it on (D214).
+    ///
+    /// The zone's access list decides first: REFUSED with EDE 18 (Prohibited) to a client it does not permit (D211).
+    /// Over TCP and TLS the transfer is a [`Step::Transfer`]. An IXFR from a client whose serial is not behind
+    /// the zone's, or over UDP, gets the SOA alone (RFC 1995 §2, §4; Knot's `ixfr_process_query`, BIND's
+    /// `xfrout.c`); the changes since the client's serial, condensed (§6), when the history has them, else the
+    /// zone whole. An IXFR without the client's SOA in its authority section is FORMERR (§3). An AXFR over UDP
+    /// (RFC 5936 §4.2), and either over a transport other than TCP and TLS (RFC 9103 §7.8, D214), is REFUSED
+    /// with EDE 21 (Not Supported).
+    pub(crate) fn transfer(
+        &self,
+        query: &Query<'_>,
+        client: &Client<'_>,
+        from: IpAddr,
+        out: &mut [u8],
+    ) -> Option<Step> {
+        let question = client.question.as_ref()?;
+        let index = self
+            .apex(&question.name)
+            .filter(|&index| self.zones[index].class() == question.qclass)?;
+        let zone = &self.zones[index];
+        let replied = |len: Option<usize>| Some(len.map_or(Step::Drop, Step::Reply));
+        let ixfr = question.qtype == RecordType::IXFR;
+        let stream = matches!(client.transport, Transport::Tcp | Transport::Tls);
+        let carried = stream || ixfr && client.transport == Transport::Udp;
+        let refusal = if !self.access[index].permits(Action::Transfer, from, client.key()) {
+            Some(InfoCode::PROHIBITED)
+        } else if !carried {
+            Some(InfoCode::NOT_SUPPORTED)
+        } else {
+            None
+        };
+        if let Some(error) = refusal {
+            return replied(client.reply(Message::default(), Rcode::REFUSED, Some(error), out));
+        }
+        let changes = if ixfr {
+            let Some(serial) = client_serial(query) else {
+                return replied(client.reply(Message::default(), Rcode::FORMERR, None, out));
+            };
+            let current = Serial::new(zone.soa().serial);
+            let behind = serial < current;
+            if !stream || !behind {
+                let message = Message {
+                    answer: vec![zone.soa_record()],
+                    ..Message::default()
+                };
+                return replied(client.authoritative(message, Rcode::NOERROR, out));
+            }
+            self.histories[index].since(serial, current)
+        } else {
+            None
+        };
+        let request = (client.header, question.clone().into_owned());
+        let transfer = Transfer::new(Arc::clone(zone), changes, request, client.opt(None));
+        Some(Step::Transfer(Box::new(transfer)))
+    }
+}
+
+/// The serial of the client's SOA in the authority section of `query`, an IXFR (RFC 1995 §3).
+fn client_serial(query: &Query<'_>) -> Option<Serial> {
+    let decoded = Message::decode(query.wire()).ok()?;
+    decoded
+        .message
+        .authority
+        .iter()
+        .find_map(|record| match record.data() {
+            RData::Soa(soa) => Some(Serial::new(soa.serial)),
+            _ => None,
+        })
 }
 
 /// `wire`, an uncompressed name, past its first `count` labels.

@@ -1,7 +1,7 @@
 //! [`Zone`]: the checked content of one zone, immutable (D204).
 
-use dedens_proto::rdata::Soa;
-use dedens_proto::{Class, Name, RecordType, Ttl};
+use dedens_proto::rdata::{RData, Soa};
+use dedens_proto::{Class, Name, Record, RecordType, Ttl};
 
 use crate::denial::Denial;
 use crate::{Node, RrSet};
@@ -83,6 +83,64 @@ impl Zone {
     pub const fn record_count(&self) -> usize {
         self.records
     }
+
+    /// The records of the zone but its SOA, from `at`, each with the place past it: the body of a zone transfer,
+    /// which the SOA opens and closes (RFC 5936 §2.2). Name after name in canonical order, each `RRset` of a name
+    /// followed by the signature sets; occluded names and glue included, for a secondary is a copy of the zone (RFC
+    /// 5936 §3.5). [`At::default`] is the first record; a walk resumes from the place of the last record taken.
+    pub fn transfer_records(&self, at: At) -> impl Iterator<Item = (Record<'_>, At)> {
+        let mut at = at;
+        std::iter::from_fn(move || {
+            loop {
+                let (owner, node) = self.nodes.get(at.node)?;
+                let Some((rtype, set)) = node.rrsets.iter().chain(&node.signatures).nth(at.set)
+                else {
+                    at = At {
+                        node: at.node + 1,
+                        ..At::default()
+                    };
+                    continue;
+                };
+                // The SOA is the apex's, the first node's, and its signatures are among the rest.
+                let soa = at.node == 0 && at.set < node.rrsets.len() && *rtype == RecordType::SOA;
+                let Some(rdata) = set.rdatas().get(at.record).filter(|_| !soa) else {
+                    at = At {
+                        set: at.set + 1,
+                        record: 0,
+                        ..at
+                    };
+                    continue;
+                };
+                at.record += 1;
+                let record = Record {
+                    name: owner.reborrow(),
+                    class: self.class,
+                    ttl: set.ttl(),
+                    rdata: rdata.reborrow(),
+                };
+                return Some((record, at));
+            }
+        })
+    }
+
+    /// The SOA as a record.
+    #[must_use]
+    pub fn soa_record(&self) -> Record<'static> {
+        Record::new(
+            self.apex.clone(),
+            self.class,
+            self.soa_ttl,
+            &RData::Soa(self.soa.clone()),
+        )
+    }
+}
+
+/// A place in the walk of [`Zone::transfer_records`]: a name, one of its sets, one of its records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct At {
+    node: usize,
+    set: usize,
+    record: usize,
 }
 
 /// The entry of `name` in `nodes`, which are in canonical order.

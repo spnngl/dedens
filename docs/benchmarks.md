@@ -461,6 +461,18 @@ nothing validates.
   the two trees (284 → 273, 614 → 574 ns fastest). The change removes work no sample could show: it is no gain, and
   costs a flag. A signed query costs about 560 ns more than an unsigned one for a small answer (the HMAC of the
   request and of the reply, and a copy), before and after alike, as it is still walked once more.
+- `authoritative_signed` with the reply signed in place (D214): the fastest sample of 3 runs of 2000 per tree,
+  in ns, before (`origin/main` at 027bd2e2) → after, run alternately, same session: `VENERA.ISI.EDU.` A 895 →
+  818-901, `ISI.EDU.` MX 1225 → 1187-1271, `NOTHERE.ISI.EDU.` A 1021 → 985-1026, root referral 6476 → 6479-6770.
+  The copy of the reply was one allocation of 144 B a signed reply (9 → 8 allocations, 973 → 829 B for
+  `VENERA.ISI.EDU.` A); its time is under the noise. It matters to a transfer, where it would be a 16 KB copy a
+  message.
+- `axfr_root` (D214): the AXFR of the captured root zone, 24 899 records in 86 messages of 16383 bytes at most,
+  from the read of the query to the last message, unsigned then signed with an HMAC-SHA256 key, into one
+  65535-byte buffer: medians of 100 samples 1.17 ms and 1.59 ms, about 47 ns and 64 ns a record; 519 and 696
+  allocations (6 and 8 a message: the records gathered and their cursors, regrown each message, and the TSIG
+  record). The 0.4 ms of signing are 86 HMACs of 16 KB. `dedensd` paces a transfer by its client's reading
+  (D214), so this is the server's share of a transfer, not its length.
 
 ## Blocklist (D56, D58, D118, D120)
 

@@ -22,9 +22,9 @@ pub enum SignError {
     /// The additional section has 65535 records already.
     #[error("additional record count is full")]
     Count,
-    /// The message with the TSIG record is over 65535 bytes. Over UDP the answer is the question and the TSIG with
-    /// TC set (RFC 8945 §5.3), which the caller builds.
-    #[error("message with its TSIG is longer than 65535 bytes")]
+    /// The message with the TSIG record is over 65535 bytes, or over the buffer it is written in. Over UDP the
+    /// answer is the question and the TSIG with TC set (RFC 8945 §5.3), which the caller builds.
+    #[error("message with its TSIG is longer than 65535 bytes or its buffer")]
     TooLong,
     /// The TSIG data does not fit its fields.
     #[error(transparent)]
@@ -123,14 +123,15 @@ pub(crate) struct Signature<'a> {
     pub(crate) timers_only: bool,
 }
 
-/// Signs `wire` in place with `key`, from `digest` that holds the request MAC where there is one, and returns the
-/// MAC.
+/// Signs the message of `len` bytes at the start of `out` with `key`, from `digest` that holds the request MAC where
+/// there is one, the TSIG record written after it; returns the MAC and the signed message's length.
 pub(crate) fn sign(
     key: &Key,
     mut digest: Digest,
-    wire: &mut Vec<u8>,
+    (out, len): (&mut [u8], usize),
     signature: &Signature<'_>,
-) -> Result<Vec<u8>, SignError> {
+) -> Result<(Vec<u8>, usize), SignError> {
+    let wire = out.get(..len).ok_or(SignError::TooLong)?;
     let id = original_id(wire)?;
     digest.bytes(wire);
     let template = Tsig::new(
@@ -157,8 +158,21 @@ pub(crate) fn sign(
         signature.error,
         signature.other,
     )?;
-    append(wire, key.name(), &tsig)?;
-    Ok(mac)
+    let len = append((out, len), key.name(), &tsig)?;
+    Ok((mac, len))
+}
+
+/// Runs `write` on `wire` grown to the longest message, with the length of the message it holds, and keeps the
+/// length `write` returns: the [`Vec`] form of the functions that sign in place.
+pub(crate) fn grown<T>(
+    wire: &mut Vec<u8>,
+    write: impl FnOnce((&mut [u8], usize)) -> Result<(T, usize), SignError>,
+) -> Result<T, SignError> {
+    let len = wire.len();
+    wire.resize(len.max(MAX_MESSAGE_LEN), 0);
+    let written = write((wire, len));
+    wire.truncate(written.as_ref().map_or(len, |(_, end)| *end));
+    written.map(|(value, _)| value)
 }
 
 /// The ID of the message in `wire`, the Original ID of its TSIG.
@@ -169,13 +183,15 @@ pub(crate) fn original_id(wire: &[u8]) -> Result<u16, SignError> {
     }
 }
 
-/// Appends the TSIG record, named `owner` with class `ANY` and TTL 0 (RFC 8945 §4.2), as the last additional
-/// record, counting it.
+/// Writes the TSIG record, named `owner` with class `ANY` and TTL 0 (RFC 8945 §4.2), after the message of `len`
+/// bytes at the start of `out`, as its last additional record, counting it; returns the new length. Nothing is
+/// written when it fails.
 pub(crate) fn append(
-    wire: &mut Vec<u8>,
+    (out, len): (&mut [u8], usize),
     owner: &Name<'_>,
     tsig: &Tsig<'_>,
-) -> Result<(), SignError> {
+) -> Result<usize, SignError> {
+    let wire = out.get(..len).ok_or(SignError::TooLong)?;
     original_id(wire)?;
     let additional = u16::from_be_bytes([wire[10], wire[11]])
         .checked_add(1)
@@ -184,17 +200,24 @@ pub(crate) fn append(
     let rdata_len = u16::try_from(rdata.len()).map_err(|_| SignError::TooLong)?;
     let mut name = [0; MAX_NAME_LEN];
     let owner = owner.to_wire(&mut name);
-    if wire.len() + owner.len() + 10 + rdata.len() > MAX_MESSAGE_LEN {
+    let end = len + owner.len() + 10 + rdata.len();
+    if end > MAX_MESSAGE_LEN || end > out.len() {
         return Err(SignError::TooLong);
     }
-    wire[10..12].copy_from_slice(&additional.to_be_bytes());
-    wire.extend_from_slice(owner);
-    wire.extend_from_slice(&RecordType::TSIG.0.to_be_bytes());
-    wire.extend_from_slice(&Class::ANY.0.to_be_bytes());
-    wire.extend_from_slice(&0_u32.to_be_bytes());
-    wire.extend_from_slice(&rdata_len.to_be_bytes());
-    wire.extend_from_slice(&rdata);
-    Ok(())
+    out[10..12].copy_from_slice(&additional.to_be_bytes());
+    let mut at = len;
+    for part in [
+        owner,
+        &RecordType::TSIG.0.to_be_bytes(),
+        &Class::ANY.0.to_be_bytes(),
+        &0_u32.to_be_bytes(),
+        &rdata_len.to_be_bytes(),
+        &rdata,
+    ] {
+        out[at..at + part.len()].copy_from_slice(part);
+        at += part.len();
+    }
+    Ok(end)
 }
 
 #[cfg(test)]

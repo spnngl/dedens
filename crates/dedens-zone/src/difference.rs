@@ -2,7 +2,6 @@
 
 use core::cmp::Ordering;
 
-use dedens_proto::rdata::RData;
 use dedens_proto::{Class, DecodedRecord, Name, Record, RecordType, Serial, WireRdata};
 
 use crate::builder::Builder;
@@ -93,16 +92,6 @@ impl Zone {
         }
         let (zone, report) = builder.finish()?;
         Ok(Loaded { zone, report })
-    }
-
-    /// The SOA as a record.
-    fn soa_record(&self) -> Record<'static> {
-        Record::new(
-            self.apex.clone(),
-            self.class,
-            self.soa_ttl,
-            &RData::Soa(self.soa.clone()),
-        )
     }
 }
 

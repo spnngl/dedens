@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use dedens_cache::{Cache, Config};
 use dedens_dnssec::{Rollover, TrustAnchors, Validator};
-use dedens_proto::edns::{EdnsOption, InfoCode};
+use dedens_proto::edns::InfoCode;
 use dedens_proto::rdata::RData;
 use dedens_proto::{Class, Flags, Message, Name, Rcode, RecordType, Transport};
 use dedens_resolver::{
@@ -27,7 +27,7 @@ use dedens_server::{
 use dedens_testkit::recursion::{self, Authorities};
 use rand_core::{TryCryptoRng, TryRng};
 
-use crate::util::{client_query, decode};
+use crate::util::{client_query, decode, ede};
 
 /// `SplitMix64` from a fixed seed, so that a draw replays: a CSPRNG by marker only, for tests.
 struct Seeded(u64);
@@ -199,19 +199,6 @@ fn ask(
 /// The query of `capture`'s question, RD set, DO clear.
 fn question(capture: &recursion::Resolution) -> Vec<u8> {
     client_query(&capture.name.to_string(), capture.rtype, Flags::NONE, false)
-}
-
-/// The extended error of `reply`, if any.
-fn ede(reply: &Message<'_>) -> Option<InfoCode> {
-    reply
-        .edns
-        .as_ref()?
-        .options
-        .iter()
-        .find_map(|option| match option {
-            EdnsOption::Ede(ede) => Some(ede.code),
-            _ => None,
-        })
 }
 
 const CLIENT: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));

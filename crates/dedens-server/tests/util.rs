@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use dedens_cache::{Cache, Config};
 use dedens_dnssec::{Limits, TrustAnchors, Validator};
+use dedens_proto::edns::{EdnsOption, InfoCode};
 use dedens_proto::{Flags, Message, Rcode, RecordType, Transport};
 use dedens_server::{Forward, Pipeline, Stage, Step, Validating};
 use dedens_testkit::dns;
@@ -64,6 +65,19 @@ pub(crate) fn decode(wire: &[u8]) -> Message<'_> {
     decoded.message
 }
 
+/// The extended error of `reply`, if any.
+pub(crate) fn ede(reply: &Message<'_>) -> Option<InfoCode> {
+    reply
+        .edns
+        .as_ref()?
+        .options
+        .iter()
+        .find_map(|option| match option {
+            EdnsOption::Ede(ede) => Some(ede.code),
+            _ => None,
+        })
+}
+
 /// What a query came to: the servers asked, in order, the requests sent them, and the reply, `None` when dropped.
 #[derive(Debug)]
 pub(crate) struct Run {
@@ -118,6 +132,7 @@ pub(crate) fn run_at(
             }
             Step::Park(parked) => step = pipeline.shed(parked, now, &mut out),
             Step::Resolve(_) => unreachable!("no recurse stage"),
+            Step::Transfer(_) => unreachable!("no transfer asked"),
         }
     };
     Run {
@@ -234,6 +249,7 @@ pub(crate) fn run_captured_from(
             }
             Step::Park(parked) => step = pipeline.shed(parked, now, &mut out),
             Step::Resolve(_) => unreachable!("no recurse stage"),
+            Step::Transfer(_) => unreachable!("no transfer asked"),
         }
     };
     Run {
@@ -265,6 +281,7 @@ pub(crate) fn run_together(
         Step::Drop => replies.push(None),
         Step::Park(_) => unreachable!("given up before"),
         Step::Resolve(_) => unreachable!("no recurse stage"),
+        Step::Transfer(_) => unreachable!("no transfer asked"),
     };
     for _ in 0..queries {
         let step = pipeline.query(

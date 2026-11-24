@@ -15,12 +15,13 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   binding; JSON Schema from the types (schemars); config tests run D36 query files. Reload (SIGHUP, file watch)
   builds the new pipeline, then swaps it (`ArcSwap`); in-flight queries finish on the old one; cache and upstream
   connections survive.
-- D41 (amended by D43, D46, D77, D111, D114, D185, D186, D208, D211) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
+- D41 (amended by D43, D46, D77, D111, D114, D185, D186, D208, D211, D214) Server core (`dedens-server`), sans-IO as D26: `Pipeline::query` takes the query's
   bytes and transport and returns a step: a reply in the caller's buffer, nothing, or a request for an upstream
   server whose response goes back through `Pipeline::receive`; `apps/dedensd` does the I/O. Before the stages the
   core answers what none should see: responses and bytes shorter than a header are dropped; FORMERR to a query it
   cannot read (the header alone, no OPT), that breaks a rule (D9) or has no question; NOTIMP to opcodes other than
-  QUERY; BADVERS to EDNS versions above 0; REFUSED to AXFR and IXFR, and when no stage answers. With keys, a
+  QUERY; BADVERS to EDNS versions above 0; REFUSED to AXFR and IXFR (but for a zone's apex, D214), and when no
+  stage answers. With keys, a
   request's TSIG is verified before these, and the replies to a signed request are signed (D211). A reply has the
   client's ID, opcode and question in its case; QR and RA set, RD and CD copied, AA clear, AD only for a query with
   AD or DO (RFC 6840 §5.8); our OPT (1232 bytes, DO copied) only when the query had one (RFC 6891 §6.1.1, §7),
@@ -2324,7 +2325,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     bundled anchors alone, older than the download); a timer thread in `dedensd` (the serving threads own the
     I/O and the stage); Unbound's DS entries kept in the state (the seed's DS name keys that turn Valid at once);
     following forward stages' anchors (the upstream's answers, out of the step); non-root anchors (out of the step).
-- D204 (amends D74; amended by D206, D207, D209, D210) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
+- D204 (amends D74; amended by D206, D207, D209, D210, D214) Zones (`dedens-zone`, the authoritative phase's data): a `Zone` is what `Zone::load(origin, source, include,
   &Limits)` returns for zone text, checked, and it never changes: a change loads a new `Zone` and the server swaps
   it in whole (`Arc`, as D24's pipeline), so a query sees one version from start to end and a reload that fails
   leaves the served one. Loading does no I/O: `$INCLUDE` is a callback giving the bytes of a file (D25: the
@@ -2365,7 +2366,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     data below a delegation (RFC 1035 §6.1 zones hold glue; a transfer carries occluded data); the checks as a pass
     over a finished `Zone` (the errors would lose their lines).
 
-- D205 (amended by D211) TSIG (RFC 8945, `dedens-tsig`): sans-I/O, in a crate of its own: the keys and the signing belong to the
+- D205 (amended by D211, D214) TSIG (RFC 8945, `dedens-tsig`): sans-I/O, in a crate of its own: the keys and the signing belong to the
   authoritative server (steps 09 to 15) and to `dedens` (transfers, updates), not to the wire format, and the crate
   adds `ring`'s HMAC, `subtle` and `zeroize` to what depends on it only. `dedens-proto` has what is the wire format:
   `RecordType::TKEY` and `TSIG`, `TsigError` (BADSIG 16, BADKEY 17, BADTIME 18, BADTRUNC 22: the TSIG error field is
@@ -2607,7 +2608,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     record after a refused one kept (a hole breaks the chain); one `Changeset` per RRset (RFC 1995 §4's sequence is
     per version); keeping a changeset over the limit alone and dropping the rest (the oldest of a chain is what
     goes first, NSD).
-- D208 (amends D41, D54, D55, D91, D99; amended by D211) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
+- D208 (amends D41, D54, D55, D91, D99; amended by D211, D214) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
   `authoritative` stage): `dedensd` answers the zones it is the authority for, from `dedens-zone`'s `Zone` (D204,
   D206), in the same pipeline as its other stages (the phase's choice 1: no second binary). The stage holds its
   zones as `Arc<Zone>` sorted by apex in canonical order (RFC 4034 §6.1), no apex twice (`Duplicate`); the zone of a
@@ -2622,7 +2623,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   from the zone's cut").
   - In the pipeline (choice 2, BIND's `allow-query` against `allow-recursion`): authoritative stages open it, and
     `dedensd` places one first or refuses the configuration. The checks before the stages stay: FORMERR, NOTIMP,
-    BADVERS, AXFR and IXFR REFUSED (D41), the rate limit and cookies (D113); then a zone answers its names to every
+    BADVERS, AXFR and IXFR REFUSED (D41; D214 answers those of a zone's apex), the rate limit and cookies (D113); then a zone answers its names to every
     client, AA set (RFC 1034 §4.3.2), whatever RD says, and the access lists (D91) apply only to the queries the
     zones pass on, with their action (REFUSED with EDE 18, or nothing). With such a pipeline `Pipeline::denial` is
     `None` and `Pipeline::drops` false, so that no transport drops a client before the zones see it; the same for
@@ -2910,7 +2911,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     fallback after a TSIG failure or a limit (Knot does it on all but I/O; an AXFR is then refused the same and
     costs a second connection); the SOA query over TCP after a UDP timeout (the secondary's retry does it).
 
-- D211 (amends D41, D122, D205, D208) Signed requests and zone access lists: `dedensd` verifies the TSIG of a
+- D211 (amends D41, D122, D205, D208; amended by D214) Signed requests and zone access lists: `dedensd` verifies the TSIG of a
   request (RFC 8945, D205's `dedens-tsig`), signs its reply, and says per zone who may transfer it, notify the
   server of it or update it, by network and key. Steps 12 to 15 ask the lists; this step answers nothing new.
   - Keys: top-level `keys:`, a list of `{name, algorithm, secret_file}`, the algorithm one of D205's (any case), the
@@ -2939,8 +2940,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     authoritative stage opens the pipeline. After the read, the QR check, cookies and the rate limit (D113: a
     flood of signed requests is limited before it costs an HMAC; a slip stays unsigned: a client that signed
     discards it (§5.4) and waits out its timeout, no retry over TCP, a price the limit is worth), before D41's checks,
-    whatever the opcode: the FORMERR, NOTIMP (NOTIFY and UPDATE until steps 12 and 14), BADVERS and AXFR and
-    IXFR REFUSED (until 12 and 13) of a verified request are signed. Its failures are D205's, by RFC 8945 §5.3.2:
+    whatever the opcode: the FORMERR, NOTIMP (NOTIFY and UPDATE until steps 15 and 14), BADVERS and AXFR and
+    IXFR REFUSED (outside a zone's apex, D214) of a verified request are signed. Its failures are D205's, by RFC 8945 §5.3.2:
     FORMERR unsigned; NOTAUTH with BADKEY or BADSIG, unsigned; BADTIME and BADTRUNC signed. NSD does the same, the
     TSIG of every request before the opcode (`process_tsig`, `query_process`, `query.c`); Knot verifies only a
     request an ACL rule with a key matched (`process_query_verify`, `process_query.c`), so a signed QUERY gets an
@@ -2955,8 +2956,8 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     Padding (RFC 7830) is sized before the TSIG is added, so a signed reply over DoT, DoH or DoQ is not a multiple
     of RFC 8467's block: the padding sits inside what the MAC covers, and a signed peer is an operator's, not a
     client whose queries an observer would classify by length.
-    The signing copies the reply into a vector, `dedens-tsig`'s interface: signed requests are those of the
-    operator's peers, not of the many clients. Streams of signed messages (AXFR, IXFR) are step 12's.
+    The TSIG is written in place after the reply (D214; this step copied the reply into a vector). Streams of
+    signed messages (AXFR, IXFR) are D214's.
   - Past the zones: a signed request the zones pass on is REFUSED with EDE 20 (Not Authoritative, RFC 8914
     §4.21), signed: a cache, forward or recurse stage answers from upstream, later, outside `Pipeline::query`,
     and a stage's reply is not the zones' to sign (docs/TODECIDE.md, "Signed queries past the zones"). It is not
@@ -2994,3 +2995,66 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: verifying only where a rule asks (Knot, above); reading the keys at every reload (the user would
     have to read the secrets); deny lines (Knot's `deny`, NSD's `BLOCKED`), until a user needs one: the lists
     permit, nothing else does.
+- D214 (amends D41, D204, D205, D208, D211) Transfers out: the authoritative stage answers AXFR (RFC 5936) and
+  IXFR (RFC 1995) to the clients a zone's `transfer` list permits (D211), as a stream `dedensd`'s TCP and TLS
+  connections drain one message at a time (`dedens_server::transfer`, `serve/transfer.rs`, `serve/tcp.rs`).
+  - Which zone (amends D208): the question's name must be a zone's apex and its class the zone's; AXFR and IXFR are
+    no longer REFUSED by D41's checks but answered by `Authoritative::transfer`. A name no zone has as apex is
+    NOTAUTH when the pipeline has zones (RFC 5936 §2.2.1; Knot's `NS_NEED_ZONE` in `axfr_process_query` and
+    `ixfr_process_query`, NSD's `answer_axfr_ixfr` in `axfr.c`), REFUSED without (D41). A client the list does
+    not permit: REFUSED, EDE 18, signed when the request is (D211). An AXFR over UDP (RFC 5936 §4.2: TCP only;
+    BIND's `xfrout.c` FORMERR, Knot's `axfr_process_query` NOTIMP), and either over QUIC, HTTPS, ODoH or CoAP:
+    REFUSED, EDE 21 Not Supported (RFC 9103 §7.8's answer to traffic a server will not take there).
+  - IXFR (RFC 1995): the client's serial from the SOA in the authority section (FORMERR without one, §3). Not
+    behind the zone's (§2), or over UDP whatever the serial: the SOA alone, which tells the client to ask over TCP
+    (§4; Knot's `ixfr_process_query`, BIND's `xfrout.c` always, not only when the changes would not fit as §4
+    allows). Behind: the changes since its serial condensed into one difference sequence (§6, D207's
+    `Changeset::condense`) when the zone's `History` has them, else the zone whole in AXFR form (§4).
+  - History (amends D204): `dedensd` diffs each zone a reload changes against the version it replaces (D207's
+    `Zone::diff`) and keeps the changesets in memory, `History::DEPTH` 20 deep (Knot's `journal-max-depth`) and
+    never more records than the zone (BIND's `max-ixfr-ratio` 100%: past it the zone is the shorter answer). A
+    reload whose difference is not a changeset (serial not ahead, D207) starts the history again; a restart loses it
+    (docs/TODECIDE.md, "The history of a zone across restarts"), and an IXFR then gets the zone whole. `Zone::transfer_records` walks a zone from any
+    `At` for the stream to resume, the apex SOA aside and its signatures within; occluded names and glue are
+    transferred (RFC 5936 §3.5: MUST).
+  - Messages (RFC 5936 §2.2.1): each made by `Transfer::next` when the connection has room for it, from the
+    version of the zone (an `Arc<Zone>`) taken when the transfer began, so a reload swaps the zone under no
+    transfer. The ID, opcode and RD of the request; QR and AA; RA, TC, AD and CD clear; the question in the first
+    message only; our OPT in every message when the request had one (RFC 9103 §6.3.4), its cookie with it (D113).
+    Filled to `MESSAGE_LEN` 16383 bytes, the last offset a compression pointer reaches (NSD's
+    `AXFR_MAX_MESSAGE_LEN` in `query_axfr`, Knot's `KNOT_WIRE_PTR_MAX` in `axfr_process_query`), names compressed
+    within each (§3.4); a record longer alone gets a message of up to 65535 bytes, one that does not fit there cuts
+    the transfer (NSD's `query_axfr` ends it too). The records are gathered by their least length and encoded with
+    `Message::encode_truncated`, which keeps those that fit; the rest start the next message. The root zone: 86
+    messages, each over 90% full.
+  - Signed (amends D205, D211): each message of a signed request signed in turn over the MAC before it (RFC 8945
+    §5.3.1, D205's `ResponseSigner`, owned by the transfer: `into_owned`), at the pipeline's clock when the message
+    is made. The key is looked up in the running pipeline's keyring by name and algorithm for every message: a
+    reload that revokes it (D211) cuts the transfer at the next one, and a key the keyring still names is the
+    key verified (D211: a changed key is not read until a restart). The TSIG is written in place after the message
+    (`sign_in`, also for every signed reply, D211's copy gone): one allocation less a signed reply, and no 16 KB
+    copy a message (docs/benchmarks.md).
+  - The stream (`dedensd`): a connection that starts a transfer reads no more requests until it ends, as Knot's
+    and NSD's; replies of requests in flight before may come between its messages (RFC 9103 §6.3.2: MAY
+    intermingle). A message is made when no more than `TCP_QUEUED` bytes (D47) wait for the writer: a client that
+    reads slowly holds one queue's worth and the zone's version, and one that stops is closed by the write timeout
+    (D47's `TCP_WRITE`). Bounds (RFC 9103 §6.3.3: MAY limit, SHOULD SERVFAIL): `TRANSFERS` 10 at once and
+    `TRANSFERS_PER_CLIENT` 2 per address (BIND's `transfers-out`, `transfers-per-ns`), past which SERVFAIL, signed
+    when the request is; `TRANSFER_TIME` 120 minutes (BIND's `max-transfer-time-out`), past which the connection
+    closes. Knot and NSD bound transfers by their TCP clients only (`tcp-max-clients`, `tcp-count`).
+    `dedensd_authoritative_transfers_total{type=axfr|ixfr, outcome=done|refused|cut}`.
+  - XoT: over DoT, as over TCP. RFC 9103 §7.2's TLS 1.3 only is not enforced: the DoT listener takes TLS 1.2 too
+    (D66) and compio-tls's stream does not say which version was agreed (docs/TODECIDE.md, "XoT over TLS 1.2").
+  - Tests: `dedens-zone`'s `tests/transfer.rs` the walk (the zone again from it, occluded names, any resume point);
+    `dedens-server`'s `tests/transfer.rs` every test zone and the root capture read back by D210's stream reader,
+    signed and unsigned, IXFR condensed, up to date, past the history, over UDP, refusals, the revoked key, the
+    message bounds; `dedensd`'s `tests/transfer.rs` AXFR and IXFR across a reload, a denied client, a client that
+    does not read and the quotas. `just transfer-interop` has Knot 3.6.2 transfer every test zone from `dedensd` by
+    AXFR, ISI.EDU. and the root by IXFR after a reload, unsigned then signed (outside the gate: it needs D203's
+    image). A fuzz arm drains every transfer `serve_query` starts. `axfr_root` (docs/benchmarks.md): 1.2 ms the root
+    unsigned, 1.6 ms signed.
+  - Rejected: several transfers interleaved on one connection (§6.3.2's MAY; Knot and NSD send one at a time
+    too): a client opens connections; the changesets kept in D207's journal file, which outlives a restart: the
+    files of the state directory are steps 13's and 14's, which write them; NOTAUTH for a denied
+    client (Knot, D211). Not in this step: XoQ (RFC 9250 §5.7) and the padding of transfers (RFC 9103 §7.9.1,
+    §7.10.3: no policy defined).

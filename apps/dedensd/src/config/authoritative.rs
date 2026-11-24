@@ -90,15 +90,24 @@ pub(super) fn authoritative(
         count <= MAX_ZONES,
         "stage `{name}`: `zones` lists {count} zones, over {MAX_ZONES}"
     );
-    let zones = (file.zones.iter())
+    let (zones, histories): (Vec<_>, Vec<_>) = (file.zones.iter())
         .map(|zone| {
             let context = || format!("stage `{name}`, zone `{}`", zone.name.0);
             let access = access(zone, keys).with_context(context)?;
             let loaded = store.zones.zone(&zone.name.0, &zone.file);
-            Ok((loaded.with_context(context)?, access))
+            let history = store.zones.history(&zone.name.0, &zone.file);
+            Ok((
+                (loaded.with_context(context)?, access),
+                (&zone.name.0, history),
+            ))
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .unzip();
     let stage = Authoritative::guarded(zones).with_context(|| format!("stage `{name}`"))?;
+    let stage = (histories.into_iter()).fold(stage, |stage, (apex, history)| {
+        stage.with_history(apex, history)
+    });
     warn_undelegated(&stage);
     Ok(Stage::Authoritative(stage))
 }

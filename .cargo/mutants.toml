@@ -104,6 +104,14 @@ exclude_re = [
   'wire/mod\.rs:\d+:\d+: replace \| with \^ in Writer<.a>::(put_owner|put_name_found)$',
   # The room left is at least 501 bytes, far above `Cache::MIN_OUT`.
   'server/src/cache\.rs:\d+:\d+: replace < with (==|<=) in look$',
+  # The records gathered for a transfer's message (D214): a bound for speed only, `encode_truncated` keeping those
+  # that fit of whatever is gathered. The header's few bytes off, the bound one record later or never, or a first
+  # record too long left out rather than dropped by the encoding, make the same messages. By column: the `+` of each
+  # record's length is caught.
+  'server/src/transfer\.rs:\d+:(36: replace \+ with [-*]|22: replace > with (==|>=)|37: delete !) in Transfer::fill$',
+  # The apex's first signature set taken for the SOA: the sets are in type order and a signed apex signs its NS (2)
+  # before its SOA (6), so that first set is never the SOA's.
+  'zone/src/zone\.rs:\d+:\d+: replace < with <= in Zone::transfer_records$',
   # Read by dedensd only, whose tests do not run for a mutant of dedens-server.
   'replace Pipeline::stages -> &\[Stage\] with ',
   # The records were filtered to fit already; the flag, opcode and rcode bits are disjoint.

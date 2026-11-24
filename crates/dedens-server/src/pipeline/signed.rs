@@ -5,7 +5,7 @@ use std::fmt;
 
 use dedens_proto::edns::InfoCode;
 use dedens_proto::{Message, Query, Rcode};
-use dedens_tsig::{Key, Keyring, Refusal, Request, SignError, verify_request};
+use dedens_tsig::{Key, Keyring, Refusal, Request, ResponseSigner, SignError, verify_request};
 
 use super::Step;
 use super::finish::reply;
@@ -84,9 +84,18 @@ impl Keys {
             Err(Refusal::Format(_)) => Err(reply(client, Message::default(), Rcode::FORMERR, out)),
             Err(Refusal::NotAuth(not_auth)) => {
                 let len = client.reply(Message::default(), Rcode::NOTAUTH, None, out);
-                Err(seal(client, len, out, |wire| not_auth.sign(wire, now)))
+                Err(seal(client, len, out, |message| {
+                    not_auth.sign_in(message, now)
+                }))
             }
         }
+    }
+
+    /// The time to sign a message with `key` at, the clock's; `None` once the keyring has no key of its name and
+    /// algorithm: a reload revoked it, and its transfers stop (D211, D214). A reload keeps a key only unchanged.
+    pub(super) fn signing_time(&self, key: &Key) -> Option<u64> {
+        let kept = self.keys.get(key.name())?;
+        (kept.algorithm() == key.algorithm()).then(|| (self.clock)())
     }
 }
 
@@ -98,9 +107,14 @@ impl<'k> Signed<'k> {
 
     /// The reply of `len` bytes in `out` to `client`, signed (RFC 8945 §5.3).
     pub(super) fn seal(&self, client: &Client<'_>, len: usize, out: &mut [u8]) -> Step {
-        seal(client, Some(len), out, |wire| {
-            self.request.signer().sign(wire, self.now)
+        seal(client, Some(len), out, |message| {
+            self.request.signer().sign_in(message, self.now)
         })
+    }
+
+    /// The signer of the response to the request, which a transfer keeps for its messages (RFC 8945 §5.3.1).
+    pub(super) fn signer(&self) -> ResponseSigner<'static> {
+        self.request.signer().into_owned()
     }
 }
 
@@ -125,18 +139,11 @@ fn seal(
     client: &Client<'_>,
     len: Option<usize>,
     out: &mut [u8],
-    sign: impl FnOnce(&mut Vec<u8>) -> Result<(), SignError>,
+    sign: impl FnOnce((&mut [u8], usize)) -> Result<usize, SignError>,
 ) -> Step {
     let Some(len) = len else {
         return Step::Drop;
     };
-    // A copy, for the signing takes a vector: signed requests are the few a server is configured for, transfers
-    // and updates, not the queries of the many.
-    let mut wire = out[..len].to_vec();
     let limit = client.limit().min(out.len());
-    if sign(&mut wire).is_err() || wire.len() > limit {
-        return Step::Drop;
-    }
-    out[..wire.len()].copy_from_slice(&wire);
-    Step::Reply(wire.len())
+    sign((&mut out[..limit], len)).map_or(Step::Drop, Step::Reply)
 }

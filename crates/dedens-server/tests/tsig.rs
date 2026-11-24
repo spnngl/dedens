@@ -85,10 +85,10 @@ fn signed<'k>(query: &Message<'_>, key: &'k Key) -> (Vec<u8>, ResponseVerifier<'
 fn s5_3_knots_signed_requests_get_signed_replies() {
     let key = key();
     for (id, rcode) in [
-        // A zone transfer, which the core refuses until the transfer server (D41), and an UPDATE, which it does
-        // not implement: their opcodes and types do not matter to the TSIG.
-        ("axfr-tsig", Rcode::REFUSED),
-        ("ixfr-tsig-uptodate", Rcode::REFUSED),
+        // Zone transfers of `zonetransfer.me.`, which the server is not the authority for (D214), and an UPDATE,
+        // which it does not implement: their opcodes and types do not matter to the TSIG.
+        ("axfr-tsig", Rcode::NOTAUTH),
+        ("ixfr-tsig-uptodate", Rcode::NOTAUTH),
         ("update-signed", Rcode::NOTIMP),
     ] {
         let (request, transport) = captured(id);

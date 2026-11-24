@@ -215,17 +215,7 @@ impl<'q> Client<'q> {
         };
         message.questions.clear();
         message.questions.extend(self.question.clone());
-        message.edns = self.has_opt().then(|| {
-            let mut edns = self.our_edns();
-            edns.options.extend(self.cookie.map(EdnsOption::Cookie));
-            edns.options.extend(error.map(|code| {
-                EdnsOption::Ede(ExtendedError {
-                    code,
-                    text: Cow::Borrowed(""),
-                })
-            }));
-            edns
-        });
+        message.edns = self.opt(error);
         if message.set_rcode(rcode).is_err() {
             message.header.rcode = Rcode::SERVFAIL;
         }
@@ -238,6 +228,22 @@ impl<'q> Client<'q> {
             }
             _ => Some(len),
         }
+    }
+
+    /// Our OPT record for this client, when it sent one (RFC 6891 §7): [`Client::our_edns`], its COOKIE option
+    /// (RFC 7873 §5.2.3) and the extended `error` if any (RFC 8914 §2, no text).
+    pub(crate) fn opt(&self, error: Option<InfoCode>) -> Option<Edns<'static>> {
+        self.has_opt().then(|| {
+            let mut edns = self.our_edns();
+            edns.options.extend(self.cookie.map(EdnsOption::Cookie));
+            edns.options.extend(error.map(|code| {
+                EdnsOption::Ede(ExtendedError {
+                    code,
+                    text: Cow::Borrowed(""),
+                })
+            }));
+            edns
+        })
     }
 
     /// Writes the reply that only truncates, TC set, no record: the question and our OPT record, as

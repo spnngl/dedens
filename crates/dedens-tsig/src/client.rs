@@ -3,7 +3,7 @@
 
 use dedens_proto::{Class, DecodeError, TsigError, find_tsig};
 
-use crate::digest::{Digest, SignError, Signature, matches, sign};
+use crate::digest::{Digest, SignError, Signature, grown, matches, sign};
 use crate::key::Key;
 use crate::{FUDGE, MAX_UNSIGNED};
 
@@ -25,7 +25,9 @@ pub fn sign_request<'k>(
         other: &[],
         timers_only: false,
     };
-    let mac = sign(key, Digest::new(key), wire, &signature)?;
+    let mac = grown(wire, |message| {
+        sign(key, Digest::new(key), message, &signature)
+    })?;
     Ok(ResponseVerifier::new(key, &mac))
 }
 

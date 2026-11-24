@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Instant;
 
-use dedens_testkit::authoritative::{Recording, Transport};
+use dedens_testkit::authoritative::{Peer, Recording, Transport};
 use dedens_testkit::recursion::Resolution;
 
 use crate::{Entry, TARGETS};
@@ -47,6 +47,7 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
     seeds.extend(coap_seeds());
     seeds.extend(recursion());
     seeds.extend(transfers());
+    seeds.extend(transfer_requests());
     seeds.extend(command_lines());
     seeds.extend(stamps());
     seeds.extend(configs());
@@ -154,6 +155,20 @@ fn transfers() -> Vec<(String, Vec<u8>)> {
                 .collect();
             let messages: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
             (!messages.is_empty()).then(|| (format!("transfer {id}"), framed(&messages)))
+        })
+        .collect()
+}
+
+/// The requests of the zone transfers of `transfers`, over any transport, alone: the AXFR and IXFR queries
+/// `serve_query` turns into transfers (D214).
+fn transfer_requests() -> Vec<(String, Vec<u8>)> {
+    Recording::ids()
+        .into_iter()
+        .filter(|id| (id.starts_with("axfr-") || id.starts_with("ixfr-")) && id != "axfr-root")
+        .filter_map(|id| {
+            let request = (Recording::read(&id).messages.into_iter())
+                .find(|packet| packet.from == Peer::Client)?;
+            Some((format!("transfer request {id}"), request.message))
         })
         .collect()
 }

@@ -355,6 +355,23 @@ fn s5_3_the_record_fits_to_the_last_byte() {
         Err(SignError::TooLong)
     );
     assert_eq!(over.len(), 65535 - record + 1);
+
+    // In place: up to the end of the buffer, and never past the longest message whatever the buffer.
+    let message = query(1, "a.");
+    let mut buffer = message.clone();
+    buffer.resize(message.len() + record, 0);
+    let len = message.len();
+    let signed = verified.signer().sign_in((&mut buffer, len), T);
+    assert_eq!(signed, Ok(message.len() + record));
+    let short = &mut buffer[..message.len() + record - 1];
+    let signed = verified.signer().sign_in((short, len), T);
+    assert_eq!(signed, Err(SignError::TooLong));
+    let mut wide = fits.clone();
+    wide.resize(65535 + record, 0);
+    let signed = verified
+        .signer()
+        .sign_in((&mut wide, 65535 - record + 1), T);
+    assert_eq!(signed, Err(SignError::TooLong));
 }
 
 /// §5.3: a message with no room for the record, or no header, is an error, and the signer is unchanged.
