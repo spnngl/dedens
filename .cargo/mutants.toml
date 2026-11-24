@@ -276,6 +276,9 @@ exclude_re = [
   # The CLI's cap of records kept to show (D212): a test of it holds 2^21 records, a transfer of the size of a minute
   # of CPU and some 2 GB for a `>` that `==` and `>=` change by one record.
   'run/transfer\.rs:\d+:\d+: replace > with (==|>=) in fetch$',
+  # The zone an UPDATE names, searched among those held (D216): another zone found answers the same NOTAUTH, from
+  # `Zone::update`'s own check of the zone.
+  'zones\.rs:\d+:\d+: replace && with \|\| in Held::update$',
 ]
 # Built only under `--cfg dedens_loom`, where `just loom` runs the tests that catch its mutants (D135); built only off
 # Unix, where the mutants shards do not run. The test kit, test code as `tests/` is, which cargo-mutants never

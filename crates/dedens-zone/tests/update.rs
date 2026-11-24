@@ -7,7 +7,7 @@
 //! update may change (a signed one is refused, D216).
 
 use dedens_proto::rdata::{RData, Soa};
-use dedens_proto::{Message, Rcode, Record, RecordType, Update};
+use dedens_proto::{Class, Message, Rcode, Record, RecordType, Ttl, Update};
 use dedens_testkit::authoritative::{Peer, Recording, Transport};
 use dedens_testkit::dns;
 use dedens_zone::{Limits, Rejection, Updated, Zone};
@@ -140,14 +140,23 @@ fn request(changes: Vec<Record<'static>>) -> Message<'static> {
     message
 }
 
-/// RFC 2136 §3.4.2.2, §3.6: an SOA ahead replaces the apex's and is the new version's, its serial not raised
-/// again; one behind or level is ignored.
+/// RFC 2136 §3.4.2.2, §3.6: an SOA ahead replaces the apex's, its TTL too, and is the new version's, its serial
+/// not raised again; one behind or level is ignored.
 #[test]
 fn rfc2136_s3_4_2_2_an_soa_ahead_replaces_the_apexs() {
     let before = before();
     let serial = before.soa().serial;
     let (rcode, after) = made(&before, request(vec![soa(&before, serial + 10)]));
     assert_eq!((rcode, after.soa().serial), (Rcode::NOERROR, serial + 10));
+    let ttl = Ttl::new(60).expect("a TTL");
+    let shorter = Record {
+        ttl,
+        ..soa(&before, serial + 1)
+    };
+    let (rcode, after) = made(&before, request(vec![shorter]));
+    assert_eq!((rcode, after.soa_ttl()), (Rcode::NOERROR, ttl));
+    let (rcode, after) = made(&before, request(vec![soa(&before, serial)]));
+    assert_eq!((rcode, after.soa().serial), (Rcode::NOERROR, serial));
     let (rcode, after) = made(&before, request(vec![soa(&before, serial - 1)]));
     assert_eq!((rcode, after), (Rcode::NOERROR, before.clone()));
 }
@@ -262,4 +271,130 @@ fn rfc2136_s3_4_2_4_the_apex_keeps_its_soa_and_ns() {
     let apex = after.node(&dns("example.")).expect("the apex");
     let kept: Vec<_> = apex.rrsets().map(|(rtype, _)| rtype).collect();
     assert_eq!(kept, [RecordType::NS, RecordType::SOA]);
+}
+
+/// RFC 2136 §3.4.2.4: deleting the apex's NS records one by one keeps the last, other `RRset`s of the apex go with
+/// their last record.
+#[test]
+fn rfc2136_s3_4_2_4_the_apexs_last_ns_is_kept() {
+    let before = before();
+    let apex = dns("example.");
+    let rdatas = |zone: &Zone, rtype| -> Vec<_> {
+        zone.node(&apex)
+            .and_then(|node| node.rrset(rtype))
+            .map(|set| set.rdatas().to_vec())
+            .unwrap_or_default()
+    };
+    let ns = rdatas(&before, RecordType::NS);
+    let mx = rdatas(&before, RecordType::MX);
+    assert_eq!((ns.len(), mx.len()), (2, 1));
+    let delete = ns.iter().chain(&mx).map(|rdata| Record {
+        name: apex.clone(),
+        class: Class::NONE,
+        ttl: Ttl::ZERO,
+        rdata: rdata.clone(),
+    });
+    let (rcode, after) = made(&before, request(delete.collect()));
+    assert_eq!(rcode, Rcode::NOERROR);
+    assert_eq!(rdatas(&after, RecordType::NS), ns[1..]);
+    assert_eq!(rdatas(&after, RecordType::MX), []);
+}
+
+/// RFC 2136 §3.4.2.3: the NS `RRset` of a delegation is deleted, by its type or with its name; only the apex's is
+/// kept.
+#[test]
+fn rfc2136_s3_4_2_3_a_delegations_ns_is_deleted() {
+    let before = before();
+    let delete = |rtype: u8, name: &str| {
+        let any = Record::from_wire(&[0, 0, rtype, 0, 255, 0, 0, 0, 0, 0, 0])
+            .expect("a record of class ANY at the root")
+            .0
+            .record
+            .into_owned();
+        Record {
+            name: dns(name),
+            ..any
+        }
+    };
+    // NS, then ANY.
+    for (rtype, name) in [(2, "b.example."), (255, "a.example.")] {
+        let has_ns = |zone: &Zone| {
+            zone.node(&dns(name))
+                .is_some_and(|node| node.rrset(RecordType::NS).is_some())
+        };
+        assert!(has_ns(&before), "{name}");
+        let (rcode, after) = made(&before, request(vec![delete(rtype, name)]));
+        assert_eq!(rcode, Rcode::NOERROR, "{name}");
+        assert!(!has_ns(&after), "{name}");
+    }
+}
+
+/// RFC 2136 §2.4.2, §3.2.3: an `RRset` exists with given values when its RDATAs are those, in any order: as many
+/// others is NXRRSET.
+#[test]
+fn rfc2136_s3_2_3_values_compare_as_a_set() {
+    let before = before();
+    let ns = |host: &str| Record::new(dns("example."), Class::IN, Ttl::ZERO, &RData::Ns(dns(host)));
+    for (hosts, expected) in [
+        (["ns2.example.", "ns1.example."], Rcode::NOERROR),
+        (["ns1.example.", "ns3.example."], Rcode::NXRRSET),
+    ] {
+        let mut message = request(Vec::new());
+        message.answer = hosts.map(ns).to_vec();
+        assert_eq!(made(&before, message).0, expected, "{hosts:?}");
+    }
+}
+
+/// RFC 2136 §3.4.2.2: a CNAME added to a name without data is added, and another one then replaces it; other data
+/// added beside it is ignored (RFC 2181 §10.1).
+#[test]
+fn rfc2136_s3_4_2_2_a_cname_replaces_a_cname() {
+    let alias = dns("alias.example.");
+    let cname = |target: &str| {
+        let ttl = Ttl::new(300).expect("a TTL");
+        Record::new(alias.clone(), Class::IN, ttl, &RData::Cname(dns(target)))
+    };
+    let targets = |zone: &Zone| -> Vec<String> {
+        zone.node(&alias)
+            .and_then(|node| node.rrset(RecordType::CNAME))
+            .map(|set| set.rdatas().iter().map(|r| r.data().to_string()).collect())
+            .unwrap_or_default()
+    };
+    let (rcode, first) = made(&before(), request(vec![cname("a.example.")]));
+    assert_eq!(
+        (rcode, targets(&first)),
+        (Rcode::NOERROR, vec!["a.example.".to_owned()])
+    );
+    let (rcode, second) = made(&first, request(vec![cname("ai.example.")]));
+    assert_eq!(
+        (rcode, targets(&second)),
+        (Rcode::NOERROR, vec!["ai.example.".to_owned()])
+    );
+    let a = Record::new(
+        alias.clone(),
+        Class::IN,
+        Ttl::new(300).expect("a TTL"),
+        &RData::A([192, 0, 2, 1].into()),
+    );
+    let (rcode, third) = made(&second, request(vec![a]));
+    assert_eq!(rcode, Rcode::NOERROR);
+    assert!(third == second, "the A beside the CNAME is ignored");
+}
+
+/// RFC 2136 §3.1.1: a request for another zone, or for the zone's name in another class, is not the zone's: NOTAUTH.
+#[test]
+fn rfc2136_s3_1_1_another_zone_is_notauth() {
+    let before = before();
+    let mut other = request(Vec::new());
+    other.questions[0].name = dns("example.org.");
+    let mut chaos = request(Vec::new());
+    chaos.questions[0].qclass = Class::CH;
+    for request in [other, chaos] {
+        let update = Update::read(request).expect("a request");
+        let rejection = before.update(&update, &Limits::default()).err();
+        assert!(
+            matches!(rejection, Some(Rejection::OtherZone)),
+            "{rejection:?}"
+        );
+    }
 }

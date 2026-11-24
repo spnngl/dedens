@@ -360,6 +360,31 @@ mod tests {
         assert!(!access.permits(Action::Update, primary, None));
     }
 
+    /// D216: a zone with an `update` list keeps its versions in `state_dir/zones`, the directory made for the user
+    /// root drops to; without one, no directory is.
+    #[test]
+    fn a_zone_updated_is_kept_in_the_state_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = example(dir.path());
+        let keys = "keys:\n  - {name: k, algorithm: hmac-sha256, secret_file: SECRET}\n";
+        let updated_dir = |lists: &str| {
+            let text = format!(
+                "state_dir: /state\n{}",
+                guarded(dir.path(), &path, keys, lists)
+            );
+            let config = crate::config::read(
+                &text,
+                env,
+                (&Pipeline::default(), None),
+                &mut Store::default(),
+            );
+            config.unwrap().downloads.updated_dir()
+        };
+        let update = "        update:\n          - {networks: ['192.0.2.0/24'], key: k}\n";
+        assert_eq!(updated_dir(update), Some(PathBuf::from("/state/zones")));
+        assert_eq!(updated_dir(""), None);
+    }
+
     /// D211: the access lists and the keys refuse what they cannot honour.
     #[test]
     fn access_list_and_key_mistakes_are_errors() {

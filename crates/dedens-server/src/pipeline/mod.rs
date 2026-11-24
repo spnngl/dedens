@@ -426,10 +426,10 @@ impl Pipeline {
             self.check(&query, &client, standing, from, now, out),
         ) {
             (Some(signed), Step::Reply(len)) => signed.seal(&client, len, out),
-            // Only replies come of a signed request: the stages past the zones are refused it.
-            (Some(_), step) if !matches!(step, Step::Update(_)) => Step::Drop,
             // An update's reply is sealed by `Pipeline::updated`, the request verified again.
-            (_, step) => step,
+            (_, step @ Step::Update(_)) | (None, step) => step,
+            // Only replies and updates come of a signed request: the stages past the zones are refused it.
+            (Some(_), _) => Step::Drop,
         }
     }
 

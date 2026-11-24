@@ -206,8 +206,8 @@ impl Held {
     ///
     /// The RCODE of a reply other than NOERROR.
     pub(crate) fn update(&mut self, update: &Update<'_>) -> Result<bool, Rcode> {
-        let found = (self.zones.iter_mut())
-            .find(|((apex, _), kept)| apex == update.zone() && kept.used && kept.state.is_some());
+        let found =
+            (self.zones.iter_mut()).find(|((apex, _), kept)| apex == update.zone() && kept.used);
         let Some(((apex, _), kept)) = found else {
             return Err(Rcode::NOTAUTH);
         };
@@ -383,8 +383,8 @@ mod tests {
         "ISI.EDU.".parse().unwrap()
     }
 
-    /// D216: an update is saved in the zone's directory and held, a load restores it, and the zone file with its
-    /// serial ahead replaces it; a zone held without a directory takes none.
+    /// D216: an update is saved in the zone's directory and held, a load restores it, even beside a zone file of the
+    /// same serial, and the zone file with its serial ahead replaces it; a zone held without a directory takes none.
     #[test]
     fn an_update_is_restored_until_the_zone_file_is_ahead() {
         use dedens_proto::rdata::RData;
@@ -415,6 +415,9 @@ mod tests {
         let restored = Held::default().zone(&apex(), &path, Some(state.clone()));
         assert!(restored.unwrap() == updated, "restored");
         let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.replace(" 20 ", " 21 ")).unwrap();
+        let level = Held::default().zone(&apex(), &path, Some(state.clone()));
+        assert!(level.unwrap() == updated, "the zone file level");
         fs::write(&path, text.replace(" 20 ", " 22 ")).unwrap();
         let edited = Held::default().zone(&apex(), &path, Some(state)).unwrap();
         assert_eq!(edited.soa().serial, 22);

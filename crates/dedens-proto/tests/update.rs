@@ -172,7 +172,8 @@ fn rfc2136_s3_2_5_prerequisites() {
     );
 }
 
-/// Two records of one `RRset` make one value-dependent prerequisite (§2.4.2), once each RDATA, after the others.
+/// Two records of one `RRset` make one value-dependent prerequisite (§2.4.2), once each RDATA, after the others;
+/// a record of another name makes its own.
 #[test]
 fn rfc2136_s2_4_2_values_gather_into_one_rrset() {
     let wire = request("update-prereq-yxrrset-value");
@@ -181,13 +182,21 @@ fn rfc2136_s2_4_2_values_gather_into_one_rrset() {
         .message
         .into_owned();
     let first = message.answer[0].clone();
-    message.answer.push(first);
+    let mut other = first.clone();
+    other.name = "ns1.example.".parse().expect("a name");
+    message.answer.extend([first, other]);
     let read = Update::read(message).expect("a request");
-    let [Prerequisite::Equals(name, RecordType::NS, rdatas)] = read.prerequisites() else {
+    let [
+        Prerequisite::Equals(name, RecordType::NS, rdatas),
+        Prerequisite::Equals(other, RecordType::NS, others),
+    ] = read.prerequisites()
+    else {
         panic!("{:?}", read.prerequisites());
     };
     assert_eq!(*name, apex());
     assert_eq!(rdatas.len(), 2);
+    assert_eq!(other.to_string(), "ns1.example.");
+    assert_eq!(others.len(), 1);
 }
 
 /// The prescan of §3.4.1.3 on the change of `update-add-name`.

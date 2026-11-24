@@ -212,6 +212,15 @@ mod tests {
         );
     }
 
+    /// No saved zone is no error; one that cannot be read is, logged before the zone file serves.
+    #[test]
+    fn a_saved_zone_unread_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let apex = dns("example.");
+        assert!(saved(&apex, &dir.path().join("zone")).unwrap().is_none());
+        assert!(saved(&apex, dir.path()).is_err(), "a directory");
+    }
+
     /// An UPDATE of `example.` with no change.
     fn update() -> Update<'static> {
         let mut message = Message::query(1, Question::new(dns("example."), RecordType::SOA));
