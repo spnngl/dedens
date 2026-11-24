@@ -13,10 +13,11 @@
 
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 
 use dedens_dnssec::{Rollover, RolloverStateError, TrustAnchors};
-use dedens_proto::Record;
+use dedens_proto::{Name, Record};
+use dedens_zone::Zone;
 
 use crate::config::unix_seconds;
 use crate::download;
@@ -56,6 +57,8 @@ pub(crate) enum Wake {
     Hangup,
     /// The answer to the root's keys asked by a serving thread, with its signatures; empty when it failed.
     RootKeys(Vec<Record<'static>>),
+    /// A secondary zone's new version, or `None` at its expire (D215).
+    Zone(Name<'static>, Option<Arc<Zone>>),
 }
 
 /// When the root's keys are next asked, shared by the serving threads and set by the thread reloading, which the

@@ -5,7 +5,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
-use std::{io, thread};
+use std::{io, iter, thread};
 
 use dedens_dnssec::TrustAnchors;
 use dedens_net::tls::{Presented, Trust};
@@ -19,6 +19,7 @@ use crate::lists::Store;
 use crate::privileges::Identity;
 use crate::rollover::{self, Probe, Wake};
 use crate::roots::{self, Refresh};
+use crate::secondary::{Secondaries, Secondary};
 use crate::sync::{self, AtomicU64, Mutex, Ordering, PoisonError};
 
 /// The pipeline in use. Serving threads ask [`Current::newer`] before each query: one atomic load, and the new
@@ -129,9 +130,10 @@ const RETRY: Duration = Duration::from_secs(60);
 struct Ticks {
     /// The wait after the next failure.
     retry: Duration,
-    /// A downloaded list or the anchors followed (D200) changed and no reload served it yet. The list and its
-    /// `ETag`, or the state of the rollover, are saved before the reload, so the next fetch finds the list unchanged
-    /// (304) and the next answer the anchors: only this remembers that the pipeline is behind them.
+    /// A downloaded list, the anchors followed (D200) or a secondary zone's version (D215) changed and no reload
+    /// served it yet. The list and its `ETag`, the state of the rollover, or the version, are saved before the reload,
+    /// so the next fetch finds the list unchanged (304) and the next answer the anchors: only this remembers that the
+    /// pipeline is behind them.
     pending: bool,
 }
 
@@ -151,13 +153,13 @@ impl Ticks {
     }
 
     /// What follows a reload that `served` or not, `asked`: whether the thread goes back to the top of its loop. A
-    /// failed one after the anchors followed (D200) changed is pending, a SIGHUP's too, tried again on the next tick
+    /// failed one after the anchors followed (D200) or a secondary zone (D215) changed is pending, a SIGHUP's too, tried again on the next tick
     /// as a list's is: the state is saved, so no later answer would ask for it; a SIGHUP's that changed nothing waits
     /// for the next SIGHUP.
     const fn reloaded(&mut self, served: bool, asked: Reload) -> bool {
         if served {
             self.served();
-        } else if asked.anchors_changed {
+        } else if asked.changed {
             self.pending = true;
         }
         !served || matches!(asked.read, Read::File)
@@ -196,10 +198,25 @@ impl Ticks {
     }
 }
 
+/// Removes the `.part` files a run killed mid-write left of the copies of `downloads` and of the files it keeps in
+/// `state_dir` (D104).
+fn leftovers(downloads: &Downloads) {
+    let mut copies: Vec<_> = (downloads.urls.iter())
+        .map(|url| download::copy(&downloads.dir, url))
+        .collect();
+    if let Some(tlds) = &downloads.roots.tlds {
+        copies.push(roots::tlds_copy(&downloads.dir, &tlds.url));
+    }
+    sweep(&copies, &downloads.dir);
+    let kept = [roots::ANCHORS, rollover::STATE].map(|name| downloads.state_dir.join(name));
+    sweep(&kept, &downloads.state_dir);
+}
+
 /// Starts the thread that replaces the pipeline: on each SIGHUP, reading `file` again (D55), and once the lists of
 /// `downloads` changed, fetched at once, after each SIGHUP, then every refresh interval (D57), building `text`, the
 /// configuration last loaded, again without reading `file`; and once the root keys a serving thread asked changed
-/// the anchors they are followed to (RFC 5011, D200), building `text` again too. One thread for all, so a refresh
+/// the anchors they are followed to (RFC 5011, D200), or a secondary zone's version (D215), building `text` again
+/// too; `secondaries`, then those of each configuration built, go to their thread. One thread for all, so a refresh
 /// never replaces the pipeline of a reload with an older one. A panic while fetching or reloading is logged and
 /// counts as a failure; the thread goes on, and a reload that failed after the lists or the anchors followed
 /// changed is tried again on the next tick (D104). The SIGHUP handler is installed before this returns: a SIGHUP once the server logged that it
@@ -214,12 +231,14 @@ pub(crate) fn control(
     current: Arc<Current>,
     fixed: Fixed,
     mut downloads: Downloads,
-    mut store: Store,
+    (mut store, secondaries): (Store, Vec<Secondary>),
 ) -> io::Result<()> {
     // The server serves: from now on, a zone failing to load keeps its last version (D208).
     store.zones.serve();
     let (hangup, wakes) = mpsc::channel::<Wake>();
     current.probe().connect(hangup.clone());
+    let mut zones = Secondaries::new(&downloads.state_dir, hangup.clone());
+    zones.configure(&downloads.state_dir, secondaries);
     #[cfg(unix)]
     {
         let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGHUP])?;
@@ -238,18 +257,7 @@ pub(crate) fn control(
             // Held here, so `wakes` is never disconnected, SIGHUP or not.
             let _hangup = hangup;
             let client = Fetcher::new();
-            guarded("leftover sweep", || {
-                let mut copies: Vec<_> = (downloads.urls.iter())
-                    .map(|url| download::copy(&downloads.dir, url))
-                    .collect();
-                if let Some(tlds) = &downloads.roots.tlds {
-                    copies.push(roots::tlds_copy(&downloads.dir, &tlds.url));
-                }
-                sweep(&copies, &downloads.dir);
-                let kept =
-                    [roots::ANCHORS, rollover::STATE].map(|name| downloads.state_dir.join(name));
-                sweep(&kept, &downloads.state_dir);
-            });
+            guarded("leftover sweep", || leftovers(&downloads));
             let mut ticks = Ticks::new();
             let mut refresh = Refresh::default();
             let mut following = false;
@@ -271,8 +279,14 @@ pub(crate) fn control(
                         failed: true,
                     });
                     ticks.wait(fetched, downloads.refresh, || {
-                        let new =
-                            reload(&file, Read::Last, &mut text, &current, &fixed, &mut store)?;
+                        let new = reload(
+                            &file,
+                            Read::Last,
+                            &mut text,
+                            (&current, &fixed),
+                            &mut store,
+                            &mut zones,
+                        )?;
                         let every = new.refresh;
                         downloads = new;
                         // A directory not writable is warned of again at each load.
@@ -301,7 +315,14 @@ pub(crate) fn control(
                     else {
                         continue;
                     };
-                    let new = reload(&file, asked.read, &mut text, &current, &fixed, &mut store);
+                    let new = reload(
+                        &file,
+                        asked.read,
+                        &mut text,
+                        (&current, &fixed),
+                        &mut store,
+                        &mut zones,
+                    );
                     let served = new.is_some();
                     if let Some(new) = new {
                         downloads = new;
@@ -330,11 +351,10 @@ fn follow(probe: &Probe, following: &mut bool, follows: bool) {
     }
 }
 
-/// The reload `wake` asks for, `None` for none, the wakes `queued` after it taken too: an answer of the root's keys
-/// reloads when the anchors trusted changed (D200); a SIGHUP reloads the file, and those queued with it ask for the
-/// same (D104), an answer among them followed all the same, whether it changed the anchors told in the reload.
-/// `followed` is the probe and the anchors seeding the rollover, kept in `state_dir`, `None` when no stage follows
-/// one; `now` the time in Unix seconds.
+/// The one reload `wake` and the wakes `queued` after it ask for, `None` for none: an answer of the root's keys
+/// reloads when the anchors trusted changed (D200), a secondary zone's version always (D215), a SIGHUP reads the
+/// file (D104), whichever came first. `followed` is the probe and the anchors seeding the rollover, kept in
+/// `state_dir`, `None` when no stage follows one; `now` the time in Unix seconds.
 fn woken(
     wake: Wake,
     queued: impl Iterator<Item = Wake>,
@@ -343,26 +363,35 @@ fn woken(
     store: &mut Store,
     now: u64,
 ) -> Option<Reload> {
-    match wake {
-        Wake::RootKeys(answer) => {
-            root_keys(&answer, followed, state_dir, store, now).then_some(Reload {
-                read: Read::Last,
-                anchors_changed: true,
-            })
-        }
-        Wake::Hangup => {
-            let mut anchors_changed = false;
-            for wake in queued {
-                if let Wake::RootKeys(answer) = wake {
-                    anchors_changed |= root_keys(&answer, followed, state_dir, store, now);
-                }
+    let mut asked = None::<Reload>;
+    for wake in iter::once(wake).chain(queued) {
+        let (read, changed) = match wake {
+            Wake::Hangup => (Some(Read::File), false),
+            Wake::RootKeys(answer) => {
+                let changed = root_keys(&answer, followed, state_dir, store, now);
+                (changed.then_some(Read::Last), changed)
             }
-            Some(Reload {
-                read: Read::File,
-                anchors_changed,
-            })
-        }
+            Wake::Zone(apex, zone) => {
+                store.zones.transferred(apex, zone);
+                (Some(Read::Last), true)
+            }
+        };
+        let Some(read) = read else {
+            continue;
+        };
+        asked = Some(match asked {
+            None => Reload { read, changed },
+            Some(before) => Reload {
+                read: if before.read == Read::File {
+                    Read::File
+                } else {
+                    read
+                },
+                changed: before.changed || changed,
+            },
+        });
     }
+    asked
 }
 
 /// Follows `answer`, the root's keys asked by a serving thread, when the configuration follows them from the seed
@@ -392,9 +421,9 @@ fn root_keys(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Reload {
     read: Read,
-    /// The anchors followed (D200) changed, in the answer that asked for it or in one queued with a SIGHUP: the state
-    /// is saved, and a reload that fails must be tried again.
-    anchors_changed: bool,
+    /// The anchors followed (D200) or a secondary zone's version (D215) changed: the state is saved, or the version
+    /// in the store, and a reload that fails must be tried again.
+    changed: bool,
 }
 
 /// Which configuration a reload builds.
@@ -419,9 +448,9 @@ fn reload(
     file: &Path,
     read: Read,
     text: &mut String,
-    current: &Current,
-    fixed: &Fixed,
+    (current, fixed): (&Current, &Fixed),
     store: &mut Store,
+    zones: &mut Secondaries,
 ) -> Option<Downloads> {
     let config = file.display();
     let built = guarded("reload", || {
@@ -466,6 +495,7 @@ fn reload(
                 presented.replace(new);
             }
             current.replace(new.pipeline);
+            zones.configure(&new.downloads.state_dir, new.secondaries);
             metrics::counter!(RELOADS, "result" => "ok").increment(1);
             tracing::info!(%config, "reloaded");
             Some(new.downloads)
@@ -581,11 +611,44 @@ mod tests {
         assert_eq!(trusted, Some(last()));
     }
 
-    /// A reload of the file asked, `anchors_changed` or not.
-    const fn file(anchors_changed: bool) -> Reload {
+    /// D215: a secondary zone's version reaches the store and rebuilds the last text, unless a SIGHUP in the same
+    /// batch reads the file, whatever their order.
+    #[test]
+    fn a_zone_transferred_reloads_the_last_text_unless_a_hangup_reads_the_file() {
+        let state = tempfile::tempdir().unwrap();
+        let (dir, probe) = (state.path(), Probe::default());
+        let mut store = Store::default();
+        let zone = |name: &str| Wake::Zone(name.parse().unwrap(), None);
+        let mut wake = |first, queued: Vec<Wake>| {
+            woken(
+                first,
+                queued.into_iter(),
+                (&probe, None),
+                dir,
+                &mut store,
+                0,
+            )
+        };
+        assert_eq!(wake(zone("a.example."), vec![]), Some(last()));
+        assert_eq!(
+            wake(zone("a.example."), vec![zone("b.example.")]),
+            Some(last())
+        );
+        assert_eq!(
+            wake(Wake::Hangup, vec![zone("a.example.")]),
+            Some(file(true))
+        );
+        assert_eq!(
+            wake(zone("a.example."), vec![Wake::Hangup]),
+            Some(file(true))
+        );
+    }
+
+    /// A reload of the file asked, `changed` or not.
+    const fn file(changed: bool) -> Reload {
         Reload {
             read: Read::File,
-            anchors_changed,
+            changed,
         }
     }
 
@@ -593,7 +656,7 @@ mod tests {
     const fn last() -> Reload {
         Reload {
             read: Read::Last,
-            anchors_changed: true,
+            changed: true,
         }
     }
 

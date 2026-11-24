@@ -1127,7 +1127,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     100 restarts under load, Linux), `serve/isolate.rs`. Cost: `hit_guarded` equals `hit` (0 allocations), `bench udp` within
     noise (`docs/benchmarks.md`); not measured on `io_uring`.
 
-- D122 (amends D42, D44, D55, D66, D104, D107, D115; amended by D128, D211) `dedensd` drops root once its sockets are bound, from the audit (S5): a
+- D122 (amends D42, D44, D55, D66, D104, D107, D115; amended by D128, D211, D215) `dedensd` drops root once its sockets are bound, from the audit (S5): a
   server started as root to bind :53, :443 and :853 kept root while it parsed hostile input.
   - Configuration: top-level `user:` (a name or a numeric id, number or string) and `group:` (the same; only with
     `user`). Linux only: `PR_SET_NO_NEW_PRIVS` and the `/proc/PID/status` that the checks read are Linux's, and
@@ -2607,7 +2607,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     record after a refused one kept (a hole breaks the chain); one `Changeset` per RRset (RFC 1995 §4's sequence is
     per version); keeping a changeset over the limit alone and dropping the rest (the oldest of a chain is what
     goes first, NSD).
-- D208 (amends D41, D54, D55, D91, D99; amended by D211) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
+- D208 (amends D41, D54, D55, D91, D99; amended by D211, D215) The authoritative stage (`Stage::Authoritative`, `dedens_server::Authoritative`; `dedensd`'s
   `authoritative` stage): `dedensd` answers the zones it is the authority for, from `dedens-zone`'s `Zone` (D204,
   D206), in the same pipeline as its other stages (the phase's choice 1: no second binary). The stage holds its
   zones as `Arc<Zone>` sorted by apex in canonical order (RFC 4034 §6.1), no apex twice (`Duplicate`); the zone of a
@@ -2825,7 +2825,7 @@ Decisions; the rules and the index are in [`README.md`](README.md).
     D74's validator calls a zone above 150 insecure); a bound of BIND's 50 (a server holding a zone of 100 for a
     1024-bit key follows the RFC and Unbound).
 
-- D210 (amends D204) The transfer client (`dedens_net::transfer`, the authoritative phase): what a secondary asks
+- D210 (amends D204; amended by D215) The transfer client (`dedens_net::transfer`, the authoritative phase): what a secondary asks
   a primary. `soa(io, primary, zone, key)` asks for the zone's SOA over UDP, once, and again over TCP when the
   response is truncated (RFC 7766 §5), within `SOA_TIMEOUT`, 10 s (NSD's `XFRD_UDP_TIMEOUT`, `xfrd.c`; Knot waits
   5 s, `tcp-remote-io-timeout` in `src/knot/conf/schema.c`); its response must have the AA bit. `transfer(io,
@@ -2994,3 +2994,64 @@ Decisions; the rules and the index are in [`README.md`](README.md).
   - Rejected: verifying only where a rule asks (Knot, above); reading the keys at every reload (the user would
     have to read the secrets); deny lines (Knot's `deny`, NSD's `BLOCKED`), until a user needs one: the lists
     permit, nothing else does.
+
+- D215 (amends D122, D208, D210) Secondary zones (`apps/dedensd/src/secondary/`, the authoritative phase): a zone
+  of the `authoritative` stage is transferred from its primaries, kept up to date by the timers of its SOA (RFC 1034
+  §4.3.5) and across restarts in `state_dir`, served as a zone file is (D208).
+  - Configuration: a zone gives `secondary: { primaries: [{address, key}] }` instead of `file`, one of the two
+    (`file` becomes optional). `address` an IP address, port 53 unless given; `key` a name of `keys:` (D211), the
+    queries signed with it; at most `MAX_PRIMARIES`, 16 (D115: each costs up to the SOA query's 10 s when a refresh
+    fails; Knot, NSD and BIND bound none). A secondary apex is in one stage. Primaries are asked in order, the first
+    that answers decides; transfers are over TCP only (no XoT, the phase's choice). The zone's access lists apply as
+    to a zone file's.
+  - One thread, `dedensd-secondaries`, owns every secondary zone: files, timers and transfers, on a compio runtime,
+    its task generic over `Io` so that the simulator drives its clock (D182). The thread reloading sends it the zones
+    after each configuration built (`Secondaries::configure`; a zone kept keeps its version and timers, a new one is
+    read from disk, a zone gone is dropped with its refresh); it sends back each new version, or the end of one
+    (`Wake::Zone`), which the thread reloading holds in `zones::Held` and serves by building the pipeline again from
+    the last text read, as a rollover does (D200): a version costs a rebuild, a query nothing. `Secondaries::refresh`
+    makes a zone due now: NOTIFY's entry point (step 15). At most `IN_FLIGHT`, 8, refreshes at once (a refresh holds
+    a connection and an AXFR its zone; Knot runs them on `background-workers`, as many as CPUs, NSD up to
+    `xfrd-tcp-max` 128, `options.c`, BIND `transfers-in` 10).
+  - A refresh queries each primary's SOA (D210's `soa`). Ahead of ours (RFC 1982): a transfer from our serial (IXFR,
+    D210's fallback to AXFR), or an AXFR without a version; equal: up to date, refresh and expire renewed; behind or
+    2^31 away: not followed, logged, the expire running on, as Knot (`soa_query_consume` and
+    `finalize_timers_noexpire`, `src/knot/events/handlers/refresh.c`); no primary answering or a transfer failing: the
+    retry. A transfer is checked as a load (D204): warnings logged, an error, or an IXFR that does not `apply` to our
+    version, refuses it and keeps the version. Next refresh at refresh (after an answer) or retry (after a failure)
+    from the SOA, each clamped (`secondary/timers.rs`, D115): refresh 2 s (Knot `refresh-min-interval`, `schema.c`)
+    to 28 days (NSD `max-refresh-time`, `options.c`), retry 1 s (Knot) to 14 days (NSD), expire at least 3 s (Knot);
+    jittered down to 90 %, when over 10 s, as NSD's `xfrd_set_timer` (`xfrd.c`), so that zones loaded together do not
+    query together, never later, and never the expire. A zone without a version is tried at 5 s × tries², at most
+    2 h, plus a draw under 30 s, Knot's `zone_bootstrap_next` (`src/knot/zone/zone.c`).
+  - Expire: a version past its expire is dropped, logged at error and counted; a zone without a version (never
+    transferred, expired, or its files not read) is held by the stage (`Authoritative::with_unavailable`) and its
+    names answered SERVFAIL with EDE 24 Invalid Data (RFC 8914 §4.25), as Knot answers a zone without contents
+    (`NS_NEED_ZONE_CONTENTS`, `src/knot/nameserver/internet.h`) and NSD one not loaded (`query.c`), not left to the
+    next stage. It stays tried as above.
+  - Persistence (`secondary/disk.rs`), `state_dir/zones/<zone>/`, `<zone>` the apex lowercased, bytes outside
+    `[a-z0-9_-]` as `%xx`, labels joined by dots, trailing dot (`root` for the root, which no other name gives):
+    `zone`, the zone's text (SOA first, `Record`'s presentation), written whole after each full transfer and
+    whenever the journal no longer reaches it, through a `.part` file, `fsync` and rename; `journal`, D207's, each
+    IXFR's changesets appended once applied; `timers`, the last refresh and the expire's deadline, Unix seconds,
+    written after each answer. Read when a zone is first configured: the text loaded (no `$INCLUDE`), the journal
+    replayed from its serial (one that does not apply is cleared, warned), served until its expire, refreshed at
+    its refresh; past its expire, or a file that does not read, the zone is transferred again. The directory is
+    `0700`, and `state_dir/zones` made and checked writable as the user `dedensd` drops to (amends D122), only when
+    a secondary is configured; a changed `state_dir` takes a restart for them.
+  - Transfer limits (closes the TODECIDE of D210, amends D210): every secondary uses `transfer::Limits::default()`.
+    The primaries are the operator's, trusted with one transfer's memory; `IN_FLIGHT` bounds how many at once.
+  - Metrics: `dedensd_authoritative_refreshes_total` by `result` (`full`, `incremental`, `uptodate`, `behind`,
+    `refused`, `failed`), `dedensd_authoritative_expired_total`; the serial and zones gauges count secondaries
+    (amends D208); `dedensd_authoritative_answers_total` kind `unavailable`.
+  - Test data (D203): a primary on the loopback address replays Knot's captures: the root's AXFR, kept and served
+    after a restart without the primary; Knot's IXFR from the root's previous serial applied to that zone on disk,
+    journaled; a primary whose SOA is behind ours not followed; a zone on disk past its expire answered SERVFAIL,
+    EDE 24. Unit tests: the clamps, jitter and bootstrap; refresh, retry and expire timing; the text written and read
+    back equal for the root, zonetransfer.me and RFC 5155's zone; the directory names. An expire while serving waits
+    for the simulator's clock (step 17).
+  - Rejected: a task on serving thread 0, as prewarm (D96), whose disk writes and the root's 1 s load would stall
+    queries; swapping the zone inside the stage (`ArcSwap`), which would change the stage steps 12 and 14 share and
+    add a load per query; a thread per zone (10 000 zones); per-zone timer and limit settings (Knot's
+    `refresh-min-interval` and friends), until a user asks; a binary snapshot of the zone (the text is D204's
+    load, readable by an operator); dropping a version when a primary goes behind (Knot keeps it).

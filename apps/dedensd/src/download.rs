@@ -402,6 +402,14 @@ fn save_with(
 /// through nor reused, and a leftover is known by [`sweep`]; it is removed when the write fails. Its mode is `0o666`
 /// less the umask, as a file created in the usual way.
 pub(crate) fn replace(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    replace_with(path, |part| part.write_all(contents.as_ref()))
+}
+
+/// [`replace`] with what `write` writes, streamed: a zone's text is not held whole in memory (D215).
+pub(crate) fn replace_with(
+    path: &Path,
+    write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut prefix = path.file_name().unwrap_or_default().to_owned();
     prefix.push(".");
@@ -410,7 +418,7 @@ pub(crate) fn replace(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()>
     #[cfg(unix)]
     builder.permissions(fs::Permissions::from_mode(0o666));
     let mut part = builder.tempfile_in(dir)?;
-    part.write_all(contents.as_ref())?;
+    write(&mut part)?;
     part.as_file().sync_all()?;
     part.persist(path).map_err(|error| error.error)?;
     sync_dir(dir)

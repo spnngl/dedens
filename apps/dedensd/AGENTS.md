@@ -35,3 +35,7 @@ belongs in `crates/dedens-server` and its sans-IO tests.
   across reloads: only the thread reloading touches it.
 - A zone file (D208) is read through `zones::Held`, in the `Store`: its `$INCLUDE` only inside the zone file's
   directory, canonical path checked; a zone failing to load once serving keeps its last version, never fails the reload.
+- A secondary zone (D215) is the `dedensd-secondaries` thread's alone, its files in `state_dir/zones/` and its
+  timers included: other threads send it commands (`Secondaries`), and it sends each version to the thread reloading
+  (`Wake::Zone`), which holds it in `zones::Held` and builds the pipeline again. A version is kept on disk before it
+  is sent; a write that fails is logged, and the version served all the same.

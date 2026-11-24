@@ -1,4 +1,4 @@
-//! The counters of the `metrics` feature (D30, D91, D113, D208).
+//! The counters of the `metrics` feature (D30, D91, D113, D208, D215).
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -7,11 +7,11 @@ use dedens_dnssec::{Limits, TrustAnchors, Validator};
 use dedens_proto::edns::{Cookie, Edns, EdnsOption};
 use dedens_proto::{Flags, RecordType, Transport};
 use dedens_server::{
-    Access, Allowance, Budget, Budgets, Clock, Cookies, Denial, Network, Pipeline, Rate, RateLimit,
-    RateLimitConfig, Secret, Secrets, Step, Validating,
+    Access, Allowance, Authoritative, Budget, Budgets, Clock, Cookies, Denial, Network, Pipeline,
+    Rate, RateLimit, RateLimitConfig, Secret, Secrets, Stage, Step, Validating,
 };
 use dedens_testkit::dnssec::Captures;
-use dedens_testkit::query;
+use dedens_testkit::{dns, query};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 use crate::util::{captured_at, client_query, forwarder, run_captured, validating_under, wire};
@@ -81,14 +81,17 @@ pub(crate) fn counted(
     counted
 }
 
-/// `dedensd_authoritative_answers_total{kind}` counts the answers of the authoritative stage by kind (D208); a
-/// query it passes on counts nothing.
+/// `dedensd_authoritative_answers_total{kind}` counts the answers of the authoritative stage by kind (D208), the
+/// SERVFAIL of a zone without a version too (D215); a query it passes on counts nothing.
 #[test]
 fn authoritative_answers_are_counted_by_kind() {
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     let pipeline = metrics::with_local_recorder(&recorder, || {
-        Pipeline::new(vec![crate::authoritative::zones()])
+        let stage = Authoritative::new([crate::authoritative::example()])
+            .and_then(|stage| stage.with_unavailable([dns("net")]))
+            .expect("two apexes");
+        Pipeline::new(vec![Stage::Authoritative(stage)])
     });
     let mut out = vec![0; 65535];
     for (name, qtype) in [
@@ -97,6 +100,7 @@ fn authoritative_answers_are_counted_by_kind() {
         ("ns1.example", RecordType::MX),
         ("nothing.example", RecordType::A),
         ("www.a.example", RecordType::A),
+        ("example.net", RecordType::A),
         ("example.org", RecordType::A),
     ] {
         let query = client_query(name, qtype, Flags::NONE, false);
@@ -116,7 +120,13 @@ fn authoritative_answers_are_counted_by_kind() {
     };
     assert_eq!(
         counted(&snapshotter, "dedensd_authoritative_answers_total", "kind"),
-        kinds(&[("data", 2), ("nodata", 1), ("nxdomain", 1), ("referral", 1)])
+        kinds(&[
+            ("data", 2),
+            ("nodata", 1),
+            ("nxdomain", 1),
+            ("referral", 1),
+            ("unavailable", 1)
+        ])
     );
 }
 

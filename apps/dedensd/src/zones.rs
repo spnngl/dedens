@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, anyhow, ensure};
 use dedens_proto::{Name, Ttl};
-use dedens_zone::{Limits, Source, Zone};
+use dedens_zone::{Include, Limits, Source, Zone};
 
 use crate::lists::Stamp;
 
@@ -66,10 +66,20 @@ struct Kept {
     used: bool,
 }
 
-/// The zones loaded so far, by apex and file. Part of the [`Store`](crate::lists::Store).
+/// The version of a secondary zone the secondaries' thread gave last (D215).
+#[derive(Debug)]
+struct Version {
+    zone: Arc<Zone>,
+    /// Whether the reading under way used it: what is not is dropped at its end.
+    used: bool,
+}
+
+/// The zones loaded so far, by apex and file, and the versions of the secondary zones, by apex. Part of the
+/// [`Store`](crate::lists::Store).
 #[derive(Debug, Default)]
 pub(crate) struct Held {
     zones: HashMap<(Name<'static>, PathBuf), Kept>,
+    secondaries: HashMap<Name<'static>, Version>,
     /// Whether the server serves: a zone failing to load keeps its last version then.
     serving: bool,
 }
@@ -79,6 +89,9 @@ impl Held {
     pub(crate) fn begin(&mut self) {
         for kept in self.zones.values_mut() {
             kept.used = false;
+        }
+        for version in self.secondaries.values_mut() {
+            version.used = false;
         }
     }
 
@@ -90,16 +103,48 @@ impl Held {
                 metrics::gauge!(SERIAL, "zone" => apex.to_string()).set(0.0);
             }
         }
+        for (apex, version) in &self.secondaries {
+            if !version.used {
+                metrics::gauge!(SERIAL, "zone" => apex.to_string()).set(0.0);
+            }
+        }
         self.zones.retain(|_, kept| kept.used);
-        for ((apex, _), kept) in &self.zones {
-            metrics::gauge!(SERIAL, "zone" => apex.to_string())
-                .set(f64::from(kept.zone.soa().serial));
+        self.secondaries.retain(|_, version| version.used);
+        let served = (self
+            .zones
+            .iter()
+            .map(|((apex, _), kept)| (apex, &kept.zone)))
+        .chain(
+            self.secondaries
+                .iter()
+                .map(|(apex, version)| (apex, &version.zone)),
+        );
+        for (apex, zone) in served {
+            metrics::gauge!(SERIAL, "zone" => apex.to_string()).set(f64::from(zone.soa().serial));
         }
         #[expect(
             clippy::cast_precision_loss,
             reason = "a gauge is a float; the zones number far below 2⁵²"
         )]
-        metrics::gauge!(ZONES).set(self.zones.len() as f64);
+        metrics::gauge!(ZONES).set((self.zones.len() + self.secondaries.len()) as f64);
+    }
+
+    /// The version of the secondary zone of apex `apex` to serve, `None` while it has none (D215).
+    pub(crate) fn secondary(&mut self, apex: &Name<'static>) -> Option<Arc<Zone>> {
+        let version = self.secondaries.get_mut(apex)?;
+        version.used = true;
+        Some(Arc::clone(&version.zone))
+    }
+
+    /// Sets the version of the secondary zone of apex `apex`, as the secondaries' thread gave it: `None` once it
+    /// expired. The next reading serves it.
+    pub(crate) fn transferred(&mut self, apex: Name<'static>, zone: Option<Arc<Zone>>) {
+        if let Some(zone) = zone {
+            self.secondaries.insert(apex, Version { zone, used: false });
+        } else {
+            metrics::gauge!(SERIAL, "zone" => apex.to_string()).set(0.0);
+            self.secondaries.remove(&apex);
+        }
     }
 
     /// From now on, a zone failing to load keeps its last version: the server serves (D55).
@@ -235,13 +280,36 @@ fn load(apex: &Name<'static>, path: &Path, max: u64, files: &mut Files) -> anyho
         }
         read(&target, max, files).map_err(|error| format!("{error:#}"))
     };
+    parse(apex, path, &text, &mut include)
+}
+
+/// The zone of apex `apex` a secondary keeps in the file at `path` (D215): read as a zone file is, with no
+/// `$INCLUDE`, which the server never writes.
+///
+/// # Errors
+///
+/// A file that cannot be read, or a zone the loader refuses.
+pub(crate) fn stored(apex: &Name<'static>, path: &Path) -> anyhow::Result<Zone> {
+    let text = read(path, MAX_ZONE_FILE_BYTES, &mut Files::new())?;
+    parse(apex, path, &text, &mut |_| {
+        Err("a zone a secondary keeps has no $INCLUDE".to_owned())
+    })
+}
+
+/// The zone of apex `apex` in `text`, read from `path`, its `$INCLUDE`s from `include`; its warnings logged.
+fn parse(
+    apex: &Name<'static>,
+    path: &Path,
+    text: &[u8],
+    include: &mut Include<'_>,
+) -> anyhow::Result<Zone> {
     let name = path.display().to_string();
     let source = Source {
         name: &name,
-        text: &text,
+        text,
         default_ttl: Some(DEFAULT_TTL),
     };
-    let loaded = Zone::load(apex.clone(), source, &mut include, &Limits::default())
+    let loaded = Zone::load(apex.clone(), source, include, &Limits::default())
         .map_err(|report| anyhow!("{report}"))
         .with_context(|| format!("loading zone `{apex}`"))?;
     if !loaded.report.warnings.is_empty() {
@@ -350,6 +418,20 @@ mod tests {
         assert_eq!(read()[1], metric(SERIAL, "0"));
         assert_eq!(read()[2], metric(ZONES, "0"));
         assert!(held.zones.is_empty());
+
+        // A secondary zone's version the same (D215).
+        let zone = Held::default().zone(&apex(), &path).unwrap();
+        metrics::with_local_recorder(&recorder, || {
+            held.transferred(apex(), Some(zone));
+            held.begin();
+            assert!(held.secondary(&apex()).is_some());
+            held.end();
+            held.begin();
+            held.end();
+        });
+        assert_eq!(read()[1], metric(SERIAL, "0"));
+        assert_eq!(read()[2], metric(ZONES, "0"));
+        assert!(held.secondaries.is_empty());
     }
 
     /// D208: the gauges describe what is served, so a reload that fails as a whole, after its zones were read,

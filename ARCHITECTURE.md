@@ -39,7 +39,8 @@
   `apps/dedensd/src/odoh/`, D79, D94; DNSCrypt in `apps/dedensd/src/dnscrypt/` and `serve/dnscrypt.rs`, D99) →
   `crates/dedens-server/src/access.rs` (D91) → `Query::read` → `cookie.rs` and `rrl.rs` (D113) → the TSIG verified,
   the reply signed (`pipeline/signed.rs`, D211) → the stage pipeline (`pipeline/`, D23) of stages `authoritative.rs`
-  (D208, its zones loaded and kept across reloads by `apps/dedensd/src/zones.rs`, each zone's transfer, notify and
+  (D208, its zones loaded and kept across reloads by `apps/dedensd/src/zones.rs`, secondary zones transferred, refreshed
+  and kept in `state_dir` by `apps/dedensd/src/secondary/`, D215, each zone's transfer, notify and
   update lists in `zone_access.rs`, D211; the access lists past it), `plugin.rs`, `cache.rs` and `forward.rs` or
   `recurse/` (D195; `apps/dedensd/src/serve/recurse.rs` steps the resolution, `dedens-resolver`, over `dedens-net`'s
   authoritative mode, D190); a cache hit is copied and patched in place (`dedens-cache`, D116), every reply fitted to

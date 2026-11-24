@@ -28,5 +28,7 @@ mod rfc6761;
 #[cfg(unix)]
 mod rfc9718;
 #[cfg(unix)]
+mod secondary;
+#[cfg(unix)]
 mod tlds;
 mod util;

@@ -1,17 +1,21 @@
 //! An `authoritative` stage, as written and built (D208): the zones it serves, each a name and the file holding it
-//! in the presentation format (RFC 1035 §5), kept across reloads while their files stay (D120), and its access
-//! lists: who may transfer it, notify the server or update it, by network and TSIG key (D211).
+//! in the presentation format (RFC 1035 §5), kept across reloads while their files stay (D120), or the primaries
+//! it is transferred from, a secondary zone (D215), and its access lists: who may transfer it, notify the server or
+//! update it, by network and TSIG key (D211).
 
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{Context as _, bail, ensure};
 use dedens_proto::{Name, Question, RecordType};
 use dedens_server::{Action, Authoritative, Grant, Network, Stage, ZoneAccess};
+use dedens_tsig::Key;
 use dedens_zone::End;
 use serde::Deserialize;
 
 use super::tsig::Keys;
 use crate::lists::Store;
+use crate::secondary::{Primary, Secondary};
 
 /// The most zones an `authoritative` stage serves: 10 000 (D115). Each is a file read and stamped at every reload
 /// (D120), and a line of the configuration; past that, a catalog of zones (RFC 9432) is the tool, which the
@@ -29,13 +33,15 @@ pub(crate) struct AuthoritativeFile {
     zones: Vec<ZoneFile>,
 }
 
-/// A zone, as written: its apex, `name`, and the `file` it is read from; `$INCLUDE` reads files in the directory of
-/// `file` or below it. Its access lists permit nothing unless written (RFC 5936 §5).
+/// A zone, as written: its apex, `name`, and either the `file` it is read from, `$INCLUDE` reading files in the
+/// directory of `file` or below it, or the `secondary` settings it is transferred with. Its access lists permit
+/// nothing unless written (RFC 5936 §5).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ZoneFile {
     name: Domain,
-    file: PathBuf,
+    file: Option<PathBuf>,
+    secondary: Option<SecondaryFile>,
     /// Who may transfer the zone, AXFR or IXFR.
     #[serde(default)]
     transfer: Vec<GrantFile>,
@@ -56,6 +62,43 @@ struct GrantFile {
     key: Option<Domain>,
 }
 
+/// A secondary zone's settings, as written (D215).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecondaryFile {
+    /// Asked in order, up to [`MAX_PRIMARIES`].
+    primaries: Vec<PrimaryFile>,
+}
+
+/// A primary of a secondary zone, as written: its address, and the key of `keys` signing the queries to it, if any.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrimaryFile {
+    address: Address,
+    key: Option<Domain>,
+}
+
+/// The most primaries of a secondary zone: 16 (D115). A refresh asks them in turn, each up to the 10 s of an SOA
+/// query (D210), so they bound how long a refresh takes to fail; a zone has a few primaries. Knot, NSD and BIND
+/// bound none.
+const MAX_PRIMARIES: usize = 16;
+
+/// A primary's address: an IP address and port, or an IP address, on port 53.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "String")]
+struct Address(SocketAddr);
+
+impl TryFrom<String> for Address {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        (text.parse())
+            .or_else(|_| text.parse().map(|ip: IpAddr| SocketAddr::new(ip, 53)))
+            .map(Self)
+            .map_err(|_| format!("`{text}` is not an IP address, with a port or not"))
+    }
+}
+
 /// A domain name in presentation format: a zone's apex, a key's name.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "String")]
@@ -71,18 +114,21 @@ impl TryFrom<String> for Domain {
     }
 }
 
-/// The `authoritative` stage `name` of `file`, its zones from `store`, the keys of its access lists from `keys`.
+/// The `authoritative` stage `name` of `file`, its zones from `store`, its secondary zones' versions too, their
+/// settings added to `secondaries`, the keys of its access lists and primaries from `keys`. A secondary zone
+/// without a version is answered SERVFAIL (D215).
 ///
 /// # Errors
 ///
-/// No zone, or more than [`MAX_ZONES`]; a zone given twice; a zone that does not load, at the start or new to the
+/// No zone, or more than [`MAX_ZONES`]; a zone given twice; a zone with both or neither of `file` and `secondary`,
+/// with no primary or more than [`MAX_PRIMARIES`]; a zone that does not load, at the start or new to the
 /// configuration (a zone served keeps its last version, D55); an access list line without a network or with a key
 /// not in `keys`, a list of more than [`MAX_LIST_NETWORKS`] networks.
 pub(super) fn authoritative(
     name: &str,
     file: &AuthoritativeFile,
     keys: &Keys,
-    store: &mut Store,
+    (store, secondaries): (&mut Store, &mut Vec<Secondary>),
 ) -> anyhow::Result<Stage> {
     let count = file.zones.len();
     ensure!(count > 0, "stage `{name}`: `zones` is empty");
@@ -90,17 +136,69 @@ pub(super) fn authoritative(
         count <= MAX_ZONES,
         "stage `{name}`: `zones` lists {count} zones, over {MAX_ZONES}"
     );
-    let zones = (file.zones.iter())
-        .map(|zone| {
-            let context = || format!("stage `{name}`, zone `{}`", zone.name.0);
-            let access = access(zone, keys).with_context(context)?;
-            let loaded = store.zones.zone(&zone.name.0, &zone.file);
-            Ok((loaded.with_context(context)?, access))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let stage = Authoritative::guarded(zones).with_context(|| format!("stage `{name}`"))?;
+    let mut zones = Vec::with_capacity(count);
+    let mut unavailable = Vec::new();
+    for zone in &file.zones {
+        let context = || format!("stage `{name}`, zone `{}`", zone.name.0);
+        let access = access(zone, keys).with_context(context)?;
+        let apex = &zone.name.0;
+        match (&zone.file, &zone.secondary) {
+            (Some(path), None) => {
+                zones.push((store.zones.zone(apex, path).with_context(context)?, access));
+            }
+            (None, Some(secondary)) => {
+                let primaries = primaries(secondary, keys).with_context(context)?;
+                secondaries.push(Secondary {
+                    apex: apex.clone(),
+                    primaries,
+                });
+                match store.zones.secondary(apex) {
+                    Some(version) => zones.push((version, access)),
+                    None => unavailable.push(apex.clone()),
+                }
+            }
+            _ => bail!("{}: give one of `file` and `secondary`", context()),
+        }
+    }
+    let stage = (Authoritative::guarded(zones))
+        .and_then(|stage| stage.with_unavailable(unavailable))
+        .with_context(|| format!("stage `{name}`"))?;
     warn_undelegated(&stage);
     Ok(Stage::Authoritative(stage))
+}
+
+/// The primaries of `secondary`, their keys from `keys`.
+fn primaries(secondary: &SecondaryFile, keys: &Keys) -> anyhow::Result<Vec<Primary>> {
+    let count = secondary.primaries.len();
+    ensure!(count > 0, "`secondary`: `primaries` is empty");
+    ensure!(
+        count <= MAX_PRIMARIES,
+        "`secondary`: `primaries` lists {count}, over {MAX_PRIMARIES}"
+    );
+    (secondary.primaries.iter())
+        .map(|primary| {
+            let key = match &primary.key {
+                None => None,
+                Some(name) => Some(key(keys, name, "primaries")?.clone()),
+            };
+            Ok(Primary {
+                address: primary.address.0,
+                key,
+            })
+        })
+        .collect()
+}
+
+/// The key `name` of `keys`, which `setting` names.
+fn key<'a>(keys: &'a Keys, name: &Domain, setting: &str) -> anyhow::Result<&'a Key> {
+    match keys.ring.get(&name.0) {
+        Some(key) => Ok(key),
+        None if keys.skipped(&name.0) => bail!(
+            "`{setting}`: key `{}` is not read: a key added or changed takes a restart",
+            name.0
+        ),
+        None => bail!("`{setting}`: key `{}` is not in `keys`", name.0),
+    }
 }
 
 /// The access lists of `zone`, their keys from `keys`.
@@ -127,14 +225,7 @@ fn access(zone: &ZoneFile, keys: &Keys) -> anyhow::Result<ZoneAccess> {
                     );
                     let key = match &grant.key {
                         None => None,
-                        Some(name) => match keys.ring.get(&name.0) {
-                            Some(key) => Some(key),
-                            None if keys.skipped(&name.0) => bail!(
-                                "`{setting}`: key `{}` is not read: a key added or changed takes a restart",
-                                name.0
-                            ),
-                            None => bail!("`{setting}`: key `{}` is not in `keys`", name.0),
-                        },
+                        Some(name) => Some(key(keys, name, setting)?),
                     };
                     Ok(Grant::new(grant.networks.iter().copied(), key))
                 })
@@ -273,6 +364,79 @@ mod tests {
             read(&serving(&zones), &mut Store::default()).unwrap_err()
         );
         assert!(error.contains(&format!("over {MAX_ZONES}")), "{error}");
+    }
+
+    /// A secondary zone names its primaries, port 53 unless given, and their keys (D215); one never transferred is
+    /// held all the same, answered SERVFAIL.
+    #[test]
+    fn secondary_zones_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret.key");
+        private(&secret, dedens_testkit::authoritative::TSIG_KEY.secret);
+        let text = |primaries: &str| {
+            format!(
+                "keys:\n  - {{name: k, algorithm: hmac-sha256, secret_file: {}}}\nlisten: ['127.0.0.1:53']\npipeline: [zones]\nstages:\n  zones:\n    type: authoritative\n    zones:\n      - {{name: example, {primaries}}}\n",
+                secret.display()
+            )
+        };
+        let read = |text: &str| {
+            crate::config::read(
+                text,
+                env,
+                (&Pipeline::default(), None),
+                &mut Store::default(),
+            )
+        };
+        let both = "secondary: {primaries: [{address: '192.0.2.53'}, {address: '[2001:db8::53]:5353', key: k}]}";
+        let config = read(&text(both)).unwrap();
+        let [secondary] = &config.secondaries[..] else {
+            panic!("{:?}", config.secondaries);
+        };
+        assert_eq!(secondary.apex.to_string(), "example.");
+        let primaries: Vec<_> = (secondary.primaries.iter())
+            .map(|primary| {
+                (
+                    primary.address.to_string(),
+                    primary.key.as_ref().map(|key| key.name().to_string()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            primaries,
+            [
+                ("192.0.2.53:53".to_owned(), None),
+                ("[2001:db8::53]:5353".to_owned(), Some("k.".to_owned()))
+            ]
+        );
+        assert_eq!(config.zones, ["example."]);
+
+        let error = |primaries: &str| format!("{:#}", read(&text(primaries)).unwrap_err());
+        let cases = [
+            (
+                "file: x.zone, secondary: {primaries: [{address: '192.0.2.53'}]}",
+                "give one of `file` and `secondary`",
+            ),
+            ("transfer: []", "give one of `file` and `secondary`"),
+            ("secondary: {primaries: []}", "`primaries` is empty"),
+            (
+                "secondary: {primaries: [{address: primary.example}]}",
+                "is not an IP address",
+            ),
+            (
+                "secondary: {primaries: [{address: '192.0.2.53', key: other}]}",
+                "key `other.` is not in `keys`",
+            ),
+        ];
+        for (primaries, expected) in cases {
+            assert!(
+                error(primaries).contains(expected),
+                "{primaries}: {}",
+                error(primaries)
+            );
+        }
+        let many = vec!["{address: '192.0.2.53'}"; MAX_PRIMARIES + 1].join(", ");
+        let many = error(&format!("secondary: {{primaries: [{many}]}}"));
+        assert!(many.contains(&format!("over {MAX_PRIMARIES}")), "{many}");
     }
 
     /// [`serving`] `example` from `path` with `keys` and the zone's access lists `lists`, a key file of the captures'
