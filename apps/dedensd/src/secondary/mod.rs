@@ -704,6 +704,65 @@ mod tests {
         assert!(matches!(woken.try_recv(), Ok(Wake::Zone(apex, None)) if apex == self::apex()));
     }
 
+    /// A configuration keeps the zones it names, their versions and timers with its primaries, and drops the others;
+    /// a zone kept is not sent again.
+    #[test]
+    fn a_configuration_keeps_its_zones_with_their_new_primaries() {
+        use dedens_net::io::Compio;
+
+        use super::{Primary, Secondary, configure};
+
+        let dir = tempfile::tempdir().unwrap();
+        let gone: Name<'static> = "gone.example.".parse().unwrap();
+        let zones = BTreeMap::from([(apex(), held(dir.path())), (gone, held(dir.path()))]);
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 5353));
+        let secondaries = vec![Secondary {
+            apex: apex(),
+            primaries: vec![Primary { address, key: None }],
+        }];
+        let (wakes, woken) = mpsc::channel();
+        let zones = configure(zones, secondaries, dir.path(), (&Compio, &wakes));
+        assert_eq!(zones.keys().cloned().collect::<Vec<_>>(), [apex()]);
+        let zone = &zones[&apex()];
+        let primaries: Vec<_> = zone.primaries.iter().map(|p| p.address).collect();
+        assert_eq!(primaries, [address]);
+        assert_eq!((zone.next, kept(zone).expires), (3600, 3_600_000));
+        assert!(woken.try_recv().is_err());
+    }
+
+    /// RFC 1034 §4.3.5: a version kept on disk is served up to its expire, not at it; without one, the zone is
+    /// refreshed at once.
+    #[test]
+    fn rfc1034_4_3_5_a_version_on_disk_is_read_before_its_expire() {
+        use super::adopt;
+        use super::disk::dir_of;
+
+        let dir = tempfile::tempdir().unwrap();
+        let zone = held(dir.path()).version.map(|(zone, _)| zone).unwrap();
+        let kept = Kept {
+            refreshed: 0,
+            expires: 3_600_000,
+        };
+        Disk::new(dir_of(dir.path(), &apex()))
+            .full(&zone, kept)
+            .unwrap();
+        let read = adopt(&apex(), Vec::new(), dir.path(), (3_599_999, 0));
+        assert_eq!((read.version.is_some(), read.next), (true, 3240));
+        let expired = adopt(&apex(), Vec::new(), dir.path(), (3_600_000, 0));
+        assert_eq!(
+            (expired.version.is_some(), expired.next),
+            (false, 3_600_000)
+        );
+    }
+
+    /// The jitter is drawn from the I/O's random bytes: two draws are the same once in 2^64.
+    #[test]
+    fn the_jitter_is_drawn_at_random() {
+        use dedens_net::io::Compio;
+
+        assert_ne!(super::draw(&Compio), super::draw(&Compio));
+    }
+
     /// RFC 1996 §3.11: the refresh a NOTIFY asks reaches the thread once it runs, and nothing before.
     #[test]
     fn a_refresh_asked_reaches_the_running_thread() {

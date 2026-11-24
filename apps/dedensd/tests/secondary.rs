@@ -176,6 +176,10 @@ fn rfc5936_2_2_a_secondary_zone_is_transferred_kept_and_served_after_a_restart()
     assert_eq!(transferred["fields"]["kind"], "full");
     assert_eq!(transferred["fields"]["serial"], ROOT);
     serves(&server, ".", ROOT);
+    assert_eq!(
+        logged(&server, "secondary zone transferred with warnings"),
+        Vec::<serde_json::Value>::new()
+    );
     let dir = state.path().join("zones/root");
     assert!(dir.join("zone").is_file() && dir.join("timers").is_file());
     // The files stay where the thread started: another `state_dir` takes a restart.

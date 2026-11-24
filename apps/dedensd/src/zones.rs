@@ -418,6 +418,20 @@ mod tests {
         assert_eq!(read()[1], metric(SERIAL, "0"));
         assert_eq!(read()[2], metric(ZONES, "0"));
         assert!(held.zones.is_empty());
+
+        // A secondary zone's version the same (D215).
+        let zone = Held::default().zone(&apex(), &path).unwrap();
+        metrics::with_local_recorder(&recorder, || {
+            held.transferred(apex(), Some(zone));
+            held.begin();
+            assert!(held.secondary(&apex()).is_some());
+            held.end();
+            held.begin();
+            held.end();
+        });
+        assert_eq!(read()[1], metric(SERIAL, "0"));
+        assert_eq!(read()[2], metric(ZONES, "0"));
+        assert!(held.secondaries.is_empty());
     }
 
     /// D208: the gauges describe what is served, so a reload that fails as a whole, after its zones were read,
